@@ -52,13 +52,18 @@ typedef struct {
      * later timings until the engine spends it on the row's retune (dsd_scan_mode_take_timed_digital_family()), which
      * carries the digital family by it; a row's entry clears it. Decoder thread only. */
     int timed_digital_family;
+    /* The CQPSK choice the row's symbol timing used (issue #890): 1 or 0 when the row makes its own
+     * (scan_scope_cqpsk_choice()), -1 when it lands with the decoder's. Set by every timing of a row, a row
+     * dsd_scan_mode_prepare() stages included, so the retune prepared next for that row queues the chain its timing
+     * assumed (dsd_scan_mode_timed_cqpsk()). Decoder thread only. */
+    int timed_cqpsk;
 } scan_scope;
 
 static const char* const mode_names[] = {"",      "p25", "dmr", "nxdn96", "nxdn48", "dpmr",
-                                         "dstar", "ysf", "m17", "nfm",    "am"};
+                                         "dstar", "ysf", "m17", "nfm",    "am",     "tetra-dmo"};
 static const dsdneoUserDecodeMode mode_presets[] = {
     DSDCFG_MODE_AUTO,  DSDCFG_MODE_TDMA, DSDCFG_MODE_DMR, DSDCFG_MODE_NXDN96, DSDCFG_MODE_NXDN48, DSDCFG_MODE_DPMR,
-    DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF,  DSDCFG_MODE_M17, DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM};
+    DSDCFG_MODE_DSTAR, DSDCFG_MODE_YSF,  DSDCFG_MODE_M17, DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM,     DSDCFG_MODE_TETRA};
 
 _Static_assert(sizeof(mode_names) / sizeof(mode_names[0]) == (size_t)DSD_SCAN_MODE_LAST + 1U,
                "every scan class needs a name");
@@ -88,7 +93,8 @@ dsd_scan_mode_analog_kind(dsd_scan_mode mode) {
         case DSD_SCAN_MODE_DPMR:
         case DSD_SCAN_MODE_DSTAR:
         case DSD_SCAN_MODE_YSF:
-        case DSD_SCAN_MODE_M17: return -1;
+        case DSD_SCAN_MODE_M17:
+        case DSD_SCAN_MODE_TETRA_DMO: return -1;
     }
     return -1;
 }
@@ -463,6 +469,36 @@ dsd_scan_settings_equal(const dsd_scan_settings* a, const dsd_scan_settings* b, 
            && (!include_timing || scan_settings_fields_equal(a, b, timing, sizeof(timing) / sizeof(timing[0])));
 }
 
+dsd_scan_key_capability
+dsd_scan_mode_key_capability(dsd_scan_mode mode) {
+    switch (mode) {
+        case DSD_SCAN_MODE_INHERIT:
+        case DSD_SCAN_MODE_P25:
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48: return DSD_SCAN_KEYS_FULL;
+        case DSD_SCAN_MODE_DPMR: return DSD_SCAN_KEYS_SCRAMBLER;
+        case DSD_SCAN_MODE_M17: return DSD_SCAN_KEYS_SESSION;
+        case DSD_SCAN_MODE_DSTAR:
+        case DSD_SCAN_MODE_YSF:
+        case DSD_SCAN_MODE_NFM:
+        case DSD_SCAN_MODE_AM:
+        case DSD_SCAN_MODE_TETRA_DMO:
+        default: return DSD_SCAN_KEYS_NONE;
+    }
+}
+
+const char*
+dsd_scan_mode_key_refusal(dsd_scan_mode mode) {
+    switch (dsd_scan_mode_key_capability(mode)) {
+        case DSD_SCAN_KEYS_SCRAMBLER: return "it takes only an -R scrambler key in its options";
+        case DSD_SCAN_KEYS_SESSION: return "it takes no keys of its own: the session's keys apply";
+        case DSD_SCAN_KEYS_NONE: return "it decrypts nothing";
+        case DSD_SCAN_KEYS_FULL:
+        default: return NULL;
+    }
+}
+
 dsd_decode_mode_profile
 dsd_scan_mode_profile(dsd_scan_mode mode) {
     return dsd_decode_mode_profile_for(
@@ -505,31 +541,41 @@ dsd_scan_mode_configured_digital(const dsd_opts* opts, const dsd_state* state) {
  * of the analog family (issue #583), and the CQPSK state the row lands with, in @p out_cqpsk. The choice is the
  * target's under --trunk-scan for a P25 target with a modulation value (auto, c4fm or cqpsk), whose state is the
  * modulation its decoder runs (@p decoder_cqpsk: the scanner puts the target's modulation, or an auto target's learned
- * one, into rf_mod before the row is timed), and for a DMR or NXDN target, whose state is CQPSK off whatever the
- * decoder's rf_mod says: the engine's GFSK chain always lands it on the FSK discriminator, and a -mq lock leaves such a
- * target with no modulation of its own on rf_mod 1. Only the trunk-scan coordinator sets a scope's modulation
- * (dsd_scan_mode_target_modulation()), and it maps exactly its DMR and NXDN target types to those three modes, so this
- * is the rule the engine attaches the digital family by (dsd_engine_prepare_digital_family()), with the CQPSK state its
- * profile queues: the decoder is timed, and a republish asks, for the CQPSK state the tune lands. A -Y row of the same
- * modes, and a P25 target with no modulation, make no choice of their own: they land with @p decoder_cqpsk where an
- * open of the mode would, DSD_NEO_CQPSK deciding when set. */
+ * one, into rf_mod before the row is timed), and for every other digital target, whose CQPSK state is its class's
+ * whatever the decoder's rf_mod says (issue #890): off for DMR, NXDN at either rate, dPMR, D-STAR, YSF and M17, which
+ * the engine's landing profile always lands on the FSK discriminator (a -mq lock leaves such a target with no
+ * modulation of its own on rf_mod 1), and on for TETRA DMO, which runs only on the CQPSK chain. Under --trunk-scan the
+ * scopes are the coordinator's, one per target type's class, so this is the rule the engine attaches the digital
+ * family by (dsd_engine_prepare_digital_family()), with the CQPSK state its landing profile queues
+ * (dsd_engine_trunk_scan_active_class_landing()): the decoder is timed, and a republish asks, for the CQPSK state the
+ * tune lands. A -Y row of the same modes, and a P25 target with no modulation, make no choice of their own: they land
+ * with @p decoder_cqpsk where an open of the mode would, DSD_NEO_CQPSK deciding when set. A -Y tetra-dmo row is the
+ * exception (issue #890): its class has one chain, the CQPSK one, whatever a global -m lock puts on rf_mod, so it lands
+ * there as a tetra-dmo-conventional target does (docs/trunk-scan.md: a lock may keep its slicer setting, while the
+ * chain stays the class's). */
 static int
 scan_scope_cqpsk_choice(const dsd_opts* opts, const scan_scope* scope, int decoder_cqpsk, int* out_cqpsk) {
     *out_cqpsk = decoder_cqpsk ? 1 : 0;
-    if (!scope || opts->trunk_scan_enabled != 1) {
+    if (!scope || scope->mode == DSD_SCAN_MODE_INHERIT || dsd_scan_mode_is_analog(scope->mode)) {
         return 0;
     }
-    switch (scope->mode) {
-        case DSD_SCAN_MODE_P25:
-            return (scope->modulation == DSD_SCAN_MODULATION_AUTO || scope->modulation == DSD_SCAN_MODULATION_C4FM
-                    || scope->modulation == DSD_SCAN_MODULATION_CQPSK)
-                       ? 1
-                       : 0;
-        case DSD_SCAN_MODE_DMR:
-        case DSD_SCAN_MODE_NXDN96:
-        case DSD_SCAN_MODE_NXDN48: *out_cqpsk = 0; return 1;
-        default: return 0;
+    if (opts->trunk_scan_enabled != 1) {
+        if (scope->mode != DSD_SCAN_MODE_TETRA_DMO) {
+            return 0;
+        }
+        *out_cqpsk = 1;
+        return 1;
     }
+    if (scope->mode == DSD_SCAN_MODE_P25) {
+        return (scope->modulation == DSD_SCAN_MODULATION_AUTO || scope->modulation == DSD_SCAN_MODULATION_C4FM
+                || scope->modulation == DSD_SCAN_MODULATION_CQPSK)
+                   ? 1
+                   : 0;
+    }
+    /* TETRA's pi/4-DQPSK runs only on the CQPSK chain (EN 300 396-2 clause 5.3); every other class, the FSK
+       discriminator. */
+    *out_cqpsk = scope->mode == DSD_SCAN_MODE_TETRA_DMO ? 1 : 0;
+    return 1;
 }
 
 /* The rate a row with @p symbol_rate_hz (0: no symbol clock) is timed for; see dsd_scan_mode_symbol_timing_rate_hz().
@@ -600,6 +646,33 @@ dsd_scan_mode_cqpsk_explicit(const dsd_opts* opts, const dsd_state* state, int* 
 }
 
 int
+dsd_scan_mode_chain_rf_mod(const dsd_opts* opts, const dsd_state* state) {
+    if (!state) {
+        return 0;
+    }
+    int row_cqpsk = 0;
+    if (!dsd_scan_mode_cqpsk_explicit(opts, state, &row_cqpsk)) {
+        return state->rf_mod;
+    }
+    if (row_cqpsk) {
+        return 1;
+    }
+    return state->rf_mod == 1 ? 2 : state->rf_mod;
+}
+
+int
+dsd_scan_mode_timed_cqpsk(const dsd_state* state, int* out_cqpsk) {
+    const scan_scope* scope = state ? scan_scope_get(state) : NULL;
+    if (!scope || scope->timed_cqpsk < 0) {
+        return 0;
+    }
+    if (out_cqpsk) {
+        *out_cqpsk = scope->timed_cqpsk ? 1 : 0;
+    }
+    return 1;
+}
+
+int
 dsd_scan_mode_take_timed_digital_family(const dsd_state* state) {
     scan_scope* scope = scan_scope_get(state);
     if (!scope || !scope->timed_digital_family) {
@@ -619,9 +692,12 @@ scan_scope_apply_timing(const dsd_opts* opts, dsd_state* state, const scan_scope
     const int clock_hz = dsd_scan_mode_is_analog(scope->mode) ? 0 : profile.symbol_rate_hz;
     int landing_cqpsk = 0;
     const int cqpsk_explicit = scan_scope_cqpsk_choice(opts, scope, state->rf_mod == 1, &landing_cqpsk);
-    const int rate_hz =
-        scan_timing_rate_hz(opts, scan_scope_get(state), scan_configured_digital(opts, scope->configured.analog_only),
-                            clock_hz, landing_cqpsk, cqpsk_explicit);
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_cqpsk = cqpsk_explicit ? landing_cqpsk : -1;
+    }
+    const int rate_hz = scan_timing_rate_hz(opts, live, scan_configured_digital(opts, scope->configured.analog_only),
+                                            clock_hz, landing_cqpsk, cqpsk_explicit);
     state->samplesPerSymbol = dsd_opts_compute_sps_rate(opts, profile.symbol_rate_hz, rate_hz);
     state->symbolCenter = dsd_opts_symbol_center(state->samplesPerSymbol);
     state->sps_hunt_idx = (int)profile.sps_profile_index;
@@ -634,9 +710,13 @@ typedef enum { SCAN_ROW_STAGED = 0, SCAN_ROW_COMMITTED = 1 } scan_row_apply;
 /* Put the row @p scope describes over the configured decoder, all but its symbol timing, and fill @p out_profile with
  * the profile the row is timed with. Returns 0 for a blank row, which runs the configured decoder with its timing. The
  * caller times the row (scan_scope_apply_timing()) once the modulation the row runs is decided: the preset's, the
- * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). A typed row runs
- * no TETRA decoder: committed, it leaves TETRA as its preset does; staged, the TETRA session stays whole until a commit
- * (dsd_stage_decode_mode_preset()), so a transition that fails before one goes back to it as it was. */
+ * configured lock's or the scope's, and on resume the one a P25 row learned (dsd_scan_mode_resume()). A typed row of
+ * any class but tetra-dmo runs no TETRA decoder: committed, it leaves TETRA as its preset does (keeping the state
+ * allocated while a scan session with a TETRA DMO row holds it, dsd_state::tetra_ext_scan_held, issue #890); staged, the
+ * TETRA session stays whole until a commit (dsd_stage_decode_mode_preset()), so a transition that fails before one goes
+ * back to it as it was. A tetra-dmo row runs the TETRA preset (issue #890), which keeps the TETRA decoder and what it
+ * holds; the scan starts that state cold at the landing (tetra_scan_visit_reset()).
+ */
 static int
 scan_scope_apply_row_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* scope, scan_row_apply how,
                              dsd_decode_mode_profile* out_profile) {
@@ -693,6 +773,13 @@ scan_scope_apply_decoder(dsd_opts* opts, dsd_state* state, const scan_scope* sco
     dsd_decode_mode_profile profile;
     if (scan_scope_apply_row_decoder(opts, state, scope, how, &profile)) {
         scan_scope_apply_timing(opts, state, scope, profile);
+        return;
+    }
+    /* A blank row runs the configured decoder with its timing, and so its chain: no choice of its own, so none a row
+       timed before it left on the live scope (issue #890) answers for it. */
+    scan_scope* live = scan_scope_get(state);
+    if (live) {
+        live->timed_cqpsk = -1;
     }
 }
 
@@ -938,6 +1025,7 @@ dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings_capture(opts, state, &scope->configured);
     scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
+    scope->timed_cqpsk = -1; /* no row timed yet */
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, scope, free);
     return 0;
 }
@@ -1108,6 +1196,29 @@ dsd_scan_mode_target_modulation(const dsd_state* state, dsd_scan_modulation modu
     }
 }
 
+int
+dsd_scan_mode_auto_rf_mod(dsd_scan_mode mode) {
+    switch (mode) {
+        /* The C4FM classes: P25 Phase 1 (which a P25 target then learns), YSF, M17 and dPMR (TS 102 658 clause 4.2) are
+           four-level FM, run on the C4FM slicer as their presets run them. */
+        case DSD_SCAN_MODE_P25:
+        case DSD_SCAN_MODE_YSF:
+        case DSD_SCAN_MODE_M17:
+        case DSD_SCAN_MODE_DPMR: return 0;
+        /* GFSK: DMR and NXDN as trunk scan has always run them, and D-STAR's two-level GMSK (JARL STD6.0 clause
+           3.1.2), which its preset names GFSK too. INHERIT keeps the GFSK this answered before it had a table. */
+        case DSD_SCAN_MODE_INHERIT:
+        case DSD_SCAN_MODE_DMR:
+        case DSD_SCAN_MODE_NXDN96:
+        case DSD_SCAN_MODE_NXDN48:
+        case DSD_SCAN_MODE_DSTAR: return 2;
+        case DSD_SCAN_MODE_TETRA_DMO: return 1;
+        case DSD_SCAN_MODE_NFM:
+        case DSD_SCAN_MODE_AM: return 0;
+    }
+    return 0;
+}
+
 void
 dsd_scan_mode_apply_modulation(dsd_opts* opts, dsd_scan_mode mode, dsd_scan_modulation modulation) {
     if (!opts || modulation == DSD_SCAN_MODULATION_INHERIT || (unsigned)modulation > DSD_SCAN_MODULATION_GFSK) {
@@ -1115,7 +1226,7 @@ dsd_scan_mode_apply_modulation(dsd_opts* opts, dsd_scan_mode mode, dsd_scan_modu
     }
     int mod;
     switch (modulation) {
-        case DSD_SCAN_MODULATION_AUTO: mod = mode == DSD_SCAN_MODE_P25 ? 0 : 2; break;
+        case DSD_SCAN_MODULATION_AUTO: mod = dsd_scan_mode_auto_rf_mod(mode); break;
         case DSD_SCAN_MODULATION_C4FM: mod = 0; break;
         case DSD_SCAN_MODULATION_CQPSK: mod = 1; break;
         case DSD_SCAN_MODULATION_GFSK: mod = 2; break;
@@ -1373,6 +1484,7 @@ dsd_scan_mode_effective_profile(const dsd_opts* opts, const dsd_state* state) {
             case DSD_FRAME_SYNC_SPS_PROFILE_9600_2: return dsd_decode_mode_profile_for(DSDCFG_MODE_EDACS_PV);
             case DSD_FRAME_SYNC_SPS_PROFILE_6000_4: return dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2);
             case DSD_FRAME_SYNC_SPS_PROFILE_4800_2: return dsd_decode_mode_profile_for(DSDCFG_MODE_DSTAR);
+            case DSD_FRAME_SYNC_SPS_PROFILE_18000_4: return dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA);
             default: break;
         }
     }
@@ -1397,6 +1509,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
     scan_scope* live = scan_scope_get(state);
     if (live) {
         live->timed_digital_family = 0;
+        live->timed_cqpsk = -1; /* until the staged row's timing records its own choice */
     }
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);

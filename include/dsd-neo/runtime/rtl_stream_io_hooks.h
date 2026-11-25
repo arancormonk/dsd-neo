@@ -83,6 +83,9 @@ typedef struct {
     /* Whether the stream can carry the FSK voice lane (rtl_stream_voice_lane_available()). Optional: without it, a
        stream with read_lanes carries it. */
     int (*voice_lane_available)(void);
+    /* Tell the stream the TETRA decoder is on a direct mode carrier, or no longer (rtl_stream_set_tetra_direct_bursts(),
+       issue #890). Optional. */
+    void (*set_tetra_direct_bursts)(int enable);
 } dsd_rtl_stream_io_hooks;
 
 /** Install a copy of @p hooks; NULL clears every slot. */
@@ -123,6 +126,10 @@ int dsd_rtl_stream_io_hook_read_lanes(dsd_state* state, float* out, float* voice
 
 /** @brief Ask the RTL stream for its FSK voice lane, or stop it (issue #518); nothing without the hook. */
 void dsd_rtl_stream_io_hook_set_voice_lane(int enable);
+
+/** @brief Tell the RTL stream the TETRA decoder is on a direct mode carrier, or no longer (issue #890), so its TETRA
+ * chain times each burst from its training; nothing without the hook. */
+void dsd_rtl_stream_io_hook_set_tetra_direct_bursts(int enable);
 
 /**
  * @brief Whether the RTL stream carries the FSK voice lane: 1 with the read_lanes hook, unless the voice_lane_available

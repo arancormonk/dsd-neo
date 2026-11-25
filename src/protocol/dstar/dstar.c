@@ -349,11 +349,14 @@ processDSTAR_HD(dsd_opts* opts, dsd_state* state) {
         return 0;
     }
 
-    const int header_ok = dstar_header_decode_soft(state, soft_symbols);
+    int header_data = 0;
+    const int header_ok = dstar_header_decode_soft_data(state, soft_symbols, &header_data);
     if (header_ok) {
         /* A CRC-16/X.25 over 39 octets: proof on its own, and it opens the transmission the
          * voice superframe below belongs to. */
         dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
+        /* And a scan hold (issue #890, D4), its kind the checked header's own DATA flag. */
+        dstar_report_scan_activity(opts, state, 1, header_data);
         /* The capture of the transmission before it ends here (issue #661). */
         dsd_mbe_out_close_protocol(opts, state, DSD_MBE_OUT_SLOT1, DSD_SYNC_DSTAR_HD_POS);
     }

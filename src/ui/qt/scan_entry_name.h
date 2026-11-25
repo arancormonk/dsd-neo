@@ -16,29 +16,33 @@
 #ifndef DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 #define DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 
-#include <QMap>
 #include <QString>
-#include <utility>
+#include "scan_protocol_catalog.h"
 
 namespace dsd_qt {
 
-/** The protocol a decode flag runs, as a scan list names it ("p25", "dmr", ...); empty for none it maps. */
+/** The protocol a decode flag runs, as a scan list names it ("p25", "tetra_dmo", ...; scan_protocol_for_flag()); empty
+    for none it maps. */
 inline QString
 scan_entry_protocol_for_flag(const QString& decodeFlag) {
-    static const QMap<QString, QString> protocols{
-        {"-ft", "p25"},    {"-f1", "p25"},  {"-mq", "p25"},    {"-^", "p25"},     {"-fs", "dmr"},
-        {"-fi", "nxdn48"}, {"-fn", "nxdn"}, {"-ft -^", "p25"}, {"-mq -^", "p25"}, {"-^ -ft", "p25"},
-        {"-^ -mq", "p25"}, {"-fA", "nfm"},  {"-fM", "am"}};
-    return protocols.value(decodeFlag.simplified());
+    const ScanProtocol* protocol = scan_protocol_for_flag(decodeFlag);
+    return protocol ? QString::fromLatin1(protocol->id) : QString();
 }
 
-/** @p protocol (a scan-list protocol id) as the scan list editor names it (ScanListScreen.qml protocolLabels); an id
-    it does not name, upper-cased. */
+/** @p protocol (a scan-list protocol id) as the scan list editor names it (ScanProtocol::label); empty for an id the
+    catalog does not have. */
 inline QString
 scan_entry_protocol_label(const QString& protocol) {
-    static const QMap<QString, QString> labels{{"p25", "P25"},     {"dmr", "DMR"},          {"nxdn48", "NXDN48"},
-                                               {"nxdn", "NXDN96"}, {"nfm", "NFM (analog)"}, {"am", "AM (analog)"}};
-    return labels.value(protocol, protocol.toUpper());
+    const ScanProtocol* found = scan_protocol_by_id(protocol);
+    return found ? QString::fromLatin1(found->label) : QString();
+}
+
+/** The label of the protocol engine target type @p type names ("tetra-dmo-conventional" is "TETRA DMO";
+    scan_protocol_for_type()); empty for a type the catalog does not have. */
+inline QString
+scan_entry_type_label(const QString& type) {
+    const ScanProtocol* found = scan_protocol_for_type(type);
+    return found ? QString::fromLatin1(found->label) : QString();
 }
 
 /** @p name when it has one, else @p protocol (a scan-list protocol id) and @p freqMhz as the scan list shows them. */

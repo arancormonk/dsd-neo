@@ -26,6 +26,7 @@
 #include <dsd-neo/runtime/colors.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
@@ -101,6 +102,30 @@ dpmr_call_kind_for_mode(uint32_t mode) {
         return DSD_CALL_KIND_DATA;
     }
     return DSD_CALL_KIND_UNKNOWN;
+}
+
+void
+dpmr_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, int target_known,
+                          uint32_t source, int source_known, uint32_t mode, uint32_t version) {
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    identity.encrypted = (uint8_t)(version == 3U);
+    if (target_known) {
+        identity.target = target & 0xFFFFFFU;
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET;
+    }
+    if (source_known) {
+        identity.source = source & 0xFFFFFFU;
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+    }
+    const dsd_call_kind kind = dpmr_call_kind_for_mode(mode);
+    if (kind != DSD_CALL_KIND_UNKNOWN) {
+        identity.data_call = (uint8_t)(kind == DSD_CALL_KIND_DATA);
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    }
+    const int protocol = DSD_SYNC_IS_DPMR(state->synctype) ? state->synctype : DSD_SYNC_DPMR_FS2_POS;
+    dsd_trunk_scan_hook_digital_conventional_activity(opts, state, protocol, -1, &identity);
 }
 
 int
@@ -193,6 +218,10 @@ dpmr_publish_header_call(dsd_opts* opts, dsd_state* state, const dpmr_header* he
                   sizeof(observation.target_text) - 1U);
     dsd_strncpy_s(observation.source_text, sizeof(observation.source_text), calling,
                   sizeof(observation.source_text) - 1U);
+    /* The checked MI's raw 24-bit IDs as the call's numbers (issue #890), beside the dial strings shown: the policies
+       that read the call (the voice-only scan's, the audio gate's) judge it by them, as the activity reports are. */
+    observation.ota_target_id = header->called_id & 0xFFFFFFU;
+    observation.ota_source_id = header->calling_id & 0xFFFFFFU;
     /* A header opens its transmission (dsd_call_boundary: a voice header is per-transmission evidence); a repeat of the
        header that opened it goes on with it. */
     (void)dsd_call_state_observe(state, &observation, continues ? DSD_CALL_BOUNDARY_CONTINUE : DSD_CALL_BOUNDARY_BEGIN);
@@ -308,6 +337,9 @@ dpmr_process_header(dsd_opts* opts, dsd_state* state, const dpmr_header* header,
         dpmr_confirm_note_evidence(state, DPMR_EVIDENCE_STRONG);
         dpmr_publish_header_call(opts, state, header, continues);
         dpmr_note_call_header(state, header, continues);
+        /* A Communications_Start header whose CRC-8 passed holds a scan target (issue #890): both stations known. */
+        dpmr_report_scan_activity(opts, state, header->called_id, 1, header->calling_id, 1, header->mode,
+                                  header->version);
         /* The search and a scan quiet check hear it after the call is published (dpmr_confirm_end_frame()). */
         dpmr_confirm_end_frame(opts, state);
     } else if (header->message_type == DPMR_MT_COMMUNICATIONS_START && header->mode == 7U) {

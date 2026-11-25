@@ -779,7 +779,9 @@ count_vc_sync(dsd_opts* opts, const dsd_state* state) {
 static int g_profile_pushes;
 
 static int
-count_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps) {
+count_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels, int channel_profile,
+                    int ted_sps) {
+    (void)cqpsk_explicit;
     (void)cqpsk_enable;
     (void)symbol_rate_hz;
     (void)levels;

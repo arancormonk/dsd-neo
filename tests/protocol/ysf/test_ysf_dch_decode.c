@@ -27,7 +27,9 @@
 #include <dsd-neo/protocol/ysf/ysf.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <math.h>
 #include <mbelib-neo/mbelib.h>
 #include <sndfile.h>
@@ -44,6 +46,7 @@
 #endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "scan_activity_capture.h"
 #include "test_support.h"
 #include "ysf_frame.h"
 #include "ysf_internal.h"
@@ -2394,6 +2397,109 @@ test_process_ysf_vd_type1_records_five_frames_to_call_wav(void) {
 }
 #endif
 
+/* One full-rate data or V/D type 1 frame with FICH fields @p fi, @p dt and @p cm (its CRC broken when @p bad_fich),
+   decoded on a row of scan class @p row (INHERIT: none entered): the PROVEN notes a quiet check heard, the -Y content
+   it moved (@p content_moved), and the trunk scan reports it made (g_test_scan_activity). */
+static int
+ysf_scan_frame(uint32_t fi, uint32_t dt, uint32_t cm, int bad_fich, dsd_scan_mode row, uint32_t* content_moved) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t fich_bits[48];
+    uint8_t fich_input[100];
+    uint8_t dch0[180];
+    uint8_t dch1[180];
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    DSD_MEMSET(g_dibit_stream, 0, sizeof(g_dibit_stream));
+    g_dibit_stream_len = 0;
+    g_dibit_stream_pos = 0;
+    g_process_mbe_call_count = 0;
+    if (row != DSD_SCAN_MODE_INHERIT) {
+        assert(dsd_scan_mode_enter(&opts, &state, row) == 0);
+    }
+    opts.scan_skip_silent = 1;
+    state.synctype = DSD_SYNC_YSF_POS;
+    make_fich_bits_for_full_rate_data(fich_bits);
+    set_bits_msb(fich_bits, 0U, 2U, fi);
+    set_bits_msb(fich_bits, 4U, 2U, cm);
+    set_bits_msb(fich_bits, 22U, 2U, dt);
+    /* Some words this fixture's FICH encoder does not round-trip (its convolutional tail): the squelch code, which no
+       case reads, is stepped until the word decodes. */
+    for (uint32_t sc = 0U; sc < 128U; sc++) {
+        set_bits_msb(fich_bits, 25U, 7U, sc);
+        append_ysf_crc(fich_bits);
+        encode_fich_input(fich_bits, 0, 0, fich_input);
+        uint8_t probe[32];
+        if (ysf_conv_fich(fich_input, probe, NULL) == 0) {
+            break;
+        }
+    }
+    encode_fich_input(fich_bits, bad_fich, 0, fich_input);
+    encode_dch_payload_to_input("SCANDST001SCANSRC002", 20U, dch0, 176U, 9U, 0);
+    encode_dch_payload_to_input("SCANUPL003SCANDNL004", 20U, dch1, 176U, 9U, 0);
+    append_dibits_to_stream(fich_input, 100U);
+    if (fi == 1U && dt == 0U) {
+        append_vd_type1_blocks(dch0, 3U);
+    } else {
+        append_interleaved_full_rate_dch_blocks(dch0, dch1);
+    }
+    dsd_frame_sync_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.content_evidence = record_quiet_note;
+    dsd_frame_sync_hooks_set(&hooks);
+    dsd_test_scan_activity_install();
+    g_quiet_proven = 0;
+    const uint32_t content = state.scan_y_content_seq;
+    (void)processYSF(&opts, &state);
+    *content_moved = state.scan_y_content_seq - content;
+    dsd_frame_sync_hooks_set(NULL);
+    dsd_trunk_scan_hooks_set(NULL);
+    dsd_state_ext_free_all(&state);
+    return g_quiet_proven;
+}
+
+/* Issue #890: a FICH whose CRC passed reports its frame to trunk scan's policy table when it is a header (FI 0) or a
+   communication frame (FI 1): DT 1 a data call, CM 3 an individual one, CM 1 (radio ID) and CM 2 of unknown party,
+   never encrypted. A terminator (FI 2), a test frame (FI 3) and a failed FICH report nothing. */
+static void
+test_process_ysf_reports_checked_calls_to_trunk_scan(void) {
+    InitAllFecFunction();
+    uint32_t moved = 0U;
+    (void)ysf_scan_frame(0U, 1U, 3U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_YSF(g_test_scan_activity.protocol));
+    assert(g_test_scan_activity.slot == -1);
+    const dsd_trunk_scan_activity_identity* id = &g_test_scan_activity.last;
+    assert(id->known
+           == (DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_PARTY));
+    assert(id->data_call == 1U && id->is_private == 1U && id->encrypted == 0U);
+    (void)ysf_scan_frame(1U, 0U, 0U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.data_call == 0U
+           && g_test_scan_activity.last.is_private == 0U);
+    (void)ysf_scan_frame(0U, 1U, 2U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) == 0U);
+    /* Radio ID mode (CM 1) addresses a destination radio ID: neither a group nor an individual call. */
+    (void)ysf_scan_frame(0U, 1U, 1U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_PARTY) == 0U);
+    (void)ysf_scan_frame(2U, 1U, 0U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 0);
+    (void)ysf_scan_frame(3U, 1U, 0U, 0, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 0);
+    (void)ysf_scan_frame(0U, 1U, 0U, 1, DSD_SCAN_MODE_INHERIT, &moved);
+    assert(g_test_scan_activity.count == 0);
+}
+
+/* Issue #890 F3: a test frame (FI 3) is channel activity to an untyped row, its FICH and each DCH PROVEN, but to a
+   row of the ysf class it proves the profile only: no PROVEN note and no -Y content. A header on that row is content as
+   ever. */
+static void
+test_process_ysf_test_frame_is_no_traffic_for_a_typed_row(void) {
+    InitAllFecFunction();
+    uint32_t moved = 0U;
+    assert(ysf_scan_frame(3U, 1U, 0U, 0, DSD_SCAN_MODE_INHERIT, &moved) >= 2 && moved >= 2U);
+    assert(ysf_scan_frame(3U, 1U, 0U, 0, DSD_SCAN_MODE_YSF, &moved) == 0 && moved == 0U);
+    assert(ysf_scan_frame(0U, 1U, 0U, 0, DSD_SCAN_MODE_YSF, &moved) >= 2 && moved >= 2U);
+}
+
 int
 main(void) {
 #ifdef DSD_YSF_TEST_REAL_VOCODER
@@ -2420,6 +2526,8 @@ main(void) {
     test_process_ysf_frame_cut_by_an_input_interruption_publishes_nothing();
     test_process_ysf_bad_fich_fallback_reopens_ysf_epoch();
     test_ysf_checked_fich_and_dch_are_proven_content();
+    test_process_ysf_reports_checked_calls_to_trunk_scan();
+    test_process_ysf_test_frame_is_no_traffic_for_a_typed_row();
     test_process_ysf_fich_verdict_is_sticky_per_transmission();
     test_process_ysf_fich_fallback_is_per_decoder_state();
     test_process_ysf_vd_type2_routes_dch2_voice_and_audio_errors();

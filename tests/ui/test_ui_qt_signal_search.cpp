@@ -45,8 +45,10 @@
 #include <clocale>
 #include <cmath>
 #include <condition_variable>
+#include <cstdio>
 #include <dsd-neo/app_control/frontend_runtime.h>
 #include <dsd-neo/app_control/signal_search.h>
+#include <dsd-neo/app_control/trunk_scan_validate.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
@@ -2505,6 +2507,110 @@ test_pending_export_destroyed_from_busy_changed(const QString& root) {
     assert(replies == (QList<QPair<int, bool>>{qMakePair(token, true)}));
 }
 
+/* Issue #890: a scan-list protocol's channel width and label come from one catalog, read whole: a frequency entry's
+   protocol id (tetra_dmo is TETRA's 25 kHz carrier, dpmr and dstar 6.25 kHz, ysf and m17 12.5 kHz), a saved system's
+   decode flag, and a target CSV's suffixed type (dpmr-conventional, tetra-dmo-conventional), never split at its first
+   hyphen. */
+static void
+test_simplex_widths_and_labels(const QString& root) {
+    dsd_qt::SavedSystemsModel systems;
+    dsd_qt::ScanListsModel lists;
+    assert(systems.count() == 0 && lists.count() == 0);
+
+    const struct {
+        const char* protocol;
+        const char* label;
+        qint64 hz;
+        double width;
+    } families[] = {{"dpmr", "dPMR", 471100000, 6250},
+                    {"dstar", "D-STAR", 471200000, 6250},
+                    {"ysf", "YSF (C4FM)", 471300000, 12500},
+                    {"m17", "M17", 471400000, 12500},
+                    {"tetra_dmo", "TETRA DMO", 471500000, 25000}};
+
+    QVariantList entries;
+    for (const auto& f : families) {
+        entries << QVariantMap{{QStringLiteral("uid"), QString::fromLatin1(f.protocol)},
+                               {QStringLiteral("kind"), QStringLiteral("freq")},
+                               {QStringLiteral("protocol"), QString::fromLatin1(f.protocol)},
+                               {QStringLiteral("freqMhz"), QString::number(f.hz / 1e6, 'f', 6)}};
+    }
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Simplex")}, {QStringLiteral("entries"), entries}}));
+    // Saved systems by their decode flags, 1 MHz up.
+    const char* flags[] = {"-fm", "-fd", "-fy", "-fz", "-fT"};
+    for (size_t i = 0; i < sizeof flags / sizeof flags[0]; ++i) {
+        assert(systems.add({{QStringLiteral("decodeFlag"), QString::fromLatin1(flags[i])},
+                            {QStringLiteral("freqMhz"), QString::number((families[i].hz + 1000000) / 1e6, 'f', 6)}}));
+    }
+    dsd_qt::KnownFrequencyIndex index(&systems, &lists);
+    for (const auto& f : families) {
+        const QString label = QString::fromLatin1(f.label);
+        for (qint64 base : {f.hz, f.hz + 1000000}) {
+            // Inside half its width (and the tuned 25 kHz channel's) it is the entry; past it, nothing.
+            const auto inside = index.tunedMatches(base + f.width / 2 - 500, 25000);
+            assert(inside.size() == 1);
+            assert(inside[0].toMap().value(QStringLiteral("protocolLabel")).toString() == label);
+            assert(index.tunedMatches(base + f.width / 2 + 500, 25000).isEmpty());
+        }
+        // An unnamed entry is named for its protocol, as the scan list shows it.
+        const QString mhz = QString::number(f.hz / 1e6, 'f', 6);
+        assert(index.tunedNames(f.hz, 25000)
+               == QStringList{QStringLiteral("Simplex / ") + label + QString::fromUtf8(" · ") + mhz
+                              + QStringLiteral(" MHz")});
+    }
+
+    // A target CSV's rows by their suffixed types, read by the engine's own target parser.
+    const QString targets = QDir(root).filePath(QStringLiteral("simplex-targets.csv"));
+    writeFile(targets, "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,label\n"
+                       "p,dpmr-conventional,473100000,,,,,Pmr\n"
+                       "d,dstar-conventional,473200000,,,,,Star\n"
+                       "y,ysf-conventional,473300000,,,,,Fusion\n"
+                       "m,m17-conventional,473400000,,,,,Open\n"
+                       "t,tetra-dmo-conventional,473500000,,,,,Direct\n");
+    /* Every row this added goes again, so the stores the later cases load hold none of them. */
+    const auto forget = [&systems, &lists]() {
+        while (systems.count() > 0) {
+            assert(systems.remove(0));
+        }
+        while (lists.count() > 0) {
+            assert(lists.remove(0));
+        }
+    };
+    char error[256] = {};
+    const int parsed =
+        dsd_app_trunk_scan_validate_targets_csv(targets.toUtf8().constData(), nullptr, error, sizeof error);
+    if (parsed != 0) {
+        std::fprintf(stderr, "the engine refuses the simplex target CSV: %s\n", error);
+    }
+    assert(parsed == 0);
+    assert(lists.add({{QStringLiteral("name"), QStringLiteral("Typed")},
+                      {QStringLiteral("targetSource"), QStringLiteral("csv")},
+                      {QStringLiteral("targetsCsvPath"), targets}}));
+    const QString typed = lists.get(lists.count() - 1).value(QStringLiteral("uid")).toString();
+    const char* names[] = {"Pmr", "Star", "Fusion", "Open", "Direct"};
+    for (size_t i = 0; i < sizeof names / sizeof names[0]; ++i) {
+        const qint64 hz = families[i].hz + 2000000;
+        const auto inside = index.tunedMatches(hz + families[i].width / 2 - 500, 25000);
+        assert(inside.size() == 1);
+        assert(inside[0].toMap().value(QStringLiteral("protocolLabel")).toString()
+               == QString::fromLatin1(families[i].label));
+        assert(inside[0].toMap().value(QStringLiteral("name")).toString()
+               == QStringLiteral("Typed / ") + QString::fromLatin1(names[i]));
+        assert(index.tunedMatches(hz + families[i].width / 2 + 500, 25000).isEmpty());
+    }
+    // The session's own targets (Activity's in-place Listen) carry the same width and label.
+    const QVariantList session = index.sessionTargets({QVariantMap{{QStringLiteral("uid"), typed},
+                                                                   {QStringLiteral("name"), QStringLiteral("Typed")},
+                                                                   {QStringLiteral("path"), targets}}});
+    assert(session.size() == 5);
+    for (int i = 0; i < 5; ++i) {
+        const QVariantMap row = session.at(i).toMap();
+        assert(std::abs(row.value(QStringLiteral("width")).toDouble() - families[i].width) < 0.5);
+        assert(row.value(QStringLiteral("protocolLabel")).toString() == QString::fromLatin1(families[i].label));
+    }
+    forget();
+}
+
 int
 main(int argc, char** argv) {
     if (argc == 3 && strcmp(argv[1], "--hold-export-lock") == 0) {
@@ -2516,6 +2622,7 @@ main(int argc, char** argv) {
     test_csv_text();
     QTemporaryDir temp;
     assert(temp.isValid());
+    test_simplex_widths_and_labels(temp.path());
     test_save_transport_local(temp.path());
     test_save_transport_abort_mid_save(temp.path());
     test_save_transport_host(temp.path());

@@ -31,7 +31,9 @@ int dsd_scan_profile_ensure(dsd_scan_row_profile** profile);
  * Returns -1 on a bad argument with @p out untouched. */
 int dsd_scan_options_keys(const dsd_scan_options* options, dsd_key_set* out);
 /** Whether a prepared direct source can serve the target protocol. Collections
- * retain their normal per-call material checks. Does not mutate live state. */
+ * retain their normal per-call material checks. Does not mutate live state. A class that takes no keys of its own
+ * (dsd_scan_mode_key_capability(): analog, D-STAR, YSF, TETRA DMO, M17) refuses any source, a key loader or a
+ * clear-keys source included; dPMR takes only its 15-bit scrambler key, or a clear-keys source (issue #890). */
 int dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode);
 /** Merge legacy key columns into parsed options. Columns alone do not claim a mute override;
  * direct option text retains its decryption policy regardless of merged material. Rejects a

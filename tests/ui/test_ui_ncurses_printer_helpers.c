@@ -3611,6 +3611,15 @@ test_sync_tree_follows_scan_class(void) {
     ui_update_sync_and_edacs_tree(state);
     assert(ncurses_last_synctype == DSD_SYNC_DMR_BS_VOICE_POS);
 
+    /* Issue #890: a tetra-dmo row idles on the TETRA synchronisation burst, and keeps a TETRA sync it last saw. */
+    g_scan_mode_active = DSD_SCAN_MODE_TETRA_DMO;
+    state->synctype = DSD_SYNC_NONE;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_TETRA_SB_POS);
+    ncurses_last_synctype = DSD_SYNC_TETRA_NDB_NEG;
+    ui_update_sync_and_edacs_tree(state);
+    assert(ncurses_last_synctype == DSD_SYNC_TETRA_NDB_NEG);
+
     g_scan_mode_active = DSD_SCAN_MODE_NXDN48;
     state->synctype = DSD_SYNC_NONE;
     state->nxdn_last_ran = (unsigned int)-1;

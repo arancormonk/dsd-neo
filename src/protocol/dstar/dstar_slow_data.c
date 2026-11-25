@@ -9,6 +9,7 @@
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/position.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dstar/dstar.h>
@@ -217,6 +218,9 @@ dstar_sd_handle_header_format(const dsd_opts* opts, dsd_state* state, const dsta
          * real, on its own (#421). Noted once the header's callsigns are on the call: a signal
          * search reads them from it when it hears the confirmation. */
         dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
+        /* And a scan hold (issue #890, D4), its DATA flag the transmission's: read whole in this superframe, the one
+           read this transmission's frames are dispatched in, so it is bound to the transmission and the visit. */
+        dstar_report_scan_activity(opts, state, 1, (ctx->header_flag1 & 0x80U) != 0U);
         return;
     }
     DSD_FPRINTF(stderr, " SLOW DATA - HEADER FORMAT (CRC ERR)");
@@ -391,6 +395,15 @@ dstar_tx_named_call(const dsd_state* state) {
     return state->dstar_tx_call_epoch;
 }
 
+/* The scan visit a slow-data byte read now belongs to (dsd_state_scan_observation_origin(), issue #890): the one its
+ * frame's read began on; a frame a carrier boundary or an input interruption cut is no visit's (UINT64_MAX, which no
+ * visit matches). */
+static uint64_t
+dstar_sd_scan_visit(const dsd_state* state) {
+    dsd_scan_observation_origin origin;
+    return dsd_state_scan_observation_origin(state, &origin) ? origin.visit : UINT64_MAX;
+}
+
 /* Capture what an assembly's first byte or block is heard under. */
 static void
 dstar_sd_bind(const dsd_opts* opts, const dsd_state* state, dstar_sd_binding* b) {
@@ -399,6 +412,7 @@ dstar_sd_bind(const dsd_opts* opts, const dsd_state* state, dstar_sd_binding* b)
     b->call_epoch = dstar_tx_named_call(state);
     b->confirmed = (uint8_t)dstar_confirm_is_confirmed(state);
     dsd_position_origin_capture(opts, state, &b->origin);
+    b->scan_visit = dstar_sd_scan_visit(state);
 }
 
 /* 1 while everything @p b was captured under still holds: the same transmission, the same call named by its checked
@@ -408,7 +422,8 @@ static int
 dstar_sd_binding_holds(const dsd_state* state, const dstar_sd_binding* b) {
     return b->tx == state->dstar_tx_seq && b->call_epoch == dstar_tx_named_call(state)
            && b->confirmed == (uint8_t)dstar_confirm_is_confirmed(state)
-           && dsd_position_origin_matches(state, &b->origin);
+           && dsd_position_origin_matches(state, &b->origin) && b->scan_visit != UINT64_MAX
+           && b->scan_visit == dstar_sd_scan_visit(state);
 }
 
 /* The call slow data bound by @p b may reach: the slot 0 call a checked header of its transmission named on the
@@ -499,6 +514,11 @@ dstar_dprs_complete(const dsd_opts* opts, dsd_state* state, const dstar_dprs_ass
         return;
     }
     dstar_confirm_note_evidence(opts, state, DSTAR_EVIDENCE_STRONG);
+    /* A record proves the DV transmission it rides in, bound from its first byte to that transmission and the scan
+       visit (dstar_sd_binding_holds() above, issue #890 F4). It is no call of its own: presence of the DV
+       transmission, never a data call, whether or not a checked header named the transmission's call, so it holds
+       under --no-data-calls. */
+    dstar_report_scan_activity(opts, state, 1, 0);
     dstar_aprs_position pos;
     if (!dstar_aprs_parse(a->text + DSTAR_DPRS_PREFIX_LEN, (size_t)a->len - DSTAR_DPRS_PREFIX_LEN - 1U, &pos)) {
         DSD_FPRINTF(stderr, " D-PRS (NO POSITION)");

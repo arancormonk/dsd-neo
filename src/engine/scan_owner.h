@@ -103,6 +103,25 @@ typedef struct {
        did not step after all gets no second yield for the same pair, so a held row is never reset at every frame. */
     uint64_t y_frame_yield_epoch;
     int64_t y_frame_yield_mark_ms;
+    /* The -Y typed simplex row's admitted activity (issue #890; scan_voice_gate.c): y_admitted_seq moves with every
+       protocol report the scan's policy table admits for the typed ysf, dstar, dpmr, m17 or tetra-dmo row on air, on
+       its landed visit (dsd_engine_scan_y_typed_activity()); y_admitted_seen is the last one the -Y frame boundary
+       turned into dsd_state::scan_y_content_m. Such a row holds on these alone, not on every PROVEN note. y_refused:
+       the row's last such report was refused (by the receive filter or the policy table), on call slot
+       y_refused_slot, so an open verdict (PARTIAL, an M17 packet chunk waiting on its end's CRC) of that transmission
+       renews no -Y wait. The mark is the refused transmission's alone: the refused frame's -Y boundary binds it to that
+       slot's active call (y_refused_epoch, its dsd_call_snapshot::transmission_epoch; 0 until bound) only when that
+       frame observed that slot's call (dsd_call_state_observation_seq() moved since the boundary before,
+       y_call_obs_mark; a media refresh, which may refresh a call an earlier transmission left active, never counts),
+       else it lapses, and it drops once that call is no longer the one active there, so a later call keeps its open-verdict
+       wait (live_scanner_y_refusal_stands()). An admitted report and a landing clear it
+       (dsd_engine_scan_landing_forget_y_notes()). */
+    uint64_t y_admitted_seq;
+    uint64_t y_admitted_seen;
+    uint64_t y_refused_epoch;
+    uint32_t y_call_obs_mark[2];
+    uint8_t y_refused;
+    uint8_t y_refused_slot;
     /* A sync awaiting its frame's verdict (issue #834 R1; scan_quiet.c), moved only while skip-silent is on.
        frame_pending: the frame sync returned a sync whose frame has not ended yet. frame_evidence, frame_hold_ms: the
        strongest content note that frame made so far (DSD_CONTENT_EVIDENCE_*, 0 for none) and its longest PARTIAL hold.

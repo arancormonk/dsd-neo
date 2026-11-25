@@ -26,7 +26,9 @@
 #include <dsd-neo/protocol/m17/m17_parse.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -36,6 +38,8 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "m17_algorithms.h"
 #include "m17_internal.h"
+#include "m17_state_ext.h"
+#include "scan_activity_capture.h"
 #include "test_support.h"
 
 struct CODEC2;
@@ -71,6 +75,13 @@ static size_t g_boundary_at = SIZE_MAX;
    or PCM file that ended with the fallback to another input asked for, whose stand-ins getSymbol() counts as symbols,
    so the count says the frame was read whole. */
 static size_t g_input_end_at = SIZE_MAX;
+/* The read at which the symbol clock restarts (SIZE_MAX for none): a stream flush during the frame's read
+   (dsd_state::symbol_clock_epoch), the frame's own symbols read on. */
+static size_t g_epoch_at = SIZE_MAX;
+/* The allocation the size of the M17 extension: the requests counted, and the next one failed while
+   g_fail_ext_alloc is set (issue #890: an RF LSF frame requests it once, after its CRC passed). */
+static int g_fail_ext_alloc;
+static int g_ext_alloc_requests;
 
 enum { TEST_END_EXIT = 0, TEST_END_FALLBACK = 1 };
 
@@ -129,6 +140,9 @@ next_dibit(dsd_state* state, float* symbol) {
     if (g_pos == g_interrupt_at) {
         state->input_interrupted = 1;
     }
+    if (g_pos == g_epoch_at) {
+        state->symbol_clock_epoch++;
+    }
     const int ended = g_pos >= g_input_end_at;
     if (g_pos == g_input_end_at) {
         if (g_input_end_mode == TEST_END_EXIT) {
@@ -152,6 +166,23 @@ next_dibit(dsd_state* state, float* symbol) {
         state->symbolcnt++;
     }
     return dibit;
+}
+
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __real_calloc(size_t count, size_t size);
+// NOLINTNEXTLINE(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+void* __wrap_calloc(size_t count, size_t size);
+
+void*
+__wrap_calloc(size_t count, size_t size) {
+    if (count == 1U && size == sizeof(m17_state_ext)) {
+        g_ext_alloc_requests++;
+        if (g_fail_ext_alloc != 0) {
+            g_fail_ext_alloc = 0;
+            return NULL;
+        }
+    }
+    return __real_calloc(count, size);
 }
 
 int
@@ -235,6 +266,7 @@ load_randomized_frame(const uint8_t rnd[M17_PAYLOAD_BITS]) {
     g_interrupt_at = SIZE_MAX;
     g_boundary_at = SIZE_MAX;
     g_input_end_at = SIZE_MAX;
+    g_epoch_at = SIZE_MAX;
 }
 
 static void
@@ -338,6 +370,13 @@ load_bert_frame(uint16_t* lfsr) {
     load_randomized_frame(rnd);
 }
 
+/* Whether a clean LICH chunk has disputed the checked link setup (m17_state_ext::lsf_disputed); 0 with no extension. */
+static int
+lsf_disputed(const dsd_state* state) {
+    const m17_state_ext* g = m17_state_ext_find(state);
+    return g != NULL && g->lsf_disputed != 0U;
+}
+
 /* A fresh decoder on symbols at +-1 and +-3, its thresholds centred on 0, the search's evidence counted. */
 static void
 prepare(dsd_opts* opts, dsd_state* state) {
@@ -392,7 +431,8 @@ has_call(const dsd_state* state) {
    which the LICH's Golay blocks can take for codewords and the Viterbi decode for a frame number with its end flag
    set: a frame read entirely of them ends the call as a terminator would, one cut mid-frame stores a frame number the
    transmission never sent, and one cut late still decodes, its voice included. A cut frame is dropped: no frame number,
-   no LICH chunk, no voice, no evidence, and the call stays as it was. Decoding resumes with the next whole frame. */
+   no LICH chunk, no voice, no evidence, and the call stays as it was; the cut breaks RF continuity, so the chunks held
+   from before it go too (issue #890). Decoding resumes with the next whole frame. */
 static void
 test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
     static dsd_opts opts;
@@ -416,8 +456,8 @@ test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
     assert(strcmp(before.source_text, "EF2GH") == 0);
     const int decodes_before = g_codec2_decodes;
     const int evidence_before = g_search_evidence;
-    uint8_t lich_chunks_before[sizeof(state.m17_lsf)];
-    DSD_MEMCPY(lich_chunks_before, state.m17_lsf, sizeof(lich_chunks_before));
+    uint8_t no_chunks[sizeof(state.m17_lsf)];
+    DSD_MEMSET(no_chunks, 0, sizeof(no_chunks));
 
     static const size_t cuts[3] = {0U, 124U, 170U}; /* the whole frame; mid frame; late, the LICH still clears */
     for (size_t c = 0U; c < 3U; c++) {
@@ -436,7 +476,7 @@ test_stream_frame_cut_by_an_input_interruption_is_dropped(void) {
         assert(call.epoch == before.epoch);
         assert(g_codec2_decodes == decodes_before);
         assert(g_search_evidence == evidence_before);
-        assert(memcmp(state.m17_lsf, lich_chunks_before, sizeof(lich_chunks_before)) == 0);
+        assert(memcmp(state.m17_lsf, no_chunks, sizeof(no_chunks)) == 0 && state.m17_lich.held == 0U);
         assert(state.m17_confirmed == 1U);
     }
 
@@ -926,6 +966,650 @@ test_packet_frames_before_their_crc_are_partial(void) {
     }
 }
 
+#ifdef USE_CODEC2
+/* Issue #890: under a scan, Codec2 speech is the call's checked media only while a checked LSF vouches for the
+   transmission. After a clear voice stream's checked LSF frame, a stream whose first clean LICH chunk disagrees with it
+   (another station on CAN 7, its EOT and LSF frame missed) plays under the old fields but earns no checked media, on
+   that frame or the next; the same LSF's own stream frames earn it at once. */
+static void
+test_disputed_link_setup_earns_no_checked_speech(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t other_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"), m17_encode_b40_callsign(0ULL, "QR7ST"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    for (int disputed = 0; disputed <= 1; disputed++) {
+        prepare(opts, state);
+        opts->trunk_scan_enabled = 1;
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        assert(processM17LSF(opts, state) == 1);
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        const int decodes_before = g_codec2_decodes;
+        for (uint16_t fn = 0U; fn < 2U; fn++) {
+            load_stream_frame(disputed ? other_bits : lsf_bits, (uint8_t)fn, fn);
+            (void)processM17STR(opts, state);
+        }
+        assert(g_codec2_decodes > decodes_before);
+        assert(lsf_disputed(state) == disputed);
+        const dsd_call_snapshot call = m17_call(state);
+        assert((call.checked_media_updated_m > 0.0) == !disputed);
+        finish(state);
+    }
+}
+#endif
+
+/* Issue #890: any break in RF continuity voids the scan side's binding until the next LSF whose CRC passes, an LSF
+   frame or one the LICH rebuilds from chunks received after the break. After a clear voice transmission on CAN 5,
+   three frame periods pass unheard (its EOS frame, the EOT and the next LSF frame). The same transmission after such a
+   fade, joined at chunk 3, reports anonymous until its six chunks after the break rebuild its LSF (at the next chunk
+   5), then with the bound values; another transmission from the same station on CAN 7 does too (its chunk 2 disputes
+   the old binding meanwhile), then with its own rebuilt LSF's CAN 7. */
+static void
+rf_gap_case(int same_transmission) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t can7_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(can7_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 6U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == bound);
+    state->symbolcnt += 3U * 192U;
+    const uint8_t* next = same_transmission ? lsf_bits : can7_bits;
+    static const uint8_t k_order[] = {3U, 4U, 5U, 0U, 1U, 2U, 3U, 4U};
+    int reports = 0;
+    for (size_t i = 0U; i < sizeof(k_order); i++) {
+        const int before = g_test_scan_activity.count;
+        load_stream_frame(next, k_order[i], (uint16_t)(6U + i));
+        (void)processM17STR(opts, state);
+        if (g_test_scan_activity.count != before) {
+            reports++;
+            assert(g_test_scan_activity.last.known == 0U);
+        }
+    }
+    assert(reports >= 1 && lsf_disputed(state) == !same_transmission);
+    load_stream_frame(next, 5U, 14U);
+    (void)processM17STR(opts, state);
+    assert(!lsf_disputed(state) && g_test_scan_activity.last.known == bound);
+    assert(state->m17_can == (same_transmission ? 5U : 7U));
+    finish(state);
+}
+
+/* Issue #890: an LSF frame whose CRC fails never vouches. Under a CAN 5 filter, after a checked CAN 5 transmission and
+   a missed end (three frame periods unheard), a CAN 7 transmission's LSF frame fails its CRC: the CAN 7 stream frames
+   after it, continuous with that failed frame, report refused (their CAN unknown under the filter), never as CAN 5. */
+static void
+test_failed_lsf_after_a_gap_vouches_nothing(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t can7_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(can7_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    uint8_t can7_bad[TEST_M17_LSF_BITS];
+    DSD_MEMCPY(can7_bad, can7_bits, sizeof(can7_bad));
+    can7_bad[200] ^= 1U; /* a META bit after the CRC was attached: the CRC fails */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 5;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 6U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.last.known != 0U && g_test_scan_activity.last.receive_refused == 0U);
+    state->symbolcnt += 3U * 192U;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(can7_bad);
+    (void)processM17LSF(opts, state);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(can7_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.receive_refused == 1U
+           && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: LICH chunks held from before a break in RF continuity are dropped. A stream joined late (no LSF frame),
+   confirmed by its first LICH pair, holds chunks up to 2 of its second cycle; then six frame periods pass unheard, then
+   chunks 3 to 5: the chunks never rebuild an LSF across the break, so the stream stays unchecked and its reports
+   anonymous. Without the break the same frames rebuild the LSF and bind it. */
+static void
+lich_gap_case(int gap) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 9U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == 0U);
+    if (gap) {
+        state->symbolcnt += 6U * 192U;
+    }
+    for (uint16_t fn = 9U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == (uint8_t)!gap);
+    assert(g_test_scan_activity.count >= 1);
+    assert((g_test_scan_activity.last.known == 0U) == gap);
+    finish(state);
+}
+
+static void
+test_lich_chunks_do_not_cross_a_gap(void) {
+    lich_gap_case(1);
+    lich_gap_case(0);
+}
+
+static void
+test_rf_gap_voids_the_link_setup_until_a_checked_lsf(void) {
+    rf_gap_case(0);
+    rf_gap_case(1);
+}
+
+/* A checked CAN 5 voice LSF frame and its first six stream frames, the binding vouched for (issue #890). */
+static void
+bound_stream(dsd_opts* opts, dsd_state* state, const uint8_t* lsf_bits) {
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 6U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == bound);
+}
+
+/* Issue #890: a stream frame or LSF frame whose read was cut (an input interruption four symbols in, whose stand-ins
+   count no symbols, so the next frame still falls in the spacing window) breaks RF continuity at once: the next clean
+   LICH pair reports anonymous, never the old LSF's fields. */
+static void
+test_cut_read_voids_the_binding(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    for (int lsf_cut = 0; lsf_cut <= 1; lsf_cut++) {
+        bound_stream(opts, state, lsf_bits);
+        state->synctype = lsf_cut ? DSD_SYNC_M17_LSF_POS : DSD_SYNC_M17_STR_POS;
+        if (lsf_cut) {
+            load_lsf_frame(lsf_bits);
+        } else {
+            load_stream_frame(lsf_bits, 0U, 6U);
+        }
+        g_interrupt_at = 4U;
+        assert((lsf_cut ? processM17LSF(opts, state) : processM17STR(opts, state)) == 0);
+        state->input_interrupted = 0;
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        dsd_test_scan_activity_reset();
+        for (uint16_t fn = 7U; fn < 10U; fn++) {
+            load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+            (void)processM17STR(opts, state);
+        }
+        assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+        finish(state);
+    }
+}
+
+/* Issue #890: a stream frame the symbol clock restarted inside (a flush at the last dibit of its read) is dropped as a
+   cut read is: no evidence, no open-verdict wait, no voice and no LICH chunk, so its chunk 0 and the next frames'
+   chunks 1 to 5 rebuild no LSF, and the reports stay anonymous at that chunk 5. */
+static void
+test_split_stream_frame_gives_no_lich_chunk(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    bound_stream(opts, state, lsf_bits);
+    load_stream_frame(lsf_bits, 0U, 6U);
+    g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
+    const uint32_t partial_before = state->scan_y_partial_seq;
+    const uint32_t content_before = state->scan_y_content_seq;
+    const int decodes_before = g_codec2_decodes;
+    const int reports_before = g_test_scan_activity.count;
+    assert(processM17STR(opts, state) == 0);
+    assert(state->scan_y_partial_seq == partial_before && state->scan_y_content_seq == content_before);
+    assert(g_codec2_decodes == decodes_before && g_test_scan_activity.count == reports_before);
+    assert(state->m17_lich.held == 0U && state->m17_confirm_weak_streak == 0U);
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 7U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: a valid packet-mode LSF frame the symbol clock restarted inside (on its last symbol, its CRC still
+   passing) is dropped before anything of it takes effect: no call, no scan report, no packet armed. */
+static void
+test_split_lsf_frame_publishes_nothing(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    g_epoch_at = M17_PAYLOAD_SYMBOLS - 1U;
+    assert(processM17LSF(opts, state) == 0);
+    assert(g_test_scan_activity.count == 0 && state->m17_lsf_checked == 0U && !has_call(state));
+    const m17_state_ext* g = m17_state_ext_find(state);
+    assert(g == NULL || g->pkt_armed == 0U);
+    state->synctype = DSD_SYNC_M17_PKT_POS;
+    assert(load_packet_frame("HI", 0) == 1);
+    assert(processM17PKT(opts, state) == 0);
+    finish(state);
+}
+
+/* Issue #890: a stream frame inside which the input ended (a capture's end with the fallback to another input asked
+   for, six symbols short, its stand-ins counted) is cut: it reports nothing, stores no LICH chunk and voids the
+   binding, so the next clean LICH pair reports anonymous. */
+static void
+test_stream_frame_at_the_input_end_is_cut(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    bound_stream(opts, state, lsf_bits);
+    load_stream_frame(lsf_bits, 0U, 6U);
+    g_input_end_mode = TEST_END_FALLBACK;
+    g_input_end_at = 178U;
+    const int reports_before = g_test_scan_activity.count;
+    assert(processM17STR(opts, state) == 0);
+    assert(state->input_interrupted == 1 && g_test_scan_activity.count == reports_before);
+    assert(state->m17_lich.held == 0U);
+    state->input_interrupted = 0;
+    state->input_fallback_pending = 0;
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 7U; fn < 10U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(state);
+}
+
+/* Issue #890: one clean LICH on each side of a break in RF continuity (four frame periods unheard) is no pair: the
+   second neither confirms the stream nor reports activity. */
+static void
+test_rf_gap_breaks_the_weak_streak(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    state->symbolcnt += 4U * 192U;
+    load_stream_frame(lsf_bits, 1U, 5U);
+    (void)processM17STR(opts, state);
+    assert(state->m17_confirmed == 0U && g_test_scan_activity.count == 0);
+    finish(state);
+}
+
+/* Issue #890: an RF LSF frame requests the M17 extension once, and only after its CRC passed. On a fresh decoder, one
+   whose CRC fails makes no extension; a checked packet-mode one whose single request fails arms nothing, so the
+   packet after it is not decoded, even though a second request would succeed. */
+static void
+test_rf_lsf_frame_requests_the_extension_once(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_packet_lsf_bits(lsf_bits);
+    uint8_t bad_bits[TEST_M17_LSF_BITS];
+    DSD_MEMCPY(bad_bits, lsf_bits, sizeof(bad_bits));
+    bad_bits[200] ^= 1U;
+    prepare(opts, state);
+    g_ext_alloc_requests = 0;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(bad_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_ext_alloc_requests == 0 && m17_state_ext_find(state) == NULL);
+    finish(state);
+
+    prepare(opts, state);
+    g_ext_alloc_requests = 0;
+    g_fail_ext_alloc = 1;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    g_fail_ext_alloc = 0;
+    assert(g_ext_alloc_requests == 1);
+    state->synctype = DSD_SYNC_M17_PKT_POS;
+    assert(load_packet_frame("HI", 0) == 1);
+    assert(processM17PKT(opts, state) == 0);
+    finish(state);
+}
+
+#ifdef USE_CODEC2
+/* Issue #890: the same rule for speech. Under a scan, after a checked LSF for CAN 5 and three unheard frame periods,
+   another transmission from the same station on CAN 7, joined at chunk 3, plays but earns no checked media until an
+   LSF is checked again. */
+static void
+test_stale_link_setup_earns_no_checked_speech(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t can7_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    build_lsf_bits_with(can7_bits, m17_encode_b40_callsign(0ULL, "AB1CD"), m17_encode_b40_callsign(0ULL, "EF2GH"),
+                        m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U));
+    prepare(opts, state);
+    opts->trunk_scan_enabled = 1;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    state->symbolcnt += 3U * 192U;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    const int decodes_before = g_codec2_decodes;
+    for (uint16_t fn = 0U; fn < 5U; fn++) {
+        load_stream_frame(can7_bits, (uint8_t)((3U + fn) % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(g_codec2_decodes > decodes_before);
+    const dsd_call_snapshot call = m17_call(state);
+    assert(call.checked_media_updated_m <= 0.0);
+    finish(state);
+}
+#endif
+
+/* Issue #890: what an M17 transmission reports to trunk scan's policy table. A link setup frame whose CRC passed reports
+   the checked values it binds (encryption, voice stream); a clean LICH reports once it completes a pair with the frame
+   before it, anonymous before any LSF was checked and with the bound values after one; the LSF the six LICH chunks
+   rebuild whole reports with them; a packet whose CRC passed reports a data call; a BERT lock (a test) never reports.
+   The receive side's CAN filter is kept: a CAN it refuses, and an unknown CAN while it is set, report nothing. */
+static void
+test_checked_content_reports_to_trunk_scan(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    build_lsf_bits(lsf_bits);
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(opts, state) == 1);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_M17(g_test_scan_activity.protocol));
+    assert(g_test_scan_activity.last.known == bound && g_test_scan_activity.last.encrypted == 0U
+           && g_test_scan_activity.last.data_call == 0U);
+    /* A link setup whose CRC passed but whose TYPE sets a reserved bit is not applied: it reports nothing. */
+    {
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        uint8_t reserved_bits[TEST_M17_LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        DSD_MEMSET(reserved_bits, 0, sizeof reserved_bits);
+        m17_load_lsf_callsigns(reserved_bits, m17_encode_b40_callsign(0ULL, "AB1CD"),
+                               m17_encode_b40_callsign(0ULL, "EF2GH"));
+        write_bits(reserved_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U) | 0x8000U, 16U);
+        (void)m17_attach_lsf_crc(reserved_bits, packed);
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(reserved_bits);
+        (void)processM17LSF(opts, state);
+        assert(state->m17_lsf_checked == 0U);
+        assert(g_test_scan_activity.count == 0);
+        finish(state);
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        assert(processM17LSF(opts, state) == 1);
+    }
+    /* Stream frames after it: the first clean LICH starts a pair, the second completes it, with the LSF's values. */
+    dsd_test_scan_activity_reset();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    assert(processM17STR(opts, state) == 1);
+    const int after_first = g_test_scan_activity.count;
+    load_stream_frame(lsf_bits, 1U, 1U);
+    assert(processM17STR(opts, state) == 1);
+    assert(g_test_scan_activity.count == after_first + 1 && g_test_scan_activity.last.known == bound);
+
+    /* The next transmission, another station's on CAN 7 (its EOT and LSF frame missed): its first LICH chunk disagrees
+       with the checked LSF, so the binding goes and its pair reports anonymous, never the last LSF's CAN or type. */
+    {
+        uint8_t other_bits[TEST_M17_LSF_BITS];
+        uint8_t packed[M17_LSF_BYTES];
+        DSD_MEMSET(other_bits, 0, sizeof other_bits);
+        m17_load_lsf_callsigns(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"),
+                               m17_encode_b40_callsign(0ULL, "QR7ST"));
+        write_bits(other_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U), 16U);
+        (void)m17_attach_lsf_crc(other_bits, packed);
+        dsd_test_scan_activity_reset();
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        load_stream_frame(other_bits, 0U, 0U);
+        (void)processM17STR(opts, state);
+        assert(state->m17_lsf_checked == 1U && lsf_disputed(state));
+        load_stream_frame(other_bits, 1U, 1U);
+        (void)processM17STR(opts, state);
+        assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+        /* The same transmission's chunks agree and keep a binding. */
+        finish(state);
+        prepare(opts, state);
+        dsd_test_scan_activity_install();
+        state->synctype = DSD_SYNC_M17_LSF_POS;
+        load_lsf_frame(lsf_bits);
+        (void)processM17LSF(opts, state);
+        state->synctype = DSD_SYNC_M17_STR_POS;
+        for (uint16_t fn = 0U; fn < 6U; fn++) {
+            load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+            (void)processM17STR(opts, state);
+            assert(state->m17_lsf_checked == 1U && !lsf_disputed(state));
+        }
+        /* A disputed binding is withdrawn from the CAN filter too: an unknown CAN under a filter holds nothing. */
+        state->m17_can_en = 5;
+        uint8_t other_bits2[TEST_M17_LSF_BITS];
+        uint8_t packed2[M17_LSF_BYTES];
+        DSD_MEMSET(other_bits2, 0, sizeof other_bits2);
+        m17_load_lsf_callsigns(other_bits2, m17_encode_b40_callsign(0ULL, "XY9ZZ"),
+                               m17_encode_b40_callsign(0ULL, "QR7ST"));
+        write_bits(other_bits2 + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 5U, 0U, 0U), 16U);
+        (void)m17_attach_lsf_crc(other_bits2, packed2);
+        dsd_test_scan_activity_reset();
+        load_stream_frame(other_bits2, 0U, 6U);
+        (void)processM17STR(opts, state);
+        load_stream_frame(other_bits2, 1U, 7U);
+        (void)processM17STR(opts, state);
+        assert(lsf_disputed(state) && g_test_scan_activity.count >= 1 && g_test_scan_activity.last.receive_refused == 1U
+               && g_test_scan_activity.last.known == 0U);
+        finish(state);
+    }
+
+    /* Late entry: no LSF frame. The pair reports anonymous; the rebuilt LSF, whole and checked, binds the values. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    load_stream_frame(lsf_bits, 1U, 1U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.known == 0U);
+    /* The confirmation the pair made is part of the assembly's binding, so the chunks before it go, and the first chunk
+       5 closes an assembly that is not whole: a whole one follows. */
+    for (uint16_t fn = 2U; fn < 12U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)(fn % 6U), fn);
+        (void)processM17STR(opts, state);
+    }
+    assert(state->m17_lsf_checked == 1U && g_test_scan_activity.last.known == bound);
+    finish(state);
+
+    /* Under a CAN filter: the LSF's CAN 5 refused by a filter of 3, and the late entry's unknown CAN, report refused
+       (receive_refused, nothing else known), so nothing holds on them and a typed -Y row renews no wait on them. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 3;
+    state->synctype = DSD_SYNC_M17_STR_POS;
+    load_stream_frame(lsf_bits, 0U, 0U);
+    (void)processM17STR(opts, state);
+    load_stream_frame(lsf_bits, 1U, 1U);
+    (void)processM17STR(opts, state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.receive_refused == 1U
+           && g_test_scan_activity.last.known == 0U);
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_test_scan_activity.count == 2 && g_test_scan_activity.last.receive_refused == 1U
+           && g_test_scan_activity.last.known == 0U);
+    finish(state);
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 5;
+    state->synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    (void)processM17LSF(opts, state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.receive_refused == 0U);
+    finish(state);
+
+    /* A packet under a CAN filter that refuses its CAN 5: its checked packet-mode LSF frame reports refused, so a typed
+       -Y row renews no wait on the packet's chunks; the chunks still note their open verdict for a quiet check. */
+    static const char text[] = "A PACKET HOLDS AS DATA";
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->m17_can_en = 3;
+    read_packet_lsf_frame(opts, state);
+    assert(g_test_scan_activity.count == 1 && g_test_scan_activity.last.receive_refused == 1U);
+    const uint32_t partial_before = state->scan_y_partial_seq;
+    assert(load_packet_frame(text, 0) == 2);
+    assert(processM17PKT(opts, state) == 1);
+    assert(state->scan_y_partial_seq == partial_before + 1U);
+    finish(state);
+
+    /* A packet whose CRC passed: a data call. Its own checked packet-mode LSF frame comes first (the strict RF packet
+       rule) and reports a data call too. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    read_packet_lsf_frame(opts, state);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 1U);
+    dsd_test_scan_activity_reset();
+    assert(load_packet_frame(text, 0) == 2);
+    (void)processM17PKT(opts, state);
+    assert(g_test_scan_activity.count == 0);
+    (void)load_packet_frame(text, 1);
+    (void)processM17PKT(opts, state);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 1U);
+    finish(state);
+
+    /* BERT: confirmed, never a call. */
+    prepare(opts, state);
+    dsd_test_scan_activity_install();
+    state->synctype = DSD_SYNC_M17_BRT_POS;
+    uint16_t lfsr = 1U;
+    load_bert_frame(&lfsr);
+    assert(processM17BRT(opts, state) == 1 && state->m17_confirmed == 1U);
+    assert(g_test_scan_activity.count == 0);
+    finish(state);
+    dsd_trunk_scan_hooks_set(NULL);
+}
+
+/* Issue #890: a decoded EOS ends the transmission its checked LSF was for. The next transmission, joined on its LICH
+   chunks 3 and 4 (which carry none of DST, SRC or TYPE, so nothing in them can dispute the binding), reports anonymous:
+   never the ended transmission's CAN, encryption or type. */
+static void
+test_eos_ends_the_scan_binding(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    uint8_t lsf_bits[TEST_M17_LSF_BITS];
+    uint8_t other_bits[TEST_M17_LSF_BITS];
+    uint8_t packed[M17_LSF_BYTES];
+    build_lsf_bits(lsf_bits);
+    DSD_MEMSET(other_bits, 0, sizeof other_bits);
+    m17_load_lsf_callsigns(other_bits, m17_encode_b40_callsign(0ULL, "XY9ZZ"), m17_encode_b40_callsign(0ULL, "QR7ST"));
+    write_bits(other_bits + 96, m17_compose_frame_info(1U, 2U, 0U, 0U, 7U, 0U, 0U), 16U);
+    (void)m17_attach_lsf_crc(other_bits, packed);
+    const uint8_t bound = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+
+    prepare(&opts, &state);
+    dsd_test_scan_activity_install();
+    state.synctype = DSD_SYNC_M17_LSF_POS;
+    load_lsf_frame(lsf_bits);
+    assert(processM17LSF(&opts, &state) == 1);
+    state.synctype = DSD_SYNC_M17_STR_POS;
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(lsf_bits, (uint8_t)fn, fn);
+        (void)processM17STR(&opts, &state);
+    }
+    assert(g_test_scan_activity.count >= 2 && g_test_scan_activity.last.known == bound);
+    /* The last frame, its EOS bit set. */
+    load_stream_frame(lsf_bits, 2U, (uint16_t)(2U | 0x8000U));
+    (void)processM17STR(&opts, &state);
+    assert(state.m17_lsf_checked == 1U && state.m17_tx_ended == 1U);
+
+    dsd_test_scan_activity_reset();
+    for (uint16_t fn = 0U; fn < 2U; fn++) {
+        load_stream_frame(other_bits, (uint8_t)(3U + fn), fn);
+        (void)processM17STR(&opts, &state);
+        assert(state.m17_lsf_checked == 0U);
+        assert(g_test_scan_activity.count == 0 || g_test_scan_activity.last.known == 0U);
+    }
+    assert(g_test_scan_activity.count >= 1 && g_test_scan_activity.last.known == 0U);
+    finish(&state);
+    dsd_trunk_scan_hooks_set(NULL);
+}
+
+/* Issue #890 F3, end to end: a BERT lock is PROVEN content to a quiet check on an untyped row, and nothing on a row of
+   the m17 class (entered as a -Y row or trunk-scan target enters it), which it confirms all the same. */
+static void
+test_bert_on_a_typed_row_is_profile_only(void) {
+    dsd_opts* opts = g_opts;
+    dsd_state* state = g_state;
+    for (int typed = 0; typed < 2; typed++) {
+        prepare(opts, state);
+        if (typed) {
+            assert(dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_M17) == 0);
+        }
+        opts->scan_skip_silent = 1;
+        opts->aggressive_framesync = 1;
+        state->synctype = DSD_SYNC_M17_BRT_POS;
+        quiet_notes_install(1);
+        uint16_t lfsr = 1U;
+        load_bert_frame(&lfsr);
+        assert(processM17BRT(opts, state) == 1 && state->m17_confirmed == 1U);
+        assert(g_quiet_proven == (typed ? 0 : 1));
+        quiet_notes_install(0);
+        finish(state);
+    }
+}
+
 int
 main(void) {
     InitAllFecFunction();
@@ -946,6 +1630,24 @@ main(void) {
     test_bert_frame_cut_by_an_input_interruption_counts_nothing();
     test_frames_split_by_a_carrier_boundary_are_dropped();
     test_packet_frames_before_their_crc_are_partial();
+#ifdef USE_CODEC2
+    test_disputed_link_setup_earns_no_checked_speech();
+#endif
+    test_checked_content_reports_to_trunk_scan();
+    test_rf_gap_voids_the_link_setup_until_a_checked_lsf();
+    test_failed_lsf_after_a_gap_vouches_nothing();
+    test_lich_chunks_do_not_cross_a_gap();
+    test_cut_read_voids_the_binding();
+    test_split_stream_frame_gives_no_lich_chunk();
+    test_split_lsf_frame_publishes_nothing();
+    test_stream_frame_at_the_input_end_is_cut();
+    test_rf_gap_breaks_the_weak_streak();
+    test_rf_lsf_frame_requests_the_extension_once();
+#ifdef USE_CODEC2
+    test_stale_link_setup_earns_no_checked_speech();
+#endif
+    test_eos_ends_the_scan_binding();
+    test_bert_on_a_typed_row_is_profile_only();
     free(g_state);
     free(g_opts);
     return 0;

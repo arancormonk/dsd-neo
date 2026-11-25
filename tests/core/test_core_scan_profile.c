@@ -800,6 +800,102 @@ test_analog_rows_refuse_key_material(void) {
     DSD_SECURE_ZERO(&keys, sizeof(keys));
 }
 
+/* --- Issue #890: the key matrix, by material --- */
+
+/* Every source of key material, by kind, against every simplex class: dPMR takes its 15-bit scrambler key alone (and a
+   clear-keys source); M17 takes none (the session's keys apply); YSF, D-STAR and TETRA DMO none (they decrypt nothing).
+   A key loader, a key list, AES, a second scalar (-1, an RC4/multi-scalar key), a basic or Hytera key and a TETRA air
+   key are refused for all of them, and NXDN keeps what it took. */
+static void
+test_simplex_classes_follow_the_key_matrix(void) {
+    enum {
+        MAT_CLEAR,
+        MAT_SCRAMBLER,
+        MAT_WIDE_SCRAMBLER,
+        MAT_LOADER,
+        MAT_LIST,
+        MAT_AES,
+        MAT_MULTI,
+        MAT_BASIC,
+        MAT_HYTERA,
+        MAT_TETRA,
+        MAT_COUNT
+    };
+
+    static const char* const names[MAT_COUNT] = {"clear keys", "scrambler 17", "scrambler 32768", "key loader",
+                                                 "key list",   "AES-256",      "-1 scalars",      "basic privacy",
+                                                 "Hytera",     "TETRA air key"};
+
+    /* 1 where the class takes the material. */
+    static const struct {
+        unsigned int mode;
+        int takes[MAT_COUNT];
+    } classes[] = {
+        {DSD_SCAN_MODE_DPMR, {1, 1, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {DSD_SCAN_MODE_M17, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {DSD_SCAN_MODE_YSF, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {DSD_SCAN_MODE_DSTAR, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {DSD_SCAN_MODE_TETRA_DMO, {0, 0, 0, 0, 0, 0, 0, 0, 0, 0}},
+        {DSD_SCAN_MODE_NXDN48, {1, 1, 0, 1, 1, 1, 1, 0, 0, 1}},
+    };
+
+    dsd_key_set_entry entry = {1U, 0x1234U, 1U};
+    for (int material = 0; material < MAT_COUNT; material++) {
+        dsd_key_set keys = {0};
+        keys.present = 1U;
+        switch (material) {
+            case MAT_SCRAMBLER:
+                keys.scalars.R = 17U;
+                keys.scalars.scalar_key_present[0] = 1U;
+                break;
+            case MAT_WIDE_SCRAMBLER:
+                keys.scalars.R = 32768U;
+                keys.scalars.scalar_key_present[0] = 1U;
+                break;
+            case MAT_LOADER: keys.keyloader = 1; break;
+            case MAT_LIST:
+                keys.entries = &entry;
+                keys.count = 1U;
+                break;
+            case MAT_AES:
+                keys.scalars.aes_key_loaded[0] = 1;
+                keys.scalars.aes_key_segments[0] = 4U;
+                break;
+            case MAT_MULTI:
+                keys.scalars.R = 0x1111111111ULL;
+                keys.scalars.RR = 0x1111111111ULL;
+                keys.scalars.scalar_key_present[0] = 1U;
+                keys.scalars.scalar_key_present[1] = 1U;
+                break;
+            case MAT_BASIC:
+                keys.scalars.basic_key_present = 1U;
+                keys.scalars.K = 7U;
+                break;
+            case MAT_HYTERA: keys.scalars.hytera_key_segments = 1U; break;
+            case MAT_TETRA: keys.scalars.tetra_air_keys[0].loaded = 1U; break;
+            case MAT_CLEAR:
+            default: break;
+        }
+        for (size_t c = 0; c < sizeof(classes) / sizeof(classes[0]); c++) {
+            const int takes = dsd_scan_keys_compatible(&keys, classes[c].mode);
+            if (takes != classes[c].takes[material]) {
+                DSD_FPRINTF(stderr, "class %u, %s: compatible %d, want %d\n", classes[c].mode, names[material], takes,
+                            classes[c].takes[material]);
+                assert(0);
+            }
+        }
+        /* The entry is the test's own: not freed with the set. */
+        keys.entries = NULL;
+        keys.count = 0U;
+        DSD_SECURE_ZERO(&keys, sizeof(keys));
+    }
+    /* No key source at all is compatible with every class. */
+    dsd_key_set none = {0};
+    for (size_t c = 0; c < sizeof(classes) / sizeof(classes[0]); c++) {
+        assert(dsd_scan_keys_compatible(&none, classes[c].mode));
+    }
+}
+
 /* A learned alias appended to the global group file while a row's own list for that file is in effect is copied into
  * the global list held aside, whose baseline already counts the row. When that copy cannot be stored (out of memory)
  * the global list is marked incomplete: back in effect it refuses to save, so its next save cannot pass the guard and
@@ -865,6 +961,7 @@ test_held_list_short_of_an_appended_row_is_not_saved(void) {
 int
 main(void) {
     test_analog_rows_refuse_key_material();
+    test_simplex_classes_follow_the_key_matrix();
     test_squelch_rows_import_and_preview();
     test_move_unwinds_both_group_scopes();
     test_slotless_options_validate_files();

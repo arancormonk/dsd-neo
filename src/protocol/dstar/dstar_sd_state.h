@@ -32,14 +32,17 @@ extern "C" {
  * What a D-STAR slow-data assembly (a D-PRS record, the text message) is bound to from its first byte or block
  * (dstar_slow_data.c): the transmission (dsd_state::dstar_tx_seq), the call a checked header of that transmission named
  * on the current reception (dstar_tx_named_call(), 0: none), whether the transmission was confirmed
- * (dsd_state::dstar_confirmed) and the reception (dsd_position_origin_capture()). A block heard when any of them has
- * changed resets the assembly before it is used: nothing assembled across two transmissions, two receptions, a header
- * naming another call or the confirmation reaches the evidence, a position or a call.
+ * (dsd_state::dstar_confirmed), the reception (dsd_position_origin_capture()) and the scan visit (issue #890). A block
+ * heard when any of them has changed resets the assembly before it is used: nothing assembled across two transmissions,
+ * two receptions, two scan visits, a header naming another call or the confirmation reaches the evidence, a position,
+ * a call or a scan hold.
  */
 typedef struct dstar_sd_binding {
     uint32_t tx;
     uint64_t call_epoch;
     dsd_position_origin origin;
+    uint64_t
+        scan_visit; /* the scan visit the first byte was read on (dsd_state_scan_observation_origin(), issue #890) */
     uint8_t confirmed;
 } dstar_sd_binding;
 

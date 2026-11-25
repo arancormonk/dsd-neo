@@ -3,10 +3,14 @@
  * Focused checks for D-STAR voice/header processing loop boundaries.
  */
 
+#include "../../test_support/scan_activity_capture.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
 #include "dstar_sd_state.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 #include <assert.h>
 #include <dsd-neo/core/audio.h>
@@ -26,6 +30,7 @@
 #include <dsd-neo/protocol/dstar/dstar_header.h>
 #include <dsd-neo/protocol/dstar/dstar_header_utils.h>
 #include <dsd-neo/runtime/telemetry.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -310,12 +315,19 @@ dsd_call_state_end_ex(dsd_state* state, uint8_t slot, double observed_m, dsd_cal
     return 1;
 }
 
+/* The DATA flag the stubbed header carries. */
+static int header_decode_soft_data_flag = 0;
+
 int
-dstar_header_decode_soft(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS]) {
+dstar_header_decode_soft_data(struct dsd_state* state, const float soft_symbols[DSD_DSTAR_HEADER_CODED_BITS],
+                              int* data) {
     (void)state;
     assert(soft_symbols != NULL);
     DSD_MEMCPY(captured_soft_symbols, soft_symbols, sizeof(captured_soft_symbols));
     header_decode_soft_calls++;
+    if (data != NULL && header_decode_soft_result) {
+        *data = header_decode_soft_data_flag;
+    }
     return header_decode_soft_result;
 }
 
@@ -1141,6 +1153,49 @@ test_failed_header_read_is_productive_on_checked_slow_data_only(void) {
     header_decode_soft_result = 1;
 }
 
+/* Issue #890 D4: a header whose CRC passed reports the transmission to trunk scan's policy table, once, with its own
+   checked DATA flag (voice, then data); one that failed reports nothing, and the
+   resynchronization words' streak never reports, however long it runs. */
+static void
+test_only_a_checked_header_reports_to_trunk_scan(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    opts.pulse_digi_out_channels = 1;
+    reset_counters();
+    dsd_test_scan_activity_reset();
+    header_decode_soft_result = 1;
+    assert(processDSTAR_HD(&opts, &state) == 1);
+    assert(g_test_scan_activity.count == 1 && DSD_SYNC_IS_DSTAR(g_test_scan_activity.protocol));
+    assert(g_test_scan_activity.last.known == (DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED));
+    assert(g_test_scan_activity.last.data_call == 0U && g_test_scan_activity.last.encrypted == 0U);
+    /* A data header: its own CRC-checked DATA flag, whatever the call state holds (here no D-STAR call at all). */
+    reset_counters();
+    dsd_test_scan_activity_reset();
+    call_protocol = DSD_SYNC_YSF_POS;
+    header_decode_soft_data_flag = 1;
+    assert(processDSTAR_HD(&opts, &state) == 1);
+    assert(g_test_scan_activity.count == 1 && (g_test_scan_activity.last.known & DSD_SCAN_ACTIVITY_KNOWN_DATA)
+           && g_test_scan_activity.last.data_call == 1U);
+    header_decode_soft_data_flag = 0;
+    call_protocol = DSD_SYNC_DSTAR_VOICE_POS;
+    reset_counters();
+    dsd_test_scan_activity_reset();
+    header_decode_soft_result = 0;
+    assert(processDSTAR_HD(&opts, &state) == 0);
+    assert(g_test_scan_activity.count == 0);
+    header_decode_soft_result = 1;
+    dstar_confirm_reset(&state);
+    for (int superframe = 0; superframe < 4; superframe++) {
+        reset_counters();
+        (void)processDSTAR(&opts, &state);
+    }
+    assert(state.dstar_confirmed == 1);
+    assert(g_test_scan_activity.count == 0);
+}
+
 int
 main(void) {
     test_voice_process_without_telemetry();
@@ -1166,6 +1221,7 @@ main(void) {
     test_end_after_the_last_data_frame_decodes_the_slow_data();
     test_header_led_superframe_split_in_a_data_frame_stops_there();
     test_failed_header_read_is_productive_on_checked_slow_data_only();
+    test_only_a_checked_header_reports_to_trunk_scan();
     printf("DSTAR_PROCESS: OK\n");
     return 0;
 }

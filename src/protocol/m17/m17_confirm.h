@@ -38,9 +38,10 @@ extern "C" {
 
 /** @brief How much a passing check is worth. */
 typedef enum {
-    M17_EVIDENCE_WEAK = 1,  /**< A LICH whose four Golay(24,12) blocks cleared. */
-    M17_EVIDENCE_STRONG = 2 /**< A CRC-16: an LSF (its frame's, or rebuilt whole from the LICH) or a packet. Also a
-                                 PRBS9 BERT lock. */
+    M17_EVIDENCE_WEAK = 1,   /**< A LICH whose four Golay(24,12) blocks cleared. */
+    M17_EVIDENCE_STRONG = 2, /**< A CRC-16: an LSF (its frame's, or rebuilt whole from the LICH) or a packet. */
+    M17_EVIDENCE_TEST = 3    /**< A PRBS9 BERT lock: as strong as a CRC for the transmission, but a test, which a row
+                                  of the m17 scan class takes as proof of the M17 profile only (issue #890 F3). */
 } m17_evidence;
 
 /** @brief Frames of weak evidence in a row that together confirm a transmission. */
@@ -86,17 +87,23 @@ void m17_confirm_begin_frame(dsd_state* state);
 /**
  * @brief Report a check this frame passed.
  *
- * Strong evidence confirms immediately. Weak evidence counts once per frame however many times
+ * Strong and test evidence confirm immediately. Weak evidence counts once per frame however many times
  * it is reported, and confirms on the M17_CONFIRM_WEAK_OBSERVES'th frame in a row. Where a signal
  * search hears the confirmation, a scan quiet check hears it too, through @p opts
  * (dsd_frame_sync_hook_content_evidence(), issue #834): PROVEN for strong evidence and a completed
- * weak streak, PARTIAL (M17_CONFIRM_PARTIAL_HOLD_MS) for a weak frame a later one must complete.
- * @p opts may be NULL (no quiet check).
+ * weak streak, PARTIAL (M17_CONFIRM_PARTIAL_HOLD_MS) for a weak frame a later one must complete. Test
+ * evidence is PROVEN too, except on a row of the m17 scan class (a typed -Y row or an m17-conventional
+ * trunk-scan target, dsd_scan_mode_active()), where a test transmission is no traffic and advances neither the
+ * -Y content nor a quiet check's activity (issue #890 F3). @p opts may be NULL (no quiet check).
  */
 void m17_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, m17_evidence evidence);
 
 /** @brief Close a frame's accounting; a frame that proved nothing breaks the weak streak. */
 void m17_confirm_end_frame(dsd_state* state);
+
+/** @brief RF continuity broke (issue #890: a frame lost or cut, frames missed, the symbol clock restarted): a clean LICH
+ * before the break and one after it are no two in a row, so the weak streak starts again. */
+void m17_confirm_break_streak(dsd_state* state);
 
 /**
  * @brief A frame the decoder accepted that carries no check of its own (a packet frame before the end-of-transmission

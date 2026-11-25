@@ -68,6 +68,20 @@ void tetra_confirm_reset(dsd_state* state);
  * machine when a retune completes. A session without TETRA state is left without one; NULL is ignored. */
 void tetra_forget_carrier(dsd_state* state);
 
+/* Start a scan's visit to a TETRA row cold (issue #890): the engine calls it at every landing of a scan session that
+ * holds the TETRA state (dsd_state::tetra_ext_scan_held), a TETRA row after another TETRA row included, and when the
+ * session lets the state go. In this order it clears what the last visit's bursts proved, the direct mode call, then
+ * the network, each part once (tetra_bsch_forget_network(): the D-MM STATUS, the trunked calls kept with their
+ * canonical calls, the short data being rebuilt, its cell with SYSINFO and the TM-SDUs, then MCC, MNC, colour code and
+ * scrambling seed, net_known last), the carrier as
+ * tetra_forget_carrier() does (DM colour code and direct mode included), the trunking state machine's staged and
+ * in-flight work (tetra_sm_init()), the carrier's polarity with the frame sync's burst capture, and the frontends'
+ * publication. It keeps the state allocated with the speech decoder's storage, the operator air keys (which live in
+ * dsd_state) and the KSG evidence kept per network (tetra_state_t::air_ksg), which only that network's own identity
+ * reaches again; a --tetra-net preset seeds the identity again at the next burst. Never creates TETRA state; NULL
+ * @p state is ignored, and @p opts may be NULL. */
+void tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state);
+
 #ifdef __cplusplus
 }
 #endif

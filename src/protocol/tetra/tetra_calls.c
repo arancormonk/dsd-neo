@@ -27,6 +27,7 @@
 #include <dsd-neo/protocol/tetra/tetra_trunk_sm.h>
 #include <dsd-neo/protocol/tetra/tetra_voice.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -2076,6 +2077,85 @@ dmo_sds_key_equal(const tetra_dmo_sds_key* a, const tetra_dmo_sds_key* b) {
            && a->src_type == b->src_type && a->dst_type == b->dst_type && a->has_mni == b->has_mni && a->mni == b->mni;
 }
 
+/* ---- Trunk scan activity (issue #890) ---- */
+
+/* A checked direct mode report to trunk scan's policy table, from a burst read whole on the carrier the receiver is on
+   (tetra_confirm_burst_current()): a stale or cut burst holds nothing. TETRA DMO has no slot the DMR/P25 slot filter
+   reads (-1). */
+static void
+dmo_scan_report(const dsd_opts* opts, const dsd_state* state, const dsd_trunk_scan_activity_identity* identity) {
+    if (tetra_confirm_burst_current(state)) {
+        dsd_trunk_scan_hook_digital_conventional_activity(opts, state, calls_protocol(state), -1, identity);
+    }
+}
+
+/* The encryption of the direct mode channel's traffic (tetra_dmo_call_crypt(), the SCH/S security class and the
+   DM-SETUP's end-to-end flag), known once a set-up or occupation said it: air interface or end-to-end encrypted is
+   encrypted (there is no direct mode decryption). */
+static void
+dmo_scan_crypt(const dsd_state* state, dsd_trunk_scan_activity_identity* id) {
+    const tetra_dmo_crypt_e crypt = tetra_dmo_call_crypt(state);
+    if (crypt != TETRA_DMO_CRYPT_UNKNOWN) {
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+        id->encrypted = (uint8_t)(crypt != TETRA_DMO_CRYPT_CLEAR);
+    }
+}
+
+/* What the direct mode call @p d set up says of its transmission: its source (ISSI) and destination (GSSI or ISSI) as
+   numeric IDs while its addresses were clear (DM-2-B hides the destination), its call type (EN 300 396-3 clause 9.3.4:
+   group or individual) and its circuit mode type when read and defined (clause 9.6.3: 0 and 8 speech, 1-7 circuit mode
+   data; 9-15 are reserved, which say nothing of the service, so a reserved one leaves it unknown). */
+static void
+dmo_scan_call_identity(const dsd_state* state, const tetra_dmo_call_t* d, dsd_trunk_scan_activity_identity* id) {
+    DSD_MEMSET(id, 0, sizeof(*id));
+    if (d->addressed) {
+        id->source = d->src;
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_SOURCE;
+        if (d->dst != 0u) {
+            id->target = d->dst;
+            id->known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET;
+        }
+    }
+    if (d->group_known) {
+        id->is_private = (uint8_t)(d->group == 0u);
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    }
+    if (d->circuit_known && d->circuit_mode <= 8u) {
+        id->data_call = (uint8_t)(d->circuit_mode >= 1u && d->circuit_mode <= 7u);
+        id->known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    }
+    dmo_scan_crypt(state, id);
+}
+
+/* A DMAC-SYNC call PDU that starts or carries the call's traffic (EN 300 396-3 clauses 6.2, 8.4): a DM-SETUP, a
+   DM-CONNECT ACK (to a DM-SETUP PRES, whose presence check alone carries no traffic) or a DM-OCCUPIED. A DM-SETUP PRES
+   and a gateway set-up (DM-GSETUP) hold nothing until that call's DM-CONNECT ACK or DM-OCCUPIED. */
+static int
+dmo_pdu_carries_traffic(const tetra_dmo_sync_h_t* h) {
+    return h->msg_type == TETRA_DMO_MSG_SETUP || h->msg_type == TETRA_DMO_MSG_CONNECT_ACK
+           || h->msg_type == TETRA_DMO_MSG_OCCUPIED;
+}
+
+void
+tetra_calls_dmo_speech_activity(const dsd_opts* opts, const dsd_state* state) {
+    const tetra_state_t* const ts = tetra_st_peek(state);
+    if (!ts) {
+        return;
+    }
+    const tetra_dmo_call_t* const d = &ts->calls.dmo;
+    dsd_trunk_scan_activity_identity identity;
+    if (d->active && d->tx_seq == ts->dmo_tx_seq) {
+        dmo_scan_call_identity(state, d, &identity);
+    } else {
+        DSD_MEMSET(&identity, 0, sizeof(identity));
+        dmo_scan_crypt(state, &identity);
+    }
+    /* Speech is the transmission's voice, whatever the set-up said of a circuit mode type. */
+    identity.known |= DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    identity.data_call = 0U;
+    dmo_scan_report(opts, state, &identity);
+}
+
 /* Short data of the channel as a data notice (EN 300 396-3 clause 9.7); the DMAC-SYNC repeats it, so a repeat of the
  * last within 10 s is not noted again: the same message, its short data type, length and whole DM-SDU included, from
  * the same source to the same destination. Short data whose FCS fails is discarded (clause 6.3.2) before either: the
@@ -2085,6 +2165,26 @@ dmo_sds_notice(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_
     if (h->fcs_state == TETRA_DMO_FCS_FAILED) {
         return;
     }
+    /* Short data that passed its FCS (or carries none) is a data call to trunk scan, every copy of it (issue #890 F2):
+       the repeat the notice below leaves out is the channel's activity too. */
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_SOURCE | DSD_SCAN_ACTIVITY_KNOWN_DATA | DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED;
+    identity.source = h->src;
+    identity.data_call = 1U;
+    identity.encrypted = (uint8_t)(h->enc_state != TETRA_DMO_AIE_DM1);
+    /* Acknowledged short data (DM-SDS DATA) is an individual service: the unacknowledged one (DM-SDS UDATA) shall be
+       used for a group and may be used for an individual (EN 300 396-3 clauses 6.3, 6.3.1.1.2), so only the
+       acknowledged one says its party. */
+    if (h->msg_type == TETRA_DMO_MSG_SDS_DATA) {
+        identity.is_private = 1U;
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_PARTY;
+    }
+    if (!h->dst_encrypted && h->dst != 0u) {
+        identity.target = h->dst;
+        identity.known |= DSD_SCAN_ACTIVITY_KNOWN_TARGET;
+    }
+    dmo_scan_report(opts, state, &identity);
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     const double now_m = dsd_decode_now_mono_s();
     const uint32_t dst = h->dst_encrypted ? 0u : h->dst;
@@ -2164,24 +2264,58 @@ dmo_call_of_transmission(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, co
     return 0;
 }
 
+/* Whether DMO system code @p code is one EN 300 396-3 clause 9.3.29 defines (1100 ETS 300 396-3, 1101 EN 300 396-3
+   V1.2.1 on), as against a DMO reserved one (1010, 1011, 1110, 1111), which a DM-MS takes only after examining the
+   PDU's content. */
+static int
+dmo_system_code_recognised(uint32_t code) {
+    return code == 0xCu || code == 0xDu;
+}
+
+/* A DM-2-C DMAC-SYNC, whose addresses and message type are encrypted too: an encrypted transmission, of no one known.
+   It shows and records as a call under any system code. Under a DMO reserved one nothing of the PDU could be examined
+   (EN 300 396-3 clause 9.3.29), so it proves the profile only and holds no scan target (issue #890). */
+static void
+dmo_opaque_pdu(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, uint32_t system_code) {
+    const int examined = dmo_system_code_recognised(system_code);
+    tetra_dmo_call_t* const d = &ts->calls.dmo;
+    /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
+    tetra_confirm_note_proof(state, examined ? DSD_TETRA_BURST_PROOF_DMO_OPAQUE : DSD_TETRA_BURST_PROOF_PROFILE);
+    (void)dmo_call_of_transmission(opts, state, ts, NULL);
+    dmo_call_forget(d);
+    d->active = 1;
+    d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
+    d->seen_m = dsd_decode_now_mono_s();
+    dmo_publish(opts, state, ts);
+    if (!examined) {
+        return;
+    }
+    /* Encrypted direct mode presence of no one known (EN 300 396-3 clause 8.5.3): it may be a reservation. It is no
+       data call of its own (presence, as a D-PRS record is), so it holds under --no-data-calls; whether an encrypted
+       call may hold is the encrypted-call tuning rule's. */
+    dsd_trunk_scan_activity_identity identity;
+    DSD_MEMSET(&identity, 0, sizeof(identity));
+    identity.known = DSD_SCAN_ACTIVITY_KNOWN_ENCRYPTED | DSD_SCAN_ACTIVITY_KNOWN_DATA;
+    identity.encrypted = 1U;
+    dmo_scan_report(opts, state, &identity);
+}
+
 void
 tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const tetra_dmo_sync_h_t* h) {
+    tetra_calls_dmo_sync_pdu(opts, state, sync_enc_state, 0xDu, h);
+}
+
+void
+tetra_calls_dmo_sync_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, uint32_t system_code,
+                         const tetra_dmo_sync_h_t* h) {
     tetra_state_t* const ts = tetra_st(state);
     if (!ts || !h) {
         return;
     }
     tetra_dmo_call_t* const d = &ts->calls.dmo;
     if (!h->has_addrs) {
-        /* DM-2-C encrypts the addresses and the message type too: an encrypted transmission, of no one known. */
         if (sync_enc_state == TETRA_DMO_AIE_DM2C) {
-            /* Checked, but what it is no one can tell: a transmission or a reservation (tetra.h). */
-            tetra_confirm_note_proof(state, DSD_TETRA_BURST_PROOF_DMO_OPAQUE);
-            (void)dmo_call_of_transmission(opts, state, ts, NULL);
-            dmo_call_forget(d);
-            d->active = 1;
-            d->in_tx = (uint8_t)(ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
-            d->seen_m = dsd_decode_now_mono_s();
-            dmo_publish(opts, state, ts);
+            dmo_opaque_pdu(opts, state, ts, system_code);
         }
         return;
     }
@@ -2193,6 +2327,11 @@ tetra_calls_dmo_pdu(dsd_opts* opts, dsd_state* state, int sync_enc_state, const 
             d->in_tx = (uint8_t)(d->in_tx || ts->dmo_tx_crypt != (uint8_t)TETRA_DMO_CRYPT_UNKNOWN);
             d->seen_m = dsd_decode_now_mono_s();
             dmo_publish(opts, state, ts);
+            if (sync_enc_state >= 0 && dmo_pdu_carries_traffic(h)) {
+                dsd_trunk_scan_activity_identity identity;
+                dmo_scan_call_identity(state, d, &identity);
+                dmo_scan_report(opts, state, &identity);
+            }
             break;
         case DMO_PDU_END:
             d->active = 0;

@@ -1730,7 +1730,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
     /* Whether the row can carry a single DMR radio: a shortened reading keeps the DMR floor on it. */
     e->dmr = scan_quiet_visit_dmr(opts, mode);
     /* Why these facts give the row no check, if they give none (issue #834 R6). */
-    e->reason = scan_quiet_facts_reason(opts, e, mode == DSD_SCAN_MODE_INHERIT);
+    e->reason = scan_quiet_facts_reason(opts, e, mode);
 }
 
 /* The -Y scan's conditions for checking the landed row @p row: the row on air from a landing in this
@@ -1739,7 +1739,7 @@ no_carrier_quiet_row_classes(const dsd_opts* opts, const dsd_state* state, int r
 static int
 no_carrier_quiet_row_eligible(const dsd_opts* opts, const dsd_state* state, int row) {
     return dsd_engine_scan_landing_is_row(state, row) && dsd_engine_channel_scan_on_air_row(state) == row
-           && !state->lcn_scan_hold && !dsd_engine_channel_scan_on_avoided_row(state)
+           && !state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state)
            && !dsd_engine_channel_scan_waiting(state) && !no_carrier_scan_tune_awaited(state)
            && dsd_scan_analog_tone_gate(opts, state) == DSD_ANALOG_TONE_GATE_OFF
            && !dsd_scan_analog_carrier_open(opts, state) && dsd_engine_channel_scan_has_other_row(opts, state);
@@ -2307,17 +2307,21 @@ no_carrier_scan_tune_awaited(const dsd_state* state) {
 
 int
 dsd_engine_channel_scan_departure_due(const dsd_opts* opts, dsd_state* state, double now_m) {
+    /* A tetra-dmo row on air is judged again at every pass that asks (issue #890 D5). */
+    dsd_engine_channel_scan_tetra_judge(opts, state);
     if (!opts || !state || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1 || now_m < state->lcn_avoid_depart_m
-        || !dsd_engine_channel_scan_on_avoided_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
+        || !dsd_engine_channel_scan_on_departing_row(state) || !dsd_state_trunk_lcn_user_list_present(opts, state)) {
         return 0;
     }
     /* A tune of the scan's still in flight decides first: its landing leaves the row, its failure paces the retry. */
     if (dsd_engine_channel_scan_waiting(state) || dsd_engine_manual_tune_pending_row(state, NULL) >= 0) {
         return 0;
     }
-    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go. With none, the next
-       look waits the step cadence, as after a step: the row walk runs once a cadence, not on every frame. */
-    if (dsd_engine_channel_scan_reachable_rows(opts, state) > 0) {
+    /* The avoided row on air is no row a step lands on, so any counted is somewhere else to go; a tetra-dmo row whose
+       chain cannot run on air may still count as one, so it needs another row. With none, the next look waits the step
+       cadence, as after a step: the row walk runs once a cadence, not on every frame. */
+    if (dsd_engine_channel_scan_on_avoided_row(state) ? dsd_engine_channel_scan_reachable_rows(opts, state) > 0
+                                                      : dsd_engine_channel_scan_has_other_row(opts, state)) {
         return 1;
     }
     dsd_engine_channel_scan_departure_note(opts, state, now_m);
@@ -2343,7 +2347,7 @@ no_carrier_step_stays(const dsd_opts* opts, dsd_state* state) {
     if (dsd_engine_channel_scan_hold_keeps_row(state) || no_carrier_scan_tune_awaited(state)) {
         return 1;
     }
-    if (dsd_engine_channel_scan_on_avoided_row(state)) {
+    if (dsd_engine_channel_scan_on_departing_row(state)) {
         const double now_m = dsd_decode_now_mono_s();
         if (now_m < state->lcn_avoid_depart_m) {
             return 1;
@@ -4335,7 +4339,7 @@ live_scanner_start_trunk_scan_if_needed(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state || opts->trunk_scan_enabled != 1) {
         return 0;
     }
-    char scan_err[256] = {0};
+    char scan_err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
     if (dsd_engine_trunk_scan_init(opts, state, scan_err, sizeof scan_err) != 0) {
         LOG_ERROR("Trunk scan: %s\n", scan_err[0] ? scan_err : "initialization failed");
         return -1;
@@ -4461,7 +4465,8 @@ live_scanner_receive_should_yield(const dsd_opts* opts, dsd_state* state) {
     }
     /* A row the operator avoided is left at its paced departure, whatever holds the carrier (issue #644). The clock is
        read only while something is avoided. */
-    if (state->lcn_avoid_count != 0U && dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+    if ((state->lcn_avoid_count != 0U || dsd_engine_channel_scan_tetra_rows(state))
+        && dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
         return 1;
     }
     return !dsd_engine_channel_scan_hold_keeps_row(state)
@@ -4542,7 +4547,7 @@ live_scanner_y_frame_step_may_decide(const dsd_opts* opts, const dsd_state* stat
         return 0;
     }
     return !dsd_engine_channel_scan_hold_keeps_row(state) && !no_carrier_scan_tune_awaited(state)
-           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_avoided_row(state)
+           && !dsd_engine_channel_scan_waiting(state) && !dsd_engine_channel_scan_on_departing_row(state)
            && dsd_engine_channel_scan_has_other_row(opts, state);
 }
 
@@ -4584,38 +4589,110 @@ live_scanner_y_frames_carry_nothing(const dsd_opts* opts, const dsd_state* state
     return !owner || owner->y_frame_yield_epoch != *out_epoch || owner->y_frame_yield_mark_ms != *out_mark_ms;
 }
 
+/* Checked content, or on a typed simplex row (@p typed) an admitted report @p owner has not seen yet, since the last
+   boundary: the content time (only an admitted report's on a typed row), and the open verdict resolved. */
+static void
+live_scanner_y_note_checked(dsd_state* state, double now_m, dsd_engine_scan_owner* owner, int typed) {
+    const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
+    state->scan_y_content_seen = state->scan_y_content_seq;
+    if (!typed || admitted) {
+        state->scan_y_content_m = now_m;
+    }
+    if (admitted) {
+        owner->y_admitted_seen = owner->y_admitted_seq;
+    }
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    state->scan_y_partial_hold_ms = 0U;
+    state->scan_y_partial_until_m = -1.0;
+}
+
+/* Whether the refusal @p owner holds for the typed simplex row on air still stands (issue #890): the refused
+   transmission is the call active on its slot. Bound at the boundary of the refused report's own frame, every
+   boundary asking, to that call's transmission_epoch, and only when that frame observed the slot's call (@p
+   frame_observed: dsd_call_state_observation_seq() moved since the boundary before; a media refresh never moves it),
+   so a report with no call of its own (an M17 LICH pair the CAN filter refused, before any link setup, while the
+   decoder still refreshes the media of the call an earlier transmission left active) never binds to that call; dropped
+   once the slot holds no active call (the transmission ended, or it was never a call the decoder tracks) or another
+   transmission's call, so a later call keeps the open-verdict wait the -Y rule gives it. */
+static int
+live_scanner_y_refusal_stands(const dsd_state* state, dsd_engine_scan_owner* owner, int frame_observed) {
+    if (!owner || owner->y_refused == 0U) {
+        return 0;
+    }
+    dsd_call_snapshot call;
+    const int active =
+        dsd_call_state_get(state, owner->y_refused_slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE;
+    if (owner->y_refused_epoch == 0U) {
+        if (!active || !frame_observed) {
+            owner->y_refused = 0U;
+            return 0;
+        }
+        owner->y_refused_epoch = call.transmission_epoch;
+    }
+    if (!active || call.transmission_epoch != owner->y_refused_epoch) {
+        owner->y_refused = 0U;
+        owner->y_refused_epoch = 0U;
+        return 0;
+    }
+    return 1;
+}
+
+/* An open verdict (PARTIAL) since the last boundary: the end of its hold, bounded by SCAN_QUIET_PENDING_MAX_MS. On a
+   typed simplex row whose last report the policy refused (@p refused, issue #890) it holds nothing: the transmission
+   it waits on is already known to be one the row may not hold on (an M17 packet under --no-data-calls, whose chunks
+   each open a wait for the CRC at its end), while the quiet check still takes it as pending evidence. */
+static void
+live_scanner_y_note_partial(dsd_state* state, double now_m, int refused) {
+    state->scan_y_partial_seen = state->scan_y_partial_seq;
+    const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS ? state->scan_y_partial_hold_ms
+                                                                                       : SCAN_QUIET_PENDING_MAX_MS;
+    state->scan_y_partial_hold_ms = 0U;
+    if (refused) {
+        return;
+    }
+    const double until_m = now_m + (double)hold_ms / 1000.0;
+    if (until_m > state->scan_y_partial_until_m) {
+        state->scan_y_partial_until_m = until_m;
+    }
+}
+
 /* What the frames since the last boundary noted, for the -Y step: checked content and an unchecked protocol's frame
    become their time (the frame's end), and a verdict still open (PARTIAL) the end of its hold, bounded by
    SCAN_QUIET_PENDING_MAX_MS. Proof dominates, as in dsd_engine_scan_quiet_note_evidence(): checked content resolves
    the open verdict, so the hold it started ends there, and a PARTIAL note of the same frame starts none. */
 static void
 live_scanner_y_note_frame_content(dsd_state* state, double now_m) {
+    /* A typed simplex row holds on the activity the policy table admitted for it alone (issue #890,
+       dsd_engine_scan_y_typed_activity()): its checked content still settles an open verdict, but only an
+       admitted report becomes its content time. */
+    const int typed = dsd_engine_scan_y_row_holds_on_admitted(state);
+    dsd_engine_scan_owner* owner =
+        typed ? DSD_STATE_EXT_GET_AS(dsd_engine_scan_owner, state, DSD_STATE_EXT_ENGINE_TRUNK_SCAN) : NULL;
+    const int admitted = owner && owner->y_admitted_seq != owner->y_admitted_seen;
+    /* A refusal binds to the call its own frame observed at this boundary, whatever that frame noted (a refused PROVEN
+       frame resolves no open verdict here), or lapses: so it can never bind a later call. */
+    int frame_observed = 0;
+    if (owner) {
+        const uint32_t seen[2] = {dsd_call_state_observation_seq(state, 0U), dsd_call_state_observation_seq(state, 1U)};
+        frame_observed = seen[owner->y_refused_slot ? 1 : 0] != owner->y_call_obs_mark[owner->y_refused_slot ? 1 : 0];
+        owner->y_call_obs_mark[0] = seen[0];
+        owner->y_call_obs_mark[1] = seen[1];
+    }
+    const int refused = live_scanner_y_refusal_stands(state, owner, frame_observed);
     if (state->scan_y_content_seq == state->scan_y_content_seen
         && state->scan_y_partial_seq == state->scan_y_partial_seen
-        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen) {
+        && state->scan_y_unchecked_seq == state->scan_y_unchecked_seen && !admitted) {
         return;
     }
     if (state->scan_y_unchecked_seq != state->scan_y_unchecked_seen) {
         state->scan_y_unchecked_seen = state->scan_y_unchecked_seq;
         state->scan_y_unchecked_m = now_m;
     }
-    if (state->scan_y_content_seq != state->scan_y_content_seen) {
-        state->scan_y_content_seen = state->scan_y_content_seq;
-        state->scan_y_content_m = now_m;
-        state->scan_y_partial_seen = state->scan_y_partial_seq;
-        state->scan_y_partial_hold_ms = 0U;
-        state->scan_y_partial_until_m = -1.0;
+    if (state->scan_y_content_seq != state->scan_y_content_seen || admitted) {
+        live_scanner_y_note_checked(state, now_m, typed ? owner : NULL, typed);
     }
     if (state->scan_y_partial_seq != state->scan_y_partial_seen) {
-        state->scan_y_partial_seen = state->scan_y_partial_seq;
-        const uint32_t hold_ms = state->scan_y_partial_hold_ms < SCAN_QUIET_PENDING_MAX_MS
-                                     ? state->scan_y_partial_hold_ms
-                                     : SCAN_QUIET_PENDING_MAX_MS;
-        state->scan_y_partial_hold_ms = 0U;
-        const double until_m = now_m + (double)hold_ms / 1000.0;
-        if (until_m > state->scan_y_partial_until_m) {
-            state->scan_y_partial_until_m = until_m;
-        }
+        live_scanner_y_note_partial(state, now_m, refused);
     }
 }
 

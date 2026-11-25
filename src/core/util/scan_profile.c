@@ -47,15 +47,32 @@ scan_aes_compatible(const dsd_key_scalars* k, unsigned int mode, int nxdn) {
     return 1;
 }
 
-int
-dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode) {
-    if (!keys || !keys->present) {
-        return keys != NULL;
+/* Whether @p k holds a TETRA air-interface key. */
+static int
+scan_keys_tetra_air(const dsd_key_scalars* k) {
+    for (size_t i = 0; i < DSD_TETRA_AIR_KEY_SLOTS; i++) {
+        if (k->tetra_air_keys[i].loaded) {
+            return 1;
+        }
     }
-    /* An analog class decrypts nothing, so any key material -- a key loader included -- is refused. */
-    if (dsd_scan_mode_is_analog((dsd_scan_mode)mode)) {
+    return 0;
+}
+
+/* dPMR's keys (issue #890 key matrix, DSD_SCAN_KEYS_SCRAMBLER): its one 15-bit scrambler key (TS 102 658 clause 7.4) or
+ * none (a clear-keys source); no key loader, key list, second scalar, basic, Hytera, AES or TETRA key. */
+static int
+scan_keys_scrambler_only(const dsd_key_set* keys) {
+    const dsd_key_scalars* k = &keys->scalars;
+    if (keys->keyloader || keys->count != 0U || k->basic_key_present || k->hytera_key_segments || k->aes_key_loaded[0]
+        || k->aes_key_loaded[1] || k->scalar_key_present[1] || scan_keys_tetra_air(k)) {
         return 0;
     }
+    return !k->scalar_key_present[0] || k->R <= 32767U;
+}
+
+/* The keys a class that decodes them all takes (DSD_SCAN_KEYS_FULL): each scalar by its class's rules, AES by its. */
+static int
+scan_keys_full_compatible(const dsd_key_set* keys, unsigned int mode) {
     if (keys->keyloader) {
         return 1;
     }
@@ -64,11 +81,27 @@ dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode) {
     if (k->basic_key_present && (mode != DSD_SCAN_MODE_DMR || k->K > 255U)) {
         return 0;
     }
-    if (k->scalar_key_present[0] && !k->scalar_key_present[1]
-        && ((!nxdn && mode != DSD_SCAN_MODE_DPMR) || k->R > 32767U)) {
+    if (k->scalar_key_present[0] && !k->scalar_key_present[1] && (!nxdn || k->R > 32767U)) {
         return 0;
     }
     return scan_aes_compatible(k, mode, nxdn);
+}
+
+int
+dsd_scan_keys_compatible(const dsd_key_set* keys, unsigned int mode) {
+    if (!keys || !keys->present) {
+        return keys != NULL;
+    }
+    /* A class that takes no keys of its own refuses any key source, a key loader and a clear-keys one included: an
+       analog class, D-STAR, YSF and TETRA DMO decrypt nothing, and M17 uses the session's keys (issue #890). dPMR takes
+       its scrambler key alone. */
+    switch (dsd_scan_mode_key_capability((dsd_scan_mode)mode)) {
+        case DSD_SCAN_KEYS_NONE:
+        case DSD_SCAN_KEYS_SESSION: return 0;
+        case DSD_SCAN_KEYS_SCRAMBLER: return scan_keys_scrambler_only(keys);
+        case DSD_SCAN_KEYS_FULL:
+        default: return scan_keys_full_compatible(keys, mode);
+    }
 }
 
 static int

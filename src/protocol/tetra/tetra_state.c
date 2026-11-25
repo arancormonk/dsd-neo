@@ -7,6 +7,7 @@
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/tetra_publication.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <stdlib.h>
 
 /* The state holds operator air keys, so it is wiped before it is freed; its speech decoder goes first. A
@@ -17,6 +18,10 @@ tetra_state_free(void* ptr) {
     if (ptr) {
         tetra_state_t* const ts = (tetra_state_t*)ptr;
         tetra_sm_disown_pending(&ts->sm);
+        /* The radio stream no longer times bursts for a direct mode carrier this state was on (tetra_dmo.c). */
+        if (ts->dmo) {
+            dsd_rtl_stream_io_hook_set_tetra_direct_bursts(0);
+        }
         free(ts->sds_concat);
         tetra_voice_release(&ts->voice);
         DSD_SECURE_ZERO(ptr, sizeof(tetra_state_t));
