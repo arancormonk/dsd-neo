@@ -2982,6 +2982,43 @@ test_scan_report_takes_the_calls_own_encryption(void) {
 }
 
 /*
+ * Within one encrypted call the scan report takes the call's encryption, not the algorithm match (issue #903): DES is
+ * established for group 0x0456, then a VCALL of the same call indicating AES, which the hysteresis holds back (DES
+ * stays applied), is still reported encrypted. A VCALL of that call indicating clear is a lone contradiction the
+ * hysteresis holds back: whether the call is encrypted is not known from it, so it refreshes no hold.
+ */
+static int
+test_scan_report_keeps_an_encrypted_call_encrypted(void) {
+    static Event_History_I histories[2];
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (alloc_fixture(&opts, &state) != 0) {
+        return 1;
+    }
+    init_sacch2_state(state, histories);
+    state->nxdn_confirmed = 1;
+    state->synctype = DSD_SYNC_NXDN_POS;
+    const dsd_trunk_scan_hooks hooks = {.nxdn_conventional_activity = capture_scan_report};
+    dsd_trunk_scan_hooks_set(&hooks);
+    uint8_t bits[96];
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 2U, 7U);
+    NXDN_Elements_Content_decode(opts, state, bits, 96U);
+    int rc = expect_vcall_scan_encryption("scan-des-established", opts, state, bits, 1);
+    rc |= expect_int("scan-des-applied", (int)state->nxdn_cipher_type, 2);
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 3U, 7U);
+    rc |= expect_vcall_scan_encryption("scan-aes-within-the-call", opts, state, bits, 1);
+    rc |= expect_int("scan-aes-held-back", (int)state->nxdn_cipher_type, 2);
+    make_vcall_elements(bits, 0x01U, 0x0123U, 0x0456U, 0U, 0U);
+    g_scan_report.reports = 0;
+    NXDN_Elements_Content_decode(opts, state, bits, 96U);
+    rc |= expect_int("scan-clear-within-the-call-not-reported", g_scan_report.reports, 0);
+    rc |= expect_int("scan-clear-held-back", (int)state->nxdn_cipher_type, 2);
+    dsd_trunk_scan_hooks_set(NULL);
+    free_fixture(opts, state);
+    return rc;
+}
+
+/*
  * The conventional scan activity report names a VCALL's source only when the VCALL names one (issue #903), as the call
  * publication and the held call take it (nxdn_vcall_source()): an interconnect (110) or speed dial (111) call whose
  * Voice Call Option (4) says the source field carries none is reported with source 0, so a radio list row matching
@@ -3488,6 +3525,7 @@ main(void) {
     rc |= test_dcr_publication_carries_no_preceding_iv();
     rc |= test_held_back_vcall_prints_no_key_value();
     rc |= test_scan_report_takes_the_calls_own_encryption();
+    rc |= test_scan_report_keeps_an_encrypted_call_encrypted();
     rc |= test_scan_report_names_only_a_named_source();
     rc |= test_vcall_source_learned_before_its_target();
     rc |= test_dcr_identification_withdraws_inherited_crypto();
