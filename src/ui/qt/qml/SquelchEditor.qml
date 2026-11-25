@@ -69,7 +69,7 @@ Column {
             width: parent.width - 116
             anchors.verticalCenter: parent.verticalCenter
             text: qsTr("+%1 dB").arg(editor.margin)
-            Accessible.name: qsTr("Squelch margin %1 dB").arg(editor.margin)
+            Accessible.name: reachable ? qsTr("Squelch margin %1 dB").arg(editor.margin) : ""
             color: Theme.textPrimary
             font.family: Theme.mono
             font.pixelSize: Theme.fontSize(14)
