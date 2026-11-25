@@ -45,7 +45,9 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 
 Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the interactive setup (respects
 `DSD_NEO_NO_BOOTSTRAP`). When a config file is enabled and loads successfully, a no-arg run reuses it; use
-`--interactive-setup` to force the wizard.
+`--interactive-setup` to force the wizard. Its RTL-SDR question, `RTL device (index or serial)`, reads the answer as
+the device field of `-i rtl:<dev>:...` does (an index such as `0`, or a USB serial such as `00000001`; `serial=1090`
+for a serial that is a plain number), and asks again, saying what to enter, when the answer names neither.
 
 ## Configuration Files
 
