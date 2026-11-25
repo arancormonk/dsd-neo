@@ -2036,13 +2036,13 @@ ui_pcm_timing_rate_hz(const dsd_opts* opts) {
 
 /* The device a Switch source radio row opens: the Airspy row's own spec, or for the RTL-SDR row the radio a switch to
    PCM left (issue #634), else an RTL-SDR (svc_rtl_row_destination()). */
-static int
+static void
 ui_radio_row_set_device(dsd_opts* opts, int cmd_id) {
     if (cmd_id == DSD_APP_CMD_AIRSPY_ENABLE_INPUT) {
         DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "airspy%s%s",
                      opts->airspy.serial[0] ? ":serial=" : "", opts->airspy.serial);
         opts->rtltcp_enabled = 0;
-        return 0;
+        return;
     }
     char destination[sizeof opts->audio_in_dev];
     svc_rtl_row_destination(opts, destination, sizeof destination);
@@ -2050,19 +2050,6 @@ ui_radio_row_set_device(dsd_opts* opts, int cmd_id) {
     /* The backend flag follows the device, as a config's input does: an Airspy run since cleared it, and the retune
        settling reads it (an rtl_tcp stream is buffered). */
     opts->rtltcp_enabled = dsd_opts_audio_in_dev_is_rtltcp_spec(destination) ? 1 : 0;
-    /* An RTL-SDR spec names the dongle it opens: the options select it, as a fresh start of the spec would, whatever an
-       earlier spec selected. A device field the grammar refuses opens nothing (-1). */
-    return dsd_rtl_spec_select_device(opts, destination) < 0 ? -1 : 0;
-}
-
-/* Point the input at the device the radio row @p cmd_id opens and start it (svc_rtl_enable_input_locked()); -1 without a
-   start when that device's spec names no dongle the grammar takes. Caller holds the P25 SM tick guard. */
-static int
-ui_radio_row_start_locked(dsd_opts* opts, dsd_state* state, int cmd_id) {
-    if (ui_radio_row_set_device(opts, cmd_id) != 0) {
-        return -1;
-    }
-    return svc_rtl_enable_input_locked(opts, state);
 }
 
 /* A radio row's stream replaced the input: the PCM input it replaced is closed, as an input switch closes the input it
@@ -2142,7 +2129,8 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     ui_radio_input before;
     ui_capture_radio_input(opts, state, &before);
     const int pcm_timing_rate_hz = ui_pcm_timing_rate_hz(opts);
-    const int rc = ui_radio_row_start_locked(opts, state, c->id);
+    ui_radio_row_set_device(opts, c->id);
+    const int rc = svc_rtl_enable_input_locked(opts, state);
     const int failed = rc != 0 && !ui_rc_is_not_supported(rc);
     if (failed) {
         refused = ui_radio_start_failed_locked(opts, state, &before, why, sizeof why, &capture_stopped);
@@ -2172,6 +2160,19 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     return result;
 }
 
+/* A restart of the running receiver refused because another input is staged in its place (SVC_ERR_INPUT_STAGED):
+   "Refused: " and what to do. 1 when @p rc is that refusal and the toast says so. */
+static int
+ui_set_staged_input_toast(dsd_state* state, const dsd_opts* opts, int rc) {
+    if (rc != SVC_ERR_INPUT_STAGED) {
+        return 0;
+    }
+    char why[96];
+    svc_rtl_staged_input_why(opts, why, sizeof why);
+    ui_set_toast(state, 5, "Refused: %s", why);
+    return 1;
+}
+
 static int
 ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
@@ -2184,7 +2185,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
             ui_set_toast(state, 3, "Applied: RTL stream restarted");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot restart stream");
-        } else {
+        } else if (!ui_set_staged_input_toast(state, opts, rc)) {
             ui_set_failed_restart_toast(state, opts, capture_before, "RTL stream restart");
         }
     }
@@ -2227,7 +2228,7 @@ ui_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* seria
         ui_set_toast(state, 3, "Applied: RTL device -> %s", what);
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: this radio source has no RTL-SDR device to select");
-    } else {
+    } else if (!ui_set_staged_input_toast(state, opts, rc)) {
         char why[DSD_RTL_SERIAL_MAX + 64];
         DSD_SNPRINTF(why, sizeof why, "RTL device -> %s (see log)", what);
         ui_set_rollback_toast(state, "Failed: ", why, capture_stopped);
@@ -2245,14 +2246,17 @@ ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app
 }
 
 /* A serial, whole and as the rule allows (dsd_rtl_serial_is_valid()): one cut short or refused would name another
-   dongle, so it changes nothing. A serial of digits stays a serial: the payload's command says it is one. */
+   dongle, so it changes nothing. The payload is the serial and its NUL, as the typed setter and the API send it: one
+   with no NUL inside its declared length is framed wrong (the first bytes of a longer serial), refused before
+   anything changes, never completed with a NUL here. A serial of digits stays a serial: the command says it is one. */
 static int
 ui_cmd_handle_rtl_set_dev_serial(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     char serial[DSD_RTL_SERIAL_MAX + 1];
     if (!state) {
         return UI_CMD_APPLY_COMPLETED;
     }
-    if (!ui_cmd_copy_payload_path(c, serial, sizeof serial) || !dsd_rtl_serial_is_valid(serial)) {
+    if (c->n == 0U || !memchr(c->data, '\0', c->n) || !ui_cmd_copy_payload_path(c, serial, sizeof serial)
+        || !dsd_rtl_serial_is_valid(serial)) {
         ui_set_toast(state, 4, "Refused: not an RTL-SDR serial (up to %d printable characters, no ':' or '\"')",
                      DSD_RTL_SERIAL_MAX);
         return UI_CMD_APPLY_INVALID_PAYLOAD;
@@ -2651,7 +2655,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
-        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
+        } else if (!ui_set_staged_input_toast(state, opts, rc) && !ui_cmd_radio_unavailable_toast(state, rc)) {
             char what[32];
             DSD_SNPRINTF(what, sizeof what, "RTL gain -> %d", (int)v);
             ui_set_failed_restart_toast(state, opts, capture_before, what);
@@ -4758,19 +4762,25 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
     if (opts->rtl_gain_value == before->input.rtl_gain_value) {
         return 0;
     }
+    /* Another input staged over the running receiver (svc_rtl_staged_input_blocks_restart()): the gain waits for the
+       start that opens it, and the running receiver is not reopened. */
+    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
+        return 0;
+    }
     return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
                                       ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 
-/* The dongle an RTL-SDR [input] names is the one its spec names: once the apply wrote a new RTL-SDR spec (the running
-   input's, which the restart reopens, or one staged while PCM runs, which the RTL-SDR row opens), the options select
-   the spec's device (dsd_rtl_spec_select_device()), so a save and the open agree. A refused rtl_serial never reaches
-   here (cfg_rtl_selector_valid()); the rollback of a failed start puts back the selector that ran (ui_radio_input). */
+/* A config's [input] that names another input while a radio stream runs and is not reopened (a Pulse or file [input]
+   over a running RTL-SDR or rtl_tcp stream) stages that input for the next start: the stream keeps running, and its
+   spec is recorded (dsd_opts::radio_running_dev, the first one while staging lasts), so a restart of the running
+   receiver is refused rather than open the staged name (svc_rtl_staged_input_blocks_restart()) and a rollback reopens
+   the receiver that runs. */
 static void
-apply_cfg_select_rtl_spec(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev) {
-    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_RTL
+apply_cfg_note_staged_input(dsd_opts* opts, const dsd_state* state, const char* old_audio_in_dev) {
+    if (state->rtl_ctx && opts->audio_in_type == AUDIO_IN_RTL && opts->radio_running_dev[0] == '\0'
         && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
-        (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
+        DSD_SNPRINTF(opts->radio_running_dev, sizeof opts->radio_running_dev, "%s", old_audio_in_dev);
     }
 }
 
@@ -4785,7 +4795,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
-        apply_cfg_select_rtl_spec(opts, cfg, old_audio_in_dev);
+        apply_cfg_note_staged_input(opts, state, old_audio_in_dev);
         apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }
@@ -4810,7 +4820,6 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
         apply_cfg_rtl_receive(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTL) {
-        apply_cfg_select_rtl_spec(opts, cfg, old_audio_in_dev);
         apply_cfg_rtl_common(opts, state, cfg);
         opts->rtltcp_enabled = 0;
     } else if (cfg->input_source == DSDCFG_INPUT_RTLTCP) {
@@ -4828,8 +4837,9 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     }
     int prev_gain = 0;
     const int staged = apply_cfg_stage_scan_gain(opts, state, cfg, before, &prev_gain);
-    return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
-                                      ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
+    return apply_cfg_settle_scan_gain(
+        opts, state, before, staged, prev_gain,
+        ui_cfg_settle_reopen(opts, state, svc_rtl_restart_onto_locked(opts, state), before));
 }
 #endif
 

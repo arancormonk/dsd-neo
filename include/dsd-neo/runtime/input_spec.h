@@ -121,6 +121,13 @@ int dsd_rtl_device_field_format(int index, const char* serial, char* out, size_t
 int dsd_rtl_spec_set_device(char* spec, size_t spec_size, int index, const char* serial);
 
 /**
+ * @brief Read the device field of the `rtl` / `rtl:...` spec @p spec (dsd_rtl_device_field_parse()): DSD_RTL_DEV_EMPTY
+ *        for a bare `rtl` or an empty field (index 0, no serial, as every reader takes it), DSD_RTL_DEV_INVALID for a
+ *        field the grammar refuses, one too long for any serial, or a spec that is no `rtl` one.
+ */
+dsd_rtl_dev_kind dsd_rtl_spec_device(const char* spec, int* index, char* serial, size_t serial_size);
+
+/**
  * @brief Select in @p opts the dongle the device field of the `rtl` / `rtl:...` spec @p spec names, as a fresh start of
  *        that spec opens it: an index (the serial cleared), a serial (dsd_rtl_device_field_parse()), or, for a bare
  *        `rtl` or an empty field, index 0 with no serial. The spec is the one record of which dongle an input opens;

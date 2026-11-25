@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_device_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
@@ -2053,17 +2054,14 @@ rtl_restart(void* v) {
     (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
 }
 
-/* The prompt opens on the device the input names: its index, or its serial in the explicit serial=<sn> form, so a serial
-   of digits submitted again stays a serial. */
+/* The prompt opens on the device the spec the next RTL-SDR open reads names (dsd_app_rtl_device_prefill(), the rule
+   the change itself writes by): its index, or its serial in the explicit serial=<sn> form, so a serial of digits
+   submitted again stays a serial; never the device the options last opened, so Enter confirms what would open. */
 void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
     char current[DSD_RTL_SERIAL_MAX + 16];
-    if (dsd_rtl_device_field_format(c->opts->rtl_dev_index < 0 ? 0 : c->opts->rtl_dev_index, c->opts->rtl_dev_serial,
-                                    current, sizeof current)
-        != 0) {
-        current[0] = '\0';
-    }
+    (void)dsd_app_rtl_device_prefill(c->opts, current, sizeof current);
     ui_open_rtl_device_prompt(c, current);
 }
 

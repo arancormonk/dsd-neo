@@ -568,18 +568,16 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
 }
 
 /* The dongle an rtl: spec's device field @p field names (dsd_rtl_device_field_parse()), as rtl_serial or rtl_device,
-   the other cleared. A bare `rtl` or an empty field is the dongle the session opens, by the serial or index it holds.
-   A field the parser refuses stays refused (rtl_serial_invalid): a save never turns it into an index. */
+   the other cleared. The spec alone names it: a bare `rtl` or an empty field is index 0 with no serial, as a start of
+   the same spec opens (dsd_rtl_spec_select_device()), whatever device the options last held. A field the parser
+   refuses stays refused (rtl_serial_invalid): a save never turns it into an index. */
 static void
-snapshot_rtl_device_field(const dsd_opts* opts, const char* field, dsdneoUserConfig* cfg) {
-    int index = opts->rtl_dev_index;
+snapshot_rtl_device_field(const char* field, dsdneoUserConfig* cfg) {
+    int index = 0;
     char serial[DSD_RTL_SERIAL_MAX + 1];
     serial[0] = '\0';
-    const dsd_rtl_dev_kind kind = dsd_rtl_device_field_parse(field, &index, serial, sizeof serial);
-    if (kind == DSD_RTL_DEV_INVALID) {
+    if (dsd_rtl_device_field_parse(field, &index, serial, sizeof serial) == DSD_RTL_DEV_INVALID) {
         cfg->rtl_serial_invalid = 1;
-    } else if (kind == DSD_RTL_DEV_EMPTY && dsd_rtl_serial_is_valid(opts->rtl_dev_serial)) {
-        DSD_SNPRINTF(serial, sizeof serial, "%s", opts->rtl_dev_serial);
     }
     /* A dongle named by serial names no index: the one it opened at is where the serial resolved this time, not an
        index the config chose, so none is saved beside it. */
@@ -599,7 +597,7 @@ snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     char buf[sizeof opts->audio_in_dev];
     char* tok[9] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    snapshot_rtl_device_field(opts, n > 1 ? tok[1] : NULL, cfg);
+    snapshot_rtl_device_field(n > 1 ? tok[1] : NULL, cfg);
     snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
@@ -1560,7 +1558,12 @@ format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* o
     resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, sql, sizeof sql, &vol);
     char dev[DSD_RTL_SERIAL_MAX + 8];
     format_rtl_device_field(cfg, dev, sizeof dev);
-    DSD_SNPRINTF(out, out_size, "rtl:%s:%s:%d:%d:%d:%s:%d", dev, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    /* The whole spec or none: one cut to fit would end inside the serial and name another dongle. */
+    const int n = DSD_SNPRINTF(out, out_size, "rtl:%s:%s:%d:%d:%d:%s:%d", dev, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
     return 0;
 }
 

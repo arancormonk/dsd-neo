@@ -3456,6 +3456,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_device_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     # chan_map_adopt()/svc_clear_channel_map() note the DMR rows' origins (discussion #900).
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -4462,7 +4463,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
-        # The RTL-SDR device prompt opens on the input's device field, written by the input spec's formatter.
+        # The RTL-SDR device prompt opens on the device field of the spec the next open reads.
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_device_view.c
         ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
         ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c

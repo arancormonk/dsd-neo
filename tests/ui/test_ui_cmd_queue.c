@@ -122,6 +122,7 @@
 #include <dsd-neo/core/file_io.h>
 
 #include <dsd-neo/core/audio_input_switch.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/protocol/tetra/tetra_confirm.h"
 #include "../../src/protocol/tetra/tetra_state.h"
@@ -11835,6 +11836,10 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_squelch_margin = opts ? opts->rtl_squelch_margin_db : -1;
     g_config_rtl_create_frame_p25p1 = opts ? opts->frame_p25p1 : -1;
     DSD_SNPRINTF(g_config_rtl_create_dev, sizeof g_config_rtl_create_dev, "%s", opts ? opts->audio_in_dev : "");
+    /* The dongle the open selects is the one its spec names, handed back to the options (dsd_rtl_spec_select_device()). */
+    if (opts && g_config_rtl_open_ok) {
+        (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
+    }
     DSD_SNPRINTF(g_config_rtl_create_serial, sizeof g_config_rtl_create_serial, "%s", opts ? opts->rtl_dev_serial : "");
     g_config_rtl_create_analog_only = opts ? dsd_opts_is_analog_family(opts) : -1;
     g_config_rtl_create_kind = opts ? opts->analog_demod : -1;
@@ -32000,6 +32005,14 @@ test_rtl_device_commands(void) {
     rc |= expect_str("numeric serial toast", state->ui_msg, "Applied: RTL device -> serial 1090");
     rc |= expect_saved_rtl_device("a numeric serial stays a serial", opts, state, 1, "1090");
 
+    /* A payload framed without its NUL (the first 4 bytes of "ABCDE") is refused, never completed as "ABCD". */
+    rc |= expect_int("unterminated serial queued", dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "ABCDE", 4U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    const int creates_before_framing = g_config_rtl_creates;
+    rc |= expect_int("unterminated serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("unterminated serial toast", state->ui_msg, "Refused: not an RTL-SDR serial");
+    rc |= expect_true("unterminated serial changes nothing",
+                      g_config_rtl_creates == creates_before_framing && strcmp(opts->rtl_dev_serial, "1090") == 0);
     const int creates = g_config_rtl_creates;
     rc |= expect_int("refused serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "A:B"),
                      DSD_APP_COMMAND_SUBMIT_QUEUED);

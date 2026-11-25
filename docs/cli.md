@@ -156,7 +156,7 @@ for a serial that is a plain number), and asks again, saying what to enter, when
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355; port `0` is the default too)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - Empty fields: the `rtl`, `rtltcp`, `tcp`, `udp` and `m17udp` specs read their fields by place, so an empty field keeps
-  its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens the default device at 851.0125 MHz with
+  its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens device 0 at 851.0125 MHz with
   gain 20 and PPM 3, `-i rtltcp:192.0.2.10::851.375M` connects to port 1234, and `-i udp::7356` listens on `127.0.0.1`
   port 7356.
 - Ports: a port field must be a whole number from 1 to 65535 (`udp` input also takes `0` for its default). Anything
@@ -3427,7 +3427,8 @@ dongle:
 - The `dev` field is an index when it is a plain decimal number with no leading zero (`0`, `1`, `12`), so scripts
   that name a dongle by index read as before. `serial=<sn>` is always a serial, for a serial such as `1090` that would
   read as an index. Any other value (`00000001`, `0000001`, `A1B2`) is a serial. `01` and `+1` are serials now, not
-  index 1. An empty field (`rtl::851.375M`) keeps the device as it was.
+  index 1. An empty field (`rtl::851.375M`), or a bare `rtl`, is index 0 with no serial: the spec alone names the
+  dongle, never a device an earlier input selected.
 - A serial matches exactly, case included, as librtlsdr's own lookup does: no prefix, suffix or number reading
   (`00000001` never opens index 1). It is 1 to 127 printable ASCII characters with no `:` or `"` and no space at
   either end; a dongle whose serial is anything else is still listed by `--rtl-list`, and can be chosen by index or

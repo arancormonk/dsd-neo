@@ -706,6 +706,9 @@ static char g_wrap_missing_serial[DSD_RTL_SERIAL_MAX + 1];
 /* Streams stopped and created so far. */
 static int g_wrap_stops = 0;
 static int g_wrap_creates = 0;
+/* The spec the last create was handed, and creates still to fail (a receiver that does not open). */
+static char g_wrap_created_dev[2048];
+static int g_wrap_fail_creates = 0;
 
 /* The receiver's gate (issue #899): the shared stand-in (channel_gate_fake.h) is the stream here. A stream opens
    closed on the analog family, under the options' squelch on the digital one; a retune marked a new channel lands at
@@ -718,17 +721,33 @@ static dsd_rtl_stream_metrics_hooks g_wrap_rx_hooks;
 int
 __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     ++g_wrap_creates;
-    if (opts && opts->audio_in_type == AUDIO_IN_RTL) {
-        /* The dongle the stream opens: by serial when the options name one, else by index. A serial the test made
-           missing opens nothing, as a dongle not plugged in. */
-        if (g_wrap_missing_serial[0] != '\0' && strcmp(opts->rtl_dev_serial, g_wrap_missing_serial) == 0) {
+    DSD_SNPRINTF(g_wrap_created_dev, sizeof g_wrap_created_dev, "%s", opts ? opts->audio_in_dev : "");
+    if (g_wrap_fail_creates > 0) {
+        --g_wrap_fail_creates;
+        return -1;
+    }
+    if (opts && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
+        /* The dongle the stream opens is the one its spec names (the open selects it there and hands it back). A
+           serial the test made missing opens nothing, as a dongle not plugged in. */
+        int index = 0;
+        char serial[DSD_RTL_SERIAL_MAX + 1];
+        serial[0] = '\0';
+        const dsd_rtl_dev_kind kind = dsd_rtl_spec_device(opts->audio_in_dev, &index, serial, sizeof serial);
+        if (kind == DSD_RTL_DEV_INVALID
+            || (kind == DSD_RTL_DEV_SERIAL && g_wrap_missing_serial[0] != '\0'
+                && strcmp(serial, g_wrap_missing_serial) == 0)) {
             return -1;
         }
+        (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
         g_wrap_opened_index = opts->rtl_dev_index;
         DSD_SNPRINTF(g_wrap_opened_serial, sizeof g_wrap_opened_serial, "%s", opts->rtl_dev_serial);
     }
     if (out_ctx) {
         *out_ctx = (RtlSdrContext*)&g_wrap_fake_ctx;
+    }
+    if (opts) {
+        /* The receiver now running, as the open hands it back. */
+        DSD_SNPRINTF(opts->radio_running_dev, sizeof opts->radio_running_dev, "%s", opts->audio_in_dev);
     }
     if (opts) {
         /* The demod takes the squelch the stream opens with, on the digital family; the analog family opens closed. */
@@ -1112,8 +1131,9 @@ test_config_staged_on_pcm_opens_the_rtl_device_it_names(void) {
     cfg.rtl_serial_is_set = 1;
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     (void)dsd_app_drain_cmds(opts, state);
-    int rc = expect_true("the staged config selects serial B",
-                         strcmp(opts->rtl_dev_serial, "BBBB") == 0 && opts->audio_in_type == AUDIO_IN_PULSE);
+    /* Staged, the spec alone names the dongle; the switch back opens what it names. */
+    int rc = expect_true("the staged config names serial B", strncmp(opts->audio_in_dev, "rtl:serial=BBBB:", 16) == 0
+                                                                 && opts->audio_in_type == AUDIO_IN_PULSE);
     dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_rtl_selected("the switch back opens serial B", opts, state, 3, "BBBB");
@@ -1126,7 +1146,10 @@ test_config_staged_on_pcm_opens_the_rtl_device_it_names(void) {
     cfg.rtl_device_is_set = 1;
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the staged config selects index 2", opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index == 2);
+    rc |= expect_true("the staged config names index 2", strncmp(opts->audio_in_dev, "rtl:2:", 6) == 0);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_rtl_selected("the switch back opens index 2", opts, state, 2, "");
     free_test_runtime(&runtime);
     return rc;
 }
@@ -1306,13 +1329,82 @@ test_device_change_over_a_staged_pcm_name_is_refused(void) {
     const int creates = g_wrap_creates;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "MISSING", 8U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the device change is refused", strstr(state->ui_msg, "Unsupported") != NULL);
+    rc |= expect_true("the device change is refused",
+                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
     rc |= expect_true("nothing stopped or opened", g_wrap_stops == stops && g_wrap_creates == creates);
     rc |= expect_true("the TCP receiver and its capture run on",
                       state->rtl_ctx != NULL && opts->iq_capture_requested == 1 && opts->rtltcp_enabled == 1
                           && strcmp(opts->audio_in_dev, "pulse") == 0 && opts->rtl_dev_serial[0] == '\0');
+
+    /* An explicit restart and a gain edit would reopen the running receiver: refused the same way, nothing stopped.
+       (The restart used to open the staged "pulse" as a local dongle.) */
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the restart is refused",
+                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
+    const int32_t gain = 30;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_GAIN, &gain, sizeof gain);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the gain edit is refused",
+                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
+    rc |= expect_true("nothing stopped or opened by them", g_wrap_stops == stops && g_wrap_creates == creates);
+
+    /* The RTL-SDR row's switch that does not open: the rollback reopens the receiver that ran (rtl_tcp), with the
+       staged Pulse input still named for the next start. */
+    g_wrap_fail_creates = 1;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the rollback reopens rtl_tcp",
+                      strcmp(g_wrap_created_dev, "rtltcp:127.0.0.1:1234:851375000") == 0 && state->rtl_ctx != NULL
+                          && strcmp(opts->audio_in_dev, "pulse") == 0
+                          && strcmp(opts->radio_running_dev, "rtltcp:127.0.0.1:1234:851375000") == 0);
+    g_wrap_fail_creates = 0;
     g_wrap_missing_serial[0] = '\0';
     opts->iq_capture_requested = 0;
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * Serial A runs; a config's file [input] stages file_path=rtl:serial=BBBB in its place, A running on. A device change
+ * to a missing serial is refused before anything stops: it would have rewritten B's spec and rolled back onto B. A
+ * stays untouched.
+ */
+static int
+test_device_change_over_a_staged_rtl_spec_is_refused(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24:0:2");
+    g_wrap_missing_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* A starts */
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_true("A runs", state->rtl_ctx != NULL && strcmp(g_wrap_opened_serial, "AAAA") == 0);
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", "rtl:serial=BBBB");
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    const int staged = opts->audio_in_type == AUDIO_IN_RTL && strcmp(opts->audio_in_dev, "rtl:serial=BBBB") == 0;
+    rc |= expect_true("B is staged over A, which runs on", staged && state->rtl_ctx != NULL);
+
+    DSD_SNPRINTF(g_wrap_missing_serial, sizeof g_wrap_missing_serial, "%s", "MISSING");
+    const int stops = g_wrap_stops;
+    const int creates = g_wrap_creates;
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "MISSING", 8U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the device change is refused", strstr(state->ui_msg, "Refused: another input") != NULL);
+    rc |= expect_true("A untouched", g_wrap_stops == stops && g_wrap_creates == creates && state->rtl_ctx != NULL
+                                         && strcmp(g_wrap_opened_serial, "AAAA") == 0
+                                         && strcmp(opts->audio_in_dev, "rtl:serial=BBBB") == 0);
+    g_wrap_missing_serial[0] = '\0';
     free_test_runtime(&runtime);
     return rc;
 }
@@ -1574,7 +1666,8 @@ test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
 
     observe_active_call(state);
     seed_carrier_codes(state);
-    opts->rtl_dev_index = 2; /* a command with no boundary of its own changes the source ... */
+    /* a command with no boundary of its own changes the source (the spec names the dongle) ... */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:2:851375000:22:0:24:0:2");
     dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U); /* ... and restarts the stream */
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("a source change through the restart ends the outgoing call", !call_active(state));
@@ -4212,7 +4305,8 @@ test_ui_rtl_setting_commands_stage_without_live_restart(void) {
 
     int rc = 0;
     rc |= expect_int_eq("RTL setting commands drain count", applied, 9);
-    rc |= expect_int_eq("RTL device command clamps negative index", opts->rtl_dev_index, 0);
+    /* The spec alone names the dongle: the staged change writes it (created, as none was remembered). */
+    rc |= expect_true("RTL device command clamps negative index", strcmp(opts->radio_in_dev, "rtl:0") == 0);
     rc |= expect_int_eq("RTL gain command clamps max", opts->rtl_gain_value, 49);
     rc |= expect_int_eq("RTL PPM command clamps max", opts->rtlsdr_ppm_error, 200);
     rc |= expect_int_eq("RTL bandwidth command falls back to supported default", opts->rtl_dsp_bw_khz, 48);
@@ -4331,6 +4425,7 @@ main(void) {
     rc |= test_rtl_row_opens_the_dongle_its_spec_names();
     rc |= test_device_change_with_no_spec_remembered_creates_it();
     rc |= test_device_change_over_a_staged_pcm_name_is_refused();
+    rc |= test_device_change_over_a_staged_rtl_spec_is_refused();
     rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();

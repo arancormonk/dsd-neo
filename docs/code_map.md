@@ -5587,7 +5587,8 @@ suite runs under this compiler.
       (`cfg_rtl_selector_valid()`, which also checks the serial itself, since a config handed over whole through
       `dsd_app_command_apply_config()` never passed the loader). The render quotes the serial, which holds no `"` by the rule, so the comment
       stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
-      a serial or an index, the other cleared; a bare `rtl` or an empty field is the session's own selector. A serial
+      a serial or an index, the other cleared; a bare `rtl` or an empty field is index 0 with no serial, as a start of
+      the same spec opens it (the spec alone names the dongle, never the device the options last held). A serial
       saves no index (the one it opened at is where it resolved, not a choice); a config that names both (a retained
       `[input]`) renders `rtl_device` beside the serial, so a patch clearing the serial after a reload falls back on
       it. Tests:
@@ -8084,23 +8085,32 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`RTL_SET_DEV` by index, `RTL_SET_DEV_SERIAL` by USB serial; `svc_rtl_set_device()`) and a config apply's reopen;
   a gain or explicit stream restart that fails still leaves no stream. The device change checks the selector and
   builds the new spec before anything changes (`dsd_rtl_spec_set_device()` on a copy: a serial the rule refuses, or a
-  field the spec does not fit, changes nothing), writes the selector and the spec together (B2: the index alone left
-  the old device in the spec, which a save wrote), and reopens inside one hold of the P25 SM tick guard; a failed
-  start puts the selector and spec that ran back and starts them again through `svc_rtl_restart_recovery_locked()`,
+  field the spec does not fit, changes nothing), writes it into the spec alone (B2: the index alone left the old device
+  in the spec, which a save wrote; the open selects from the spec and hands the selection back), and reopens inside one
+  hold of the P25 SM tick guard; a failed start puts the spec that ran back and starts it again through
+  `svc_rtl_restart_recovery_locked()`,
   as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note
   (a serial past `UI_RTL_TOAST_SERIAL_MAX` shown cut with `...`, so the note always fits the 128-byte toast). With no
   stream running before (an RTL-SDR input whose last start failed) the failed start puts back only the options and
-  opens nothing. With a stream running, the change needs its spec to be a local `rtl` one: a config can stage another
-  input's name there (a Pulse `[input]` writes `pulse` while an rtl_tcp stream runs on), so anything else is
-  `DSD_ERR_NOT_SUPPORTED` before anything stops. The spec is the one record of the dongle an input opens: the change writes its selector where the next
-  open reads the spec (the running input's; with PCM running the one the RTL-SDR row opens, picked by the row's own
-  rule, `dsd_app_radio_row_source_field()`, a spec a config staged in `audio_in_dev` before `radio_in_dev`, its tuning
-  kept; with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`), and the RTL-SDR row selects the
-  dongle the spec it opens names before it starts (`dsd_rtl_spec_select_device()` in `ui_radio_row_set_device()`; a
-  bare `rtl` or empty field is index 0, as a fresh start opens it), so the dongle that opens, the spec and a save
-  always agree, whatever ran in between (an Airspy row). With PCM running and the row opening another radio (an
-  rtl_tcp server, a SoapySDR device, a replay or stream) the change is `DSD_ERR_NOT_SUPPORTED`. An active `rtltcp`
-  source has no local dongle:
+  opens nothing. Staged input (no reopen of a different receiver): a config's `[input]` applied over a running stream
+  that it does not reopen (a Pulse or file `[input]` over a running RTL-SDR or rtl_tcp stream) names the new input
+  in `audio_in_dev` for the next start while the stream runs on, and records the running spec
+  (`apply_cfg_note_staged_input()`, `dsd_opts::radio_running_dev`, cleared by every start that works). While the two
+  differ (`svc_rtl_staged_input_blocks_restart()`), a device change, `RTL_RESTART`, a gain or DSP-bandwidth edit and
+  any other restart of the running receiver (`svc_rtl_restart_locked()`) are refused with `SVC_ERR_INPUT_STAGED`
+  before anything stops, toasting `Refused: another input (<name>) is staged; switch to it, or apply the config
+  again`; the paths that open the named input on purpose (an input switch, a config reopen, an Airspy or device
+  change) use `svc_rtl_restart_onto_locked()`, and a rollback reopens the recorded running spec with the staged name
+  kept (`svc_rtl_start_the_receiver_that_ran_locked()`). The spec is the one record of the dongle an input opens: the
+  change writes it where the next open reads the spec (`dsd_app_rtl_device_spec_field()` in
+  `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which must be a local `rtl` spec; with PCM
+  running the one the RTL-SDR row opens, picked by the row's own rule, `dsd_app_radio_row_source_field()`, a spec a
+  config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept; with no RTL-SDR spec remembered it creates
+  `rtl:<dev>` in `radio_in_dev`), and the stream open selects from the spec it opens (IO, below), so the dongle that
+  opens, the spec and a save always agree. The terminal's Device prompt opens on that spec's device field
+  (`dsd_app_rtl_device_prefill()`; a bare `rtl` is `0`), never the device the options last opened. With PCM running
+  and the row opening another radio (an rtl_tcp server, a SoapySDR device, a replay or stream) the change is
+  `DSD_ERR_NOT_SUPPORTED`. An active `rtltcp` source has no local dongle:
   `DSD_ERR_NOT_SUPPORTED`, the server not reconnected, and the terminal hides `Device...` there
   (`rtl_device_row_offered()`; its gain and PPM rows stay). The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
   stays a serial. Tests: `UI_MENU_SERVICES`, `APP_COMMAND_QUEUE`, `API_COMMAND_PAYLOADS`, `API_COMMANDS`. Any
@@ -8145,9 +8155,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
   no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
-  RTL-SDR `[input]` opens the dongle the config names: once the apply wrote a new RTL-SDR spec, the running input's or
-  one staged while PCM runs, the options select the spec's device (`apply_cfg_select_rtl_spec()`, through
-  `dsd_rtl_spec_select_device()`), not the running input's selector. A config apply whose reopen of
+  RTL-SDR `[input]` opens the dongle the config names: the spec it wrote, which the reopen (`svc_rtl_restart_onto_locked()`)
+  opens and selects from. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
@@ -11760,7 +11769,9 @@ Key public headers:
     the returned index are 0 whatever index the options held. Every local RTL-SDR stream start selects
     its dongle from the spec it opens (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`:
     `dsd_rtl_spec_select_device()`, so a cached index or serial a former spec left never opens another dongle; a field
-    the grammar refuses fails the start before anything opens) and, with a pre-opened descriptor, runs an index as 0
+    the grammar refuses fails the start before anything opens, and so does a spec that is no `rtl` one, which
+    `detect_radio_source()` reads as a local dongle by default: a staged `pulse` opens nothing) and, with a pre-opened
+    descriptor, runs an index as 0
     with the spec rewritten. The stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index`
     and its options, and `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the
     caller's spec moved on) to the caller's (decoder-owned) options, as it does `airspy_info`; the log
