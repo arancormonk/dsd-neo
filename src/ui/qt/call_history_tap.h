@@ -31,6 +31,7 @@
 #include <mutex>
 #include <thread>
 
+#include "call_history_heard.h"
 #include "call_history_model.h"
 
 class QFile;
@@ -69,6 +70,10 @@ class CallHistorySpill {
     /** @brief Empty the spill if it still holds exactly @p size bytes; @return whether it was emptied. */
     bool truncateIfSize(qint64 size);
 
+    /** @brief Whether the spill holds nothing a fold could read: a file confirmed absent, or an empty regular one. A
+     *  stat that fails for another reason is not an answer: false. */
+    bool empty() const;
+
     /** @brief Empty the spill whatever it holds. */
     void clear();
 
@@ -77,6 +82,11 @@ class CallHistorySpill {
 
     /** @brief How many appends were tried, written or not. */
     int appendAttemptsForTest() const;
+
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief While @p fail, every truncateIfSize() fails, as a spill that can be read but not written would. */
+    static void setTruncateFailsForTest(bool fail);
+#endif
 
   private:
     QString m_path;
@@ -161,6 +171,9 @@ class CallHistoryTap {
         CallHistoryModel::ClearMark clear;
         /* The session ordinals the model has given (issue #800), with the block the tap gives new ones from. */
         CallHistoryModel::SessionOrdinals ordinals;
+        /* Issue #903: who owns each recent session's calls, and the rings bound to them; a ring the tap reads first is
+         * bound to its session. */
+        HeardOwners heardOwners;
     };
 
     /** @brief What the tap leaves: the clear mark as its reads settled it, the ring position it read last, and the
@@ -172,6 +185,9 @@ class CallHistoryTap {
         quint64 ring = 0U;
         /* Every ring's session ordinal as the tap left them, the ones it gave included (issue #800). */
         QHash<quint64, qint64> ordinals;
+        /* Issue #903: the owners as the tap left them: its rings' generations, the ones it bound included, and the
+         * start mark its reads may have consumed. */
+        HeardOwners heardOwners;
         /* Spill lines, oldest first, that never reached the spill (it was still unwritable at stop). Only the model
          * has them now: the next start clears what the tap holds. */
         QByteArray unwritten;

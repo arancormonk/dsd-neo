@@ -6,6 +6,8 @@ import "Util.js" as Util
 ModalSheet {
     id: sheet
     property var bridge: commands
+    // Issue #903: the remembered talkgroups a Forget goes to (the screen's list model).
+    property var heardList: typeof talkgroups !== "undefined" ? talkgroups : null
     // A form sheet (issue #718): an outside tap keeps it; Cancel, Back and Escape ask first.
     closesOnOutsideTap: false
     property string backendMessage: metrics.uiMessage
@@ -21,6 +23,15 @@ ModalSheet {
     property bool listed: false
     property var original: ({})
     property bool removeArmed: false
+    // Issue #903: a card the system remembers, and the system (its uid) it was on when the sheet opened.
+    property bool remembered: false
+    property string owner: ""
+    property bool forgetArmed: false
+    // A Forget History refused (it could not save its log): said in the sheet, which stays open.
+    property string forgetError: ""
+    // What the sheet last read out, and how many (Navigation.announce()).
+    property string announced: ""
+    property int announcements: 0
     property bool submitted: false
     property string saveMessage: ""
     property var observedCrypto: ({})
@@ -33,11 +44,13 @@ ModalSheet {
     readonly property bool canAssignDmrKey: pattern.length === 0 && idStart === idEnd && (keyProfile.uid || "").length > 0 && keyProfile.mode === "automatic" && (observedCrypto.dmr === true || (listed && keyProfile.protocol === "dmr"))
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
-    signal saveListRequested
+    // The policy version this sheet opened with: the export saves that table (issue #903).
+    signal saveListRequested(string context, int generation)
 
     // @p record is the row's record flag (issue #708); a heard talkgroup without a
-    // row records whenever it is tuned, so it reads as listening.
-    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record, index, rowPattern) {
+    // row records whenever it is tuned, so it reads as listening. @p isRemembered
+    // and @p heardOwner (issue #903): a card remembered on saved system @p heardOwner.
+    function openRow(start, end, name, listening, isListed, priority, preempt, context, generation, record, index, rowPattern, isRemembered, heardOwner) {
         var patternText = rowPattern || "";
         observedCrypto = patternText.length === 0 && typeof talkgroups !== "undefined" && typeof talkgroups.observedDecryption === "function" ? talkgroups.observedDecryption(Number(start)) : ({});
         idStart = start;
@@ -60,6 +73,10 @@ ModalSheet {
         priorityValue = priority;
         preemptToggle.checked = preempt;
         removeArmed = false;
+        remembered = isRemembered === true;
+        owner = heardOwner || "";
+        forgetArmed = false;
+        forgetError = "";
         submitted = false;
         localMessage = "";
         visible = true;
@@ -223,6 +240,7 @@ ModalSheet {
         onClicked: sheet.saveRow()
     }
     OutlineButton {
+        id: removeButton
         objectName: "removeTalkgroup"
         width: parent.width
         height: Math.max(48, implicitHeight)
@@ -233,6 +251,8 @@ ModalSheet {
                 return;
             if (!sheet.removeArmed) {
                 sheet.removeArmed = true;
+                // TalkBack hears the question the button now asks.
+                Navigation.announce(sheet, removeButton, qsTr("Tap again to remove"));
                 return;
             }
             sheet.removeArmed = false;
@@ -245,12 +265,54 @@ ModalSheet {
             }
         }
     }
+    // Issue #903: a remembered card leaves the system's list (every variant of
+    // its number); a later call brings it back. Asked with a second tap, as Remove is.
     OutlineButton {
+        id: forgetButton
+        objectName: "forgetTalkgroup"
+        width: parent.width
+        height: Math.max(48, implicitHeight)
+        visible: sheet.remembered
+        text: sheet.forgetArmed ? qsTr("Tap again to forget") : qsTr("Forget this talkgroup")
+        onClicked: {
+            if (sheet.submitted || !sheet.heardList)
+                return;
+            if (!sheet.forgetArmed) {
+                sheet.forgetArmed = true;
+                // TalkBack hears the question the button now asks.
+                Navigation.announce(sheet, forgetButton, qsTr("Tap again to forget"));
+                return;
+            }
+            sheet.forgetArmed = false;
+            if (!sheet.heardList.forgetTalkgroupOf(sheet.owner, Number(sheet.idStart))) {
+                // Refused: nothing was forgotten. The sheet stays, and says why; tapping again retries.
+                sheet.forgetError = qsTr("Call history could not be saved, so this talkgroup is still remembered.");
+                Navigation.announce(sheet, forgetButton, sheet.forgetError);
+                return;
+            }
+            sheet.submitted = true;
+            sheet.visible = false;
+            Qt.inputMethod.hide();
+        }
+    }
+    ReadableText {
+        objectName: "forgetTalkgroupError"
+        width: parent.width
+        visible: sheet.remembered && text.length > 0
+        text: sheet.forgetError
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.pixelSize: Theme.fontSize(13)
+        color: Theme.alert
+        Accessible.role: Accessible.AlertMessage
+    }
+    OutlineButton {
+        objectName: "saveTalkgroupList"
         width: parent.width
         height: Math.max(48, implicitHeight)
         visible: sheet.canSaveList
         text: sheet.saveListText
-        onClicked: sheet.saveListRequested()
+        onClicked: sheet.saveListRequested(sheet.policyContext, sheet.policyGeneration)
     }
     ReadableText {
         width: parent.width

@@ -126,15 +126,27 @@ class ImportedFilesModel : public QAbstractListModel {
     }
 
     /**
-     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved for the
-     * life of the process (the engine may still write it after the export flow gave up), so no import takes its name.
+     * WP-D1: generate an app-owned destination without registering or writing a file. The path stays reserved while
+     * its Save talkgroup list request lasts, so no import takes its name: until registerTalkgroupList() hands the name
+     * to its row or releaseTalkgroupListPath() gives it back when the request ends.
      */
     Q_INVOKABLE QString newTalkgroupListPath() const;
     /**
      * Register a successfully exported list in place; the engine keeps writing this path. False, with no row added,
-     * when the library cannot be saved; the file stays where it is.
+     * when the library cannot be saved; the file stays where it is. A registered path is no longer reserved: its row
+     * holds the name from then on.
      */
     Q_INVOKABLE bool registerTalkgroupList(const QString& path);
+    /**
+     * Give back a newTalkgroupListPath() name whose request ended with no row for it (issue #903): its export failed
+     * or was never queued, its result was not received, a new request replaced it, or Imports could not record it.
+     */
+    Q_INVOKABLE void releaseTalkgroupListPath(const QString& path);
+    /**
+     * Whether row @p row's file came from RadioReference (its origin, or a RadioReference system id): the one rule an
+     * update in place and a removal read. False for a row out of range.
+     */
+    Q_INVOKABLE bool fromRadioReference(int row) const;
 
     /**
      * @brief Import a picked document: copied and checked on the import worker, published on the Qt thread.
@@ -258,6 +270,13 @@ class ImportedFilesModel : public QAbstractListModel {
      * before anything could have connected to one.
      */
     Q_INVOKABLE QStringList takePrunedPaths();
+    /**
+     * @brief Issue #903: whether this launch's load() pruned a row at @p path whose file was the user's own (not
+     * fromRadioReference()): a saved system naming it as its group list keeps its site (SavedSystemsModel::
+     * clearCsvPath()). The prune is saved at once, so only this launch knows: false for a path no pruned row held,
+     * whose origin is not known.
+     */
+    bool prunedUserFile(const QString& path) const;
 
   Q_SIGNALS:
     void countChanged();
@@ -377,6 +396,8 @@ class ImportedFilesModel : public QAbstractListModel {
      * complexity ceiling; the roles have no behaviour of their own.
      */
     static QVariant provenanceRole(const Row& row, int role);
+    /** @brief fromRadioReference() for one row. */
+    static bool rowFromRadioReference(const Row& row);
 
     /** @brief Append @p row, saved first: false, with nothing changed, when the index cannot be saved. */
     bool appendRow(Row row);
@@ -407,6 +428,8 @@ class ImportedFilesModel : public QAbstractListModel {
     BeforeUserReplace m_beforeUserReplace;
     QList<Row> m_rows;
     QStringList m_pruned_paths;
+    /* The paths of m_pruned_paths whose rows were the user's own files (prunedUserFile()). */
+    QStringList m_pruned_user_paths;
     /* The library revision: every change takes the next one. */
     quint64 m_revision = 0;
 

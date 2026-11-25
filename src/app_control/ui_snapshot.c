@@ -284,6 +284,10 @@ _Static_assert(
         && offsetof(dsd_state, operator_tuned) >= offsetof(dsd_state, trunk_scan_active_id)
         && UI_SNAPSHOT_FIELD_END(operator_tuned) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
     "lcn_scan_paused, lcn_scan_resume_pending and operator_tuned must ride the vertex_ks_count..ui_msg range");
+/* So does the tuning generation (issue #903): the Talkgroups screen names no system once the tuning moved. */
+_Static_assert(offsetof(dsd_state, tuning_gen) >= offsetof(dsd_state, trunk_scan_active_id)
+                   && UI_SNAPSHOT_FIELD_END(run_tuning_gen) <= UI_SNAPSHOT_FIELD_END(scan_row_scope_seq),
+               "tuning_gen and run_tuning_gen must ride the vertex_ks_count..ui_msg range");
 /* The entry holds (issue #644) sit beside the holds they mark, inside that range: every frontend's scan state and the
  * terminal's hold field read them. */
 _Static_assert(offsetof(dsd_state, lcn_scan_entry_hold) >= offsetof(dsd_state, trunk_scan_active_id)

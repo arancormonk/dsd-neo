@@ -325,6 +325,72 @@ test_startup_clears_missing_library_paths_twice() {
     }
 }
 
+/* Issue #903 (B2): the launch that prunes a gone file knows whose it was. Each site that names a user's file as its
+ * group list (an exported list, a list the user picked, an export a backup restore renamed) lets go of the file and
+ * keeps its ids and avoid; a RadioReference file the library prunes still clears its site's provenance. */
+void
+test_startup_prune_keeps_a_user_file_site() {
+    const QStringList stores{"imported_files.json", "saved_systems.json", "scan_lists.json"};
+    QMap<QString, QJsonArray> before;
+    for (const QString& store : stores) {
+        before.insert(store, dsd_qt::json_store_load_array(store));
+    }
+    const QString root = dsd_qt::ImportedFilesModel::libraryRoot();
+    // The site ids 3, 4 and 5 name these user files; 6 names the RadioReference one.
+    const QStringList userFiles{root + "/talkgroups-00000000-0000-4000-8000-000000000903.csv", root + "/dispatch.csv",
+                                root + "/talkgroups-00000000-0000-4000-8000-000000000904 (1).csv"};
+    const QString generated = root + "/Metro group.csv";
+    const auto site = [](int id, const QString& groupCsv) {
+        return QVariantMap{{"name", "Metro"},     {"sourceType", "usb"}, {"freqMhz", "851.0125"},
+                           {"decodeFlag", "-ft"}, {"rrSid", 12},         {"rrSiteId", id},
+                           {"siteName", "North"}, {"avoidSite", true},   {"groupCsvPath", groupCsv}};
+    };
+    const auto kept = [](const QVariantMap& row, int id) {
+        return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == id
+               && row.value("avoidSite").toBool() && row.value("siteName") == "North";
+    };
+    QJsonArray index;
+    {
+        dsd_qt::SavedSystemsModel systems;
+        for (int i = 0; i < userFiles.size(); ++i) {
+            expect("user prune: a site names the user's file", systems.add(site(3 + i, userFiles.at(i))));
+            index.append(QJsonObject{
+                {"name", QFileInfo(userFiles.at(i)).fileName()}, {"path", userFiles.at(i)}, {"type", "group"}});
+        }
+        expect("user prune: a site names the RadioReference file", systems.add(site(6, generated)));
+    }
+    index.append(QJsonObject{{"name", "Metro group.csv"},
+                             {"path", generated},
+                             {"type", "group"},
+                             {"origin", "radioreference"},
+                             {"rrSid", 12}});
+    expect("user prune: the index names every file", dsd_qt::json_store_save_array("imported_files.json", index));
+    {
+        TestHost host;
+        dsd_qt::ImportedFilesModel library(&host);
+        dsd_qt::SavedSystemsModel systems;
+        dsd_qt::ScanListsModel scans;
+        dsd_qt::prune_missing_csv_paths(&library, &systems, &scans);
+        // The site naming file @p i of userFiles (the RadioReference one at userFiles.size()).
+        const auto row = [&](int i) {
+            return systems.get(systems.count() - static_cast<int>(userFiles.size()) - 1 + i);
+        };
+        for (int i = 0; i < userFiles.size(); ++i) {
+            const QString name = QFileInfo(userFiles.at(i)).fileName();
+            expect(qPrintable("user prune: lets go of " + name), row(i).value("groupCsvPath") == "");
+            expect(qPrintable("user prune: keeps the site that named " + name), kept(row(i), 3 + i));
+        }
+        const QVariantMap cleared = row(static_cast<int>(userFiles.size()));
+        expect("user prune: a pruned RadioReference file still ends its site",
+               cleared.value("groupCsvPath") == "" && cleared.value("rrSid").toInt() == 0
+                   && !cleared.value("avoidSite").toBool());
+    }
+    expect("user prune: the index lets every file go", dsd_qt::json_store_load_array("imported_files.json").isEmpty());
+    for (const QString& store : stores) {
+        expect("store restored", dsd_qt::json_store_save_array(store, before.value(store)));
+    }
+}
+
 #ifndef _WIN32
 /* Issue #828: a library file in a folder that cannot be searched is not known to be gone, so the startup cleanup
  * leaves every reference to it. Only a confirmed absence clears one. */
@@ -2342,6 +2408,7 @@ main(int argc, char** argv) {
     test_incoming_classification();
     test_host_document_copies();
     test_startup_clears_missing_library_paths_twice();
+    test_startup_prune_keeps_a_user_file_site();
 #ifndef _WIN32
     test_startup_keeps_paths_it_cannot_check();
 #endif

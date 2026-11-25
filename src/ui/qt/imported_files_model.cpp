@@ -539,6 +539,7 @@ ImportedFilesModel::registerTalkgroupList(const QString& path) {
         return false;
     }
     if (rowForPath(path) >= 0) {
+        reserved_exports().remove(path);
         return true;
     }
     Row row;
@@ -551,7 +552,27 @@ ImportedFilesModel::registerTalkgroupList(const QString& path) {
         return false;
     }
     // Saved first: a row reported as added must still be listed after a restart.
-    return appendRow(std::move(row));
+    if (!appendRow(std::move(row))) {
+        return false;
+    }
+    // The row holds the name now: once it goes, so may the name.
+    reserved_exports().remove(path);
+    return true;
+}
+
+void
+ImportedFilesModel::releaseTalkgroupListPath(const QString& path) {
+    reserved_exports().remove(path);
+}
+
+bool
+ImportedFilesModel::rowFromRadioReference(const Row& row) {
+    return row.origin == QLatin1String("radioreference") || row.rrSid > 0;
+}
+
+bool
+ImportedFilesModel::fromRadioReference(int row) const {
+    return row >= 0 && row < m_rows.size() && rowFromRadioReference(m_rows.at(row));
 }
 
 bool
@@ -1033,8 +1054,7 @@ ImportedFilesModel::replaceRowFile(int row, const QVariantMap& staged, bool refr
     // removal clears references before the file goes: a failure here changes nothing, and one after leaves the rows
     // cleared over the file's old bytes, which is safe.
     const Row& current = m_rows[row];
-    const bool fromRadioReference = current.origin == QLatin1String("radioreference") || current.rrSid > 0;
-    if (!refresh && fromRadioReference && m_beforeUserReplace && !m_beforeUserReplace(current.path)) {
+    if (!refresh && rowFromRadioReference(current) && m_beforeUserReplace && !m_beforeUserReplace(current.path)) {
         discard_created(created);
         return failure(QStringLiteral("save"));
     }
@@ -1355,6 +1375,10 @@ ImportedFilesModel::load() {
         if (row.path.isEmpty() || json_store_definitely_missing(row.path)) {
             if (!row.path.isEmpty() && !m_pruned_paths.contains(row.path)) {
                 m_pruned_paths.append(row.path);
+                // Issue #903: whose file it was, for this launch's cleanup of what names it (prunedUserFile()).
+                if (!rowFromRadioReference(row)) {
+                    m_pruned_user_paths.append(row.path);
+                }
             }
             continue;
         }
@@ -1452,6 +1476,11 @@ ImportedFilesModel::takePrunedPaths() {
     QStringList paths;
     paths.swap(m_pruned_paths);
     return paths;
+}
+
+bool
+ImportedFilesModel::prunedUserFile(const QString& path) const {
+    return m_pruned_user_paths.contains(path);
 }
 
 bool

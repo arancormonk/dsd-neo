@@ -116,14 +116,16 @@ Item {
         // Each store is named as the backup names it; call history's settings file follows the application's name.
         function test_b_labels_per_store() {
             var files = ["saved_systems.json", "scan_lists.json", "imported_files.json", "decryption_profiles.json",
-                         "signal-search-ranges.json", "call_history.json", "dsd-neo-app.ini", Qt.application.name + ".conf"];
+                         "signal-search-ranges.json", "call_history.json", "dsd-neo-app.ini", Qt.application.name + ".conf",
+                         "heard_talkgroups.json"];
             for (var file of files)
                 testContext.postStoreNotice(file, "");
             waitForNotices(files.length);
             compare(texts("storeNoticeTitle"), ["Saved systems couldn't be read completely", "Scan lists couldn't be read completely",
                                                "Imported files couldn't be read completely", "Decryption profiles couldn't be read completely",
                                                "Signal search ranges couldn't be read completely", "Call history couldn't be read completely",
-                                               "Settings couldn't be read completely", "Call history settings couldn't be read completely"]);
+                                               "Settings couldn't be read completely", "Call history settings couldn't be read completely",
+                                               "Remembered talkgroups couldn't be read completely"]);
             for (var detail of texts("storeNoticeDetail"))
                 compare(detail, "Some entries may be missing. The file won't be overwritten.");
         }

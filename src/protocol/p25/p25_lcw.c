@@ -40,6 +40,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "p25_cc_update.h"
+#include "p25_heard_tg.h"
 #include "p25_unit_activity.h"
 #include "phase1/p25p1_current_call.h"
 
@@ -262,19 +263,19 @@ p25_lcw_emit_voice_user(p25_lcw_ctx* ctx, int tg, int dst, uint32_t source, int 
  * the same number switching between a local address and one needing a Source ID Extension (another system's radio),
  * an alias from an earlier call or set outside call enrichment. */
 static void
-p25_lcw_drop_alias_unless_continued(const p25_lcw_ctx* ctx, int accepted, uint32_t source, int source_local) {
+p25_lcw_drop_alias_unless_continued(const p25_lcw_ctx* ctx, const dsd_call_snapshot* call, int accepted,
+                                    uint32_t source, int source_local) {
     dsd_state* state = ctx->state;
-    dsd_call_snapshot call;
-    const int open = p25p1_current_call(state, &call);
+    const int open = call != NULL;
     const uint8_t local = (uint8_t)(source_local != 0);
     const int locality_flipped =
-        open && accepted && state->p25_p1_voice_user_epoch == call.epoch && state->p25_p1_voice_user_local != local;
+        open && accepted && state->p25_p1_voice_user_epoch == call->epoch && state->p25_p1_voice_user_local != local;
     if (open && accepted) {
-        state->p25_p1_voice_user_epoch = call.epoch;
+        state->p25_p1_voice_user_epoch = call->epoch;
         state->p25_p1_voice_user_local = local;
     }
-    if (!accepted || !open || !p25_source_id_is_subscriber(source) || locality_flipped || call.ota_source_id != source
-        || call.epoch != state->generic_talker_alias_epoch[0]
+    if (!accepted || !open || !p25_source_id_is_subscriber(source) || locality_flipped || call->ota_source_id != source
+        || call->epoch != state->generic_talker_alias_epoch[0]
         || state->generic_talker_alias_rx_gen[0] != dsd_state_reception_generation(state)) {
         state->generic_talker_alias[0][0] = '\0';
     }
@@ -286,7 +287,9 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
 
     const int accepted =
         ctx->allow_voice_start && p25_lcw_emit_voice_user(ctx, 0, (int)target, source, 0, source_local);
-    p25_lcw_drop_alias_unless_continued(ctx, accepted, source, source_local);
+    dsd_call_snapshot call;
+    const int open = p25p1_current_call(ctx->state, &call);
+    p25_lcw_drop_alias_unless_continued(ctx, open ? &call : NULL, accepted, source, source_local);
     if (!accepted) {
         return 0;
     }
@@ -294,12 +297,14 @@ p25_lcw_accept_private_voice_user(p25_lcw_ctx* ctx, uint32_t target, uint32_t so
     return 1;
 }
 
-/* A group voice user, standard (LCO 0x00) or a Motorola patched supergroup (LCGRGR): record its service options and
- * note the affiliation, then start the voice, dropping the previous talker's alias unless the call goes on
+/* A group voice user, standard (LCO 0x00) or a Motorola patched supergroup (LCGRGR, @p regroup 1): record its service
+ * options and note the affiliation, then start the voice, dropping the previous talker's alias unless the call goes on
  * (p25_lcw_drop_alias_unless_continued()). A rejected start (or a TDULC, which starts none) returns before the LC's
- * encrypted service option marks the crypto pending. */
+ * encrypted service option marks the crypto pending. An accepted one from a hard RS decode proves the group of the
+ * call it started or continued (issue #903): the LDU1's own checked link control for this transmission, a supergroup
+ * when it is a regroup voice user. A soft-erasure retry proves nothing. */
 static int
-p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local) {
+p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t source, int source_local, int regroup) {
     ctx->state->dmr_so = ctx->lc_svcopt;
 
     if (source != 0 && group != 0) {
@@ -307,9 +312,14 @@ p25_lcw_accept_group_voice_user(p25_lcw_ctx* ctx, uint16_t group, uint32_t sourc
     }
 
     const int accepted = ctx->allow_voice_start && p25_lcw_emit_voice_user(ctx, group, 0, source, 1, source_local);
-    p25_lcw_drop_alias_unless_continued(ctx, accepted, source, source_local);
+    dsd_call_snapshot call;
+    const int open = p25p1_current_call(ctx->state, &call);
+    p25_lcw_drop_alias_unless_continued(ctx, open ? &call : NULL, accepted, source, source_local);
     if (!accepted) {
         return 0;
+    }
+    if (open && ctx->lc_hard) {
+        p25_heard_tg_note(ctx->opts, ctx->state, 0U, &call, group, regroup);
     }
     p25_lcw_mark_encrypted_voice_pending(ctx, group, 1);
     return 1;
@@ -326,7 +336,7 @@ p25_lcw_handle_format_00(p25_lcw_ctx* ctx) {
     DSD_FPRINTF(stderr, " - Group %d Source %d", group, source);
     UNUSED(res);
 
-    (void)p25_lcw_accept_group_voice_user(ctx, group, source, explicit_src == 0U);
+    (void)p25_lcw_accept_group_voice_user(ctx, group, source, explicit_src == 0U, 0);
     p25_lcw_note_checked_identity(ctx, group, source, 1U, explicit_src == 0U);
 }
 
@@ -1039,7 +1049,7 @@ p25_lcw_handle_mfid90_opcode_00(p25_lcw_ctx* ctx) {
     }
     // The layout is the standard Group Voice Channel User's, with the supergroup for the group.
     p25_patch_update(ctx->state, (int)sg, 1, 1);
-    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src, ctx->bits[31] == 0U);
+    (void)p25_lcw_accept_group_voice_user(ctx, (uint16_t)sg, src, ctx->bits[31] == 0U, 1);
     p25_lcw_note_checked_identity(ctx, sg, src, 1U, ctx->bits[31] == 0U);
 }
 
@@ -1064,6 +1074,10 @@ p25_lcw_handle_mfid90_opcode_01(p25_lcw_ctx* ctx) {
         const uint16_t groups[1] = {(uint16_t)sg};
         const int svcs[1] = {P25_SM_SVC_UNKNOWN};
         p25_lcw_offer_preemption(ctx, channels, groups, svcs, 1);
+        if (ctx->lc_hard) {
+            /* A hard-decoded update names its supergroup to an assignment it took (spec 2.20). */
+            p25_sm_note_regroup_grant(p25_sm_get_ctx(), (int)sg);
+        }
     } else {
         (void)dsd_recent_activity_clear(ctx->state, 0U);
     }

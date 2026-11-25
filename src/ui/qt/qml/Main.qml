@@ -412,6 +412,19 @@ Window {
     // Activity, so a list edited, saved or deleted since changes nothing here
     // (the session still runs what it started with).
     property var sessionTargets: []
+    // Issue #903: the saved system behind each target id the scan-list
+    // session runs, read when its start is accepted from every target file
+    // that start wrote, before the engine keeps only an id's first: an id a
+    // frequency entry, an imported target file or another saved system also
+    // gives is no one's.
+    function sessionTargetOwners() {
+        return mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
+            && typeof scanListStarter !== "undefined"
+            ? knownFrequencies.sessionTargetOwners(mainRoot.sessionLists.map(function (list) {
+                return {uid: list.uid || "", path: scanListStarter.sessionCsvPath(list),
+                    targetSource: list.targetSource || "entries", entries: list.entries || []};
+            })) : ({});
+    }
     function captureSessionTargets() {
         mainRoot.sessionTargets = mainRoot.sessionScanList && typeof knownFrequencies !== "undefined"
             && typeof scanListStarter !== "undefined"
@@ -1144,6 +1157,15 @@ Window {
     property bool talkgroupsOpen: false
     // The saved-system map the running session was started from.
     property var sessionSystem: null
+    // Issue #903: the tuning the running session was started with
+    // (TalkgroupSaveFlow.tuningOf()), what a talkgroup list it saves is
+    // attached under. sessionSystem follows an edit of its system, whose new
+    // frequency or decode mode the running decoder does not take; this does
+    // not. Empty, which attaches nothing, for a session this window did not
+    // start (a recreated Activity cannot know what it was started with). A
+    // change the decoder applied live is the export result's to tell
+    // (tuningMoved): the decoder records it as it runs the export.
+    property var sessionTuning: ({})
     // The standalone saved system the session runs, by UID: empty for a scan
     // list, Explore, a signal search or a wizard test. What the session may
     // write back to (radio controls, the decryption profile for future starts).
@@ -1909,6 +1931,12 @@ Window {
         mainRoot.pendingStartRemember = true;
         mainRoot.pendingStartHold = "";
         mainRoot.pendingStartRoam = null;
+        // Issue #903: before the host is asked, History reads the old run's
+        // last commits, binding its ring to the session ending, and holds its
+        // background capture until the new session begins (or the start gives
+        // up), so no read binds the starting run's ring to the old session.
+        callHistory.holdCaptureForStart();
+        uiController.flushHistory();
         // What the start is, said here and not read off the map: an edited Explore start can carry a saved
         // system's uid, and must not record into that system's call recordings.
         var built = scan ? scanListStarter.startLists([sys].concat(companions), decoderHost, holdTarget)
@@ -1918,8 +1946,11 @@ Window {
         if (roam)
             siteRoaming.noteStartResult(roam.roamId, built);
         // A start that does not happen carries no site choice to a later one.
-        if (!built.ok || !built.started)
+        if (!built.ok || !built.started) {
             siteRoaming.forgetSiteChoice();
+            // No session begins: History's capture goes on as before.
+            callHistory.releaseCaptureHold();
+        }
         if (!built.ok) {
             // Match the rejected field without exposing a prohibited argument or a key.
             if (scan) {
@@ -1978,6 +2009,7 @@ Window {
         }
         mainRoot.exploring = (row < 0) && !sys.signalSearch;
         mainRoot.sessionSystem = sys;
+        mainRoot.sessionTuning = talkgroupSave.tuningOf(sys);
         mainRoot.sessionScanList = !!scan;
         var startExploring = !scan && (row < 0) && !sys.signalSearch;
         mainRoot.sessionStartKind = scan ? "scan" : startExploring ? "explore" : "saved";
@@ -2010,7 +2042,7 @@ Window {
         // The previous session may have committed calls since the last 250 ms
         // tick; ingest them under its own label before the label changes hands,
         // or its tail calls read as the new system's.
-        uiController.flushHistory();
+        uiController.flushHistoryBeforeStart();
         // A new decode session on this system, begun after its predecessor's tail is
         // logged above, in one call: the history's background capture never runs on
         // a label, system or session only partly changed.
@@ -2018,7 +2050,12 @@ Window {
         // not the whole log. They select the rows the history logs in it, not rows
         // stamped after a clock reading: a replay's calls carry the capture's time,
         // and the decode clock may not have moved to it yet.
-        callHistory.beginSessionOn(sys.name, (!scan && sys.uid) ? sys.uid : "");
+        // Issue #903: with who owns the verified talkgroups it hears: the saved
+        // system a saved-system start runs, or each scan target's own;
+        // Explore and Signal search own none.
+        callHistory.beginSessionWithOwners(sys.name, (!scan && sys.uid) ? sys.uid : "",
+                                           (!scan && row >= 0) ? (sys.uid || "") : "",
+                                           scan ? mainRoot.sessionTargetOwners() : ({}));
         monitorView.historySession = callHistory.session;
         talkgroups.historySession = callHistory.session;
     }
@@ -2506,9 +2543,10 @@ Window {
         }
     }
 
-    // WP-D1: associate only the retained completion, using the captured system UUID.
+    // WP-D1: associate only the retained completion, using the captured system UUID and tuning.
     TalkgroupSaveFlow {
         id: talkgroupSave
+        objectName: "talkgroupSave"
         onSaved: function (uid, path) {
             if (mainRoot.sessionSystem && mainRoot.sessionSystem.uid === uid)
                 mainRoot.sessionSystem = Object.assign({}, mainRoot.sessionSystem, {
@@ -2524,10 +2562,15 @@ Window {
         objectName: "talkgroupsScreen"
         anchors.fill: safeArea
         systemName: monitor.systemName
-        canSaveList: !talkgroups.persistent && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
+        // A list persistent only as the file a Save exported but could not add to Imports takes a new Save.
+        canSaveList: (!talkgroups.persistent || talkgroups.groupFile === talkgroupSave.unregisteredPath) && (talkgroupSave.pending === null || talkgroupSave.retryAvailable)
         saveListText: talkgroupSave.retryAvailable ? qsTr("Try again") : qsTr("Save talkgroup list")
         saveMessage: talkgroupSave.message
-        onSaveListRequested: talkgroupSave.save(mainRoot.sessionSystem ? mainRoot.sessionSystem.uid || "" : "", talkgroups.policyContext, talkgroups.policyGeneration)
+        // The sheet's own policy version; the standalone saved system (none for Explore, a scan list or a hold) and the
+        // tuning the decoder runs it with, captured now for the attachment to compare.
+        onSaveListRequested: function (context, generation) {
+            talkgroupSave.save(mainRoot.sessionSavedSystemUid, context, generation, mainRoot.sessionTuning);
+        }
         opacity: mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen ? 1.0 : 0.0
         visible: opacity > 0.0
         enabled: opacity > 0.9 && mainRoot.monitorMode && mainRoot.talkgroupsOpen && !mainRoot.wizardOpen && !mainRoot.radioReferenceOpen

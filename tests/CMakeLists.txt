@@ -427,6 +427,7 @@ add_library(
     dsd-neo_test_call_state_support
     STATIC
     ${PROJECT_SOURCE_DIR}/src/core/util/call_state.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
     ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
     ${PROJECT_SOURCE_DIR}/src/runtime/state_ext.c
 )
@@ -5442,6 +5443,9 @@ if(DSD_ENABLE_QT_UI)
         # Issue #801: the pinned Listen shortcuts, over both models.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/listen_pins.cpp
+        # Issue #903: the remembered talkgroups following the saved systems.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_owners.cpp
     )
     target_include_directories(
         dsd-neo_test_ui_qt_persistence
@@ -5459,6 +5463,41 @@ if(DSD_ENABLE_QT_UI)
     # Issue #800: the map prefs refuse NaN and infinite views, which fast-math folds away.
     dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_persistence)
     add_test(NAME UI_QT_PERSISTENCE COMMAND dsd-neo_test_ui_qt_persistence)
+
+    # Issue #903: the remembered talkgroups of each saved system. Upserts,
+    # the per-owner cap and its eviction order, elements of another version
+    # kept, an unreadable file never written, failed writes retried, the 30 s
+    # write interval, and forget, clear and purge written past an older write.
+    add_executable(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        ui/test_ui_qt_heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE Qt6::Core Qt6::Gui dsd-neo_runtime dsd-neo_platform
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_heard_talkgroup_store
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_HEARD_TALKGROUP_STORE
+        COMMAND dsd-neo_test_ui_qt_heard_talkgroup_store
+    )
+    set_tests_properties(
+        UI_QT_HEARD_TALKGROUP_STORE
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
 
     add_executable(
         dsd-neo_test_ui_qt_decryption_profiles
@@ -5781,8 +5820,11 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        # Issue #903: the remembered talkgroups the heard cards merge.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
         ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/site_identity_record.c
     )
@@ -5827,6 +5869,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
@@ -6720,6 +6763,8 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
+            # Issue #903: the remembered talkgroups the Talkgroups screen's heard cards merge.
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_model.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_view_item.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/spectrum_trace_geometry.cpp
@@ -8549,6 +8594,25 @@ target_include_directories(
 )
 target_link_libraries(dsd-neo_test_core_p25_patch_policy PRIVATE dsd-neo_core)
 add_test(NAME CORE_P25_PATCH_POLICY COMMAND dsd-neo_test_core_p25_patch_policy)
+
+# Remembered-talkgroup classifier: per-variant id ranges, both edges; and the verified-talkgroup proof the call state
+# carries onto history rows (issue #903). heard_talkgroup.c is built in with DSD_NEO_TEST_HOOKS, ahead of dsd-neo_core's
+# copy, so the test counts the classifier's runs: once per transmission, never per render.
+add_executable(
+    dsd-neo_test_core_heard_talkgroup
+    core/test_core_heard_talkgroup.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
+)
+target_include_directories(
+    dsd-neo_test_core_heard_talkgroup
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_compile_definitions(
+    dsd-neo_test_core_heard_talkgroup
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+target_link_libraries(dsd-neo_test_core_heard_talkgroup PRIVATE dsd-neo_core)
+add_test(NAME CORE_HEARD_TALKGROUP COMMAND dsd-neo_test_core_heard_talkgroup)
 
 # UTF-16 decoding / UTF-8 encoding for radio-sourced text (header-only)
 add_executable(dsd-neo_test_core_utf16 core/test_core_utf16.c)
@@ -14626,6 +14690,48 @@ add_test(
     COMMAND dsd-neo_test_p25_voice_resume_identity
 )
 
+# P25 producers of the verified talkgroup proof (issue #903). heard_talkgroup.c is built with the hooks on, ahead of
+# the library's, to count the classifier's runs.
+add_executable(
+    dsd-neo_test_p25_heard_talkgroup
+    protocol/p25/test_p25_heard_talkgroup.c
+    ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
+)
+target_include_directories(
+    dsd-neo_test_p25_heard_talkgroup
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/p25/phase2
+)
+target_compile_definitions(
+    dsd-neo_test_p25_heard_talkgroup
+    PRIVATE DSD_NEO_TEST_HOOKS
+)
+# Real XCCH processing also reaches VPDU/core GPS and its proto_dmr text decoder; the real vocoder a 2V burst reaches
+# calls the NXDN scrambler.
+if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    target_link_libraries(
+        dsd-neo_test_p25_heard_talkgroup
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+            "-Wl,--end-group"
+    )
+else()
+    target_link_libraries(
+        dsd-neo_test_p25_heard_talkgroup
+        PRIVATE
+            dsd-neo_proto_p25
+            dsd-neo_proto_dmr
+            dsd-neo_proto_nxdn
+            dsd-neo_core
+    )
+endif()
+add_test(NAME P25_HEARD_TALKGROUP COMMAND dsd-neo_test_p25_heard_talkgroup)
+
 # DMR Tier III trunk SM tests (with local stubs; safe to enable by default)
 # M17 protocol tests
 add_executable(
@@ -16733,6 +16839,22 @@ target_link_libraries(
 )
 add_test(NAME DMR_CSBK_BRANDING COMMAND dsd-neo_test_dmr_csbk_branding)
 
+# Issue #903: a checked voice LC header or terminator proves its slot's group (Tier II/III, Capacity Plus, Connect
+# Plus, Hytera XPT) from current-carrier evidence; embedded LCs, grants, voice syncs and RAS acceptances never do.
+add_executable(
+    dsd-neo_test_dmr_flco_heard_tg
+    protocol/dmr/test_dmr_flco_heard_tg.c
+)
+target_include_directories(
+    dsd-neo_test_dmr_flco_heard_tg
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_dmr_flco_heard_tg
+    PRIVATE dsd-neo_proto_dmr dsd-neo_app_control dsd-neo_test_support
+)
+add_test(NAME DMR_FLCO_HEARD_TG COMMAND dsd-neo_test_dmr_flco_heard_tg)
+
 add_executable(
     dsd-neo_test_dmr_bs_alg_refresh_error
     protocol/dmr/test_dmr_bs_alg_refresh_error.c
@@ -18403,10 +18525,12 @@ add_test(NAME TETRA_SEARCH COMMAND dsd-neo_test_tetra_search)
 set_tests_properties(TETRA_SEARCH PROPERTIES LABELS "protocol;tetra")
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
-# the hooks on, ahead of the library's.
+# the hooks on, ahead of the library's, and heard_talkgroup.c too, to count the verified talkgroup classifier's runs.
 target_sources(
     dsd-neo_test_tetra_tetra_calls
-    PRIVATE ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra/tetra_calls.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/heard_talkgroup.c
 )
 target_compile_definitions(
     dsd-neo_test_tetra_tetra_calls
@@ -27843,6 +27967,10 @@ if(DSD_ENABLE_QT_UI)
         # Issue #697: several lists started as one session, through the real starter.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_starter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/ui_controller.cpp
+        # Issue #903: the remembered talkgroups the tick writes.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
+        # Issue #903: the end-to-end case's store follows the saved systems as the app's does.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_owners.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/unit_activity_model.cpp
         # Issue #800: the map's tracks, polled on every tick.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/position_model.cpp
@@ -27858,6 +27986,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -27914,7 +28043,10 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
+        # Issue #903: the remembered talkgroups a forget after a fold must keep.
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/heard_talkgroup_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
     )
     target_include_directories(
@@ -27954,6 +28086,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp

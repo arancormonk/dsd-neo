@@ -115,6 +115,8 @@
 #include "call_recording_provider.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "heard_talkgroup_sink.h"
+#include "heard_talkgroup_source.h"
 #include "teardown_trace_capture.h"
 
 using dsd_qt::CallHistoryFilterModel;
@@ -5628,7 +5630,11 @@ test_call_kind_is_kept_and_parts_calls(void) {
         expect("r2: the export row carries it",
                model.exportRows({priv, group}).value(0).gi == 1 && model.exportRows({priv, group}).value(1).gi == 0);
         // Re-review r1: a private call's radio is never a talkgroup heard; not knowing stays as before.
-        const QList<uint32_t> heard = model.heardTalkgroups(0);
+        const QList<dsd_qt::HeardTalkgroupRow> rows = model.heardTalkgroups(0, QString(), dsd_qt::HeardTarget());
+        QList<uint32_t> heard;
+        for (const dsd_qt::HeardTalkgroupRow& r : rows) {
+            heard.append(r.id);
+        }
         expect("r1: heard talkgroups leave the radio out",
                !heard.contains(42U) && heard.contains(43U) && heard.contains(44U));
     }
@@ -7929,6 +7935,605 @@ test_reread_sender_drops_withdrawn_text(void) {
     expect("sender: the same after a reload", reloaded.count() == 1 && detail_of(reloaded, 0).isEmpty());
 }
 
+/* A stored integer, 0 when missing. */
+qint64
+json_i64(const QJsonObject& obj, const char* key) {
+    return obj.value(QLatin1String(key)).toInteger(0);
+}
+
+/* Issue #903: what History hands the remembered talkgroups (HeardTalkgroupSink), recorded. */
+struct HeardObservation {
+    QString owner;
+    int variant = 0;
+    quint32 id = 0;
+    qint64 when = 0;
+};
+
+class RecordingHeardSink : public dsd_qt::HeardTalkgroupSink {
+  public:
+    QList<HeardObservation> seen;
+
+    void
+    observe(const QString& ownerUid, int variant, quint32 id, qint64 whenSecs) override {
+        seen.append(HeardObservation{ownerUid, variant, id, whenSecs});
+    }
+
+    bool
+    has(const QString& owner, quint32 id, qint64 when) const {
+        return std::any_of(seen.cbegin(), seen.cend(),
+                           [&](const HeardObservation& o) { return o.owner == owner && o.id == id && o.when == when; });
+    }
+};
+
+/* The proof the core freezes on a row whose checked message named ordinary talkgroup @p id (Task 10's fields), heard on
+ * live input unless @p live is false. */
+Event_History*
+prove(Event_History* item, uint32_t id, bool live = true, uint8_t variant = 1U) {
+    item->heard_variant = variant;
+    item->heard_id = id;
+    item->live_input = live ? 1U : 0U;
+    return item;
+}
+
+/* The stored parts' proofs of the stored row of talkgroup @p tg: one entry per part, its `hid` (0 for none). */
+QList<qint64>
+stored_part_proofs(qulonglong tg) {
+    QList<qint64> proofs;
+    const QJsonObject row = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), tg);
+    for (const auto& part : row.value(QLatin1String("fp")).toArray()) {
+        proofs.append(json_i64(part.toObject(), "hid"));
+    }
+    return proofs;
+}
+
+/* Issue #903: a fragment heard on live input with a verified talkgroup is handed to the sink once, under the session's
+ * saved system, at its own time; a later reading of it (its end extends) hands nothing again. A reading off live input,
+ * one the operator tuned to, a scan member of a saved-system start, a session that names no owner and a read without
+ * options hand nothing. */
+void
+test_heard_proof_reaches_the_sink_once(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+    model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+    const time_t when = 1754600000;
+    Event_History* item = prove(ring.commit(0, 7001, 501, when, when + 4), 7001);
+    model.refresh(ring.state, opts.get());
+    expect("heard: a live verified call is handed on", sink.seen.size() == 1 && sink.has("sys-a", 7001, when + 4));
+    expect("heard: with its variant", sink.seen.size() == 1 && sink.seen.at(0).variant == 1);
+    item->event_time = when + 9;
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("heard: a later reading of it hands nothing again", sink.seen.size() == 1);
+
+    prove(ring.commit(0, 7002, 502, when + 30, when + 34), 7002, false);
+    prove(ring.commit(0, 7003, 503, when + 60, when + 64), 7003)->operator_tuned = 1U;
+    prove(ring.commit(0, 7004, 504, when + 90, when + 94), 7004)->scan_member = 1U;
+    prove(ring.commit(0, 7005, 505, when + 120, when + 124, "", "", "minus-y-row"), 7005)->scan_member = 1U;
+    model.refresh(ring.state, opts.get());
+    expect("heard: file input, an operator tune and a saved system's scan members hand nothing",
+           sink.seen.size() == 1 && model.count() == 5);
+    prove(ring.commit(0, 7006, 506, when + 150, when + 154), 7006);
+    model.refresh(ring.state);
+    expect("heard: a read without options establishes no owner", sink.seen.size() == 1 && model.count() == 6);
+
+    model.beginSessionOn(QStringLiteral("Exploring"), QString());
+    RingFixture explore;
+    prove(explore.commit(0, 7007, 507, when + 180, when + 184), 7007);
+    model.refresh(explore.state, opts.get());
+    expect("heard: a session that names no owner hands nothing", sink.seen.size() == 1);
+}
+
+/* Issue #903 (PR2 review r4, P1): a saved system's session whose receiver a live retune moved (a configuration from the
+ * control API, a decode mode, a channel map: Event_History::tuning_moved, with no operator hold) learns nothing for
+ * the saved system from then on, and names no owner for the call; the calls heard before the move stay its own. */
+void
+test_heard_after_a_live_retune_is_no_ones(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+    model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+    const time_t when = 1754605000;
+    prove(ring.commit(0, 7201, 701, when, when + 4), 7201);
+    prove(ring.commit(0, 7202, 702, when + 30, when + 34), 7202)->tuning_moved = 1U;
+    model.refresh(ring.state, opts.get());
+    expect("live retune: the call before it is the saved system's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7201, when + 4));
+    expect("live retune: the call after it is handed on to no one", model.count() == 2 && sink.seen.size() == 1);
+    // A proof that comes late on the moved call hands nothing on either.
+    Event_History* late = ring.commit(0, 7203, 703, when + 60, when + 64);
+    late->tuning_moved = 1U;
+    model.refresh(ring.state, opts.get());
+    prove(late, 7203);
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("live retune: a late proof of a call after it is no one's", sink.seen.size() == 1);
+}
+
+/* Issue #903 (PR2 review r4 ruling): a scan list's Go to, then its resume. The calls heard while the operator holds
+ * the tuner (operator_tuned, off any target) are learnt for no one; the Go to does not move the tuning generation
+ * (APP_COMMAND_QUEUE test_go_to_and_resume_keep_the_tuning_generation), so once the resume lands each target's calls
+ * are learnt under its own saved system again, as they were before it. */
+void
+test_heard_scan_list_learns_again_after_go_to_and_resume(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionOn(QStringLiteral("County scan"), QString());
+    model.setSessionOwners(
+        model.session(), QString(),
+        {{QStringLiteral("entry-a"), QStringLiteral("sys-a")}, {QStringLiteral("entry-b"), QStringLiteral("sys-b")}});
+    const time_t when = 1754607000;
+    // A call as the decoder stamps it at its first render: a scan member on its target, or the operator's.
+    const auto heard = [&](uint32_t tg, time_t start, const char* target, bool operatorTuned) {
+        Event_History* item = prove(ring.commit(0, tg, 900, start, start + 4, "", "", target), tg);
+        item->scan_member = operatorTuned ? 0U : 1U;
+        item->operator_tuned = operatorTuned ? 1U : 0U;
+        item->tuning_moved = static_cast<uint8_t>(dsd_state_tuning_moved(ring.state));
+    };
+    heard(7301, when, "entry-a", false);
+    model.refresh(ring.state, opts.get());
+    expect("go to: before it, the target's call is its system's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7301, when + 4));
+    // Go to: the scan pauses, the operator holds the tuner off any target.
+    heard(7302, when + 30, "", true);
+    model.refresh(ring.state, opts.get());
+    expect("go to: a call heard on the operator's frequency is no one's", sink.seen.size() == 1);
+    // The resume lands: the scan has the tuner again, on its rows.
+    heard(7303, when + 60, "entry-b", false);
+    heard(7304, when + 90, "entry-a", false);
+    model.refresh(ring.state, opts.get());
+    expect("go to: after the resume each target's call is its own system's again",
+           sink.seen.size() == 3 && sink.has("sys-b", 7303, when + 64) && sink.has("sys-a", 7304, when + 94));
+    expect("go to: every call is in History", model.count() == 4);
+}
+
+/* Issue #903: change detection sees a proof that arrives late on a committed row (a checked message after the commit)
+ * and hands it on then, at the fragment's own time, once; the proof is the row's from then on, saved with it. A later
+ * CRC failure marked on the row (fragment trust) keeps it and retracts nothing. */
+void
+test_heard_late_proof_and_crc_revision(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    const time_t when = 1754601000;
+    {
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+        model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+        Event_History* item = ring.commit(0, 7101, 601, when, when + 4);
+        item->live_input = 1U;
+        model.refresh(ring.state, opts.get());
+        expect("late proof: nothing before the proof", sink.seen.isEmpty() && model.count() == 1);
+        prove(item, 7101);
+        ring.touchCommitted(0);
+        model.refresh(ring.state, opts.get());
+        expect("late proof: the re-read hands it on", sink.seen.size() == 1 && sink.has("sys-a", 7101, when + 4));
+        expect("late proof: still one row", model.count() == 1);
+        item->crc_invalid = DSD_CRC_FAILED;
+        item->event_time = when + 6;
+        ring.touchCommitted(0);
+        model.refresh(ring.state, opts.get());
+        expect("late proof: a CRC revision hands nothing more", sink.seen.size() == 1 && model.count() == 1);
+        model.saveNow();
+        model.waitForSaveForTest();
+    }
+    const QJsonObject stored = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), 7101U);
+    expect("late proof: the row keeps its proof through the CRC revision",
+           json_i64(stored, "hv") == 1 && json_i64(stored, "hid") == 7101 && stored.value("live").toBool());
+}
+
+/* Issue #903: a merged conversation keeps each fragment's own proof: a verified transmission and an unverified one of
+ * the same talker and group merge into one row in either order, and only the verified one is handed on, at its own
+ * time, never the conversation's end; the stored parts keep one proof. */
+void
+test_heard_merged_conversation_keeps_fragment_proof(void) {
+    for (int order = 0; order < 2; order++) {
+        resetStorage();
+        RingFixture ring;
+        auto opts = std::make_unique<dsd_opts>();
+        RecordingHeardSink sink;
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+        model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+        const time_t when = 1754602000 + order * 1000;
+        if (order == 0) {
+            prove(ring.commit(0, 7201, 701, when, when + 4), 7201);
+            model.refresh(ring.state, opts.get());
+            ring.commit(0, 7201, 701, when + 6, when + 10)->live_input = 1U;
+            model.refresh(ring.state, opts.get());
+        } else {
+            ring.commit(0, 7201, 701, when, when + 4)->live_input = 1U;
+            model.refresh(ring.state, opts.get());
+            prove(ring.commit(0, 7201, 701, when + 6, when + 10), 7201);
+            model.refresh(ring.state, opts.get());
+            ring.commit(0, 7201, 701, when + 12, when + 16)->live_input = 1U;
+            model.refresh(ring.state, opts.get());
+        }
+        const qint64 provenEnd = order == 0 ? when + 4 : when + 10;
+        expect("merged: one conversation", model.count() == 1);
+        expect("merged: the verified fragment alone is handed on, at its own end",
+               sink.seen.size() == 1 && sink.has("sys-a", 7201, provenEnd));
+        model.saveNow();
+        model.waitForSaveForTest();
+        const QList<qint64> proofs = stored_part_proofs(7201U);
+        expect("merged: the parts keep one proof", proofs.size() == (order == 0 ? 2 : 3) && proofs.count(7201) == 1
+                                                       && proofs.count(0) == proofs.size() - 1);
+    }
+}
+
+/* Issue #903: the owners are bound to the ring the session read: the last call of system A, read by the flush before
+ * the host is asked to start B, is A's; one that only the flush after the host's accept reads is no one's (it could be
+ * B's run's on a reused ring); B's own ring is B's, and once B's run has its own ring, a late row of A's is A's too. A
+ * relaunched model keeps both bindings and owners, and re-reads nothing it already handed on. */
+void
+test_heard_owner_follows_the_ring(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    const time_t when = 1754603000;
+    {
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+        model.setSessionOwners(model.session(), QStringLiteral("sys-a"), {});
+        prove(ringA.commit(0, 7301, 801, when, when + 4), 7301);
+        model.refresh(ringA.state, opts.get());
+        // Main.startWithMap: A's last call is read by the flush before the host is asked; another lands after it, read
+        // by the flush after the host's accept; then B's session begins.
+        prove(ringA.commit(0, 7302, 802, when + 30, when + 34), 7302);
+        model.holdCaptureForStart();
+        model.refresh(ringA.state, opts.get());
+        prove(ringA.commit(0, 7307, 807, when + 40, when + 44), 7307);
+        model.refresh(ringA.state, opts.get(), false);
+        model.beginSessionOn(QStringLiteral("System B"), QStringLiteral("sys-b"));
+        model.setSessionOwners(model.session(), QStringLiteral("sys-b"), {});
+        expect("ring owner: A's last call, read before B's start was asked, is A's",
+               sink.seen.size() == 2 && sink.has("sys-a", 7301, when + 4) && sink.has("sys-a", 7302, when + 34));
+        prove(ringB.commit(0, 7303, 803, when + 60, when + 64), 7303);
+        model.refresh(ringB.state, opts.get());
+        expect("ring owner: B's ring is B's", sink.seen.size() == 3 && sink.has("sys-b", 7303, when + 64));
+        prove(ringA.commit(0, 7306, 806, when + 70, when + 74), 7306);
+        model.refresh(ringA.state, opts.get());
+        expect("ring owner: with B on its own ring, A's late row is A's",
+               sink.seen.size() == 4 && sink.has("sys-a", 7306, when + 74));
+        expect("ring owner: the call only the flush after the accept read is no one's",
+               std::none_of(sink.seen.cbegin(), sink.seen.cend(),
+                            [](const HeardObservation& o) { return o.id == 7307U; }));
+        prove(ringB.commit(0, 7304, 804, when + 90, when + 94), 7304);
+    }
+    RecordingHeardSink relaunchedSink;
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedSink);
+    expect("ring owner: a reload hands nothing on", relaunchedSink.seen.isEmpty());
+    prove(ringA.commit(0, 7305, 805, when + 120, when + 124), 7305);
+    relaunched.refresh(ringA.state, opts.get());
+    expect("ring owner: after a relaunch A's ring is still A's, and nothing is handed on twice",
+           relaunchedSink.seen.size() == 1 && relaunchedSink.has("sys-a", 7305, when + 124));
+    relaunched.refresh(ringB.state, opts.get());
+    expect("ring owner: B's unread call after a relaunch is B's",
+           relaunchedSink.seen.size() == 2 && relaunchedSink.has("sys-b", 7304, when + 94));
+}
+
+/* Issue #903: a scan-list session owns its targets one by one: a call on a target the owner map names is that saved
+ * system's; one on a target it leaves out (an id an imported target file or another system also gives) and a call
+ * with no target are no one's. */
+void
+test_heard_scan_targets_own_their_calls(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("County scan"), QString(), QString(),
+                                 QVariantMap{{QStringLiteral("entry-a"), QStringLiteral("sys-a")}});
+    const time_t when = 1754604000;
+    prove(ring.commit(0, 7401, 901, when, when + 4, "", "", "entry-a"), 7401)->scan_member = 1U;
+    prove(ring.commit(0, 7402, 902, when + 30, when + 34, "", "", "entry-shared"), 7402)->scan_member = 1U;
+    prove(ring.commit(0, 7403, 903, when + 60, when + 64), 7403)->scan_member = 1U;
+    prove(ring.commit(0, 7404, 904, when + 90, when + 94), 7404);
+    model.refresh(ring.state, opts.get());
+    expect("scan owner: only the named target's call is handed on, to its system",
+           model.count() == 4 && sink.seen.size() == 1 && sink.has("sys-a", 7401, when + 4));
+}
+
+/* Issue #903 (review, Important 1): Main's flush before a start runs after the host accepted it, so the latest snapshot
+ * can already be the starting run's ring. That flush leaves a ring no session owns unbound: the new session owns it,
+ * and its calls go to the new saved system, not the old one. The old run's ring stays the old session's. */
+void
+test_heard_new_ring_at_the_pre_start_flush(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754606000;
+    prove(ringA.commit(0, 7601, 1101, when, when + 4), 7601);
+    model.refresh(ringA.state, opts.get());
+    // The host accepted B's start and published B's ring before Main's flush read it.
+    model.refresh(ringB.state, opts.get(), false);
+    model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+    prove(ringB.commit(0, 7602, 1102, when + 30, when + 34), 7602);
+    model.refresh(ringB.state, opts.get());
+    expect("pre-start flush: the starting run's ring is the new session's",
+           sink.seen.size() == 2 && sink.has("sys-b", 7602, when + 34));
+    prove(ringA.commit(0, 7603, 1103, when + 60, when + 64), 7603);
+    model.refresh(ringA.state, opts.get());
+    expect("pre-start flush: the old run's late call is still the old session's",
+           sink.seen.size() == 3 && sink.has("sys-a", 7603, when + 64));
+}
+
+/* Issue #903 (re-review, Minor 1): the old run's ring was never read during its run, and the new run has not published
+ * when its session begins. Main's flush before the host is asked binds the old ring to the old session, so the rows it
+ * reads keep the old owner; a row first read by the flush after the host's accept could be the new run's on a reused
+ * ring, and is no one's (PR2 review r2, P1, fail closed); the new run's ring is the new one's. */
+void
+test_heard_unread_old_ring_keeps_its_owner(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754608000;
+    prove(ringA.commit(0, 7801, 1301, when, when + 4), 7801);
+    // Main.startWithMap: the hold and the flush before the host is asked, the old run's final publish, the flush after
+    // the host's accept (B not yet published), then the new session.
+    model.holdCaptureForStart();
+    model.refresh(ringA.state, opts.get());
+    prove(ringA.commit(0, 7802, 1302, when + 30, when + 34), 7802);
+    model.refresh(ringA.state, opts.get(), false);
+    model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+    expect("unread old ring: the rows read before the start was asked keep the old owner, the later one is no one's",
+           sink.seen.size() == 1 && sink.has("sys-a", 7801, when + 4));
+    prove(ringB.commit(0, 7803, 1303, when + 60, when + 64), 7803);
+    model.refresh(ringB.state, opts.get());
+    expect("unread old ring: the new run's ring is the new owner's",
+           sink.seen.size() == 2 && sink.has("sys-b", 7803, when + 64));
+}
+
+/* Issue #903 (PR2 review r1, P1): the starting run commits a verified call after the host accepted its start and before
+ * Main's flush reads the new ring. That flush leaves the ring wholly unread, its commit revision included, so the read
+ * after the new session begins takes the call in under it: the new saved system learns it, and History logs it in the
+ * new session. */
+void
+test_heard_new_ring_call_before_the_pre_start_flush(void) {
+    resetStorage();
+    RingFixture ringA;
+    RingFixture ringB;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754609000;
+    prove(ringA.commit(0, 7901, 1401, when, when + 4), 7901);
+    model.holdCaptureForStart();
+    model.refresh(ringA.state, opts.get());
+    // The host accepted B's start, and B's run committed a verified call before Main's flush read its ring.
+    prove(ringB.commit(0, 7902, 1402, when + 30, when + 34), 7902);
+    model.refresh(ringB.state, opts.get(), false);
+    expect("pre-start call: the flush reads nothing of the new ring", sink.seen.size() == 1 && model.count() == 1);
+    model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+    const qint64 sessionB = model.session();
+    model.refresh(ringB.state, opts.get());
+    expect("pre-start call: the new system learns it", sink.seen.size() == 2 && sink.has("sys-b", 7902, when + 34));
+    const QModelIndex row = model.index(0, 0);
+    expect("pre-start call: History logs it in the new session",
+           model.count() == 2 && model.data(row, CallHistoryModel::TgRole).toULongLong() == 7902U
+               && model.data(row, CallHistoryModel::SessionRole).toLongLong() == sessionB);
+}
+
+/* Issue #903 (PR2 review r1, P2): an embedding host runs B on the state A's run used, so B's run reuses A's ring. A
+ * session's start marks where the ring read last stood: what the ring pushes after it is B's, and the rows before it,
+ * revisions included, stay A's. The call on the air is B's, and a relaunched model keeps both generations. */
+void
+test_heard_reused_ring_is_a_new_generation(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    const time_t when = 1754610000;
+    {
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+        prove(ring.commit(0, 8001, 1501, when, when + 4), 8001);
+        ring.commit(0, 8002, 1502, when + 30, when + 34)->live_input = 1U;
+        // Main.startWithMap, the host reusing the state: B's session begins on the ring A's run left.
+        model.holdCaptureForStart();
+        model.refresh(ring.state, opts.get());
+        model.refresh(ring.state, opts.get(), false);
+        model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+        expect("reused ring: the call on the air is B's",
+               model.heardOwnerOnAir(static_cast<quint64>(ring.rings[0].instance), false, false, QString())
+                   == QStringLiteral("sys-b"));
+        prove(ring.commit(0, 8003, 1503, when + 60, when + 64), 8003);
+        model.refresh(ring.state, opts.get());
+        expect("reused ring: B's call on A's ring is B's", sink.has("sys-b", 8003, when + 64));
+        // A's row (one below B's now) gains its proof after B began: it is still A's row.
+        prove(&ring.rings[0].Event_History_Items[2], 8002);
+        ring.touchCommitted(0);
+        model.refresh(ring.state, opts.get());
+        expect("reused ring: a revision of A's row is A's",
+               sink.seen.size() == 3 && sink.has("sys-a", 8001, when + 4) && sink.has("sys-a", 8002, when + 34));
+    }
+    RecordingHeardSink relaunchedSink;
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedSink);
+    prove(ring.commit(0, 8004, 1504, when + 90, when + 94), 8004);
+    relaunched.refresh(ring.state, opts.get());
+    expect("reused ring: after a relaunch the ring's new rows are still B's",
+           relaunchedSink.seen.size() == 1 && relaunchedSink.has("sys-b", 8004, when + 94));
+}
+
+/* Issue #903 (PR2 review r2, P1; ruling: fail closed): a run that reuses the old run's state (an embedding host) commits
+ * verified calls on the old ring after the host accepted its start and before Main's flush after the accept reads them.
+ * Nothing tells them from the old run's last commits, so they are no one's: neither system learns them, nor a late
+ * proof of one, nor after a relaunch. History still logs them. The old run's rows read before the start stay its
+ * owner's, and what the ring pushes after that flush is the new session's. */
+void
+test_heard_reused_ring_call_before_the_post_accept_flush(void) {
+    resetStorage();
+    RingFixture ring;
+    const auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    const time_t when = 1754611000;
+    const auto heardOf = [](const RecordingHeardSink& recorded, quint32 id) {
+        return std::any_of(recorded.seen.cbegin(), recorded.seen.cend(),
+                           [id](const HeardObservation& o) { return o.id == id; });
+    };
+    {
+        CallHistoryModel model;
+        model.setHeardSink(&sink);
+        model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+        prove(ring.commit(0, 8101, 1601, when, when + 4), 8101);
+        // Main.startWithMap: the hold and the flush before the host is asked.
+        model.holdCaptureForStart();
+        model.refresh(ring.state, opts.get());
+        // The host accepted B's start on A's state; B's run commits a verified call, and two whose proofs come later,
+        // before the flush after the accept reads the ring.
+        prove(ring.commit(0, 8102, 1602, when + 30, when + 34), 8102);
+        ring.commit(0, 8103, 1603, when + 40, when + 44)->live_input = 1U;
+        ring.commit(0, 8105, 1605, when + 50, when + 54)->live_input = 1U;
+        model.refresh(ring.state, opts.get(), false);
+        model.beginSessionWithOwners(QStringLiteral("System B"), QStringLiteral("sys-b"), QStringLiteral("sys-b"), {});
+        expect("ambiguous commit: neither system learns it",
+               sink.seen.size() == 1 && sink.has("sys-a", 8101, when + 4) && !heardOf(sink, 8102));
+        expect("ambiguous commit: History logs every call", model.count() == 4);
+        prove(&ring.rings[0].Event_History_Items[2], 8103);
+        ring.touchCommitted(0);
+        model.refresh(ring.state, opts.get());
+        expect("ambiguous commit: a late proof is no one's either", sink.seen.size() == 1 && !heardOf(sink, 8103));
+        prove(ring.commit(0, 8104, 1604, when + 60, when + 64), 8104);
+        model.refresh(ring.state, opts.get());
+        expect("ambiguous commit: B's next call is B's", sink.seen.size() == 2 && sink.has("sys-b", 8104, when + 64));
+        model.saveNow();
+        model.waitForSaveForTest();
+    }
+    RecordingHeardSink relaunchedSink;
+    CallHistoryModel relaunched;
+    relaunched.setHeardSink(&relaunchedSink);
+    // The third ambiguous call's proof arrives after a relaunch.
+    prove(&ring.rings[0].Event_History_Items[2], 8105);
+    ring.touchCommitted(0);
+    relaunched.refresh(ring.state, opts.get());
+    expect("ambiguous commit: after a relaunch a late proof is still no one's", !heardOf(relaunchedSink, 8105));
+    prove(ring.commit(0, 8106, 1606, when + 90, when + 94), 8106);
+    relaunched.refresh(ring.state, opts.get());
+    expect("ambiguous commit: after a relaunch B's new call is B's",
+           relaunchedSink.seen.size() == 1 && relaunchedSink.has("sys-b", 8106, when + 94));
+}
+
+/* Issue #903 (review, Minor 4): History's Clear hides rows; it does not un-hear a talkgroup. A row the clear covers
+ * whose proof arrives after the clear is learnt, once, and stays out of the log. A cleared row the seen map does not
+ * know gives nothing. */
+void
+test_heard_late_proof_on_a_cleared_row(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    RecordingHeardSink sink;
+    CallHistoryModel model;
+    model.setHeardSink(&sink);
+    model.beginSessionWithOwners(QStringLiteral("System A"), QStringLiteral("sys-a"), QStringLiteral("sys-a"), {});
+    const time_t when = 1754607000;
+    Event_History* item = ring.commit(0, 7701, 1201, when, when + 4);
+    item->live_input = 1U;
+    model.refresh(ring.state, opts.get());
+    model.clearAll();
+    expect("cleared proof: the clear empties the log", model.count() == 0);
+    prove(item, 7701);
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("cleared proof: the late proof is learnt", sink.seen.size() == 1 && sink.has("sys-a", 7701, when + 4));
+    expect("cleared proof: the row stays cleared", model.count() == 0);
+    item->event_time = when + 8;
+    ring.touchCommitted(0);
+    model.refresh(ring.state, opts.get());
+    expect("cleared proof: once", sink.seen.size() == 1);
+}
+
+/* Issue #903: the proof and the live latch are saved with the row and its parts, and read back; a row an older build
+ * stored reads none. What a reload folds hands nothing on, the spill aside. */
+void
+test_heard_fields_round_trip(void) {
+    resetStorage();
+    RingFixture ring;
+    auto opts = std::make_unique<dsd_opts>();
+    const time_t when = 1754605000;
+    {
+        CallHistoryModel model;
+        model.beginSessionOn(QStringLiteral("System A"), QStringLiteral("sys-a"));
+        prove(ring.commit(0, 7501, 1001, when, when + 4), 7501, true, 3U);
+        ring.commit(0, 7502, 1002, when + 30, when + 34);
+        prove(ring.commit(0, 7503, 1003, when + 60, when + 64), 7503, false);
+        model.refresh(ring.state, opts.get());
+        model.saveNow();
+        model.waitForSaveForTest();
+    }
+    QJsonArray rows = dsd_qt::json_store_load_array("call_history.json");
+    const QJsonObject proven = stored_row_with_tg(rows, 7501U);
+    const QJsonObject plain = stored_row_with_tg(rows, 7502U);
+    const QJsonObject file = stored_row_with_tg(rows, 7503U);
+    expect("round trip: a proven live row stores its proof and latch",
+           json_i64(proven, "hv") == 3 && json_i64(proven, "hid") == 7501 && proven.value("live").toBool());
+    expect("round trip: a row with no proof stores none", !plain.contains("hv") && !plain.contains("hid"));
+    expect("round trip: a row off live input stores its proof and no latch",
+           json_i64(file, "hid") == 7503 && !file.contains("live"));
+    {
+        RecordingHeardSink sink;
+        CallHistoryModel reloaded;
+        reloaded.setHeardSink(&sink);
+        reloaded.saveNow();
+        reloaded.waitForSaveForTest();
+        expect("round trip: a reload hands nothing on", sink.seen.isEmpty() && reloaded.count() == 3);
+    }
+    rows = dsd_qt::json_store_load_array("call_history.json");
+    expect("round trip: the reload keeps the fields", json_i64(stored_row_with_tg(rows, 7501U), "hv") == 3
+                                                          && stored_row_with_tg(rows, 7501U).value("live").toBool()
+                                                          && json_i64(stored_row_with_tg(rows, 7503U), "hid") == 7503);
+    // An older build's row: no fields at all.
+    for (int i = 0; i < rows.size(); i++) {
+        QJsonObject row = rows.at(i).toObject();
+        row.remove("hv");
+        row.remove("hid");
+        row.remove("live");
+        rows.replace(i, row);
+    }
+    expect("round trip: legacy fixture saved", dsd_qt::json_store_save_array("call_history.json", rows));
+    {
+        CallHistoryModel legacy;
+        legacy.saveNow();
+        legacy.waitForSaveForTest();
+    }
+    const QJsonObject legacyRow = stored_row_with_tg(dsd_qt::json_store_load_array("call_history.json"), 7501U);
+    expect("round trip: an older build's row reads no proof and not live",
+           !legacyRow.contains("hv") && !legacyRow.contains("live"));
+}
+
 } // namespace
 
 int
@@ -8110,6 +8715,20 @@ main(int argc, char** argv) {
     test_senderless_fragment_keeps_its_destination();
     test_reread_destination_renames_row();
     test_reread_sender_drops_withdrawn_text();
+    test_heard_proof_reaches_the_sink_once();
+    test_heard_after_a_live_retune_is_no_ones();
+    test_heard_scan_list_learns_again_after_go_to_and_resume();
+    test_heard_late_proof_and_crc_revision();
+    test_heard_merged_conversation_keeps_fragment_proof();
+    test_heard_owner_follows_the_ring();
+    test_heard_scan_targets_own_their_calls();
+    test_heard_fields_round_trip();
+    test_heard_new_ring_at_the_pre_start_flush();
+    test_heard_late_proof_on_a_cleared_row();
+    test_heard_unread_old_ring_keeps_its_owner();
+    test_heard_new_ring_call_before_the_pre_start_flush();
+    test_heard_reused_ring_is_a_new_generation();
+    test_heard_reused_ring_call_before_the_post_accept_flush();
 
     QDir(dataDir).removeRecursively();
     if (g_failures != 0) {

@@ -344,6 +344,7 @@ jobs:
             dsd-neo_test_ui_qt_location_feed \
             dsd-neo_test_ui_qt_location_requests \
             dsd-neo_test_ui_qt_persistence \
+            dsd-neo_test_ui_qt_heard_talkgroup_store \
             dsd-neo_test_ui_qt_decryption_profiles \
             dsd-neo_test_ui_qt_call_history_model \
             dsd-neo_test_ui_qt_call_history_tap \

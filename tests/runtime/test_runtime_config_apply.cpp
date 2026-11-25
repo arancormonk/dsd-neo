@@ -950,6 +950,8 @@ test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
     rc |= expect_carrier_codes("same-frequency reopen keeps the codes", state, 0);
     rc |= expect_true("same-frequency reopen keeps the frequency caches",
                       state->p25_vc_freq[0] == 851012500L && state->trunk_vc_freq[0] == 851012500L);
+    /* Issue #903: a reopen on the carrier is a stream gap, no change of the tuning the run started with. */
+    rc |= expect_true("same-frequency reopen keeps the start tuning", dsd_state_tuning_moved(state) == 0);
 
     DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460.125M");
     seed_carrier_codes(state);
@@ -959,6 +961,8 @@ test_config_reopen_on_another_frequency_forgets_the_carrier_codes(void) {
     rc |= expect_carrier_codes("reopen on another frequency forgets the codes", state, 1);
     rc |= expect_true("reopen on another frequency forgets the untrunked frequency caches",
                       state->p25_vc_freq[0] == 0 && state->trunk_vc_freq[0] == 0);
+    /* Issue #903: a configuration retune moves the tuning: what is heard from here on is not the start tuning's. */
+    rc |= expect_true("reopen on another frequency leaves the start tuning", dsd_state_tuning_moved(state) == 1);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1155,6 +1159,8 @@ test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
     (void)dsd_app_drain_cmds(opts, state);
     rc |= expect_true("a same-source restart ends the call at the gap", call_ended(state));
     rc |= expect_carrier_codes("a same-source restart keeps the codes", state, 0);
+    /* Issue #903: the gap keeps the tuning the run started with; another source does not. */
+    rc |= expect_true("a same-source restart keeps the start tuning", dsd_state_tuning_moved(state) == 0);
 
     const int32_t device = 1;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV, &device, sizeof device);
@@ -1162,6 +1168,7 @@ test_stream_restart_on_another_source_is_a_carrier_boundary(void) {
     rc |= expect_true("the device change ran", opts->rtl_dev_index == 1);
     rc |= expect_true("a device change ends the outgoing call", !call_active(state));
     rc |= expect_carrier_codes("a device change forgets the codes", state, 1);
+    rc |= expect_true("a device change leaves the start tuning", dsd_state_tuning_moved(state) == 1);
 
     observe_active_call(state);
     seed_carrier_codes(state);

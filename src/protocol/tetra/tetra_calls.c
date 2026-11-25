@@ -10,6 +10,7 @@
 #include <dsd-neo/core/dsd_time.h>
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/key_set.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
@@ -605,15 +606,21 @@ calls_end_published(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, dsd_cal
     }
 }
 
-/* 1 while canonical slot 0 carries @p pub (call @p call_id) as an active TETRA call. */
+/* 1 while canonical slot 0 carries @p pub (call @p call_id) as an active TETRA call, which @p call then holds. */
 static int
-calls_carrying(const dsd_state* state, const tetra_state_t* ts, uint8_t pub, uint16_t call_id) {
+calls_carried(const dsd_state* state, const tetra_state_t* ts, uint8_t pub, uint16_t call_id, dsd_call_snapshot* call) {
     if (ts->calls.published != pub || ts->calls.published_call_id != call_id) {
         return 0;
     }
+    return dsd_call_state_get(state, 0U, call) > 0 && call->phase == DSD_CALL_PHASE_ACTIVE
+           && DSD_SYNC_IS_TETRA(call->protocol);
+}
+
+/* 1 while canonical slot 0 carries @p pub (call @p call_id) as an active TETRA call. */
+static int
+calls_carrying(const dsd_state* state, const tetra_state_t* ts, uint8_t pub, uint16_t call_id) {
     dsd_call_snapshot call;
-    return dsd_call_state_get(state, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
-           && DSD_SYNC_IS_TETRA(call.protocol);
+    return calls_carried(state, ts, pub, call_id, &call);
 }
 
 /* The crypto class of call record @p c (call_air_decryptable()). */
@@ -1329,6 +1336,47 @@ setup_names_talker(const tetra_call_t* c, const tetra_call_event* ev) {
     return (ev->has & TETRA_CALL_HAS_NOTIFICATION) == 0u || ev->notification > 2u;
 }
 
+/* Basic service @p basic is circuit mode speech (circuit mode type 000, table 14.35) to many: point to multipoint,
+ * acknowledged point to multipoint or broadcast (communication type 01, 10, 11). */
+static int
+basic_is_group_speech(uint8_t basic) {
+    return !basic_is_data(basic) && basic_is_group(basic);
+}
+
+/* The verified talkgroup (issue #903) a CRC-checked D-SETUP makes its call eligible for, read before its address is
+ * reduced to the record's called_ssi: the group SSI its MAC address names in the clear (address type 001, 101 or 110:
+ * an SSI, never a USSI, which numbers a migrating radio of another network, an SMI, an event label alone or an
+ * encrypted short identity left unrecovered) for circuit mode speech to many. 0 when it is not eligible; the
+ * classifier (dsd_heard_tg_ordinary()) still judges the value. */
+static uint32_t
+setup_verified_gssi(const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    if (!sdu || !sdu->has_addr || sdu->addr.esi || !basic_is_group_speech(ev->basic_service)) {
+        return 0u;
+    }
+    switch (sdu->addr.type) {
+        case TETRA_MAC_ADDR_SSI:
+        case TETRA_MAC_ADDR_SSI_EVENT:
+        case TETRA_MAC_ADDR_SSI_USAGE: return sdu->addr.ssi;
+        default: return 0u;
+    }
+}
+
+/* A D-SETUP of @p c sets its eligibility (setup_verified_gssi()), or takes it back when it names another identity or
+ * service. One that names no identity (an event label alone, an encrypted short identity) for the same group speech
+ * says nothing against the D-SETUP that did, which stays. */
+static void
+setup_note_verified_gssi(tetra_call_t* c, const tetra_call_event* ev, const tetra_mac_sdu* sdu) {
+    const uint32_t gssi = setup_verified_gssi(ev, sdu);
+    if (gssi != 0u) {
+        c->verified_gssi = gssi;
+        return;
+    }
+    const int names_none = !sdu || !sdu->has_addr || sdu->addr.esi || sdu->addr.type == TETRA_MAC_ADDR_EVENT_LABEL;
+    if (!names_none || !basic_is_group_speech(ev->basic_service)) {
+        c->verified_gssi = 0u;
+    }
+}
+
 /* The record a D-SETUP describes. */
 static tetra_call_t*
 call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c, const tetra_call_event* ev,
@@ -1351,6 +1399,7 @@ call_setup(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, tetra_call_t* c,
     c->basic_service = ev->basic_service;
     c->e2ee = (uint8_t)basic_e2ee(ev->basic_service);
     c->priority = ev->priority;
+    setup_note_verified_gssi(c, ev, sdu);
     if (has_called) {
         c->called_ssi = called;
     }
@@ -2638,8 +2687,29 @@ tetra_calls_on_timeslot(const dsd_opts* opts, const dsd_state* state, uint8_t tn
     return best;
 }
 
+/* Speech @p sp of @p c, which canonical slot 0 carries as @p call, proves the group the call's D-SETUP made it eligible
+ * for (issue #903): on the timeslot of the call's own allocation, while the call is still the group speech it set up
+ * and slot 0 names that group. Noted once per transmission (dsd_call_state_note_verified_target() binds the slot's
+ * active transmission and classifies once); each floor grant D-TX CEASED ended is another, proven by its own speech.
+ * Encrypted speech counts: the burst's speech CRC passed, played or not. */
+static void
+speech_proves_group(const dsd_opts* opts, dsd_state* state, const tetra_call_t* c, const tetra_speech* sp,
+                    const dsd_call_snapshot* call) {
+    if (c->verified_gssi == 0u || call->heard_noted != 0U || c->called_ssi != c->verified_gssi
+        || call->ota_target_id != c->verified_gssi || !basic_is_group_speech(c->basic_service)
+        || (c->alloc.timeslots & tetra_slot_bit(sp->tn)) == 0u) {
+        return;
+    }
+    dsd_heard_tg_input in;
+    DSD_MEMSET(&in, 0, sizeof in);
+    in.variant = DSD_HEARD_TG_TETRA;
+    in.id = c->verified_gssi;
+    dsd_call_state_note_verified_target(opts, state, 0U, dsd_call_snapshot_transmission(call), &in);
+}
+
 /* Speech of a call record: the followed call may have turned undecryptable; a transmission that has not ceased
- * publishes. 1 when canonical slot 0 carries the call. */
+ * publishes, and its speech proves an eligible group (speech_proves_group()). 1 when canonical slot 0 carries the
+ * call. */
 static int
 speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetra_speech* sp, double now_m) {
     tetra_call_t* const c = calls_find(ts, sp->call_id);
@@ -2667,7 +2737,12 @@ speech_of_record(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const tetr
         /* A cipher key loaded, or the network's KSG learnt, since: no PDU of the call says so, its speech does. */
         calls_reclassify(opts, state, call_crypto_state(state, c));
     }
-    return calls_carrying(state, ts, TETRA_PUB_CALL, c->call_id);
+    dsd_call_snapshot call;
+    if (!calls_carried(state, ts, TETRA_PUB_CALL, c->call_id, &call)) {
+        return 0;
+    }
+    speech_proves_group(opts, state, c, sp, &call);
+    return 1;
 }
 
 /* Speech of the direct mode call a DM-SETUP or DM-OCCUPIED set up keeps it seen. */

@@ -24,6 +24,7 @@
 #include <QMap>
 #include <QObject>
 #include <QPointer>
+#include <QSet>
 #include <QString>
 #include <QStringList>
 #include <QVariant>
@@ -81,8 +82,9 @@ class SavedSystemsModel : public QAbstractListModel {
         HasSitePosRole,
         AvoidSiteRole,
         AirspyRole,
-        PlaceRole,        // RadioReference place, validPlace()'s form; empty = none
-        KeyConfiguredRole // a direct key, a key file or a decryption profile: whether one is set, never which
+        PlaceRole,              // RadioReference place, validPlace()'s form; empty = none
+        KeyConfiguredRole,      // a direct key, a key file or a decryption profile: whether one is set, never which
+        RememberTalkgroupsRole, // issue #903: learn the talkgroups heard on it; true unless turned off
     };
 
     /**
@@ -233,6 +235,22 @@ class SavedSystemsModel : public QAbstractListModel {
     Q_INVOKABLE bool updateRadioSettings(const QString& uid, const QVariantMap& changes);
 
     /**
+     * @brief Whether attachGroupList() would attach a list to system @p uid: it exists, has no group list, every
+     * tuningProvenanceFields() value equals what @p tuning (captured when the list was requested, with
+     * groupListTuningFields()) holds for it, a missing one included, and @p tuning names the same receiver: source and
+     * endpoint (receiver_identity()), every receiver field captured. Lets the caller tell a refusal from a failed save.
+     */
+    Q_INVOKABLE bool groupListAttachable(const QString& uid, const QVariantMap& tuning) const;
+    /**
+     * @brief Attach the talkgroup list at @p path as system @p uid's group list (issue #903, Save talkgroup list).
+     *
+     * Only when groupListAttachable(uid, tuning) and @p path is not empty. It sets groupCsvPath alone and is no edit:
+     * the RadioReference ids, avoid, site name, position and place stay, since a list saved from the session describes
+     * nothing of the site (update() would clear them). Persists first; false leaves the row as it was. One dataChanged.
+     */
+    Q_INVOKABLE bool attachGroupList(const QString& uid, const QString& path, const QVariantMap& tuning);
+
+    /**
      * @brief Forget one confirmed Radio control (issue #899, B11): "Clear saved squelch" takes @p key "squelch" out,
      * so the system's next start runs what it would without it (the app's default squelch on an analog start).
      *
@@ -252,6 +270,9 @@ class SavedSystemsModel : public QAbstractListModel {
 
     /** @brief The field names whose change in update() clears a row's RadioReference provenance. */
     Q_INVOKABLE QStringList tuningProvenanceFields() const;
+    /** @brief The fields a Save talkgroup list request captures for groupListAttachable() (issue #903): the
+     *  tuningProvenanceFields() and the receiver's (sourceType, host, port, filePath, airspy). */
+    Q_INVOKABLE QStringList groupListTuningFields() const;
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
     /** @brief Row @p row's site group key (site_group_key(): its RadioReference system on its receiver), read from
@@ -271,6 +292,10 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief Mark a grouped site avoided or not; false when the row is unknown or the save failed. */
     Q_INVOKABLE bool setAvoidSite(int row, bool avoid);
     Q_INVOKABLE int rowForUid(const QString& uid) const;
+    /** @brief Every system's uid. */
+    QSet<QString> uids() const;
+    /** @brief The uids of the systems with rememberTalkgroups on (issue #903). */
+    QSet<QString> rememberingUids() const;
     Q_INVOKABLE QVariantMap getByUid(const QString& uid) const;
 
     /**
@@ -308,11 +333,14 @@ class SavedSystemsModel : public QAbstractListModel {
      * Called when a library file is removed: a saved system pointing at a
      * deleted file would otherwise fail its next start with an opaque
      * "configure failed". A row that loses a file loses its RadioReference
-     * provenance and geography too (rr_provenance_cleared()). One dataChanged
-     * spans the changed rows. Returns false, with every row unchanged, when the
-     * save fails, and true when nothing referenced @p path.
+     * provenance and geography too (rr_provenance_cleared()), except where
+     * @p fromRadioReference is false (the user's own file, such as a saved
+     * talkgroup list) and the file was only the row's group list: that file
+     * never described the site, so the row keeps it. One dataChanged spans the
+     * changed rows. Returns false, with every row unchanged, when the save
+     * fails, and true when nothing referenced @p path.
      */
-    Q_INVOKABLE bool clearCsvPath(const QString& path);
+    Q_INVOKABLE bool clearCsvPath(const QString& path, bool fromRadioReference = true);
 
     /**
      * @brief Clear the RadioReference provenance and geography of every system whose CSV fields name @p path, keeping
@@ -365,6 +393,8 @@ class SavedSystemsModel : public QAbstractListModel {
   Q_SIGNALS:
     void sitesChanged();
     void countChanged();
+    /** @brief A removal of the system @p uid was saved; sent after rowsRemoved, sitesChanged and countChanged. */
+    void systemRemoved(const QString& uid);
     void localDayChanged();
 
   private:
@@ -385,6 +415,8 @@ class SavedSystemsModel : public QAbstractListModel {
         double siteLon = 0;
         bool hasSitePos = false;
         bool avoidSite = false;
+        /* Issue #903: on unless turned off, rows saved before the field existed included. */
+        bool rememberTalkgroups = true;
         QVariantMap place; // validPlace()'s form
         // QString copies cannot promise secret erasure. Key values belong only to
         // private persistence and argv assembly, never labels or diagnostics.
@@ -442,7 +474,7 @@ class SavedSystemsModel : public QAbstractListModel {
      *  its ids differ from @p previous's or it still lacks a name. */
     void fillPlaceNames(Row& row, const QVariantMap& previous) const;
     /** Clear the provenance of every row with a CSV field naming @p path, blanking those fields too if asked. */
-    bool clearPathProvenance(const QString& path, bool clearFields);
+    bool clearPathProvenance(const QString& path, bool clearFields, bool fromRadioReference = true);
     /** Install @p next, saved, and signal one dataChanged from @p first to @p last. */
     void commitChangedRange(QList<Row>&& next, int first, int last, const QList<int>& roles);
 

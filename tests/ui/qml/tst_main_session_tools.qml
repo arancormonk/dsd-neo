@@ -776,6 +776,196 @@ Item {
                 savedSystems.remove(row);
             }
         }
+        // Issue #903: an accepted start tells History who owns the calls its
+        // session hears: a scan list each target a saved system's entry gives
+        // (a frequency entry's is no one's), a saved system itself, and an
+        // Explore start no one.
+        function test_accepted_starts_name_their_heard_owners() {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Owned site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var sys = savedSystems.get(row);
+            scanLists.add({name: "Owned scan", sourceType: "rtltcp", host: "127.0.0.1", port: 1234,
+                entries: [{kind: "system", systemUid: sys.uid, enabled: true},
+                          {kind: "freq", name: "Gate", protocol: "p25", freqMhz: "852.0125", enabled: true}]});
+            var list = scanLists.get(scanLists.count - 1);
+            try {
+                app.startScanBundle(scanLists.rowForUid(list.uid), []);
+                var owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session, "the owners are not the session's just begun");
+                compare(owners.single, "");
+                compare(Object.keys(owners.scan).length, 1, "a frequency entry was given an owner");
+                compare(owners.scan[list.entries[0].uid], sys.uid);
+                verify(!callHistory.captureHeld(), "the scan start left History's capture held");
+                testContext.setLifecyclePhase(0);
+                app.startSystem(row);
+                owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session);
+                compare(owners.single, sys.uid);
+                compare(Object.keys(owners.scan).length, 0);
+                testContext.setLifecyclePhase(0);
+                app.startWithMap(app.exploreSystem("rtltcp", "127.0.0.1", 1234, "851.5"), -1, false);
+                owners = callHistory.sessionOwners();
+                compare(owners.session, callHistory.session);
+                compare(owners.single, "", "an Explore start owned its calls");
+                verify(!callHistory.captureHeld(), "the Explore start left History's capture held");
+            } finally {
+                testContext.resetScanLists();
+                testContext.setLifecyclePhase(2);
+                removeScanLists([list.uid]);
+                savedSystems.remove(row);
+            }
+        }
+        // Issue #903: an edit of the running system pushes its files to the
+        // session, and the monitor shows it, but the decoder keeps the frequency
+        // it started on. A talkgroup list saved afterwards captures the tuning
+        // the session runs, so it is not attached to the retuned system.
+        function test_a_saved_list_captures_the_running_tuning() {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Tuned site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var uid = savedSystems.get(row).uid;
+            var flow = findChild(app, "talkgroupSave");
+            verify(flow !== null);
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                compare(app.sessionRow, row);
+                verify(savedSystems.update(row, {freqMhz: "852.5"}));
+                findChild(app, "wizardScreen").saved(row);
+                compare(app.sessionSystem.freqMhz, "852.5", "the monitor did not follow the edit");
+                findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                compare(flow.pending.uid, uid);
+                compare(flow.pending.tuning.freqMhz, "851.5", "the request captured the edited, not the running, tuning");
+                verify(!savedSystems.groupListAttachable(uid, flow.pending.tuning), "the retuned system would take the list");
+            } finally {
+                if (flow.pending !== null)
+                    importedFiles.releaseTalkgroupListPath(flow.pending.path);
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                savedSystems.remove(row);
+            }
+        }
+        // Issue #903: the attachment follows the decoder's own record of the export (tuningMoved): whether the
+        // receiver's tuning had changed since the run began when the export ran. A decode mode or a configuration
+        // retune applied live, an operator's tune or a channel-map import leaves the saved row as it was, so only that
+        // record shows it; the snapshots may not have shown it yet when the result is read, or may show the carrier
+        // count move for a stream gap on the same carrier, which is no change of tuning. A result read after the
+        // session stopped is judged the same way.
+        function test_the_export_record_decides_the_attachment_data() {
+            return [{tag: "start tuning running", snapshot: null, moved: false, stopped: false, attached: true},
+                    {tag: "stream gap on the same carrier", snapshot: {carrierSeq: 1}, moved: false, stopped: false, attached: true},
+                    {tag: "live change the snapshots have not shown yet", snapshot: null, moved: true, stopped: false, attached: false},
+                    {tag: "decode mode applied live", snapshot: {decodeMode: 4}, moved: true, stopped: false, attached: false},
+                    {tag: "operator hold, then released", snapshot: {operatorTuned: true}, moved: true, stopped: false, attached: false},
+                    {tag: "start tuning, result read after Stop", snapshot: null, moved: false, stopped: true, attached: true},
+                    {tag: "live change, result read after Stop", snapshot: null, moved: true, stopped: true, attached: false},
+                    {tag: "result with no tuning record", snapshot: null, moved: undefined, stopped: false, attached: false},
+                    {tag: "saved receiver edited to another host", snapshot: null, moved: false, stopped: false, attached: false, edit: {host: "127.0.0.2"}},
+                    {tag: "saved receiver edited to another port", snapshot: null, moved: false, stopped: false, attached: false, edit: {port: 1235}}];
+        }
+        function test_the_export_record_decides_the_attachment(data) {
+            testContext.setLifecyclePhase(0);
+            savedSystems.add({name: "Result site", sourceType: "rtltcp", host: "127.0.0.1", port: 1234, freqMhz: "851.5", decodeFlag: "-fs"});
+            var row = savedSystems.count - 1;
+            var uid = savedSystems.get(row).uid;
+            var flow = findChild(app, "talkgroupSave");
+            verify(flow !== null);
+            var library = flow.library;
+            // Imports records every export here: the export file itself is the decoder's to write.
+            var recorder = Qt.createQmlObject("import QtQuick; QtObject { function newTalkgroupListPath() { return '/owned/result.csv'; } function registerTalkgroupList(path) { return true; } function releaseTalkgroupListPath(path) {} }", loader);
+            flow.library = recorder;
+            try {
+                app.startSystem(row);
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, decodeMode: 1, carrierSeq: 0});
+                if (data.snapshot !== null)
+                    testContext.setMetrics(data.snapshot);
+                testContext.setMetrics({operatorTuned: false});
+                compare(app.sessionSavedSystemUid, uid);
+                findChild(app, "talkgroupsScreen").saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                var request = flow.pending;
+                compare(request.uid, uid);
+                // The saved system now names another receiver than the session ran, every tuning field the same.
+                if (data.edit)
+                    verify(savedSystems.update(row, data.edit));
+                if (data.stopped)
+                    testContext.setLifecyclePhase(0);
+                var completion = {sequence: String(Number(request.sequence) + 1), policyContext: request.context,
+                                  policyGeneration: request.generation, path: request.path, success: true};
+                if (data.moved !== undefined)
+                    completion.tuningMoved = data.moved;
+                flow.results = {results: [completion], missedThrough: "0"};
+                compare(flow.pending, null);
+                compare(savedSystems.getByUid(uid).groupCsvPath, data.attached ? "/owned/result.csv" : "",
+                        data.attached ? "the system the export ran on did not take the list" : "a list exported after a tuning change was attached");
+                if (!data.attached)
+                    verify(flow.message.indexOf("system association was not changed") >= 0, flow.message);
+            } finally {
+                flow.library = library;
+                recorder.destroy();
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                testContext.setMetrics({decodeMode: 1, carrierSeq: 0, operatorTuned: false, optionsKnown: false});
+                testContext.setLifecyclePhase(0);
+                savedSystems.remove(savedSystems.rowForUid(uid));
+            }
+        }
+        // Issue #903: an export whose file could not be added to Imports leaves the decoder's list that file. While it
+        // is, the Talkgroups screen offers a new Save; a list file of any other origin still takes none.
+        function test_a_save_whose_registration_failed_can_be_made_again() {
+            testContext.setLifecyclePhase(0);
+            var flow = findChild(app, "talkgroupSave");
+            var screen = findChild(app, "talkgroupsScreen");
+            verify(flow !== null && screen !== null);
+            var library = flow.library;
+            var recorder = Qt.createQmlObject("import QtQuick; QtObject { property int paths: 0; function newTalkgroupListPath() { paths++; return '/owned/unregistered-' + paths + '.csv'; } function registerTalkgroupList(path) { return false; } function releaseTalkgroupListPath(path) {} }", loader);
+            flow.library = recorder;
+            try {
+                testContext.setLifecyclePhase(2);
+                testContext.setMetrics({optionsKnown: true, decodeMode: 1, carrierSeq: 0});
+                testContext.setGroupFile("");
+                verify(screen.canSaveList, "Save is not offered without a list file");
+                screen.saveListRequested("7", 1);
+                verify(flow.pending !== null, "the request was not made");
+                var request = flow.pending;
+                flow.results = {results: [{sequence: String(Number(request.sequence) + 1), policyContext: request.context,
+                                           policyGeneration: request.generation, path: request.path, success: true}],
+                                missedThrough: "0"};
+                compare(flow.pending, null);
+                verify(flow.message.indexOf("adding it to Imports failed") >= 0, flow.message);
+                testContext.setGroupFile(request.path);
+                verify(talkgroups.persistent);
+                verify(screen.canSaveList, "Save is not offered while the list is the export Imports could not add");
+                testContext.setGroupFile("/owned/other.csv");
+                verify(!screen.canSaveList, "Save is offered over a list file of another origin");
+                testContext.setGroupFile(request.path);
+                screen.saveListRequested("7", 1);
+                verify(flow.pending !== null, "the new Save was not made");
+                // The new export fails: the decoder's list is still the unregistered file, so Save is offered again.
+                var replacement = flow.pending;
+                flow.results = {results: [{sequence: String(Number(replacement.sequence) + 1), policyContext: replacement.context,
+                                           policyGeneration: replacement.generation, path: replacement.path, success: false}],
+                                missedThrough: "0"};
+                compare(flow.pending, null);
+                verify(screen.canSaveList, "Save is not offered after the replacement export failed");
+            } finally {
+                if (flow.pending !== null)
+                    recorder.releaseTalkgroupListPath(flow.pending.path);
+                flow.library = library;
+                recorder.destroy();
+                flow.pending = null;
+                flow.message = "";
+                flow.retryAvailable = false;
+                flow.unregisteredPath = "";
+                testContext.setGroupFile("");
+                testContext.setMetrics({decodeMode: 1, carrierSeq: 0, operatorTuned: false, optionsKnown: false});
+            }
+        }
         // A recreated Activity finds the tuner held: no session map came with it,
         // so it names the session Exploring until the resume, then by the label
         // the history kept.

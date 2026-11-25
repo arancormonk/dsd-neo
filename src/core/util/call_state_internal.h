@@ -4,7 +4,9 @@
 #define DSD_NEO_SRC_CORE_UTIL_CALL_STATE_INTERNAL_H_
 
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/state.h>
 #include <dsd-neo/platform/threading.h>
+#include <stddef.h>
 #include <stdint.h>
 #include "dsd-neo/core/state_fwd.h"
 
@@ -113,5 +115,20 @@ uint64_t dsd_call_state_pending_row_epoch(const dsd_state* state, uint8_t slot);
 
 /** dsd_call_state_pending_row_epoch() for a caller that holds the call-state mutex. */
 uint64_t dsd_call_state_pending_row_epoch_locked(const dsd_call_state_ext* ext, uint8_t slot);
+
+/**
+ * Depth in @p ring of the row @p lifecycle last committed, or 0 when it can no longer be located. push_event_history()
+ * copies row 0 into row 1, so immediately after a commit the row sits at index 1 and every push since -- including
+ * interleaved data or system notices -- has pushed it one deeper. Shared by the event layer and the call state's
+ * verified-target note, which revises that row in place. Callers hold the call-state mutex.
+ */
+static inline uint8_t
+dsd_call_event_committed_row_index(const Event_History_I* ring, const dsd_call_event_lifecycle* lifecycle) {
+    if (ring == NULL || lifecycle == NULL || !lifecycle->committed_valid || ring->push_seq < lifecycle->committed_seq) {
+        return 0U;
+    }
+    const uint64_t depth = 1U + (ring->push_seq - lifecycle->committed_seq);
+    return depth <= (DSD_EVENT_HISTORY_LEN - 1U) ? (uint8_t)depth : 0U;
+}
 
 #endif /* DSD_NEO_SRC_CORE_UTIL_CALL_STATE_INTERNAL_H_ */

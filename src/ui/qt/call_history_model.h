@@ -75,10 +75,12 @@
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <functional>
 #include <limits>
 #include <memory>
 #include <stdint.h>
 
+#include "call_history_heard.h"
 #include "call_history_merge.h"
 #include "heard_talkgroup_source.h"
 
@@ -92,6 +94,7 @@ class CallHistorySpill;
 class CallHistorySpillReader;
 class CallHistoryTap;
 class CallRecordingProvider;
+class HeardTalkgroupSink;
 
 /** @brief Where the background tap reads the published rings: dsd_app_history_tap_copy() in the app. */
 using CallHistoryTapSource = int (*)(int slot, Event_History_I* out, dsd_app_history_tap_cursor* cursor,
@@ -213,6 +216,28 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     Q_INVOKABLE void beginSessionOn(const QString& label, const QString& uid);
 
+    /**
+     * @brief beginSessionOn() with the new session's owners (setSessionOwners(): @p singleOwnerUid, and
+     * @p scanEntryOwner mapping each scan target id to a saved system's uid), all under the one handoff of the
+     * background tap, so it never runs on the session without them (issue #903). Main.startWithMap()'s call.
+     */
+    Q_INVOKABLE void beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
+                                            const QVariantMap& scanEntryOwner);
+
+    /**
+     * @brief Before Main asks the host for a start (issue #903): hand the background tap off now, its last poll binding
+     * the old run's ring to the session ending (no starting run's ring exists yet), and keep it stopped, so no poll
+     * between the host's accept and the new session can bind the starting run's ring to the old session.
+     *
+     * The next beginSession*() consumes the hold and starts the tap on the new session when the app is away. A start
+     * that does not begin one releases it (releaseCaptureHold()), and so does the next event-loop turn if nothing did:
+     * the start runs in one turn.
+     */
+    Q_INVOKABLE void holdCaptureForStart();
+
+    /** @brief End a holdCaptureForStart() no session began from: the tap starts again when the app is away. */
+    Q_INVOKABLE void releaseCaptureHold();
+
     /** @brief The session's system, label and uid together, the session itself kept (beginSessionOn()). */
     Q_INVOKABLE void setSessionSystem(const QString& label, const QString& uid);
 
@@ -322,6 +347,48 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     void setHistoryTapSource(CallHistoryTapSource source);
 
     /**
+     * @brief Hand each verified talkgroup History ingests to @p sink (issue #903); nullptr hands none. Not owned: the
+     * sink outlives this model, whose teardown still ingests what the background tap could not spill.
+     *
+     * A fragment is handed over once, at the reading of it that first carries its proof (Event_History::heard_variant),
+     * when that reading was taken on live input, the operator did not hold the tuner, and its session names its owner
+     * (setSessionOwners()): at the foreground poll, the spill fold and the teardown fold, before the log is trimmed, at
+     * the fragment's own time (its end, else its start), never the conversation's it merges into. A reload of the saved
+     * log hands over nothing. What is ingested before a sink is set (the spill folded at construction) waits for it.
+     */
+    void setHeardSink(HeardTalkgroupSink* sink);
+
+    /**
+     * @brief Who owns the calls History session @p sessionId hears (issue #903): @p singleOwnerUid, the saved system a
+     * saved-system start runs (empty for any other start), and for a scan-list start @p scanEntryOwner, each scan
+     * target id (entry uid) to the saved system it runs, built from the start's entries and every target file it
+     * launched before the engine drops duplicate ids, leaving out any id another saved system, an imported target file
+     * or a frequency entry also gives.
+     *
+     * Bound to the decoder ring: a ring belongs to the session it was first read in (the background tap's reads
+     * included), so the last calls of a session's ring that are read after the next session began keep its owners.
+     * Persisted with the session, for a relaunched UI that rejoins the running session.
+     */
+    void setSessionOwners(qint64 sessionId, const QString& singleOwnerUid,
+                          const QHash<QString, QString>& scanEntryOwner);
+
+    /**
+     * @brief Make the background spill this model folded unable to come back (issue #903): fold what a running tap
+     * holds (it starts again), and a spill no fold has read whole (a read that failed, or lines a failed truncate
+     * left) again; then, when a folded spill waits for a save's acknowledgement, wait out the saves in flight and write
+     * both stores now, which acknowledges it and empties the spill. For HeardTalkgroupStore's forget and clear
+     * (HeardTalkgroupStore::setBeforeEdit()), so a relaunch after the process dies refolds nothing they removed.
+     * @return true only when no spill is left to replay. False when that write failed (the spill is kept, as every
+     * failed save keeps it, and the log is reported not saving, saveFailing(), until a save lands), or when the spill
+     * could not be read whole or emptied.
+     */
+    bool settleSpill();
+
+    /** @brief settleSpill() of this model as HeardTalkgroupStore::setBeforeEdit() takes it; true once the model is gone
+     * (nothing of it can fold again). */
+    std::function<bool()> spillSettler();
+
+    /**
      * @brief Whether the app came back from the background with the tap still running.
      *
      * The tap stops at the first ingest after that (refresh()), which also folds in what it spilled. UiController
@@ -332,8 +399,23 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         return m_handoffOwed;
     }
 
-    /** @brief HeardTalkgroupSource: read straight from the rows, no QVariant per row (issue #718). */
-    QList<uint32_t> heardTalkgroups(qint64 forSession) const override;
+    /** @brief HeardTalkgroupSource: read straight from the rows and their parts, no QVariant per row (issue #718),
+     * each fragment by its own session and owner (Row::viewOwner), on its row's scan target (Row::channel) and its own
+     * -Y scan-list row (Row::scanListRow, none off it). */
+    QList<HeardTalkgroupRow> heardTalkgroups(qint64 forSession, const QString& owner,
+                                             const HeardTarget& target) const override;
+
+    /** @brief HeardTalkgroupSource: the serial ingestReading() gave the newest fragment it took in. */
+    quint64
+    heardSerial() const override {
+        return m_heardSerial;
+    }
+
+    /** @brief HeardTalkgroupSource: from now on ingestReading() hands on no proof of a fragment it took in by now. */
+    void heardForgotten(const QString& owner, quint32 number) override;
+
+    /** @brief HeardTalkgroupSource: heard_owner_for() in the session @p ring is bound to, else this one. */
+    QString heardOwnerOnAir(quint64 ring, bool operatorTuned, bool scanMember, const QString& channel) const override;
 
     /**
      * @brief Ingest newly committed voice rows from the snapshot ring.
@@ -348,8 +430,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * rows are eligible is each row's own stamp (issue #671): a call heard under a
      * running scan, including one enabled through extra arguments, never is, and a
      * call heard while the operator held the tuner is filed as Exploring.
+     *
+     * Issue #903: without @p bindNewRings (the flush after the host accepted a start, before the session begins:
+     * UiController::flushHistoryBeforeStart()), a snapshot of a ring no session owns is not read at all, its commits
+     * left for the next read: the flush before the host was asked bound the old run's (holdCaptureForStart()), so such
+     * a ring can only be the starting run's, whose calls the coming session owns. On a ring a session owns, what it
+     * pushed since the last read is the old run's last or the new run's first on the ring it reused: it is read, and
+     * no one's (readBeforeSession()).
      */
-    void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr);
+    void refresh(const dsd_state* snapshot, const dsd_opts* opts_snapshot = nullptr, bool bindNewRings = true);
 
     /**
      * @brief Empty the log, and keep the rows the session's ring still holds out of it.
@@ -388,6 +477,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
 
     /** @brief Make the next fold's read of the spill fail after @p lines lines, as a device error there would. */
     static void failNextSpillReadAfterLinesForTest(int lines);
+
+    /** @brief While @p fail, every truncate of the spill fails, as a spill that can be read but not written would. */
+    static void failSpillTruncatesForTest(bool fail);
 
     /** @brief The fragment parts the folds' part lookups read or indexed since the last call, which resets it. */
     static qint64 takePartLookupStepsForTest();
@@ -575,6 +667,16 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         QString messageText;
         qint64 msgWhen = 0;
         qulonglong msgSeq = 0;
+        /* Issue #903: the verified talkgroup proof of this fragment's reading (Row::heardVariant). */
+        quint32 heardId = 0;
+        uint8_t heardVariant = 0;
+        bool liveInput = false;
+        /* Issue #903: the saved system that owns the fragment, and its ingest serial (Row::viewOwner, heardSerial). */
+        QString viewOwner;
+        quint64 heardSerial = 0;
+        /* Issue #903: the -Y scan-list row the fragment was heard on (Row::scanListRow, scanListRev). */
+        quint32 scanListRow = 0;
+        quint64 scanListRev = 0;
     };
 
     /** @brief One logged call or notice. Public only so file-local helpers can build one. */
@@ -706,6 +808,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         quint64 rxRing = 0;
         quint64 rxGen = 0;
         bool rxGenKnown = false;
+        /* Issue #903: the -Y scan-list row the fragment was heard on (Event_History::scan_list_row, scan_list_rev): 1 +
+         * the row and its list's identity (scanListRev), 0 and 0 off any -Y row. Each part keeps its own; the row shows
+         * its first part's. Persisted (`slr`, `sll`, also per part); rows older builds stored read none. */
+        quint32 scanListRow = 0;
         /* Issue #800. The tuned frequency rxScope was read with (Event_History::rx_scope.tuned_hz; 0 when unknown):
          * two carriers are two receptions, also of one system whose scope names no carrier. Unlike freqHz, which a
          * merge takes from the newest fragment, it goes with rxScope. Persisted (`rxHz`) while known. */
@@ -736,6 +842,24 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         /* Detail text a store an older build wrote held (the notice's message or GPS string), shown while the row
          * has neither of the two above. */
         QString legacyDetail;
+        /* Issue #903: the verified talkgroup proof (Event_History::heard_variant, heard_id; 0 and 0 for none) and the
+         * live-input latch (Event_History::live_input). Each fragment keeps its own in its part (FragmentPart), which is
+         * what History hands its sink; the row shows its first part's proof, and is live only while every part is. A
+         * merged conversation never vouches for a fragment that had none. Persisted (`hv`, `hid`, `live`, also per part);
+         * rows older builds stored read none and not live. */
+        quint32 heardId = 0;
+        uint8_t heardVariant = 0;
+        bool liveInput = false;
+        /* Issue #903: the saved system that owns the fragment for the Talkgroups screen (heard_owner_of(), resolved
+         * where its ring was read, from the ring's own session, whatever its proof; empty for none or without published
+         * options). Each part keeps its own; the row shows its first part's. Persisted (`vo`, also per part). */
+        QString viewOwner;
+        /* Issue #903: when the fragment was last taken in as new, by this process (heardSerial()); 0 for a reload. Each
+         * part keeps its own, and an update of a fragment keeps the serial it had; the row's is its parts' newest. Not
+         * persisted. */
+        quint64 heardSerial = 0;
+        /* Issue #903: the identity of the list of the -Y scan-list row the fragment was heard on (scanListRow). */
+        quint64 scanListRev = 0;
     };
 
     /**
@@ -826,6 +950,12 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
          * counting as an advance, as the site text digest's (SeenSettled). Last, so load()'s seed leaves it unknown. */
         uint32_t identity = 0;
         bool identityKnown = false;
+        /* Issue #903: the verified talkgroup proof and live-input latch last read. The core only adds a proof (a late
+         * checked message) and only closes the latch (a switch to file input), so either is an advance
+         * (absorbSeenProof()). An entry an older build stored, or one load() seeded, reads none and not live. */
+        quint32 heardId = 0;
+        uint8_t heardVariant = 0;
+        bool liveInput = false;
     };
 
     /**
@@ -858,6 +988,14 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         bool again = false;
         QString key;
         SeenState seen;
+        /* Issue #903: the saved system the reading's verified talkgroup is handed to (setHeardSink()), resolved where
+         * the ring was read; empty when the reading is not the first to carry the fragment's proof or may not be
+         * learnt. A spill line carries it (`ho`). */
+        QString heardOwner;
+        /* Issue #903: not a row to ingest: a proof that arrived after a clear on a row the clear covers, which the
+         * clear keeps out of the log but which is still a talkgroup heard (noteClearedProof()). Its row holds only the
+         * proof and the fragment's span. A spill line of its own (clearedProofLine()). */
+        bool clearedProof = false;
     };
 
     using SeenMap = QHash<QString, SeenState>;
@@ -873,6 +1011,8 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         qulonglong clearedThrough = 0U;        // ...up to this push stamp of the walked slot
         bool* seenSettled = nullptr;           // set when a seen entry changed with nothing to ingest (SeenSettled)
         QList<QString>* settledKeys = nullptr; // the keys of those entries, for the background tap to spill
+        HeardOwners* heardOwners = nullptr;    // issue #903: the owners, and the rings bound to their sessions
+        bool optsPublished = false;            // options were published: a row's owner can be established
     };
 
     /** @brief noteSeen() verdicts. */
@@ -897,6 +1037,21 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     static bool absorbSeenSite(SeenState& seen, const SeenState& read);
     static bool absorbSeenTexts(SeenState& seen, const SeenState& read);
     static bool absorbSeenCall(SeenState& seen, const SeenState& read);
+    static bool absorbSeenProof(SeenState& seen, const SeenState& read);
+    /** @brief What a ring walk reads of @p item for its seen entry (noteSeen()). */
+    static SeenState seenReadOf(const Event_History* item);
+    /** @brief Whether the seen entry @p key of ring @p ring already holds a proof (an earlier reading carried one). */
+    static bool seenProven(const SeenMap& seen, const QString& key, quint64 ring);
+    /**
+     * @brief For a row of ring @p instance (@p slot, push stamp @p seq) a clear covers: when it now carries a learnable
+     * proof its seen entry, of this ring, lacked (the checked message came after the clear), record the proof in that
+     * entry and, when its owner resolves, append a FreshRow::clearedProof to @p fresh. A row the seen map does not know
+     * (its entry lost, or rebuilt without the cleared rows) gives nothing: fail closed.
+     */
+    static void noteClearedProof(const Event_History* item, int slot, qulonglong seq, quint64 instance,
+                                 const RingWalk& walk, qint64 session, QList<FreshRow>& fresh);
+    /** @brief The owner a fresh reading @p item of ring session @p session is handed to, or empty (FreshRow). */
+    static QString freshHeardOwner(const RingWalk& walk, qint64 session, const Event_History* item, bool provenBefore);
 
     /**
      * @brief Walk one slot's ring for rows not seen before, or seen but advanced, appending them to @p fresh.
@@ -905,9 +1060,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     static void walkRing(const Event_History_I& ring, int slot, const RingWalk& walk, QList<FreshRow>& fresh);
 
-    /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced. */
-    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], const QString& systemUid,
-                                 bool* seenSettled);
+    /** @brief Scan the flagged slots' rings for rows not seen before, or seen but advanced, binding the rings they
+     * come from to their sessions (issue #903; saved when that changed). @p optsPublished: the snapshot's options were
+     * published, so a row's identity and owner can be established. */
+    QList<FreshRow> collectFresh(const dsd_state* snapshot, const bool scan[2], bool optsPublished, bool* seenSettled);
 
     /**
      * @brief Absorb @p row into a same-target row among the newest @p scanRows when the two
@@ -952,6 +1108,21 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * @return true when a new row was inserted (the count changed).
      */
     bool ingestRow(const Row& row, bool isUpdate, bool again);
+
+    /**
+     * @brief ingestRow() for a ring reading, handing its verified talkgroup to the sink first when @p heardOwner names
+     * an owner and the log does not already hold the fragment's proof (setHeardSink()).
+     */
+    bool ingestReading(const Row& row, bool isUpdate, bool again, const QString& heardOwner);
+    /** @brief Whether the log's row holding @p row's one fragment already has that fragment's proof. */
+    bool fragmentProven(const Row& row) const;
+    /** @brief Whether a Forget or Clear of @p owner's number came after the fragment @p row reads (heardForgotten()). */
+    bool heardForgottenSince(const Row& row, bool isUpdate, const QString& owner) const;
+    /** @brief The ingest serial the log's row holding @p row's fragment keeps for it (Row::heardSerial), else 0. */
+    quint64 heldSerial(const Row& row) const;
+    /** @brief Hand a sighting to the sink, or hold it until one is set. */
+    void noteHeard(const QString& owner, int variant, quint32 id, qint64 whenSecs);
+    void saveHeardOwners();
 
     void load();
     /** @brief The log changed: a new generation is owed to the disk. */
@@ -1001,8 +1172,15 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      * took reaches the seen store. A build that predates it skips the line (no row).
      */
     static QByteArray settledSeenLine(const QString& key, const SeenState& seen);
+    /** @brief One spill line for a FreshRow::clearedProof: its key, seen entry (with the proof), owner (`ho`) and time
+     * (`when`), and `cleared`; no row. */
+    static QByteArray clearedProofLine(const FreshRow& fresh);
     /** @brief Bound @p seen once it is well past what the ring could resurrect. */
     static void pruneSeenMap(SeenMap& seen);
+    /** @brief Issue #903: whether @p snapshot may be read between a start's accept and its session (refresh() without
+     * bindNewRings): not a ring no session owns. On a ring a session owns, what it pushed since the last read is noted
+     * as no one's (heard_owners_note_unowned()). */
+    bool readBeforeSession(const dsd_state* snapshot);
 
     /** @brief Give a row about to be logged its uid, and index its fragments. */
     void adoptNewRow(Row& row);
@@ -1057,6 +1235,9 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /** @brief For a settled spill @p line (settledSeenLine()), give the seen entry @p key the site text digest it
      * carries, if the entry has none; any other line is passed over. */
     void foldSettledSeen(const QString& key, const QJsonObject& line, bool* folded);
+    /** @brief For a clearedProofLine() @p line: when the seen entry @p key still has no proof, give it the line's and
+     * hand the talkgroup to the sink (issue #903); once, so a refold adds nothing. */
+    void foldClearedProof(const QString& key, const QJsonObject& line, bool* folded);
     /** @brief Whether the clear mark (@p cleared: it applies) covers the spilled @p row its tap found as @p seen. */
     bool spilledRowCleared(bool cleared, const Row& row, const SeenState& seen) const;
     /** @brief pruneSeen() within a fold, and forget the twins taken that only the entries it dropped recorded. */
@@ -1075,9 +1256,10 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
         pruneSeenMap(m_seen);
     }
 
-    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, under one
-     * handoff of the background tap. */
-    void changeSession(const QString& label, const QString& uid, bool begin);
+    /** @brief Move the session's label and uid to @p label and @p uid, and begin a new session when @p begin, with
+     * @p owners as its owners when given (issue #903), under one handoff of the background tap. */
+    void changeSession(const QString& label, const QString& uid, bool begin,
+                       const HeardSessionOwners* owners = nullptr);
     /** @brief beginSession()'s step: the next session number, and the clear and read position a start keeps. */
     void advanceSession();
     /** @brief Whether the clear mark covers rows of the ring being read (settleClear() has bound or dropped it). */
@@ -1150,6 +1332,22 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     /* Issue #800, 2.7: the session ordinal of every ring read (SessionOrdinals). Persisted
        (callHistory/sessionOrd/next, /rings). */
     SessionOrdinals m_sessionOrdinals;
+    /* Issue #903: who owns each recent session's calls, the rings bound to them (persisted, callHistory/heardOwners),
+       the sink the verified talkgroups go to, and the sightings waiting for it. */
+    HeardOwners m_heardOwners;
+    /* Issue #903: the newest ingest serial given (heardSerial()). */
+    quint64 m_heardSerial = 0;
+    /* Issue #903: per owner, the ingest serial a Forget of each number (HeardTalkgroupStore::policyId()), and a Clear,
+       came at (heardForgotten()). */
+    QHash<QString, QHash<quint32, quint64>> m_heardForgotten;
+    QHash<QString, quint64> m_heardClearedThrough;
+    /* holdCaptureForStart(): the hold, a count that retires its safety release, and whether the app is away (the last
+       application state was Suspended or Hidden), which says whether the tap starts again when the hold ends. */
+    bool m_captureHeld = false;
+    quint64 m_captureHoldRev = 0;
+    bool m_appAway = false;
+    HeardTalkgroupSink* m_heardSink = nullptr;
+    HeardPending m_heardPending;
     /* Bumped by every clearAll(): a tap started before a clear settled no mark the model may adopt. */
     quint64 m_clearRev = 0;
     quint64 m_tapClearRev = 0;

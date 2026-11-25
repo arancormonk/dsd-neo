@@ -5,6 +5,7 @@
 
 #include <algorithm>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
+#include <iterator>
 #include <qanystringview.h>
 #include <utility>
 #include "saved_systems_model.h"
@@ -361,6 +362,10 @@ constexpr const char* kFreshProvenanceKeys[] = {"rrSid",   "rrSiteId",   "siteNa
 constexpr const char* kTuningProvenanceKeys[] = {"freqMhz",    "decodeFlag", "chanCsvPath",        "groupCsvPath",
                                                  "keyCsvPath", "keyCsvHex",  "p25BandplanCsvPath", "srcCsvPath"};
 
+/** The fields that name the receiver a row runs (receiver_identity()): a talkgroup list saved from a session attaches
+ *  only while they are what the session started with, as the tuning fields are (issue #903). */
+constexpr const char* kReceiverKeys[] = {"sourceType", "host", "port", "filePath", "airspy"};
+
 /** Whether @p system changes a field that decides what the row's imported site is. */
 bool
 changes_site_tuning(const QVariantMap& previous, const QVariantMap& system) {
@@ -515,6 +520,7 @@ SavedSystemsModel::detailRoleValue(const Row& row, int role) {
         case SiteLonRole: return row.siteLon;
         case HasSitePosRole: return row.hasSitePos;
         case AvoidSiteRole: return row.avoidSite;
+        case RememberTalkgroupsRole: return row.rememberTalkgroups;
         case PlaceRole: return row.place;
         case KeyConfiguredRole:
             return !row.encKeyType.isEmpty() || !row.keyCsvPath.isEmpty() || !row.decryptionProfileUid.isEmpty();
@@ -595,6 +601,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(AvoidSiteRole, QByteArrayLiteral("avoidSite"));
     roles.insert(PlaceRole, QByteArrayLiteral("place"));
     roles.insert(KeyConfiguredRole, QByteArrayLiteral("keyConfigured"));
+    roles.insert(RememberTalkgroupsRole, QByteArrayLiteral("rememberTalkgroups"));
     return roles;
 }
 
@@ -692,6 +699,9 @@ SavedSystemsModel::fillRowDetails(const QVariantMap& map, Row& row) {
     row.hasSitePos = row.hasSitePos && latOk && lonOk && site_position_valid(row.siteLat, row.siteLon);
     if (map.contains(QStringLiteral("avoidSite"))) {
         row.avoidSite = map.value(QStringLiteral("avoidSite")).toBool();
+    }
+    if (map.contains(QStringLiteral("rememberTalkgroups"))) {
+        row.rememberTalkgroups = map.value(QStringLiteral("rememberTalkgroups")).toBool();
     }
     if (map.contains(QStringLiteral("place"))) {
         row.place = validPlace(map.value(QStringLiteral("place")));
@@ -1002,6 +1012,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("siteLon"), row.siteLon);
     map.insert(QStringLiteral("hasSitePos"), row.hasSitePos);
     map.insert(QStringLiteral("avoidSite"), row.avoidSite);
+    map.insert(QStringLiteral("rememberTalkgroups"), row.rememberTalkgroups);
     map.insert(QStringLiteral("place"), row.place);
 
     map.insert(QStringLiteral("name"), row.name);
@@ -1169,6 +1180,42 @@ SavedSystemsModel::updateRadioSettings(const QString& uid, const QVariantMap& ch
 }
 
 bool
+SavedSystemsModel::groupListAttachable(const QString& uid, const QVariantMap& tuning) const {
+    const int row = rowForUid(uid);
+    if (row < 0 || !m_rows.at(row).groupCsvPath.isEmpty()) {
+        return false;
+    }
+    const QVariantMap stored = get(row);
+    // Compared as text: QML hands a bool or a string over as the variant it made, the store as its own.
+    const bool sameTuning =
+        std::all_of(std::begin(kTuningProvenanceKeys), std::end(kTuningProvenanceKeys), [&](const char* key) {
+            const QString name = QLatin1String(key);
+            return tuning.contains(name) && tuning.value(name).toString() == stored.value(name).toString();
+        });
+    // And the receiver: the same source and endpoint, every field of it captured.
+    const bool receiverCaptured = std::all_of(std::begin(kReceiverKeys), std::end(kReceiverKeys),
+                                              [&](const char* key) { return tuning.contains(QLatin1String(key)); });
+    return sameTuning && receiverCaptured && receiver_identity(tuning) == receiver_identity(stored);
+}
+
+bool
+SavedSystemsModel::attachGroupList(const QString& uid, const QString& path, const QVariantMap& tuning) {
+    if (path.isEmpty() || !groupListAttachable(uid, tuning)) {
+        return false;
+    }
+    const int row = rowForUid(uid);
+    auto next = m_rows;
+    next[row].groupCsvPath = path;
+    if (!saveRows(next)) {
+        return false;
+    }
+    m_rows = std::move(next);
+    const QModelIndex idx = index(row);
+    Q_EMIT dataChanged(idx, idx);
+    return true;
+}
+
+bool
 SavedSystemsModel::clearRadioSetting(const QString& uid, const QString& key) {
     const int row = rowForUid(uid);
     const bool control =
@@ -1208,6 +1255,7 @@ SavedSystemsModel::remove(int row) {
     Q_EMIT sitesChanged();
     Q_EMIT countChanged();
     releaseReplayIfUnused(file);
+    Q_EMIT systemRemoved(uid);
     return true;
 }
 
@@ -1215,6 +1263,15 @@ QStringList
 SavedSystemsModel::tuningProvenanceFields() const {
     QStringList fields;
     for (const char* key : kTuningProvenanceKeys) {
+        fields.append(QLatin1String(key));
+    }
+    return fields;
+}
+
+QStringList
+SavedSystemsModel::groupListTuningFields() const {
+    QStringList fields = tuningProvenanceFields();
+    for (const char* key : kReceiverKeys) {
         fields.append(QLatin1String(key));
     }
     return fields;
@@ -1298,6 +1355,27 @@ SavedSystemsModel::rowForUid(const QString& uid) const {
     return -1;
 }
 
+QSet<QString>
+SavedSystemsModel::uids() const {
+    QSet<QString> out;
+    out.reserve(m_rows.size());
+    for (const Row& row : m_rows) {
+        out.insert(row.uid);
+    }
+    return out;
+}
+
+QSet<QString>
+SavedSystemsModel::rememberingUids() const {
+    QSet<QString> out;
+    for (const Row& row : m_rows) {
+        if (row.rememberTalkgroups) {
+            out.insert(row.uid);
+        }
+    }
+    return out;
+}
+
 QVariantMap
 SavedSystemsModel::getByUid(const QString& uid) const {
     return get(rowForUid(uid));
@@ -1368,8 +1446,8 @@ SavedSystemsModel::csvPaths() const {
 }
 
 bool
-SavedSystemsModel::clearCsvPath(const QString& path) {
-    return clearPathProvenance(path, true);
+SavedSystemsModel::clearCsvPath(const QString& path, bool fromRadioReference) {
+    return clearPathProvenance(path, true, fromRadioReference);
 }
 
 bool
@@ -1378,7 +1456,7 @@ SavedSystemsModel::invalidatePathProvenance(const QString& path) {
 }
 
 bool
-SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
+SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields, bool fromRadioReference) {
     if (path.isEmpty()) {
         return true;
     }
@@ -1389,10 +1467,13 @@ SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
     for (int i = 0; i < next.size(); i++) {
         Row& row = next[i];
         bool names = false;
+        // Whether the file named anything that decides the site: every field but a user file's group list does.
+        bool describesSite = false;
         for (QString Row::* field :
              {&Row::chanCsvPath, &Row::groupCsvPath, &Row::keyCsvPath, &Row::p25BandplanCsvPath, &Row::srcCsvPath}) {
             if (row.*field == path) {
                 names = true;
+                describesSite = describesSite || fromRadioReference || field != &Row::groupCsvPath;
                 if (clearFields) {
                     (row.*field).clear();
                 }
@@ -1403,7 +1484,7 @@ SavedSystemsModel::clearPathProvenance(const QString& path, bool clearFields) {
         }
         // The file no longer describes the site, and the site leaves its group with the only chooser that could lift
         // its avoid. A row with nothing to clear (and no field cleared) is left out: no save, no signal for it.
-        const Row clearedRow = rowFromMap(cleared, row);
+        const Row clearedRow = describesSite ? rowFromMap(cleared, row) : row;
         if (clearFields || mapFromRow(clearedRow) != mapFromRow(row)) {
             row = clearedRow;
             first = first < 0 ? i : first;

@@ -857,6 +857,28 @@ typedef struct {
     // whether or not it named the channel. Meaningful only once channel_label_resolved is set.
     uint8_t operator_tuned;
     uint8_t scan_member;
+    // Issue #903: 1 when the receiver's tuning had changed since its run began (dsd_state_tuning_moved(): a carrier,
+    // input or decode-mode change on no allow-list, or a channel-map import) at the call's first render; frozen with the stamps above. The
+    // call was not heard on the tuning its session started with.
+    uint8_t tuning_moved;
+    // The -Y scan-list row the call was heard on (issue #903), stamped and frozen with channel_label: 1 + its index
+    // (dsd_channel_label_scan_list_row()) and the identity of the list it is a row of (dsd_state::lcn_list_rev); 0 and
+    // 0 off any -Y row (no scan, a paused one, a --trunk-scan target). Two rows that share a name, a frequency or
+    // neither stay two rows, and a call heard while a scan is paused is on none.
+    uint32_t scan_list_row;
+    uint64_t scan_list_rev;
+    // The verified talkgroup proof of the row's transmission (issue #903; dsd_call_snapshot::heard_variant, heard_id):
+    // a dsd_heard_tg_variant (<dsd-neo/core/heard_talkgroup.h>) and the over-the-air id a checked message of this
+    // fragment's own call epoch proved, or DSD_HEARD_TG_NONE (0) and 0. Copied from the call, never from a grant or an
+    // earlier epoch; a merged reacquisition keeps the row's own and fills one it lacks; a CRC failure marked on the row
+    // later leaves it (fragment trust).
+    uint8_t heard_variant;
+    uint32_t heard_id;
+    // 1 only while the decoder input was a live radio or network source (dsd_opts_input_is_live()) when the row began
+    // and at every render and commit since: a latch a running switch to a file, --playfiles or an I/Q or symbol replay
+    // closes for good. A merge ANDs the segments'; a proof that revises a committed row while the input is not live
+    // clears it. 0 for a row the renderer never built.
+    uint8_t live_input;
     uint32_t channel; // If this occurs on a trunking channel, which channel
     // The numbering channel was named in, a dsd_call_channel_kind (<dsd-neo/core/call_channel.h>): the DMR call's own
     // LSN, LPCN or LCN; DSD_CALL_CHANNEL_NONE for other protocols. Meaningful only with channel != 0, and set with it.
@@ -1214,6 +1236,15 @@ typedef struct {
     uint64_t transmission; /**< the canonical call's transmission (dsd_call_snapshot_transmission()); 0 none */
     uint32_t source;       /**< the source unit the VCALL named there */
 } dsd_nxdn_tx_source;
+
+/* NXDN Type-D: the group a checked VCALL read with the Type-D layout named (dsd_state::nxdn_heard_pending), held for
+   its own call epoch until that epoch's SCCH run confirms the Type-D reading (issue #903, nxdn_element.c). */
+typedef struct {
+    uint64_t epoch;   /**< dsd_call_snapshot::epoch of the call the VCALL named; 0 none pending */
+    uint32_t full_id; /**< (prefix << 11) | id (nxdn_typed_full_id()) */
+    uint8_t call_type;
+    uint8_t inter_system; /**< CC Option bit 6 */
+} dsd_nxdn_heard_pending;
 
 /* NXDN Type-C: where the channel access parameters (dsd_state::nxdn_rcn, nxdn_base_freq, nxdn_step) came from
    (dsd_state::nxdn_ca). They are a site's, carried only by its SITE_INFO (TS 1-A §6.5.36), so they are kept apart from
@@ -2589,6 +2620,13 @@ struct dsd_state {
     double p25_p2_last_mac_active_m[2];
     // P25p2 recent MAC_END_PTT timestamps per slot (transmission boundaries)
     time_t p25_p2_last_end_ptt[2];
+    /* Per slot: the group a CRC-passed P25 Phase 2 group voice-user message named for the slot's ACTIVE call, waiting
+       for traffic of that call to prove it (issue #903, p25_heard_tg.c): the call's epoch (0 for none; a reacquired or
+       reopened call is another epoch and waits for its own voice user), the group, and 1 when the message itself named
+       a supergroup (a regroup voice user). Decoder-thread private. */
+    uint64_t p25_p2_heard_vu_epoch[2];
+    uint32_t p25_p2_heard_vu_group[2];
+    uint8_t p25_p2_heard_vu_regroup[2];
     // P25p1 recent TDU/TDULC transmission-boundary timestamp
     double p25_p1_last_tdu_m;
     /* The P25 Phase 1 call the last terminator (a TDU or TDULC) ended (p25p1_terminator_note_end()), 0 for none, and
@@ -3004,6 +3042,10 @@ struct dsd_state {
     uint64_t edacs_no_stream_since_ms;
     uint64_t edacs_no_stream_paid;
     uint64_t edacs_no_stream_owed;
+    /* The stream the decoder read was cut and the engine has still to end the reception (issue #634): 0 none,
+       DSD_INPUT_BOUNDARY_REPLACED for another input (dsd_engine_note_input_replaced()), DSD_INPUT_BOUNDARY_RESTORED for
+       the same input put back on its own endpoint, which keeps the tuning (dsd_engine_note_input_restored(), issue
+       #903). */
     int input_boundary;
     /* The carrier boundary's count (issue #575): dsd_engine_carrier_boundary() bumps it whenever the receiver leaves a
        carrier. A decoder that buffers several bursts or frames before it decodes them notes it when collection starts,
@@ -3204,6 +3246,11 @@ struct dsd_state {
      * talker never replaces it, its transmission moving with the call the INFO3 continues. Travels with a trunk scan
      * target. */
     dsd_nxdn_tx_source nxdn_tx_source;
+    /* NXDN Type-D: a checked VCALL's group awaiting its transmission's confirmed SCCH run (issue #903). No call or
+     * carrier boundary resets it: the next confirmed SCCH consumes it, and notes it only while slot 0's ACTIVE call is
+     * still that transmission (dsd_call_snapshot_transmission(), epochs never repeat), so one left behind by another
+     * call or carrier is dropped there and notes nothing. */
+    dsd_nxdn_heard_pending nxdn_heard_pending;
 
     //multi-key array
     int keyloader;            //let us know the keyloader is active
@@ -3494,6 +3541,14 @@ struct dsd_state {
     uint8_t lcn_scan_paused;
     uint8_t lcn_scan_resume_pending;
     uint8_t operator_tuned;
+    /* The tuning generation (issue #903), fail-closed: tuning_gen counts every carrier boundary, input change, decode-
+     * mode change and channel-map or band-plan import, but the moves dsd_state_note_tuning_move() lists as staying on
+     * the system the session started (dsd_tuning_move). run_tuning_gen: tuning_gen as the run began, its first stream's
+     * start included
+     * (dsd_engine_note_run_start(), dsd_engine_note_run_stream_source()). Written on the decoder thread, under the P25
+     * SM tick guard once the watchdog runs. */
+    uint32_t tuning_gen;
+    uint32_t run_tuning_gen;
     uint16_t lcn_avoid_count; /**< Avoided -Y rows within lcn_freq_count */
     uint8_t trunk_scan_hold;  /**< 1 = --trunk-scan dwell paused on the active target */
     /* The --trunk-scan hold is an entry hold (issue #644), as lcn_scan_entry_hold is for -Y: set with trunk_scan_hold
@@ -3939,6 +3994,56 @@ dsd_state_note_carrier_change(dsd_state* state) {
        no embedded GPS fix of the next reception is attributed by it (issue #800). */
     dsd_position_attribution_clear(&state->dmr_lc_attribution[0]);
     dsd_position_attribution_clear(&state->dmr_lc_attribution[1]);
+}
+
+/* dsd_state::input_boundary's values. */
+enum { DSD_INPUT_BOUNDARY_REPLACED = 1, DSD_INPUT_BOUNDARY_RESTORED = 2 };
+
+/* Why the receiver's carrier, input or decode mode moved (issue #903). DSD_TUNING_MOVE_OTHER is every move not listed;
+   the others are the allow-list of moves that provably stay on the system the session started. */
+typedef enum {
+    DSD_TUNING_MOVE_OTHER = 0,
+    /* (a) A trunk follow to a voice channel, or the return to that system's control channel. */
+    DSD_TUNING_MOVE_TRUNK_FOLLOW,
+    /* (b) The system's own control-channel hunt among its own control-channel candidates. */
+    DSD_TUNING_MOVE_OWN_CC_HUNT,
+    /* (c) A step of the session's own scan list: scan-row ownership attributes its calls. */
+    DSD_TUNING_MOVE_OWN_SCAN_STEP,
+    /* (d) A stream gap or a reopen on the same carrier. */
+    DSD_TUNING_MOVE_STREAM_GAP,
+    /* (e) A change rolled back, or an input restored, that ends on exactly the tuning in force before it. */
+    DSD_TUNING_MOVE_RESTORED,
+    /* (f) An operator's tune: operator_tuned marks the calls heard after it, and a resume clears it. */
+    DSD_TUNING_MOVE_OPERATOR,
+} dsd_tuning_move;
+
+/* The receiver's tuning moved for @p why (dsd_state::tuning_gen, issue #903): the generation moves unless @p why is on
+   the allow-list. Every carrier boundary, input change and decode-mode change reports here. The caller holds the P25 SM
+   tick guard. */
+static inline void
+dsd_state_note_tuning_move(dsd_state* state, dsd_tuning_move why) {
+    switch (why) {
+        case DSD_TUNING_MOVE_TRUNK_FOLLOW:
+        case DSD_TUNING_MOVE_OWN_CC_HUNT:
+        case DSD_TUNING_MOVE_OWN_SCAN_STEP:
+        case DSD_TUNING_MOVE_STREAM_GAP:
+        case DSD_TUNING_MOVE_RESTORED:
+        case DSD_TUNING_MOVE_OPERATOR: return;
+        case DSD_TUNING_MOVE_OTHER:
+        default: state->tuning_gen++; return;
+    }
+}
+
+/* What the receiver is tuned to or decodes with changed, by a move on no allow-list (DSD_TUNING_MOVE_OTHER). */
+static inline void
+dsd_state_note_tuning_change(dsd_state* state) {
+    dsd_state_note_tuning_move(state, DSD_TUNING_MOVE_OTHER);
+}
+
+/* Whether the receiver's tuning changed since its run began (dsd_state::run_tuning_gen, issue #903). */
+static inline int
+dsd_state_tuning_moved(const dsd_state* state) {
+    return state->tuning_gen != state->run_tuning_gen ? 1 : 0;
 }
 
 /* Whether a frame whose sync ends on the latest symbol and that reads up to @p lookback symbols back (its sync word

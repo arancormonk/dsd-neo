@@ -66,6 +66,7 @@
 #include <QQuickItem>
 #include <QQuickWindow>
 #include <QRegularExpression>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -102,6 +103,7 @@
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/runtime/analog_tones.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
 #include <functional>
 #include <iterator>
@@ -124,6 +126,8 @@
 #include "diagnostics_log.h"
 #include "dmr_channels_model.h" // Discussion #900 F3
 #include "document_import_transport.h"
+#include "heard_talkgroup_source.h"
+#include "heard_talkgroup_store.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
 #include "json_store.h"
@@ -1368,18 +1372,24 @@ class TestUiController : public QObject {
     // WP-S2: exercise Main.qml signal routing and overlay binding.
     Q_PROPERTY(bool autoStartBlocked MEMBER autoStartBlocked)
     // WP-D1: retained export result starts empty, like the real controller.
-    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult CONSTANT)
+    Q_PROPERTY(QVariantMap talkgroupExportResults READ talkgroupExportResults CONSTANT)
     Q_PROPERTY(QVariantMap decryptionResult MEMBER decryptionResult NOTIFY decryptionResultChanged)
   public:
     using QObject::QObject;
 
     QVariantMap
     // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
-    talkgroupExportResult() const {
+    talkgroupExportResults() const {
         return {};
     }
 
     QVariantMap decryptionResult;
+
+    /* Issue #903: no export result held, like the real controller before any export. */
+    Q_INVOKABLE QString
+    talkgroupExportSequenceNow() const {
+        return heldExportSequence;
+    }
 
     Q_INVOKABLE void
     finishDecryption(const QString& id, int status) {
@@ -1388,6 +1398,7 @@ class TestUiController : public QObject {
     }
 
     bool autoStartBlocked = true;
+    QString heldExportSequence = QStringLiteral("0");
 
     /* Issue #697: @p companions, the other lists a scan target was last started with, ride along as the real
        controller's do. */
@@ -1399,6 +1410,10 @@ class TestUiController : public QObject {
     Q_INVOKABLE void
     // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
     flushHistory() {}
+
+    Q_INVOKABLE void
+    // cppcheck-suppress functionStatic // Qt meta-object entry point must remain an instance method.
+    flushHistoryBeforeStart() {}
 
   Q_SIGNALS:
     void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
@@ -2664,9 +2679,14 @@ class CommandRecorder : public QObject {
  * those signals, so a reset-everything stand-in would test nothing. Rows carry the
  * decode session they were logged in, as CallHistoryModel's do, and beginSession()
  * moves it on the way a start does.
+ *
+ * Issue #903: it hands the Talkgroups screen its heard set as CallHistoryModel does (HeardTalkgroupSource): each row's
+ * owner (setRowHeardOwner(), none by default) and the owner a call heard now would take (setHeardOwnerOnAir(), none by
+ * default), so the screen's viewed owner and its remembered cards can be tested. A row's uid is its ingest serial.
  */
-class CallLogStore : public QAbstractListModel {
+class CallLogStore : public QAbstractListModel, public dsd_qt::HeardTalkgroupSource {
     Q_OBJECT
+    Q_INTERFACES(dsd_qt::HeardTalkgroupSource)
     Q_PROPERTY(int count READ count NOTIFY countChanged)
     Q_PROPERTY(QString sessionLabel READ sessionLabel WRITE setSessionLabel NOTIFY sessionLabelChanged)
     Q_PROPERTY(QString sessionUid READ sessionUid WRITE setSessionUid NOTIFY sessionUidChanged)
@@ -2711,7 +2731,65 @@ class CallLogStore : public QAbstractListModel {
         QVariantList recordings;
         /* Issue #800: the saved fix as CallHistoryModel's position role reads it, {} without one. */
         QVariantMap position;
+        /* Issue #903: the saved system the fragment is owned by (CallHistoryModel's "vo"), empty for none, and the -Y
+           scan-list row it was heard on (CallHistoryModel's "slr", "sll"), 0 and 0 for none. */
+        QString heardOwner;
+        quint32 scanListRow = 0;
+        quint64 scanListRev = 0;
     };
+
+    /* Issue #903: HeardTalkgroupSource, as CallHistoryModel answers it, over these rows. */
+    QList<dsd_qt::HeardTalkgroupRow>
+    heardTalkgroups(qint64 forSession, const QString& owner, const dsd_qt::HeardTarget& target) const override {
+        QHash<uint32_t, dsd_qt::HeardTalkgroupRow> heard;
+        for (const StoreRow& row : m_rows) {
+            if (row.kind != CallHistoryModel::KindVoice || (forSession > 0 && row.session != forSession)
+                || row.heardOwner != owner || row.channel != target.channel || row.scanListRow != target.scanListRow
+                || (row.scanListRow != 0U && row.scanListRev != target.scanListRev) || row.tg == 0
+                || row.tg > UINT32_MAX || row.gi == 1) {
+                continue;
+            }
+            dsd_qt::HeardTalkgroupRow& entry = heard[static_cast<uint32_t>(row.tg)];
+            entry.id = static_cast<uint32_t>(row.tg);
+            entry.last = qMax(entry.last, row.when);
+            entry.serial = qMax(entry.serial, static_cast<quint64>(row.uid));
+        }
+        return heard.values();
+    }
+
+    quint64
+    heardSerial() const override {
+        return static_cast<quint64>(m_lastUid);
+    }
+
+    /* This fake hands no proof to a store: nothing to hide. */
+    void
+    heardForgotten(const QString& /*owner*/, quint32 /*number*/) override {}
+
+    QString
+    heardOwnerOnAir(quint64 /*ring*/, bool /*operatorTuned*/, bool /*scanMember*/,
+                    const QString& /*channel*/) const override {
+        return m_heardOwnerOnAir;
+    }
+
+    /** @brief The saved system a call heard now would be owned by (issue #903); the next talkgroup refresh reads it. */
+    void
+    setHeardOwnerOnAir(const QString& owner) {
+        m_heardOwnerOnAir = owner;
+    }
+
+    /** @brief Own the row with @p uid by saved system @p owner (issue #903; empty: none). */
+    Q_INVOKABLE bool
+    setRowHeardOwner(qint64 uid, const QString& owner) {
+        const int row = rowForUid(uid);
+        if (row < 0) {
+            return false;
+        }
+        m_rows[row].heardOwner = owner;
+        const QModelIndex idx = index(row);
+        Q_EMIT dataChanged(idx, idx, {CallHistoryModel::TgRole});
+        return true;
+    }
 
     int
     rowCount(const QModelIndex& parent = QModelIndex()) const override {
@@ -2776,6 +2854,40 @@ class CallLogStore : public QAbstractListModel {
     setSessionSystem(const QString& label, const QString& uid) {
         setSessionLabel(label);
         setSessionUid(uid);
+    }
+
+    /** @brief CallHistoryModel::holdCaptureForStart() (issue #903): held until a session begins or the release. */
+    Q_INVOKABLE void
+    holdCaptureForStart() {
+        m_captureHeld = true;
+    }
+
+    Q_INVOKABLE void
+    releaseCaptureHold() {
+        m_captureHeld = false;
+    }
+
+    /** @brief Whether a start's hold is still taken, for a case to read. */
+    Q_INVOKABLE bool
+    captureHeld() const {
+        return m_captureHeld;
+    }
+
+    /** @brief A start on a system with its owners (CallHistoryModel::beginSessionWithOwners(), issue #903); the
+     * owners are kept for a case to read: {session, single, scan}. The start's hold is consumed. */
+    Q_INVOKABLE void
+    beginSessionWithOwners(const QString& label, const QString& uid, const QString& singleOwnerUid,
+                           const QVariantMap& scanEntryOwner) {
+        m_captureHeld = false;
+        beginSessionOn(label, uid);
+        m_sessionOwners = QVariantMap{{QStringLiteral("session"), m_session},
+                                      {QStringLiteral("single"), singleOwnerUid},
+                                      {QStringLiteral("scan"), scanEntryOwner}};
+    }
+
+    Q_INVOKABLE QVariantMap
+    sessionOwners() const {
+        return m_sessionOwners;
     }
 
     /** @brief The scan channels' names (CallHistoryModel::setChannelNames(), issue #671), kept for a case to read. */
@@ -3359,8 +3471,12 @@ class CallLogStore : public QAbstractListModel {
     QHash<QString, qint64> m_fragmentUids;
     QString m_systemName = QStringLiteral("Test Site");
     QVariantMap m_channelNames;
+    QVariantMap m_sessionOwners;
+    bool m_captureHeld = false;
     QString m_sessionUid = QStringLiteral("test-system");
     QString m_sessionLabel = QStringLiteral("Test Site");
+    /* Issue #903: heardOwnerOnAir()'s answer. */
+    QString m_heardOwnerOnAir;
     qint64 m_session = 0;
     int m_seq = 0;
     /* Never reused, as the model's are not. */
@@ -4697,8 +4813,30 @@ class Setup : public QObject {
 
     Q_INVOKABLE void
     setGroupFileConfigured(bool configured) {
+        setGroupFile(configured ? QStringLiteral("fixture-talkgroups.csv") : QString());
+    }
+
+    /* Issue #903: the decoder's talkgroup list file is @p path (empty: none), as an export leaves it. */
+    Q_INVOKABLE void
+    setGroupFile(const QString& path) {
         DSD_SNPRINTF(m_talkgroup_opts->group_in_file, sizeof(m_talkgroup_opts->group_in_file), "%s",
-                     configured ? "fixture-talkgroups.csv" : "");
+                     path.toUtf8().constData());
+        m_applied_table = nullptr;
+        m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
+    }
+
+    /* Issue #903: a scan row with its own talkgroup list on air (persistence scope "scan"), or none. */
+    Q_INVOKABLE void
+    setTalkgroupScanScope(bool on) {
+        if (on) {
+            dsd_scan_option_values row = {};
+            row.present = DSD_SCAN_OPT_GROUP;
+            DSD_SNPRINTF(row.group_file, sizeof row.group_file, "%s", "fixture-row-talkgroups.csv");
+            (void)dsd_scan_mode_begin(m_talkgroup_opts.get(), m_talkgroup_state.get());
+            (void)dsd_scan_mode_options(m_talkgroup_opts.get(), m_talkgroup_state.get(), &row);
+        } else {
+            dsd_scan_mode_leave(m_talkgroup_opts.get(), m_talkgroup_state.get());
+        }
         m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
     }
@@ -4711,6 +4849,72 @@ class Setup : public QObject {
         m_applied_table = nullptr;
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
         return true;
+    }
+
+    /*
+     * Issue #903: the remembered talkgroups behind the Talkgroups screen. The store is the production
+     * HeardTalkgroupStore on disposable test storage; which owners it learns for is the case's
+     * (setTalkgroupRemembering()), and the owner on air is the history stand-in's (CallLogStore::setHeardOwnerOnAir()).
+     * Each refreshes the talkgroup list as the poll tick would.
+     */
+    Q_INVOKABLE void
+    setTalkgroupOwnerOnAir(const QString& owner) {
+        m_call_log->setHeardOwnerOnAir(owner);
+        refreshShownTalkgroups();
+    }
+
+    Q_INVOKABLE void
+    setTalkgroupRemembering(const QString& owner, bool on) {
+        if (on) {
+            m_remembering_owners.insert(owner);
+        } else {
+            m_remembering_owners.remove(owner);
+        }
+        m_remembered_owners.insert(owner);
+        refreshShownTalkgroups();
+    }
+
+    /** @brief Remember talkgroup @p id of @p variant heard on @p owner @p agoSecs seconds before the decode clock now. */
+    Q_INVOKABLE void
+    rememberTalkgroup(const QString& owner, int variant, double id, double agoSecs) {
+        const qint64 now = m_metrics.value(QStringLiteral("decodeNowMs")).toLongLong() / 1000;
+        m_remembered_owners.insert(owner);
+        m_heard_store->observe(owner, variant, static_cast<quint32>(id), now - static_cast<qint64>(agoSecs));
+        refreshShownTalkgroups();
+    }
+
+    Q_INVOKABLE int
+    rememberedTalkgroupCount(const QString& owner) const {
+        return static_cast<int>(m_heard_store->entriesFor(owner).size());
+    }
+
+    /** @brief The table on show refreshed, as the poll tick does. */
+    void
+    refreshShownTalkgroups() {
+        m_talkgroups->refresh(m_talkgroup_opts.get(),
+                              m_applied_table != nullptr ? m_applied_table : m_talkgroup_state.get());
+    }
+
+    /**
+     * @brief Have the store's before-edit hook refuse (@p refused) or allow every Forget and Clear, as History's
+     *        spillSettler() does while it cannot save its log (qt_ui.cpp wires that hook).
+     */
+    Q_INVOKABLE void
+    setRememberedEditsRefused(bool refused) {
+        m_heard_store->setBeforeEdit([refused]() { return !refused; });
+    }
+
+    /** @brief Forget every owner a case remembered for, learn for none, and put no owner on air. */
+    Q_INVOKABLE void
+    resetRememberedTalkgroups() {
+        m_heard_store->setBeforeEdit({});
+        for (const QString& owner : std::as_const(m_remembered_owners)) {
+            m_heard_store->clear(owner);
+        }
+        m_remembered_owners.clear();
+        m_remembering_owners.clear();
+        m_call_log->setHeardOwnerOnAir(QString());
+        refreshShownTalkgroups();
     }
 
     Q_INVOKABLE int
@@ -7486,7 +7690,12 @@ class Setup : public QObject {
         auto* monitorView = new CallHistoryFilterModel(engine);
         monitorView->setSourceModel(store);
         store->setParent(engine);
+        m_call_log = store;
         m_talkgroups = new dsd_qt::TalkgroupListModel(store, engine);
+        // Issue #903: the remembered cards' store, learning for the owners a case names.
+        m_heard_store = new dsd_qt::HeardTalkgroupStore(QLatin1String(dsd_qt::HeardTalkgroupStore::kFileName), engine);
+        m_heard_store->setOwnerPolicy([this](const QString& owner) { return m_remembering_owners.contains(owner); });
+        m_talkgroups->setHeardStore(m_heard_store);
         auto* talkgroupView = new dsd_qt::TalkgroupFilterModel(engine);
         talkgroupView->setSourceModel(m_talkgroups);
         m_talkgroups->refresh(m_talkgroup_opts.get(), m_talkgroup_state.get());
@@ -8349,6 +8558,12 @@ class Setup : public QObject {
     /* The target table on show, or null for m_talkgroup_state. */
     const dsd_state* m_applied_table = nullptr;
     dsd_qt::TalkgroupListModel* m_talkgroups = nullptr;
+    /* Issue #903: the history stand-in behind the list, the remembered talkgroups, the owners the store learns for and
+     * every owner a case remembered for (resetRememberedTalkgroups() clears them). */
+    CallLogStore* m_call_log = nullptr;
+    dsd_qt::HeardTalkgroupStore* m_heard_store = nullptr;
+    QSet<QString> m_remembering_owners;
+    QSet<QString> m_remembered_owners;
     dsd_qt::P25NetworkModel* m_network = nullptr;
     /* Issue #782: the snapshot hopNetwork() publishes, built on first use. */
     std::unique_ptr<dsd_state> m_network_state;

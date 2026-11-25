@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QChar>
+#include <QLatin1String>
 #include <QMap>
 #include <QPair>
 #include <QRegularExpression>
@@ -734,6 +735,25 @@ scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecod
         return protocol == QStringLiteral("am") ? DSD_ANALOG_DEMOD_AM : -1;
     }
     return entry.value("kind") == "system" ? analogKindForFlag(systemDecodeFlag) : -1;
+}
+
+QHash<QString, QString>
+scan_list_entry_owners(const QVariantMap& list) {
+    QHash<QString, QString> owners;
+    if (list.value("targetSource", "entries").toString() != QStringLiteral("entries")) {
+        return owners;
+    }
+    for (const auto& value : list.value("entries").toList()) {
+        const auto entry = value.toMap();
+        const QString id = entry.value("uid").toString();
+        if (owners.contains(id)) {
+            continue; // A uid's first entry is the one its target names.
+        }
+        owners.insert(id, entry.value("enabled", true).toBool() && entry.value("kind") == "system"
+                              ? entry.value("systemUid").toString()
+                              : QString());
+    }
+    return owners;
 }
 
 const ScanProtocol*

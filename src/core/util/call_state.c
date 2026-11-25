@@ -5,6 +5,8 @@
 
 #include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
+#include <dsd-neo/core/events.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/receive.h>
@@ -1736,6 +1738,110 @@ dsd_call_state_update_policy_target(dsd_state* state, uint8_t slot, uint64_t epo
     }
     dsd_call_state_ext_unlock(ext);
     return changed;
+}
+
+/* Write @p call's verified talkgroup proof (issue #903) into the epoch's own history rows: the staged row while the
+   slot's lifecycle has opened the epoch and not yet committed its end, and the row the epoch already committed, when
+   it lacks one (a revision: commit_rev moves, so a mirror of the committed rows reads it). A row of another epoch is
+   never touched. Rendering copies the proof into the staged row too; writing it here keeps a commit that runs before
+   the next render (the epoch-change path commits the staged row as it stands) from losing it. Caller holds the
+   call-state mutex. */
+static void
+call_state_stamp_verified_rows(dsd_state* state, const dsd_call_state_ext* ext, uint8_t slot,
+                               const dsd_call_snapshot* call) {
+    if (state->event_history_s == NULL) {
+        return;
+    }
+    Event_History_I* ring = &state->event_history_s[slot];
+    const dsd_call_event_lifecycle* lifecycle = &ext->events[slot];
+    int changed = 0;
+    /* Whether the input is live now (issue #903): the input in force as the proof arrived, and, when the epoch's own
+       staged row was rendered since its last commit, that row's live-input latch, which every render ANDs with the
+       input then. A staged row no render built yet (a commit just cleared it) says nothing either way. A proof noted
+       while the input is not live closes the staged row's latch too, so a commit after a switch back to a live input
+       (with no render between) still reads it shut; a render that begins the row ANDs it with the call's verdict. */
+    uint8_t live_now = call->heard_live_input;
+    if (lifecycle->epoch == call->epoch && !lifecycle->ended_committed) {
+        Event_History* staged = &ring->Event_History_Items[0];
+        staged->heard_variant = call->heard_variant;
+        staged->heard_id = call->heard_id;
+        if (staged->channel_label_resolved != 0U) {
+            live_now = (uint8_t)(live_now != 0U && staged->live_input != 0U);
+        }
+        staged->live_input = (uint8_t)(staged->live_input != 0U && live_now != 0U);
+        changed = 1;
+    }
+    const uint8_t index =
+        lifecycle->committed_epoch == call->epoch ? dsd_call_event_committed_row_index(ring, lifecycle) : (uint8_t)0U;
+    /* Always none here: heard_noted lets one note per epoch through, so a committed row is never re-proved. */
+    if (index != 0U && ring->Event_History_Items[index].heard_variant == (uint8_t)DSD_HEARD_TG_NONE) {
+        Event_History* committed = &ring->Event_History_Items[index];
+        committed->heard_variant = call->heard_variant;
+        committed->heard_id = call->heard_id;
+        /* A proof noted while the input is not live clears the row's live input: fail closed. */
+        committed->live_input = (uint8_t)(committed->live_input != 0U && live_now != 0U);
+        ring->commit_rev++;
+        changed = 1;
+    }
+    if (changed) {
+        dsd_event_history_mark_dirty(ring);
+    }
+}
+
+/* Whether the receive policy in force lets @p call's traffic prove a talkgroup of the system (issue #903): an
+   access-code filter (DCC, RAN, NAC) admits the code its carrier is decoded with now, for the call's protocol and
+   slot, which must still be the service the call was received with. A filter still checking (no code verified yet)
+   admits nothing yet, and a code the filter rejects is traffic of another system. The slot filter is not asked: it
+   picks a timeslot of the same system, as a talkgroup avoid picks a talkgroup. Protocols with no access-code filter
+   (TETRA among them) are always admitted, as is everything with no filter on. Caller holds the call-state mutex. */
+static int
+call_state_receive_code_admits(const dsd_opts* opts, const dsd_state* state, const dsd_call_snapshot* call,
+                               uint8_t slot) {
+    if (!dsd_receive_filters_enabled(opts)) {
+        return 1;
+    }
+    dsd_receive_identity live;
+    dsd_receive_identity_current(state, call->protocol, slot, &live);
+    if (dsd_receive_identity_changed(&call->receive_identity, &live)) {
+        return 0;
+    }
+    live.slot = 0U;
+    live.slot_pending = 0U;
+    return dsd_receive_identity_admitted(opts, &live);
+}
+
+void
+dsd_call_state_note_verified_target(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint64_t transmission_epoch,
+                                    const dsd_heard_tg_input* in) {
+    if (!state || slot >= DSD_CALL_STATE_SLOT_COUNT || transmission_epoch == 0U || !in) {
+        return;
+    }
+    dsd_call_state_ext* ext = dsd_call_state_ext_get(state, 0);
+    if (!ext) {
+        return;
+    }
+    dsd_call_state_ext_lock(ext);
+    dsd_call_snapshot* snapshot = &ext->calls.slots[slot];
+    /* Traffic the receive filters do not admit proves nothing and leaves the epoch unclassified, so a checked message
+       once its code is verified and admitted can still prove it. */
+    if (snapshot->phase != DSD_CALL_PHASE_ACTIVE || snapshot->heard_noted != 0U
+        || dsd_call_snapshot_transmission(snapshot) != transmission_epoch
+        || !call_state_receive_code_admits(opts, state, snapshot, slot)) {
+        dsd_call_state_ext_unlock(ext);
+        return;
+    }
+    /* Classified here, once per epoch, and frozen: a later checked message, a render or a rebuilt staged row only
+       reads the result. */
+    snapshot->heard_noted = 1U;
+    if (dsd_heard_tg_ordinary(in)) {
+        snapshot->heard_variant = (uint8_t)in->variant;
+        snapshot->heard_id = in->id;
+        snapshot->heard_live_input = (uint8_t)dsd_opts_input_is_live(opts);
+        call_state_stamp_verified_rows(state, ext, slot, snapshot);
+    }
+    snapshot->revision = call_state_next_nonzero(snapshot->revision);
+    ext->calls.revision = call_state_next_nonzero(ext->calls.revision);
+    dsd_call_state_ext_unlock(ext);
 }
 
 static int

@@ -38,6 +38,8 @@
 #include "decryption_profiles_model.h"
 #include "diagnostics_log.h"
 #include "dmr_channels_model.h"
+#include "heard_talkgroup_owners.h"
+#include "heard_talkgroup_store.h"
 #include "import_service.h"
 #include "imported_files_model.h"
 #include "input_commit.h"
@@ -369,7 +371,9 @@ prune_missing_csv_paths(ImportedFilesModel* importedFiles, SavedSystemsModel* sy
     }
     bool saved = true;
     for (const QString& path : gone) {
-        saved = systems->clearCsvPath(path) && saved;
+        // A pruned file the user made (a saved talkgroup list) never described a site: its systems keep theirs. Only
+        // the launch that prunes a row knows its origin (issue #903); any other file counts as RadioReference's.
+        saved = systems->clearCsvPath(path, !importedFiles->prunedUserFile(path)) && saved;
         saved = scanLists->clearCsvPath(path) && saved;
     }
     if (!saved) {
@@ -482,11 +486,29 @@ load_replays(DecoderHost* host, ImportService* imports, SavedSystemsModel* syste
     systems->setReplayStore(replays);
     // A restore still waiting (Deferred) or stopped part-way (Stuck) may yet replace saved_systems.json, so what it
     // names now says nothing about what the user keeps.
-    if (restore != backup::ApplyOutcome::Deferred && restore != backup::ApplyOutcome::Stuck) {
+    if (backup::restore_settled(restore)) {
         replays->reclaim(*systems, systems->storeLoaded());
     }
     replays->migrateCachedReplays(systems);
     return replays;
+}
+
+// Issue #903: the talkgroups each saved system was heard on. Made after History, so it is destroyed after it (the
+// engine's children go in creation order) and takes what History's teardown still ingests. It follows the saved
+// systems through heard_talkgroups_follow_systems(), and History hands it each verified talkgroup it ingests: the ones
+// the spill folded at History's construction too, now that the owner policy is in place. The Talkgroups screen shows the
+// viewed system's remembered talkgroups from it.
+static HeardTalkgroupStore*
+wire_heard_talkgroups(QQmlApplicationEngine& engine, UiController* controller, SavedSystemsModel* systems,
+                      CallHistoryModel* history, TalkgroupListModel* talkgroups, backup::ApplyOutcome restore) {
+    auto* heard = new HeardTalkgroupStore(QLatin1String(HeardTalkgroupStore::kFileName), &engine);
+    heard_talkgroups_follow_systems(heard, systems, restore);
+    controller->setHeardTalkgroups(heard);
+    history->setHeardSink(heard);
+    talkgroups->setHeardStore(heard);
+    // A forget or clear first makes the spill History folded unable to come back, and is refused when it cannot.
+    heard->setBeforeEdit(history->spillSettler());
+    return heard;
 }
 
 // Issue #830: the close before a restart, refused while the import worker or a backup job would be cut short.
@@ -538,6 +560,7 @@ ui_load(QQmlApplicationEngine& engine, DecoderHost* host) {
     controller->setP25Network(network); // WP-F2
     auto* recordingStatus = wire_recording_status(engine, host, controller, commands);
     wire_attachment(host, controller, prefs, systems, scanLists);
+    wire_heard_talkgroups(engine, controller, systems, history, talkgroups, restoreOutcome.outcome);
 
     auto* listenPins = load_listen_pins(prefs, importedFiles, systems, scanLists, &engine);
 

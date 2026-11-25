@@ -28,6 +28,8 @@ Item {
         property var grid: null
         property var chips: null
         property var search: null
+        // Issue #903: the saved system a remembered case views, on the shared saved systems (removed in cleanup()).
+        property int ownerRow: -1
 
         function initTestCase() {
             verify(screenLoader.item !== null, "TalkgroupsScreen.qml failed to load");
@@ -64,6 +66,15 @@ Item {
 
         function cleanup() {
             Ui.Theme.resetFontScale();
+            screenLoader.item.canSaveList = false;
+            findChild(screenLoader.item, "talkgroupEditSheet").visible = false;
+            findChild(screenLoader.item, "clearRememberedConfirm").visible = false;
+            testContext.resetRememberedTalkgroups();
+            testContext.setTalkgroupScanScope(false);
+            if (tc.ownerRow >= 0) {
+                savedSystems.remove(tc.ownerRow);
+                tc.ownerRow = -1;
+            }
             tc.search.text = "";
             talkgroupView.filterText = "";
             talkgroupView.filterTag = "";
@@ -230,6 +241,304 @@ Item {
                 var only = tc.grid.itemAtIndex(0);
                 return only !== null && only.idText === "12*";
             });
+        }
+
+        // Issue #903 (B4): on a scan row with its own list, edits stay in the session, but learned names may still be
+        // written to that target's list; and the decoder refuses an export there, so Save is not offered.
+        function test_scan_scope_footer_and_save_refusal() {
+            var screen = screenLoader.item;
+            var sheet = findChild(screen, "talkgroupEditSheet");
+            var note = findChild(screen, "talkgroupScopeNote");
+            verify(sheet !== null && note !== null);
+            screen.canSaveList = true;
+            verify(!screen.scanRowRefusesSave);
+            verify(sheet.canSaveList);
+            testContext.setTalkgroupScanScope(true);
+            tryCompare(talkgroups, "persistenceScope", "scan");
+            compare(note.text, "Edits last for this session; learned names may still be added to this target's list");
+            verify(screen.scanRowRefusesSave);
+            verify(!sheet.canSaveList);
+            testContext.setTalkgroupScanScope(false);
+            tryCompare(talkgroups, "persistenceScope", "session");
+            verify(!screen.scanRowRefusesSave);
+            verify(sheet.canSaveList);
+            screen.canSaveList = false;
+            verify(!sheet.canSaveList);
+        }
+
+        // The sheet's request reaches the screen's owner with the version the sheet captured.
+        function test_save_request_forwards_the_sheet_context() {
+            var screen = screenLoader.item;
+            var sheet = findChild(screen, "talkgroupEditSheet");
+            var received = [];
+            var forward = function (context, generation) {
+                received = [context, generation];
+            };
+            screen.saveListRequested.connect(forward);
+            sheet.saveListRequested("123", 7);
+            screen.saveListRequested.disconnect(forward);
+            compare(received, ["123", 7]);
+        }
+
+        // Issue #903: a saved system named @p name that remembers what it hears, on air; its uid.
+        function viewRememberingOwner(name) {
+            verify(savedSystems.add({name: name, sourceType: "rtltcp", freqMhz: "851.5"}));
+            tc.ownerRow = savedSystems.count - 1;
+            var uid = savedSystems.get(tc.ownerRow).uid;
+            verify(uid.length > 0);
+            testContext.setTalkgroupRemembering(uid, true);
+            testContext.setTalkgroupOwnerOnAir(uid);
+            tryCompare(talkgroups, "viewedOwner", uid);
+            verify(talkgroups.remembering);
+            return uid;
+        }
+        // A tap on @p control once the screen has laid out (a control just shown moves at the next polish).
+        function tap(control) {
+            waitForRendering(screenLoader.item);
+            mouseClick(control, control.width / 2, control.height / 2);
+        }
+        // The one card the search for @p id leaves.
+        function cardFor(id) {
+            tc.search.text = String(id);
+            tryCompare(tc.grid, "count", 1);
+            var card = null;
+            tryVerify(function () {
+                card = tc.grid.itemAtIndex(0);
+                return card !== null && card.idText === String(id);
+            }, 5000, "the card for " + id + " is missing");
+            return card;
+        }
+
+        // Issue #903: a remembered card says when it was last heard, in its second line and in what TalkBack reads
+        // with its switch (the talkgroup, then the lines in the order they are drawn); a card heard only in this
+        // session keeps today's line.
+        function test_remembered_card_says_last_heard() {
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            var card = cardFor(4242);
+            verify(card.remembered && !card.listed);
+            compare(findChild(card, "talkgroupCardTags").text, "Last heard 5 min ago");
+            var toggle = findChild(card, "talkgroupListeningSwitch");
+            compare(toggle.accessibleName, "Listen to talkgroup 4242, last heard 5 min ago");
+            compare(toggle.Accessible.description, "", "the last heard is said once, in the name");
+            testContext.rememberTalkgroup(uid, 1, 4242, 0);
+            tryCompare(findChild(card, "talkgroupCardTags"), "text", "Last heard just now");
+            compare(toggle.accessibleName, "Listen to talkgroup 4242, last heard just now");
+
+            // A time ahead of the decode clock (a replay of an older capture after live listening) is said by its time,
+            // with its date only off the viewer's local day (savedSystems.localDay, #905).
+            testContext.rememberTalkgroup(uid, 1, 4343, -7200);
+            var aheadMs = (Math.floor(metrics.decodeNowMs / 1000) + 7200) * 1000;
+            testContext.setLocalNowMs(aheadMs);
+            var ahead = cardFor(4343);
+            var aheadTags = findChild(ahead, "talkgroupCardTags");
+            tryCompare(aheadTags, "text", "Last heard at " + Qt.formatDateTime(new Date(aheadMs), "hh:mm:ss"));
+            testContext.setLocalNowMs(aheadMs + 3 * 86400000);
+            tryCompare(aheadTags, "text", "Last heard at " + Qt.formatDateTime(new Date(aheadMs), "yyyy-MM-dd hh:mm:ss"));
+            testContext.resetLocalDay();
+
+            // A call this session heard on no saved system: not remembered, today's line (the owner's change is the
+            // refresh that reads it).
+            callHistory.pushWithIds(5151, 77);
+            testContext.setTalkgroupOwnerOnAir("");
+            tryCompare(talkgroups, "viewedOwner", "");
+            card = cardFor(5151);
+            verify(!card.remembered);
+            compare(findChild(card, "talkgroupCardTags").text, "Heard in this session");
+            compare(findChild(card, "talkgroupListeningSwitch").Accessible.description, "Heard in this session");
+        }
+
+        // Issue #903: the edit sheet offers Forget on a remembered card only, and forgets the number for the system the
+        // sheet opened on, even when another is on air by the time it is tapped.
+        function test_forget_this_talkgroup() {
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            var sheet = findChild(screenLoader.item, "talkgroupEditSheet");
+            var forget = findChild(sheet, "forgetTalkgroup");
+            verify(forget !== null, "the sheet has a Forget action");
+
+            var listed = cardFor(1001);
+            var edit = findChild(listed, "talkgroupEditButton");
+            tap(edit);
+            tryCompare(sheet, "visible", true);
+            verify(!forget.visible, "a listed card is not remembered: nothing to forget");
+            sheet.visible = false;
+
+            var card = cardFor(4242);
+            edit = findChild(card, "talkgroupEditButton");
+            tap(edit);
+            tryCompare(sheet, "visible", true);
+            verify(forget.visible);
+            compare(forget.text, "Forget this talkgroup");
+            verify(forget.height >= 48);
+            testContext.setTalkgroupOwnerOnAir("");
+            tryCompare(talkgroups, "viewedOwner", "");
+            tap(forget);
+            compare(forget.text, "Tap again to forget");
+            compare(testContext.rememberedTalkgroupCount(uid), 1);
+            tap(forget);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+            verify(!sheet.visible);
+        }
+
+        // Issue #903 (PR2 review r2, P2): a Forget History refuses (it cannot save its log) leaves the sheet open with the
+        // card still remembered, and says why; once History saves, tapping again forgets it.
+        function test_refused_forget_stays_in_the_sheet() {
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            var sheet = findChild(screenLoader.item, "talkgroupEditSheet");
+            var forget = findChild(sheet, "forgetTalkgroup");
+            var error = findChild(sheet, "forgetTalkgroupError");
+            var card = cardFor(4242);
+            tap(findChild(card, "talkgroupEditButton"));
+            tryCompare(sheet, "visible", true);
+            verify(!error.visible);
+            testContext.setRememberedEditsRefused(true);
+            tap(forget);
+            tap(forget);
+            compare(testContext.rememberedTalkgroupCount(uid), 1, "nothing was forgotten");
+            verify(sheet.visible, "the sheet stays open");
+            verify(error.visible);
+            compare(error.text, "Call history could not be saved, so this talkgroup is still remembered.");
+            testContext.setRememberedEditsRefused(false);
+            tap(forget);
+            tap(forget);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+            verify(!sheet.visible);
+        }
+
+        // Issue #903 (PR2 review r2, P2): a Clear History refuses keeps its confirmation open, with the list still
+        // remembered, and says why there, read out; tapping again once History saves clears it, and asking again starts
+        // without the refusal.
+        function test_refused_clear_stays_in_the_confirmation() {
+            var screen = screenLoader.item;
+            var clear = findChild(screen, "clearRememberedTalkgroups");
+            var confirm = findChild(screen, "clearRememberedConfirm");
+            var error = findChild(confirm, "clearRememberedError");
+            var yes = findChild(confirm, "confirmClearRemembered");
+            verify(error !== null);
+            var uid = viewRememberingOwner("Test North");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            tryCompare(clear, "visible", true);
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            verify(!error.visible);
+            testContext.setRememberedEditsRefused(true);
+            var heard = confirm.announcements;
+            tap(yes);
+            compare(testContext.rememberedTalkgroupCount(uid), 1, "nothing was cleared");
+            verify(confirm.visible, "the confirmation stays open");
+            verify(error.visible);
+            compare(error.text, "Call history could not be saved, so these talkgroups are still remembered.");
+            compare(error.Accessible.role, Accessible.AlertMessage);
+            compare(confirm.announcements, heard + 1, "TalkBack hears the refusal");
+            compare(confirm.announced, error.text);
+            tap(findChild(confirm, "cancelClearRemembered"));
+            verify(!confirm.visible);
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            verify(!error.visible, "asking again starts without the refusal");
+            testContext.setRememberedEditsRefused(false);
+            tap(yes);
+            verify(!confirm.visible);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+        }
+
+        // Issue #903: Clear is offered while the saved system on air has something remembered (remembering or not), asks
+        // first naming that system, and clears that system's list.
+        function test_clear_remembered_talkgroups() {
+            var screen = screenLoader.item;
+            var clear = findChild(screen, "clearRememberedTalkgroups");
+            var confirm = findChild(screen, "clearRememberedConfirm");
+            verify(clear !== null && confirm !== null);
+            verify(!screenReader.active, "this run has no screen reader");
+            verify(!clear.visible, "no saved system on air: nothing to clear");
+            var uid = viewRememberingOwner("Test North");
+            verify(!talkgroups.hasRemembered);
+            verify(!clear.visible, "a system that remembers nothing yet: nothing to clear");
+            testContext.rememberTalkgroup(uid, 1, 4242, 300);
+            testContext.rememberTalkgroup(uid, 1, 4343, 600);
+            tryCompare(clear, "visible", true);
+            compare(clear.text, "Clear remembered talkgroups…");
+            verify(clear.height >= 48);
+            testContext.setTalkgroupRemembering(uid, false);
+            verify(!talkgroups.remembering);
+            verify(clear.visible, "Clear stays while remembering is off");
+
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            compare(findChild(confirm, "clearRememberedQuestion").text, "Forget the talkgroups remembered for Test North?");
+            compare(findChild(confirm, "confirmClearRemembered").text, "Forget remembered talkgroups");
+            var cancel = findChild(confirm, "cancelClearRemembered");
+            tap(cancel);
+            verify(!confirm.visible);
+            compare(testContext.rememberedTalkgroupCount(uid), 2);
+
+            tap(clear);
+            tryCompare(confirm, "visible", true);
+            // The system the question named is the one cleared.
+            testContext.setTalkgroupOwnerOnAir("");
+            var yes = findChild(confirm, "confirmClearRemembered");
+            tap(yes);
+            verify(!confirm.visible);
+            compare(testContext.rememberedTalkgroupCount(uid), 0);
+            tryVerify(function () {
+                return !clear.visible;
+            });
+            // On air again with its list cleared: still nothing to clear.
+            testContext.setTalkgroupOwnerOnAir(uid);
+            tryCompare(talkgroups, "viewedOwner", uid);
+            verify(!talkgroups.hasRemembered && !clear.visible);
+        }
+
+        // Issue #903: the footer offers Save talkgroup list while the list lasts for this session only, never on a scan
+        // row the decoder refuses to export, and it sends the list on show.
+        function test_footer_save_talkgroup_list() {
+            var screen = screenLoader.item;
+            var save = findChild(screen, "footerSaveTalkgroupList");
+            verify(save !== null);
+            verify(!save.visible, "not offered until the owner offers it");
+            screen.canSaveList = true;
+            tryCompare(save, "visible", true);
+            compare(save.text, "Save talkgroup list");
+            verify(save.height >= 48);
+            var received = [];
+            var forward = function (context, generation) {
+                received = [context, generation];
+            };
+            screen.saveListRequested.connect(forward);
+            tap(save);
+            screen.saveListRequested.disconnect(forward);
+            compare(received, [talkgroups.policyContext, talkgroups.policyGeneration]);
+            testContext.setTalkgroupScanScope(true);
+            tryCompare(save, "visible", false);
+            testContext.setTalkgroupScanScope(false);
+            tryCompare(save, "visible", true);
+            testContext.setHostRunning(false);
+            tryCompare(save, "visible", false);
+            testContext.setHostRunning(true);
+            screen.canSaveList = false;
+            tryCompare(save, "visible", false);
+        }
+
+        // Issue #903: with a system remembering what it hears, the session note says so, alone (the scope note gives way
+        // to it); otherwise both keep their text. A scan row keeps its own scope note.
+        function test_session_note_says_remembered() {
+            var note = findChild(screenLoader.item, "sessionOnlyNote");
+            var scope = findChild(screenLoader.item, "talkgroupScopeNote");
+            compare(note.text, "Changes last for this session. Give the system a talkgroup list to keep them.");
+            verify(scope.visible);
+            var uid = viewRememberingOwner("Test North");
+            tryCompare(note, "text", "Talkgroups heard on this system are remembered. Save a talkgroup list to keep names and listen settings.");
+            verify(note.visible);
+            tryCompare(scope, "visible", false);
+            testContext.setTalkgroupScanScope(true);
+            tryCompare(scope, "visible", true);
+            testContext.setTalkgroupScanScope(false);
+            tryCompare(scope, "visible", false);
+            testContext.setTalkgroupRemembering(uid, false);
+            tryCompare(note, "text", "Changes last for this session. Give the system a talkgroup list to keep them.");
+            tryCompare(scope, "visible", true);
         }
 
         // B3: the visible lines under the screen that read exactly @p message.

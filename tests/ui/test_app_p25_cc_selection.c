@@ -834,6 +834,33 @@ test_quiet_generic_command(dsd_opts* opts, dsd_state* state) {
     }
 }
 
+/*
+ * Issue #903: an explicit change of P25 control channel through the frequency entry moves the tuning generation, so
+ * the next system's calls are not remembered under the saved system the session started, unless it selects that
+ * system's own control channel. A return to the control channel from a followed call keeps it.
+ */
+static void
+test_selection_tuning_generation(dsd_opts* opts, dsd_state* state) {
+    setup(opts, state);
+    dsd_engine_note_run_start(opts, state);
+    select_cc(opts, state, CC_A);
+    expect_cc_toast(state, "Applied: P25 control channel -> 851.000000 MHz");
+    assert(dsd_state_tuning_moved(state) == 0);
+    select_cc(opts, state, CC_B);
+    expect_cc_toast(state, "Applied: P25 control channel -> 852.000000 MHz");
+    assert(state->operator_tuned == 0U && dsd_state_tuning_moved(state) == 1);
+    freeState(state);
+
+    setup(opts, state);
+    start_voice(opts, state);
+    dsd_engine_note_run_start(opts, state);
+    assert(dsd_app_command_submit(DSD_APP_CMD_RETURN_CC, NULL, 0) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+    assert(dsd_app_drain_cmds(opts, state) == 1);
+    assert(return_calls + cc_calls > 0 && p25_sm_get_ctx()->state != P25_SM_TUNED);
+    assert(dsd_state_tuning_moved(state) == 0);
+    freeState(state);
+}
+
 static void
 test_command_scope(dsd_opts* opts, dsd_state* state) {
     setup(opts, state);
@@ -906,6 +933,7 @@ main(void) {
     test_quiet_p25_command(opts, state);
     test_quiet_generic_command(opts, state);
     test_command_scope(opts, state);
+    test_selection_tuning_generation(opts, state);
 #endif
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_trunk_tuning_requests_reset();

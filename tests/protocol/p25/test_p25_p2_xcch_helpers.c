@@ -29,6 +29,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include "../../../src/protocol/p25/p25_heard_tg.h"
 #include "../../../src/protocol/p25/p25_trunk_sm_internal.h"
 #include "../../../src/protocol/p25/phase2/p25p2_frame_internal.h"
 
@@ -614,6 +615,15 @@ void
 p25_sm_note_validated_cc(const dsd_opts* opts, dsd_state* state) {
     (void)opts;
     p25_sm_note_cc_activity(state);
+}
+
+/* The verified talkgroup proof of a MAC_PTT (issue #903) has its own test (P25_HEARD_TALKGROUP). */
+void
+p25p2_heard_tg_ptt(const dsd_opts* opts, dsd_state* state, uint8_t slot, uint32_t group) {
+    (void)opts;
+    (void)state;
+    (void)slot;
+    (void)group;
 }
 
 #include "../../../src/protocol/p25/phase2/p25p2_xcch.c"

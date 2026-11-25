@@ -10,6 +10,14 @@ Item {
         property int edits: 0
         property int removes: 0
         property var last: []
+        // Issue #903: the remembered list's forgets (TalkgroupListModel::forgetTalkgroupOf()).
+        property var forgets: []
+        // Whether the list refuses the forget (History could not save its log): forgetTalkgroupOf() returns false.
+        property bool refuseForget: false
+        function forgetTalkgroupOf(owner, id) {
+            forgets = forgets.concat([[owner, id]]);
+            return !refuseForget;
+        }
         function setTalkgroupPolicy(a, b, c, g, changes, index, pattern) {
             edits++;
             last = [a, b, c, g, changes, index, pattern];
@@ -35,6 +43,11 @@ Item {
         anchors.fill: parent
         source: uiDir + "/TalkgroupEditSheet.qml"
     }
+    SignalSpy {
+        id: saveSpy
+        target: loader.item
+        signalName: "saveListRequested"
+    }
     TestCase {
         name: "TalkgroupEditSheet"
         when: windowShown
@@ -42,6 +55,9 @@ Item {
             testContext.resetCommands();
             verify(loader.item !== null, "edit sheet must load");
             loader.item.bridge = recorder;
+            loader.item.heardList = recorder;
+            recorder.forgets = [];
+            recorder.refuseForget = false;
             loader.item.openRow(42, 49, "Dispatch", true, true, 25, false, "18446744073709551614", 9);
             recorder.edits = 0;
             recorder.removes = 0;
@@ -165,8 +181,13 @@ Item {
         }
         function test_remove_requires_two_taps_and_reopen_resets() {
             var button = findChild(loader.item, "removeTalkgroup");
+            var heard = loader.item.announcements;
             mouseClick(button);
             compare(recorder.removes, 0);
+            // Issue #903: the armed question is read out, as Forget's is.
+            compare(button.text, "Tap again to remove");
+            compare(loader.item.announced, "Tap again to remove", "TalkBack hears the armed question");
+            compare(loader.item.announcements, heard + 1);
             mouseClick(button);
             compare(recorder.removes, 1);
             loader.item.openRow(42, 42, "", true, true, 0, false, "7", 1);
@@ -186,7 +207,9 @@ Item {
                 listed: true,
                 priority: 50,
                 preempt: true,
-                temporaryAvoidCount: 0
+                temporaryAvoidCount: 0,
+                lastHeard: 0,
+                remembered: false
             });
             verify(card !== null);
             compare(findChild(card, "talkgroupBadge").text, "42 · Priority 50 · Preempt");
@@ -328,6 +351,91 @@ Item {
             mouseClick(findChild(loader.item, "saveTalkgroup"));
             compare(recorder.edits, 1);
             verify(!loader.item.visible); // Reopen through the model for a fresh version.
+        }
+
+        // Issue #903: Save talkgroup list carries the policy version the sheet opened with, so the export and its
+        // completion name the table the user was looking at, not whatever is current when the flow completes.
+        function test_save_list_carries_the_opened_context() {
+            var sheet = loader.item;
+            sheet.canSaveList = true;
+            saveSpy.clear();
+            var button = findChild(sheet, "saveTalkgroupList");
+            verify(button !== null && button.visible);
+            button.clicked();
+            compare(saveSpy.count, 1);
+            compare(saveSpy.signalArguments[0][0], "18446744073709551614");
+            compare(saveSpy.signalArguments[0][1], 9);
+            sheet.canSaveList = false;
+            verify(!button.visible);
+        }
+
+        // Issue #903: Forget this talkgroup is on a remembered card only, asks with a second tap as Remove does, and
+        // forgets the number for the owner the sheet opened with.
+        function test_forget_only_on_remembered_cards() {
+            var sheet = loader.item;
+            var forget = findChild(sheet, "forgetTalkgroup");
+            verify(forget !== null);
+            verify(!forget.visible, "a listed row opened without the remembered flag has nothing to forget");
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", false, "owner-a");
+            verify(!forget.visible, "a card heard only this session has nothing to forget");
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            verify(forget.visible);
+            compare(forget.text, "Forget this talkgroup");
+            verify(forget.height >= 48);
+            waitForRendering(sheet);
+            var heard = sheet.announcements;
+            mouseClick(forget);
+            compare(forget.text, "Tap again to forget");
+            compare(sheet.announced, "Tap again to forget", "TalkBack hears the armed question");
+            compare(sheet.announcements, heard + 1);
+            compare(recorder.forgets.length, 0);
+            // A reopen starts unarmed.
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            compare(forget.text, "Forget this talkgroup");
+            waitForRendering(sheet);
+            mouseClick(forget);
+            waitForRendering(sheet);
+            mouseClick(forget);
+            compare(recorder.forgets, [["owner-a", 55]]);
+            verify(!sheet.visible);
+            compare(recorder.edits, 0);
+            compare(recorder.removes, 0);
+            verify(!findChild(sheet, "forgetTalkgroupError").visible, "a forget that went through says nothing");
+        }
+
+        // Issue #903 (PR2 review r2, P2): a Forget the list refuses (History could not save its log) keeps the sheet
+        // open and says so in one line, read out; tapping again retries, and a reopen starts without it.
+        function test_refused_forget_is_said_in_the_sheet() {
+            var sheet = loader.item;
+            var forget = findChild(sheet, "forgetTalkgroup");
+            var error = findChild(sheet, "forgetTalkgroupError");
+            verify(error !== null);
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            verify(!error.visible, "nothing refused yet");
+            recorder.refuseForget = true;
+            waitForRendering(sheet);
+            mouseClick(forget);
+            waitForRendering(sheet);
+            var heard = sheet.announcements;
+            mouseClick(forget);
+            compare(recorder.forgets, [["owner-a", 55]]);
+            verify(sheet.visible, "a refused forget keeps the sheet open");
+            verify(error.visible);
+            compare(error.text, "Call history could not be saved, so this talkgroup is still remembered.");
+            compare(error.Accessible.role, Accessible.AlertMessage);
+            compare(sheet.announced, error.text, "TalkBack hears the refusal");
+            compare(sheet.announcements, heard + 1);
+            compare(forget.text, "Forget this talkgroup", "the button asks again from the start");
+            // Tapped again once History saves: the forget goes through and the sheet closes.
+            recorder.refuseForget = false;
+            waitForRendering(sheet);
+            mouseClick(forget);
+            waitForRendering(sheet);
+            mouseClick(forget);
+            compare(recorder.forgets.length, 2);
+            verify(!sheet.visible);
+            sheet.openRow(55, 55, "", true, false, 0, false, "7", 2, true, -1, "", true, "owner-a");
+            verify(!error.visible, "a reopen starts without the refusal");
         }
     }
 }

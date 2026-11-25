@@ -20,6 +20,7 @@ target_sources(
         p25_sm_ui.c
         p25_sm_watchdog.c
         p25_patch.c
+        p25_heard_tg.c
         phase1/p25p1_hdu.c
         phase1/p25p1_ldu.c
         phase1/p25p1_ldu1.c

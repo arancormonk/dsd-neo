@@ -81,7 +81,83 @@ Item {
 
     property bool canSaveList: false
     property string saveListText: qsTr("Save talkgroup list")
-    signal saveListRequested
+    // The decoder refuses an export while a scan row with its own talkgroup list is on air: every Save talkgroup list
+    // button on this screen honours this.
+    readonly property bool scanRowRefusesSave: talkgroups.persistenceScope === "scan"
+    // Where Save talkgroup list is offered: the edit sheet and the footer (issue #903), by one rule.
+    readonly property bool saveOffered: canSaveList && !scanRowRefusesSave && decoderHost.running
+
+    // Issue #903: the system whose remembered talkgroups Clear asks about, captured when it asks, and its name.
+    property string clearOwner: ""
+    property string clearOwnerName: ""
+    // A Clear History refused (it could not save its log): said in the confirmation, which stays open.
+    property string clearError: ""
+    function requestClearRemembered() {
+        clearOwner = talkgroups.viewedOwner;
+        var system = typeof savedSystems !== "undefined" ? savedSystems.getByUid(clearOwner) : ({});
+        clearOwnerName = system && system.name ? system.name : screen.systemName;
+        clearError = "";
+        clearConfirm.visible = true;
+    }
+    ModalSheet {
+        id: clearConfirm
+        objectName: "clearRememberedConfirm"
+        accessibleName: qsTr("Forget remembered talkgroups")
+        // What the confirmation last read out, and how many (Navigation.announce()).
+        property string announced: ""
+        property int announcements: 0
+        ReadableText {
+            objectName: "clearRememberedQuestion"
+            width: parent.width
+            text: qsTr("Forget the talkgroups remembered for %1?").arg(screen.clearOwnerName)
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            color: Theme.textPrimary
+            font.pixelSize: Theme.fontSize(16)
+        }
+        ReadableText {
+            width: parent.width
+            text: qsTr("Talkgroups heard after this are remembered again. A saved talkgroup list is not changed.")
+            wrapMode: Text.Wrap
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(13)
+        }
+        ReadableText {
+            objectName: "clearRememberedError"
+            width: parent.width
+            visible: text.length > 0
+            text: screen.clearError
+            textFormat: Text.PlainText
+            wrapMode: Text.Wrap
+            font.pixelSize: Theme.fontSize(13)
+            color: Theme.alert
+            Accessible.role: Accessible.AlertMessage
+        }
+        OutlineButton {
+            id: confirmClear
+            objectName: "confirmClearRemembered"
+            width: parent.width
+            height: Math.max(48, implicitHeight)
+            text: qsTr("Forget remembered talkgroups")
+            onClicked: {
+                if (!talkgroups.clearRememberedOf(screen.clearOwner)) {
+                    // Refused: nothing was cleared. The confirmation stays, and says why; tapping again retries.
+                    screen.clearError = qsTr("Call history could not be saved, so these talkgroups are still remembered.");
+                    Navigation.announce(clearConfirm, confirmClear, screen.clearError);
+                    return;
+                }
+                clearConfirm.visible = false;
+            }
+        }
+        OutlineButton {
+            objectName: "cancelClearRemembered"
+            width: parent.width
+            height: Math.max(48, implicitHeight)
+            text: qsTr("Cancel")
+            onClicked: clearConfirm.visible = false
+        }
+    }
+    signal saveListRequested(string context, int generation)
     signal closed
     // Shown, fade included (issue #782). Hidden, the cards and category chips
     // let their models go: a scan brings each target's own table, and every
@@ -91,13 +167,23 @@ Item {
     // top (gridPlace), or from the top when the table was replaced meanwhile.
     readonly property bool live: screen.visible
     onVisibleChanged: {
-        if (!visible)
+        if (!visible) {
             editSheet.visible = false;
+            clearConfirm.visible = false;
+        }
     }
     readonly property bool hostRunning: decoderHost.running
     onHostRunningChanged: {
         if (!hostRunning)
             editSheet.visible = false;
+    }
+    // Ticks the remembered cards' "Last heard" ages once a minute while shown (as MonitorScreen's ageTick).
+    property int ageTick: 0
+    Timer {
+        interval: 60000
+        running: screen.visible
+        repeat: true
+        onTriggered: screen.ageTick++
     }
 
     Rectangle {
@@ -307,10 +393,12 @@ Item {
 
             width: ListView.view.width
             height: implicitHeight
+            ageTick: screen.ageTick
             // Snapshot truth, not a local toggle: the decoder may refuse an edit.
             // The row token (table index, pattern) names this row, so a duplicate or a pattern row is the one edited.
             onClicked: commands.setTalkgroupListening(idStart, idEnd, !listening, talkgroups.policyContext, talkgroups.policyGeneration, tableIndex, pattern)
-            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record, tableIndex, pattern)
+            // The sheet keeps the system the card is remembered on (issue #903): Forget forgets it there.
+            onEditRequested: editSheet.openRow(idStart, idEnd, name, listening, listed, priority, preempt, talkgroups.policyContext, talkgroups.policyGeneration, record, tableIndex, pattern, remembered, talkgroups.viewedOwner)
         }
 
         ReadableText {
@@ -364,8 +452,12 @@ Item {
         spacing: 8
 
         ReadableText {
+            objectName: "talkgroupScopeNote"
             width: parent.width
-            text: talkgroups.persistenceScope === "scan" ? qsTr("This scan target · session changes; the source CSV is unchanged") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
+            // Issue #903: in session scope with remembering on, the session note below says it all.
+            visible: !(talkgroups.remembering && !talkgroups.persistent && talkgroups.persistenceScope !== "scan")
+            // In scan scope edits are not written, but a learned radio alias still goes to the target's own list.
+            text: talkgroups.persistenceScope === "scan" ? qsTr("Edits last for this session; learned names may still be added to this target's list") : talkgroups.persistent ? qsTr("Edits are saved to the attached CSV and affect other systems sharing it") : qsTr("This session · save a talkgroup list to keep edits")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.pixelSize: Theme.fontSize(12)
@@ -396,7 +488,8 @@ Item {
             objectName: "sessionOnlyNote"
             width: parent.width
             visible: !talkgroups.persistent
-            text: qsTr("Changes last for this session. Give the system a talkgroup list to keep them.")
+            // Issue #903: a system that remembers what it hears keeps its cards; only names and settings need a list.
+            text: talkgroups.remembering ? qsTr("Talkgroups heard on this system are remembered. Save a talkgroup list to keep names and listen settings.") : qsTr("Changes last for this session. Give the system a talkgroup list to keep them.")
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(12)
             color: Theme.textSubdued
@@ -412,6 +505,50 @@ Item {
             color: Theme.textSubdued
             wrapMode: Text.Wrap
         }
+
+        // Issue #903: the list's own actions, side by side as the bulk actions
+        // are, so the cards keep their room on a phone; either alone takes the row.
+        // With a screen reader on, a scan hop changes neither (#860: the layout
+        // holds still): both stay while the decoder runs, each disabled where it
+        // does not apply.
+        Row {
+            id: listActions
+
+            width: parent.width
+            spacing: 10
+            readonly property bool steady: typeof screenReader !== "undefined" && screenReader !== null && screenReader.active
+            // Read from the conditions, not the buttons' visible (false while this row is hidden).
+            readonly property bool showSave: steady ? decoderHost.running : screen.saveOffered
+            // The system on air has something remembered, remembering or not (what it remembered before stays).
+            readonly property bool showClear: steady || talkgroups.hasRemembered
+            readonly property bool both: showSave && showClear
+            readonly property real cellHeight: Math.max(showSave ? footerSave.implicitHeight : 0, showClear ? clearRemembered.implicitHeight : 0)
+            visible: showSave || showClear
+
+            // The edit sheet's Save talkgroup list, for the list on show.
+            OutlineButton {
+                id: footerSave
+                objectName: "footerSaveTalkgroupList"
+                width: listActions.both ? (parent.width - 10) / 2 : parent.width
+                height: listActions.cellHeight
+                visible: listActions.showSave
+                enabled: screen.saveOffered
+                wrapMode: Text.WordWrap
+                text: screen.saveListText
+                onClicked: screen.saveListRequested(talkgroups.policyContext, talkgroups.policyGeneration)
+            }
+            OutlineButton {
+                id: clearRemembered
+                objectName: "clearRememberedTalkgroups"
+                width: listActions.both ? (parent.width - 10) / 2 : parent.width
+                height: listActions.cellHeight
+                visible: listActions.showClear
+                enabled: talkgroups.hasRemembered
+                wrapMode: Text.WordWrap
+                text: qsTr("Clear remembered talkgroups…")
+                onClicked: screen.requestClearRemembered()
+            }
+        }
     }
 
     TalkgroupEditSheet {
@@ -419,7 +556,9 @@ Item {
         objectName: "talkgroupEditSheet"
         saveListText: screen.saveListText
         saveMessage: screen.saveMessage
-        canSaveList: screen.canSaveList && !talkgroups.persistent && decoderHost.running
-        onSaveListRequested: screen.saveListRequested()
+        canSaveList: screen.saveOffered
+        onSaveListRequested: function (context, generation) {
+            screen.saveListRequested(context, generation);
+        }
     }
 }

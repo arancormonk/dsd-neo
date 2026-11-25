@@ -24,10 +24,16 @@
  * the returned pointer stays valid for the caller's copy and is bounded by that
  * size even if a writer ever fills one to the brim.
  */
+/* Whether the active --trunk-scan target names the channel; it outranks the -Y scan list. */
+static int
+channel_label_trunk_scan_names(const dsd_opts* opts, const dsd_state* state) {
+    return dsd_trunk_scan_owns_tuner(opts, state) && state->trunk_scan_active_id[0] != '\0';
+}
+
 static const char*
 channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_label_source* source) {
     *source = DSD_CHANNEL_LABEL_SOURCE_NONE;
-    if (dsd_trunk_scan_owns_tuner(opts, state) && state->trunk_scan_active_id[0] != '\0') {
+    if (channel_label_trunk_scan_names(opts, state)) {
         *source = DSD_CHANNEL_LABEL_SOURCE_TRUNK_SCAN;
         /* The id, not the target's display label: the label is the channel's identity in history, and two targets
          * may share a display name (issue #782). Frontends name an id for display (the Qt channel-name map). */
@@ -47,6 +53,14 @@ channel_label_pick(const dsd_opts* opts, const dsd_state* state, dsd_channel_lab
         return name;
     }
     return NULL;
+}
+
+int
+dsd_channel_label_scan_list_row(const dsd_opts* opts, const dsd_state* state) {
+    if (!opts || !state || channel_label_trunk_scan_names(opts, state) || opts->scanner_mode != 1) {
+        return -1;
+    }
+    return dsd_state_lcn_heard_row(state);
 }
 
 dsd_channel_label_source

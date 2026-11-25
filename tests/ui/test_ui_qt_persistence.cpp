@@ -32,6 +32,7 @@
 #include <QMetaType>
 #include <QObject>
 #include <QPair>
+#include <QSet>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
@@ -49,6 +50,7 @@
 #include <cmath>
 #include <functional>
 #include <limits>
+#include <memory>
 #include <stdio.h>
 #include <thread>
 #include <utility>
@@ -63,7 +65,10 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/runtime/log.h>
 #include "app_prefs.h"
+#include "backup_apply.h"
 #include "dsd-neo/core/safe_api.h"
+#include "heard_talkgroup_owners.h"
+#include "heard_talkgroup_store.h"
 #include "json_store.h"
 #include "json_store_test_hooks.h"
 #include "listen_pins.h"
@@ -73,6 +78,7 @@
 #include "site_groups.h"
 
 using dsd_qt::AppPrefs;
+using dsd_qt::HeardTalkgroupStore;
 using dsd_qt::json_store_load_array;
 using dsd_qt::json_store_notices;
 using dsd_qt::json_store_path;
@@ -736,6 +742,152 @@ test_saved_systems_past_int_range(void) {
                got.value(QStringLiteral("encKeyType")).toString() != QStringLiteral("hex"));
         model.remove(0);
     }
+}
+
+/* Issue #903: the remembered talkgroups follow the saved systems. Owners missing from them are purged only when
+ * saved_systems.json loaded and no restore is Deferred or Stuck; only a system that exists with the switch on learns,
+ * as the switch and the rows change; a deleted system's list is cleared and written at once. */
+QJsonObject
+heard_entry(const QString& owner, int id) {
+    return QJsonObject{{"v", 1}, {"owner", owner}, {"variant", 1}, {"id", id}, {"first", 10}, {"last", 20}};
+}
+
+/* A heard store over the fixture (owners @p a, @p b and a missing one), following @p systems. */
+std::unique_ptr<HeardTalkgroupStore>
+heard_following(SavedSystemsModel& systems, dsd_qt::backup::ApplyOutcome restore, const QString& a, const QString& b,
+                const QString& gone) {
+    const QString name = QStringLiteral("heard_follow.json");
+    expect("follow: heard fixture",
+           json_store_save_array(name, QJsonArray{heard_entry(a, 1), heard_entry(b, 2), heard_entry(gone, 3)}));
+    auto store = std::make_unique<HeardTalkgroupStore>(name);
+    dsd_qt::heard_talkgroups_follow_systems(store.get(), &systems, restore);
+    store->waitForWrites();
+    return store;
+}
+
+void
+test_heard_talkgroups_follow_systems(void) {
+    using dsd_qt::backup::ApplyOutcome;
+    const QString systemsStore = QStringLiteral("saved_systems.json");
+    const QString a = QStringLiteral("00000000-0000-4000-8000-00000000903a");
+    const QString b = QStringLiteral("00000000-0000-4000-8000-00000000903b");
+    const QString gone = QStringLiteral("00000000-0000-4000-8000-00000000903c");
+    QFile::remove(json_store_path(systemsStore));
+    expect("follow: systems fixture",
+           write_raw(systemsStore, "[{\"uid\":\"" + a.toUtf8() + "\",\"name\":\"System A\"},{\"uid\":\"" + b.toUtf8()
+                                       + "\",\"name\":\"System B\",\"rememberTalkgroups\":false}]"));
+    {
+        SavedSystemsModel systems;
+        expect("follow: may purge after a clean load and a settled restore",
+               dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::None)
+                   && dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Applied)
+                   && dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Failed));
+        expect("follow: no purge while a restore is Deferred or Stuck",
+               !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Deferred)
+                   && !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::Stuck));
+        for (const ApplyOutcome restore : {ApplyOutcome::Deferred, ApplyOutcome::Stuck}) {
+            auto store = heard_following(systems, restore, a, b, gone);
+            expect("follow: an unsettled restore keeps every owner", store->entriesFor(gone).size() == 1);
+        }
+        auto store = heard_following(systems, ApplyOutcome::None, a, b, gone);
+        expect("follow: the missing owner is purged and written",
+               store->entriesFor(gone).isEmpty() && store->entriesFor(a).size() == 1 && store->entriesFor(b).size() == 1
+                   && !store->dirty() && json_store_load_array(QStringLiteral("heard_follow.json")).size() == 2);
+        store->observe(a, 1, 11, 30);
+        store->observe(b, 1, 12, 30);
+        expect("follow: a system with the switch on learns", store->entriesFor(a).size() == 2);
+        expect("follow: a system with the switch off does not", store->entriesFor(b).size() == 1);
+        expect("follow: switched off", systems.update(0, {{QStringLiteral("rememberTalkgroups"), false}}));
+        expect("follow: switched on", systems.update(1, {{QStringLiteral("rememberTalkgroups"), true}}));
+        store->observe(a, 1, 13, 40);
+        store->observe(b, 1, 14, 40);
+        expect("follow: switching off stops learning", store->entriesFor(a).size() == 2);
+        expect("follow: switching on starts it", store->entriesFor(b).size() == 2);
+        expect("follow: a system added", systems.add({{QStringLiteral("name"), QStringLiteral("System D")}}));
+        const QString d = systems.get(2).value(QStringLiteral("uid")).toString();
+        store->observe(d, 1, 15, 50);
+        expect("follow: a new system learns", store->entriesFor(d).size() == 1);
+        // History cannot settle its spill (a refused Forget or Clear): a deletion still clears, as B learns nothing more.
+        store->setBeforeEdit([]() { return false; });
+        expect("follow: B removed", systems.remove(1));
+        store->waitForWrites();
+        expect("follow: a deleted system's list is cleared and written",
+               store->entriesFor(b).isEmpty() && !store->dirty());
+        bool bOnDisk = false;
+        for (const auto& value : json_store_load_array(QStringLiteral("heard_follow.json"))) {
+            bOnDisk |= value.toObject().value(QStringLiteral("owner")).toString() == b;
+        }
+        expect("follow: the removal reached the file", !bOnDisk);
+        store->observe(b, 1, 16, 60);
+        expect("follow: a deleted system learns nothing", store->entriesFor(b).isEmpty());
+    }
+    /* An unreadable saved_systems.json: nothing is purged and nothing is learnt. */
+    expect("follow: corrupt systems", write_raw(systemsStore, "[{\"uid\":"));
+    {
+        SavedSystemsModel systems;
+        expect("follow: no purge when the saved systems are unreadable",
+               !dsd_qt::heard_talkgroups_may_purge(systems, ApplyOutcome::None));
+        auto store = heard_following(systems, ApplyOutcome::None, a, b, gone);
+        expect("follow: every owner kept", store->entriesFor(a).size() == 1 && store->entriesFor(b).size() == 1
+                                               && store->entriesFor(gone).size() == 1);
+        store->observe(a, 1, 17, 70);
+        expect("follow: nothing learnt", store->entriesFor(a).size() == 1);
+        /* As test_models_keep_unreadable_stores(): a save moves the corrupt file aside and clears its mark. */
+        expect("follow: a system added over the corrupt store",
+               systems.add({{QStringLiteral("name"), QStringLiteral("New")}}));
+    }
+    remove_kept(systemsStore, 1);
+    QFile::remove(json_store_path(systemsStore));
+    QFile::remove(json_store_path(QStringLiteral("heard_follow.json")));
+}
+
+/* Issue #903: "Remember heard talkgroups" is on for a new system and for a row saved before the field existed, a
+ * system can turn it off (saved), the uid sets the remembered-talkgroup store reads follow it, and a saved removal names
+ * the removed system after its rows are gone. */
+void
+test_saved_systems_remember_talkgroups(void) {
+    const QString older = QStringLiteral("00000000-0000-4000-8000-000000009031");
+    QFile::remove(json_store_path(QStringLiteral("saved_systems.json")));
+    expect("remember: older row fixture",
+           write_raw(QStringLiteral("saved_systems.json"),
+                     "[{\"uid\":\"" + older.toUtf8() + "\",\"name\":\"System A\",\"sourceType\":\"usb\"}]"));
+    {
+        SavedSystemsModel model;
+        expect("remember: an older row reads on", model.get(0).value(QStringLiteral("rememberTalkgroups")).toBool());
+        expect("remember: the role reads on",
+               model.data(model.index(0), SavedSystemsModel::RememberTalkgroupsRole).toBool()
+                   && model.roleNames().value(SavedSystemsModel::RememberTalkgroupsRole) == "rememberTalkgroups");
+        QVariantMap added;
+        added.insert(QStringLiteral("name"), QStringLiteral("System B"));
+        expect("remember: added", model.add(added));
+        expect("remember: a new system defaults on", model.get(1).value(QStringLiteral("rememberTalkgroups")).toBool());
+        QVariantMap off;
+        off.insert(QStringLiteral("name"), QStringLiteral("System C"));
+        off.insert(QStringLiteral("rememberTalkgroups"), false);
+        expect("remember: added off", model.add(off));
+        expect("remember: a system added off reads off",
+               !model.get(2).value(QStringLiteral("rememberTalkgroups")).toBool());
+        expect("remember: turned off", model.update(1, {{QStringLiteral("rememberTalkgroups"), false}}));
+        const QString b = model.get(1).value(QStringLiteral("uid")).toString();
+        const QString c = model.get(2).value(QStringLiteral("uid")).toString();
+        expect("remember: uids lists every system", model.uids() == QSet<QString>{older, b, c});
+        expect("remember: rememberingUids follows the switch", model.rememberingUids() == QSet<QString>{older});
+    }
+    SavedSystemsModel reloaded;
+    expect("remember: the switch persists",
+           reloaded.get(0).value(QStringLiteral("rememberTalkgroups")).toBool()
+               && !reloaded.get(1).value(QStringLiteral("rememberTalkgroups")).toBool()
+               && !reloaded.get(2).value(QStringLiteral("rememberTalkgroups")).toBool());
+    QStringList removed;
+    int rowsWhenRemoved = -1;
+    QObject::connect(&reloaded, &SavedSystemsModel::systemRemoved, [&](const QString& uid) {
+        removed.append(uid);
+        rowsWhenRemoved = reloaded.rowCount();
+    });
+    expect("remember: removed", reloaded.remove(0));
+    expect("remember: a saved removal names its system after the rows changed",
+           removed == QStringList{older} && rowsWhenRemoved == 2 && !reloaded.uids().contains(older));
+    QFile::remove(json_store_path(QStringLiteral("saved_systems.json")));
 }
 
 /* A stored tuner gain past what the editor offers (a hand edit, a restore, an older build's 50..99) reads as the
@@ -2886,6 +3038,164 @@ test_invalidate_path_provenance() {
     empty_systems(model);
 }
 
+/* The tuning a Save talkgroup list request captures: the fields whose change ends a site's provenance, and the
+ * receiver's. */
+QVariantMap
+captured_tuning(const SavedSystemsModel& model, int row) {
+    QVariantMap tuning;
+    const QVariantMap system = model.get(row);
+    for (const QString& key : model.groupListTuningFields()) {
+        tuning.insert(key, system.value(key));
+    }
+    return tuning;
+}
+
+/* The RadioReference site @p row still holds: its ids, avoid, name, position and place (grouped_site()). */
+bool
+site_kept(const QVariantMap& row, int site) {
+    return row.value("rrSid").toInt() == 12 && row.value("rrSiteId").toInt() == site && row.value("avoidSite").toBool()
+           && row.value("siteName") == "North" && row.value("hasSitePos").toBool()
+           && std::abs(row.value("siteLat").toDouble() - 41.65503) < 1e-9 && row.value("place").toMap() == iowa_place();
+}
+
+/* Issue #903 (B2): a saved talkgroup list is attached to the system it was saved for without the edit path, so a
+ * RadioReference site keeps its ids, avoid, name, position and place. It attaches only to a system that still exists,
+ * has no list and runs the tuning the request captured; a refusal or a failed save changes nothing. */
+void
+test_attach_group_list_keeps_site() {
+    const QString path = QStringLiteral("/data/imports/talkgroups-0001.csv");
+    QStringList log;
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("attach: a site with no list", model.add(grouped_site("Metro — North", 3)));
+    expect("attach: a second site with no list", model.add(grouped_site("Metro — North", 4)));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap tuning = captured_tuning(model, 0);
+    expect("attach: the captured tuning names every provenance and receiver field",
+           tuning.size() == model.groupListTuningFields().size()
+               && tuning.size() > model.tuningProvenanceFields().size());
+
+    QVariantMap retuned = tuning;
+    retuned.insert("freqMhz", "852.0125");
+    expect("attach: a changed frequency is refused",
+           !model.groupListAttachable(uid, retuned) && !model.attachGroupList(uid, path, retuned));
+    QVariantMap rekeyed = tuning;
+    rekeyed.insert("keyCsvHex", true);
+    expect("attach: a changed key format is refused", !model.attachGroupList(uid, path, rekeyed));
+    QVariantMap partial = tuning;
+    partial.remove("decodeFlag");
+    expect("attach: a tuning missing a field is refused", !model.attachGroupList(uid, path, partial));
+    expect("attach: an unknown system is refused",
+           !model.groupListAttachable(QStringLiteral("00000000-0000-4000-8000-000000000903"), tuning));
+    expect("attach: an empty path is refused", !model.attachGroupList(uid, QString(), tuning));
+    expect("attach: refusals change nothing", model.get(0).value("groupCsvPath").toString().isEmpty());
+
+    record_signals(model, log);
+    expect("attach: store blocked", block_systems_store());
+    expect("attach: still attachable while the store is blocked", model.groupListAttachable(uid, tuning));
+    expect("attach: a failed save reports failure", !model.attachGroupList(uid, path, tuning));
+    expect("attach: a failed save keeps the row",
+           model.get(0).value("groupCsvPath").toString().isEmpty() && site_kept(model.get(0), 3));
+    expect("attach: a failed save sends no signal", log.isEmpty());
+    expect("attach: store unblocked", unblock_systems_store());
+
+    expect("attach: the attach saves", model.attachGroupList(uid, path, tuning));
+    expect("attach: the list is attached", model.get(0).value("groupCsvPath") == path);
+    expect("attach: the site keeps its ids, avoid, name, position and place", site_kept(model.get(0), 3));
+    expect("attach: the other site is untouched", model.get(1).value("groupCsvPath").toString().isEmpty());
+    expect("attach: one dataChanged, the site group unchanged", log == QStringList{"dataChanged"});
+    expect("attach: a system that has a list is refused",
+           !model.groupListAttachable(uid, captured_tuning(model, 0))
+               && !model.attachGroupList(uid, QStringLiteral("/data/imports/other.csv"), captured_tuning(model, 0)));
+    {
+        SavedSystemsModel reloaded;
+        expect("attach: persists with the site",
+               reloaded.get(0).value("groupCsvPath") == path && site_kept(reloaded.get(0), 3));
+    }
+
+    // A retune of the same system after the request was captured: the list was exported from the old tuning.
+    const QString second = model.get(1).value("uid").toString();
+    const QVariantMap before = captured_tuning(model, 1);
+    expect("attach: the second site retuned", model.update(1, {{"freqMhz", "852.0125"}}));
+    expect("attach: a retuned system is refused", !model.attachGroupList(second, path, before));
+    empty_systems(model);
+}
+
+/* Issue #903 (r5): a list saved from a session attaches only to a saved system that still names the receiver the session
+ * ran: the same source and endpoint. A TCP audio system edited from one receiver to another by its host or port alone
+ * keeps every tuning field, yet is refused, as is a request that captured no receiver. */
+void
+test_attach_group_list_by_receiver() {
+    const QString path = QStringLiteral("/data/imports/talkgroups-0003.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    QVariantMap tcp = grouped_site("Metro — North", 3);
+    tcp.insert("sourceType", "tcp");
+    tcp.insert("host", "10.0.0.2");
+    tcp.insert("port", 7355);
+    expect("receiver: a TCP audio system", model.add(tcp));
+    const QString uid = model.get(0).value("uid").toString();
+    const QVariantMap tuning = captured_tuning(model, 0);
+    expect("receiver: attachable on the receiver it ran", model.groupListAttachable(uid, tuning));
+
+    expect("receiver: edited to another host", model.update(0, {{"host", "10.0.0.3"}}));
+    expect("receiver: another host is refused",
+           !model.groupListAttachable(uid, tuning) && !model.attachGroupList(uid, path, tuning));
+    expect("receiver: back on its host", model.update(0, {{"host", "10.0.0.2"}}));
+    expect("receiver: edited to another port", model.update(0, {{"port", 7356}}));
+    expect("receiver: another port is refused", !model.groupListAttachable(uid, tuning));
+    expect("receiver: back on its port", model.update(0, {{"port", 7355}}));
+    expect("receiver: edited to another source", model.update(0, {{"sourceType", "udp"}}));
+    expect("receiver: another source is refused", !model.groupListAttachable(uid, tuning));
+    expect("receiver: back on its source", model.update(0, {{"sourceType", "tcp"}}));
+
+    QVariantMap partial = tuning;
+    partial.remove("host");
+    expect("receiver: a request that captured no host is refused", !model.groupListAttachable(uid, partial));
+    expect("receiver: the receiver it ran attaches",
+           model.attachGroupList(uid, path, tuning) && model.get(0).value("groupCsvPath") == path);
+    empty_systems(model);
+}
+
+/* Issue #903 (B2, r3 13): removing a library file the user made (an exported talkgroup list) lets the systems naming it
+ * as their group list go of it and keeps their site; two sites sharing it both keep theirs. A RadioReference file, or
+ * a user file used for any other field, still clears the provenance as before. */
+void
+test_clear_user_group_csv_keeps_site() {
+    const QString mine = QStringLiteral("/data/imports/talkgroups-0002.csv");
+    const QString radioReference = QStringLiteral("/data/imports/Metro group.csv");
+    SavedSystemsModel model;
+    empty_systems(model);
+    expect("user list: two sites sharing it",
+           model.add(grouped_site("Metro — North", 3, mine)) && model.add(grouped_site("Metro — North", 4, mine)));
+    QVariantMap channelMap = grouped_site("Metro — North", 5);
+    channelMap.insert("chanCsvPath", mine);
+    expect("user list: a site using it as its channel map", model.add(channelMap));
+    expect("user list: a site on a RadioReference list", model.add(grouped_site("Metro — North", 6, radioReference)));
+    expect("user list: fixture grouped", model.get(2).value("chanCsvPath") == mine && site_kept(model.get(2), 5));
+
+    expect("user list: store blocked", block_systems_store());
+    expect("user list: a failed save reports failure", !model.clearCsvPath(mine, false));
+    expect("user list: a failed save keeps every reference", model.get(0).value("groupCsvPath") == mine);
+    expect("user list: store unblocked", unblock_systems_store());
+
+    expect("user list: the clear saves", model.clearCsvPath(mine, false));
+    expect("user list: both sites let go of the list", model.get(0).value("groupCsvPath").toString().isEmpty()
+                                                           && model.get(1).value("groupCsvPath").toString().isEmpty());
+    expect("user list: both sites keep their site", site_kept(model.get(0), 3) && site_kept(model.get(1), 4));
+    expect("user list: a channel map from the user still ends the site",
+           model.get(2).value("chanCsvPath").toString().isEmpty() && geography_cleared(model.get(2)));
+    {
+        SavedSystemsModel reloaded;
+        expect("user list: persists", reloaded.get(0).value("groupCsvPath").toString().isEmpty()
+                                          && site_kept(reloaded.get(0), 3) && site_kept(reloaded.get(1), 4));
+    }
+    expect("user list: a RadioReference file still clears provenance", model.clearCsvPath(radioReference, true));
+    expect("user list: the RadioReference site is cleared",
+           model.get(3).value("groupCsvPath").toString().isEmpty() && geography_cleared(model.get(3)));
+    empty_systems(model);
+}
+
 /* A resolved state's names reach every row whose place names its ids: the state's name, its counties' names and
  * links, and the state itself on a row whose county now links to it. One save and one ranged signal; a failed save
  * leaves every row as it was. */
@@ -4496,6 +4806,8 @@ main(int argc, char** argv) {
     test_saved_systems_past_int_range();
     test_saved_systems_local_day();
     test_saved_systems_gain_range();
+    test_saved_systems_remember_talkgroups();
+    test_heard_talkgroups_follow_systems();
     test_saved_systems_csv_fields();
     test_app_prefs();
     test_gain_pref_range();
@@ -4550,6 +4862,9 @@ main(int argc, char** argv) {
     test_clear_csv_path_clears_geography();
     test_load_drops_orphan_position();
     test_invalidate_path_provenance();
+    test_attach_group_list_keeps_site();
+    test_attach_group_list_by_receiver();
+    test_clear_user_group_csv_keeps_site();
     test_dmr_channels_round_trip();
     test_dmr_channels_whole_numbers();
     test_dmr_channel_edit();

@@ -1801,6 +1801,92 @@ test_register_unsaved_export() {
     model.remove(model.rowForPath(stored));
 }
 
+/* Issue #903 (S1): an export's name is held only while its Save request lasts. A release (the request ended with no row
+ * for it) gives it back, and so does a registration: from then on the library row holds the name. */
+void
+test_export_reservations_released() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    dsd_qt::ImportedFilesModel model(&host);
+    QTemporaryDir source;
+    const QByteArray csv("TG,Mode,Name\n1,D,One\n");
+    const auto importNamed = [&](const QString& reserved) {
+        const QString name = QFileInfo(reserved).fileName();
+        const QString picked = source.filePath(name);
+        if (!write_file(picked, csv)) {
+            return QString();
+        }
+        return importAndWait(model, picked, name, "group").value("path").toString();
+    };
+
+    const QString refused = model.newTalkgroupListPath();
+    model.releaseTalkgroupListPath(refused);
+    expect("a released export name can be imported again", importNamed(refused) == refused);
+    model.remove(model.rowForPath(refused));
+
+    const QString exported = model.newTalkgroupListPath();
+    expect("released: export written", write_file(exported, "id,mode,name\n42,A,Dispatch\n"));
+    expect("released: export registered", model.registerTalkgroupList(exported));
+    expect("released: the row goes with its file",
+           model.remove(model.rowForPath(exported)) && !QFile::exists(exported));
+    expect("a registered export no longer holds its name", importNamed(exported) == exported);
+    model.remove(model.rowForPath(exported));
+
+    const QString held = model.newTalkgroupListPath();
+    expect("an export not yet answered keeps its name", importNamed(held) != held && !QFile::exists(held));
+    while (model.count() > 0) {
+        model.remove(0);
+    }
+}
+
+/* Issue #903 (B2, r3 13): a file's origin follows it to its removal. fromRadioReference() is the one rule a removal and
+ * an in-place update share; a load that prunes a vanished file names the user's own files apart. */
+void
+test_file_origin_through_removal() {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    TestHost host;
+    const QTemporaryDir fixtures;
+    const QString generated = fixtures.filePath("generated.csv");
+    expect("origin: fixture", write_file(generated, "id,mode,name\n123,A,Original\n"));
+    QString radioReference;
+    QString exported;
+    {
+        dsd_qt::ImportedFilesModel model(&host);
+        const QVariantMap origin{{"origin", "radioreference"}, {"rrSid", 12}, {"rrSiteIds", "3"}, {"rrKind", "group"}};
+        radioReference =
+            model.importGeneratedFile(generated, "Metro group.csv", "group", origin).value("path").toString();
+        exported = model.newTalkgroupListPath();
+        expect("origin: export written", write_file(exported, "id,mode,name\n42,A,Dispatch\n"));
+        expect("origin: export registered", model.registerTalkgroupList(exported));
+        expect("origin: a RadioReference file", model.fromRadioReference(model.rowForPath(radioReference)));
+        expect("origin: an exported list is the user's", !model.fromRadioReference(model.rowForPath(exported)));
+        expect("origin: no row is no RadioReference file",
+               !model.fromRadioReference(-1) && !model.fromRadioReference(99));
+        int calls = 0;
+        model.setBeforeUserReplace([&calls](const QString&) { return ++calls > 0; });
+        const QString replacement = fixtures.filePath("replacement.csv");
+        expect("origin: replacement fixture", write_file(replacement, "id,mode,name\n43,A,Tactical\n"));
+        expect("origin: the user's list updated in place",
+               replaceAndWait(model, model.rowForPath(exported), QUrl::fromLocalFile(replacement).toString(),
+                              "replacement.csv")
+                   .value("ok")
+                   .toBool());
+        expect("origin: updating the user's own list asks nothing of the systems naming it", calls == 0);
+    }
+    expect("origin: both files vanish", QFile::remove(radioReference) && QFile::remove(exported));
+    {
+        dsd_qt::ImportedFilesModel model(&host);
+        const QStringList pruned = model.takePrunedPaths();
+        expect("origin: both pruned", pruned.contains(radioReference) && pruned.contains(exported));
+        expect("origin: only the export is the user's",
+               model.prunedUserFile(exported) && !model.prunedUserFile(radioReference));
+        expect("origin: a path no pruned row held is no user's file",
+               !model.prunedUserFile(fixtures.filePath("x.csv")));
+    }
+    dsd_qt::ImportedFilesModel model(&host);
+    expect("origin: the prune is saved at once", model.takePrunedPaths().isEmpty() && !model.prunedUserFile(exported));
+}
+
 /* Issue #832 (B7): the screens list entriesForType() again on entriesChanged, so a replace or a refresh that keeps the
  * count still announces itself. */
 void
@@ -4322,6 +4408,8 @@ main(int argc, char** argv) {
     test_inspect_document();
     test_cancel_inspect();
     test_register_unsaved_export();
+    test_export_reservations_released();
+    test_file_origin_through_removal();
     test_entries_changed_on_replace();
     test_stored_names_kept();
     test_async_channel_bundles();

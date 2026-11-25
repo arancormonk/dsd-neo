@@ -2734,6 +2734,7 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
     // Candidate leg: p25_prefer_candidates routes the cycle through the P25 CC hook.
     opts.p25_prefer_candidates = 1;
     rc |= expect_int("candidate seeded", p25_cc_add_candidate(&state, 857000000L, 1), 1);
+    dsd_engine_note_run_start(&opts, &state);
     reset_io_control_tune_stub(RTL_STREAM_TUNE_OK);
     reset_cc_tune_stub(DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect_int("candidate cycle queued", dsd_app_command_action(DSD_APP_CMD_CHANNEL_CYCLE),
@@ -2745,6 +2746,8 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
     rc |= expect_int("candidate cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
     rc |= expect_true("candidate cycle clears the SM voice channel", sm->vc_freq_hz == 0);
     rc |= expect_int("candidate cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
+    /* Issue #903: the system's own control-channel hunt keeps the tuning its session started with. */
+    rc |= expect_int("candidate cycle keeps the start tuning", dsd_state_tuning_moved(&state), 0);
 
     // The site keeps trunking: the next grant is followed instead of refused as a
     // preemption of the call the SM was still holding.
@@ -2773,6 +2776,9 @@ test_channel_cycle_hands_p25_sm_back_to_cc(void) {
     rc |= expect_int("channel cycle clears the SM slot voice", sm->slots[0].voice_active, 0);
     rc |= expect_true("channel cycle clears the SM voice channel", sm->vc_freq_hz == 0);
     rc |= expect_int("channel cycle gates grants until the CC decodes", sm->cc_sync_pending, 1);
+    /* Issue #903: a channel the operator cycled to is no move the allow-list keeps, though no operator mark covers it. */
+    rc |= expect_true("channel cycle moves the tuning",
+                      dsd_state_tuning_moved(&state) == 1 && state.operator_tuned == 0U);
 
     p25_sm_init_ctx(sm, NULL, NULL);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
@@ -4307,7 +4313,9 @@ test_capture_close_records_the_last_capture(void) {
 /*
  * A UDP switch to a port another socket holds: the UDP input that ran had to be stopped to free its own port, and is
  * started again on it, a new stream on the old input, so the received tone goes and the engine ends the reception
- * (issue #634). The command fails and says so.
+ * (issue #634). The command fails and says so. The input is back on its own endpoint, so neither the command nor the
+ * engine's boundary moves the tuning the run started with (issue #903); a switch that stands moves it at once, so an
+ * export later in the same drain is not the start tuning's.
  */
 static int
 test_a_refused_udp_bind_restarts_the_old_input(void) {
@@ -4326,6 +4334,7 @@ test_a_refused_udp_bind_restarts_the_old_input(void) {
     state.input_boundary = 0;
     seed_received_tone(&state);
     const uint32_t seeded = state.analog_rx.generation;
+    dsd_engine_note_run_start(&opts, &state);
     (void)post_host_port(DSD_APP_CMD_UDP_INPUT_CFG, "127.0.0.1", held);
     rc |= expect_int("held port drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("held port fails", dsd_app_command_test_last_failed(), 1);
@@ -4333,7 +4342,41 @@ test_a_refused_udp_bind_restarts_the_old_input(void) {
     rc |= expect_int("on its own port", opts.udp_in_portno, first);
     rc |= expect_contains("restart toast", state.ui_msg, "the UDP input before it was restarted");
     rc |= expect_received_tone_cleared("a restarted udp input is a new reception", &state, seeded);
-    rc |= expect_int("the engine ends the reception", state.input_boundary, 1);
+    rc |= expect_int("the engine ends the reception", state.input_boundary, DSD_INPUT_BOUNDARY_RESTORED);
+    rc |= expect_int("the restored input keeps the start tuning", dsd_state_tuning_moved(&state), 0);
+    dsd_engine_carrier_boundary(&opts, &state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+    rc |= expect_int("and so does the engine's boundary for it", dsd_state_tuning_moved(&state), 0);
+    state.input_boundary = 0;
+
+    /* A switch that stands, with an export queued behind it in the same drain (issue #903). */
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_udp_export") != 0) {
+        rc |= expect_true("udp export temp directory", 0);
+    } else {
+        rc |= expect_int("udp export: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+        const size_t size = sizeof(dsd_app_tg_export_payload) + 64U;
+        dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)calloc(1, size);
+        rc |= expect_true("udp export: request", request != NULL);
+        if (request != NULL) {
+            dsd_tg_policy_table_version(&state, &request->policy_context, &request->policy_generation);
+            DSD_SNPRINTF(request->path, size - offsetof(dsd_app_tg_export_payload, path), "%s", "after-switch.csv");
+            const int second = free_loopback_udp_port();
+            (void)post_host_port(DSD_APP_CMD_UDP_INPUT_CFG, "127.0.0.1", second);
+            rc |= expect_int("udp export: queued behind the switch",
+                             dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, size),
+                             DSD_APP_COMMAND_SUBMIT_QUEUED);
+            free(request);
+            rc |= expect_int("udp export: one drain", dsd_app_drain_cmds(&opts, &state), 2);
+            rc |= expect_int("udp export: the switch stands", opts.udp_in_portno, second);
+            dsd_app_tg_export_result result = {0};
+            rc |= expect_int("udp export: completion", dsd_app_tg_export_result_get(&result), 1);
+            rc |= expect_int("udp export: written", result.success, 1);
+            rc |=
+                expect_int("udp export: the export ran on another input, not the start tuning", result.tuning_moved, 1);
+            (void)remove("after-switch.csv");
+        }
+        rc |= expect_int("udp export temp directory left", dsd_test_temp_cwd_leave(&cwd), 0);
+    }
     if (holder != DSD_INVALID_SOCKET) {
         dsd_socket_close(holder);
     }
@@ -4372,13 +4415,18 @@ test_config_reopen_failures_keep_the_input(void) {
     cfg.input_source = DSDCFG_INPUT_UDP;
     DSD_SNPRINTF(cfg.udp_addr, sizeof cfg.udp_addr, "%s", "127.0.0.1");
     cfg.udp_port = held;
+    dsd_engine_note_run_start(&opts, &state);
     rc |= expect_true("udp config queued", dsd_app_command_apply_config(&cfg) > 0);
     rc |= expect_int("udp config drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_true("the running udp runs on", opts.audio_in_type == AUDIO_IN_UDP && opts.udp_in_ctx != NULL);
     rc |= expect_int("on its own port", opts.udp_in_portno, first);
     rc |= expect_str("its name put back", opts.audio_in_dev, running);
     rc |= expect_received_tone_cleared("a restarted udp input is a new reception", &state, seeded);
-    rc |= expect_int("the engine ends the reception", state.input_boundary, 1);
+    rc |= expect_int("the engine ends the reception", state.input_boundary, DSD_INPUT_BOUNDARY_RESTORED);
+    /* Issue #903: the config's input is put back on the running endpoint, so the run keeps its start tuning. */
+    rc |= expect_int("the restored input keeps the start tuning", dsd_state_tuning_moved(&state), 0);
+    dsd_engine_carrier_boundary(&opts, &state, DSD_CARRIER_BOUNDARY_INPUT_SWITCH, 0);
+    rc |= expect_int("and so does the engine's boundary for it", dsd_state_tuning_moved(&state), 0);
     if (holder != DSD_INVALID_SOCKET) {
         dsd_socket_close(holder);
     }
@@ -5964,7 +6012,8 @@ settle_walk_tune(dsd_opts* opts, dsd_state* state, int result) {
  * Issue #644 (B-2), on every toolchain: a Next or Previous walk off any scan (no -Y running) through the queue's
  * portable seam. A landing names the row; a refusal passes it going forward and keeps it for a retry going back. A
  * tune that times out names nothing until it lands (then its row), fails late (then the refusal rules, by the walk's
- * direction) or is dropped (then nothing at all). Before, a timeout was taken as a landing at once.
+ * direction) or is dropped (then nothing at all). Before, a timeout was taken as a landing at once. Issue #903: no
+ * scan owns the walk and no operator mark covers it, so its landing moves the tuning generation.
  */
 static int
 test_channel_walk_off_scan_rules(void) {
@@ -5976,10 +6025,14 @@ test_channel_walk_off_scan_rules(void) {
     opts.scanner_mode = 0;
     state.lcn_freq_roll = 1;
     dsd_state_lcn_on_air_note(&state, 0);
+    dsd_engine_note_run_start(&opts, &state);
 
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to B");
     rc |= expect_true("off-scan walk: B lands", g_manual_leg_hz == 896000000U && state.lcn_freq_roll == 2
                                                     && dsd_state_lcn_heard_row(&state) == 1);
+    rc |= expect_true("off-scan walk: the landing moves the tuning",
+                      dsd_state_tuning_moved(&state) == 1 && state.operator_tuned == 0U);
+    dsd_engine_note_run_start(&opts, &state);
 
     manual_leg_script(895000000U, RTL_STREAM_TUNE_FAILED);
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE_PREV, "off-scan walk: previous refused on A");
@@ -5991,9 +6044,12 @@ test_channel_walk_off_scan_rules(void) {
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to C times out");
     rc |= expect_true("off-scan walk: C waits", g_manual_leg_hz == 897000000U && state.lcn_freq_roll == 2
                                                     && dsd_state_lcn_heard_row(&state) == 1);
+    rc |= expect_true("off-scan walk: a refusal and a tune still waiting move nothing",
+                      dsd_state_tuning_moved(&state) == 0);
     rc |= expect_int("off-scan walk: C lands", settle_walk_tune(&opts, &state, RTL_STREAM_TUNE_OK),
                      DSD_MANUAL_TUNE_LANDED);
     rc |= expect_true("off-scan walk: C named", state.lcn_freq_roll == 3 && dsd_state_lcn_heard_row(&state) == 2);
+    rc |= expect_true("off-scan walk: a late landing moves the tuning too", dsd_state_tuning_moved(&state) == 1);
 
     manual_leg_script(895000000U, RTL_STREAM_TUNE_TIMEOUT);
     rc |= drain_action(&opts, &state, DSD_APP_CMD_CHANNEL_CYCLE, "off-scan walk: next to A times out");
@@ -9505,6 +9561,132 @@ test_talkgroup_export_result(void) {
     free(state);
     free(opts);
     remove(path);
+    return rc;
+}
+
+/* Export the talkgroup list to @p path and read its completion into @p out (issue #903). */
+static int
+export_talkgroups_to(dsd_opts* opts, dsd_state* state, const char* path, dsd_app_tg_export_result* out) {
+    const size_t size = sizeof(dsd_app_tg_export_payload) + 64U;
+    dsd_app_tg_export_payload* request = (dsd_app_tg_export_payload*)calloc(1, size);
+    if (request == NULL) {
+        return 1;
+    }
+    dsd_tg_policy_table_version(state, &request->policy_context, &request->policy_generation);
+    DSD_SNPRINTF(request->path, size - offsetof(dsd_app_tg_export_payload, path), "%s", path);
+    int rc = expect_int("tuning export queued", dsd_app_command_submit(DSD_APP_CMD_TG_LIST_EXPORT, request, size),
+                        DSD_APP_COMMAND_SUBMIT_QUEUED);
+    free(request);
+    rc |= expect_int("tuning export drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_int("tuning export completion", dsd_app_tg_export_result_get(out), 1);
+    rc |= expect_int("tuning export succeeded", out->success, 1);
+    return rc;
+}
+
+/*
+ * Issue #903: the tuning generation is fail-closed. Every carrier boundary moves it (a tune no operator marks, another
+ * source or input, a replay's recorded retune), as do a decode-mode change and a channel-map import, but the boundaries
+ * on the allow-list: a stream gap on the same carrier, a step of the session's own scan, an operator's tune, a tune
+ * while the operator holds the tuner, and the run's own first stream. Each export's completion records whether it had
+ * moved since the run began (dsd_app_tg_export_result::tuning_moved), which Save talkgroup list attaches by.
+ */
+static int
+test_tuning_generation_follows_live_changes(void) {
+    int rc = 0;
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_tuning_gen") != 0) {
+        DSD_FPRINTF(stderr, "temp working directory setup failed: %s\n", strerror(errno));
+        return 1;
+    }
+    static const char map[] = "channel,frequency_hz,mode\n1,461000000,dmr\n2,851012500,p25\n";
+    rc |= write_file_bytes("tuning_map.csv", map, strlen(map));
+    init_decode_mode_context(&opts, &state);
+    rc |= expect_int("tuning gen: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+    dsd_engine_note_run_start(&opts, &state);
+    dsd_app_tg_export_result result = {0};
+    rc |= export_talkgroups_to(&opts, &state, "start.csv", &result);
+    rc |= expect_int("tuning gen: an export on the start tuning says so", result.tuning_moved, 0);
+
+    /* A run on a state an earlier run used: its first stream's source boundary is the run's start, not a change. */
+    state.carrier_source_key = 1U;
+    dsd_engine_note_run_stream_source(&opts, &state);
+    rc |= expect_int("tuning gen: the run's first stream is its start tuning", dsd_state_tuning_moved(&state), 0);
+    const dsd_carrier_boundary_kind kept[] = {
+        DSD_CARRIER_BOUNDARY_STREAM_GAP,
+        DSD_CARRIER_BOUNDARY_SCAN_STEP,
+        DSD_CARRIER_BOUNDARY_OPERATOR_TUNE,
+    };
+    for (size_t i = 0; i < sizeof kept / sizeof kept[0]; i++) {
+        dsd_engine_carrier_boundary(&opts, &state, kept[i], 0);
+        rc |= expect_int("tuning gen: a stream gap, a scan step or an operator's tune keeps the tuning",
+                         dsd_state_tuning_moved(&state), 0);
+    }
+    state.operator_tuned = 1U;
+    dsd_engine_carrier_boundary(&opts, &state, DSD_CARRIER_BOUNDARY_TUNE, 0);
+    rc |= expect_int("tuning gen: a tune while the operator holds the tuner keeps the tuning",
+                     dsd_state_tuning_moved(&state), 0);
+    state.operator_tuned = 0U;
+    rc |= export_talkgroups_to(&opts, &state, "gap.csv", &result);
+    rc |= expect_int("tuning gen: an export after a stream gap is on the start tuning", result.tuning_moved, 0);
+
+    const dsd_carrier_boundary_kind moved[] = {
+        DSD_CARRIER_BOUNDARY_TUNE,
+        DSD_CARRIER_BOUNDARY_SOURCE,
+        DSD_CARRIER_BOUNDARY_INPUT_SWITCH,
+        DSD_CARRIER_BOUNDARY_REPLAY_RETUNE,
+    };
+    for (size_t i = 0; i < sizeof moved / sizeof moved[0]; i++) {
+        dsd_engine_note_run_start(&opts, &state);
+        dsd_engine_carrier_boundary(&opts, &state, moved[i], 0);
+        rc |= expect_int("tuning gen: a tune no operator marks, another source or input, or a replay's retune moves "
+                         "the tuning",
+                         dsd_state_tuning_moved(&state), 1);
+    }
+    rc |= export_talkgroups_to(&opts, &state, "moved.csv", &result);
+    rc |= expect_int("tuning gen: an export after a retune is not on the start tuning", result.tuning_moved, 1);
+
+    /* A new run starts on its own tuning. */
+    dsd_engine_note_run_start(&opts, &state);
+    rc |= expect_int("tuning gen: a new run starts on its tuning", dsd_state_tuning_moved(&state), 0);
+    rc |= expect_int("tuning gen: decode mode",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("tuning gen: decode mode drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tuning gen: a decode mode applied live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    rc |= export_talkgroups_to(&opts, &state, "mode.csv", &result);
+    rc |= expect_int("tuning gen: an export after a mode change is not on the start tuning", result.tuning_moved, 1);
+
+    dsd_engine_note_run_start(&opts, &state);
+    rc |= expect_int("tuning gen: the same mode again",
+                     dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_DMR),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("tuning gen: the mode in force restated keeps the tuning", dsd_state_tuning_moved(&state), 0);
+
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "tuning_map.csv");
+    rc |= expect_int("tuning gen: channel map drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("tuning gen: the channel map runs", state.trunk_chan_map_used_count > 0);
+    rc |= expect_int("tuning gen: a channel map imported live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    dsd_engine_note_run_start(&opts, &state);
+    post_empty(DSD_APP_CMD_IMPORT_CHANNEL_MAP_CLEAR);
+    rc |= expect_int("tuning gen: channel map clear drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_int("tuning gen: a channel map cleared live moves the tuning", dsd_state_tuning_moved(&state), 1);
+    dsd_engine_note_run_start(&opts, &state);
+    post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, "missing_map.csv");
+    (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("tuning gen: a channel map that did not load keeps the tuning", dsd_state_tuning_moved(&state), 0);
+
+    freeState(&state);
+    (void)remove("tuning_map.csv");
+    const char* exports[] = {"start.csv", "gap.csv", "moved.csv", "mode.csv"};
+    for (size_t i = 0; i < sizeof exports / sizeof exports[0]; i++) {
+        (void)remove(exports[i]);
+    }
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
     return rc;
 }
 
@@ -22067,7 +22249,9 @@ test_overlapping_requests_end_on_the_right_gate(void) {
  * moved after. Either way the front end stays on the digital family, so the decoder goes back to the mode it had, with
  * its options and modulation lock, and says why, rather than decode Analog from a digital front end. A switch the
  * front end takes stays, and a later mode change is not undone by the refusal of an earlier one. A config's [mode]
- * onto Analog is put back the same way.
+ * onto Analog is put back the same way. Issue #903: the tuning generation follows the mode the receiver settles on, not
+ * the one asked for. A change put back, at once or where it landed, moves nothing; one taken moves it once the front
+ * end takes it, and an export while it waits says it was not heard on the start tuning.
  */
 static int
 test_refused_switch_onto_analog_puts_the_mode_back(void) {
@@ -22075,7 +22259,13 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     static dsd_state state;
     static void* fake_ctx[2];
     int rc = 0;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_analog_back") != 0) {
+        return expect_true("analog back temp directory", 0);
+    }
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    rc |= expect_int("mode back: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+    dsd_engine_note_run_start(&opts, &state);
 
     /* Refused by its request. */
     g_analog_req_result = -1;
@@ -22084,6 +22274,7 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     rc |= expect_int("request refused: drained", dsd_app_drain_cmds(&opts, &state), 1);
     rc |= expect_int("request refused: checked first", g_analog_check_calls, 1);
     rc |= expect_back_on_dmr("request refused: back on DMR", &opts, &state);
+    rc |= expect_int("request refused: the start tuning stays", dsd_state_tuning_moved(&state), 0);
     g_analog_req_result = 0;
 
     /* Refused where it landed: on Analog while pending, back on DMR once the stream says so. */
@@ -22092,6 +22283,9 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("landing: on Analog while pending", opts.analog_only, 1);
     rc |= expect_int("landing: switch requested", g_analog_req_calls == 1 && g_analog_req_width_hz == 16000, 1);
+    dsd_app_tg_export_result result = {0};
+    rc |= export_talkgroups_to(&opts, &state, "pending.csv", &result);
+    rc |= expect_int("landing: an export while the switch waits is not the start tuning's", result.tuning_moved, 1);
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("landing: still Analog while pending", opts.analog_only, 1);
     demod_thread_refuses_analog_keeping(0, 0);
@@ -22099,6 +22293,9 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     rc |= expect_int("landing: settled on an empty drain", dsd_app_drain_cmds(&opts, &state), 0);
     rc |= expect_back_on_dmr("landing: back on DMR", &opts, &state);
     rc |= expect_int("landing: the digital profile republished", g_demod_req_calls >= 1, 1);
+    rc |= expect_int("landing: put back, the start tuning stays", dsd_state_tuning_moved(&state), 0);
+    rc |= export_talkgroups_to(&opts, &state, "back.csv", &result);
+    rc |= expect_int("landing: an export once it is put back is the start tuning's", result.tuning_moved, 0);
     state.ui_msg[0] = '\0';
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("landing: reported once", state.ui_msg[0] == '\0', 1);
@@ -22107,10 +22304,12 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     reset_rx_family_wrap();
     (void)dsd_app_command_set_i32(DSD_APP_CMD_DECODE_MODE_SET, (int32_t)DSDCFG_MODE_ANALOG);
     (void)dsd_app_drain_cmds(&opts, &state);
+    rc |= expect_int("taken: nothing moved before the front end takes it", dsd_state_tuning_moved(&state), 0);
     demod_thread_lands(0);
     g_fake_analog_family = 1;
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_int("taken: Analog stays", opts.analog_only, 1);
+    rc |= expect_int("taken: the tuning moved", dsd_state_tuning_moved(&state), 1);
 
     /* Switched to Analog and on to P25 before either landed: the P25 request replaced the Analog switch in the queue,
        so the stream reports that switch replaced, never taken, whatever it then says of P25's own request, and the
@@ -22128,26 +22327,35 @@ test_refused_switch_onto_analog_puts_the_mode_back(void) {
     /* A config's [mode] onto Analog, refused where it landed. */
     freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    dsd_engine_note_run_start(&opts, &state);
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config landing");
     rc |= expect_int("config landing: on Analog while pending", opts.analog_only, 1);
     demod_thread_refuses_analog_keeping(0, 0);
     state.ui_msg[0] = '\0';
     (void)dsd_app_drain_cmds(&opts, &state);
     rc |= expect_back_on_dmr("config landing: back on DMR", &opts, &state);
+    rc |= expect_int("config landing: put back, the start tuning stays", dsd_state_tuning_moved(&state), 0);
 
     /* ... and refused by its request: the apply fails. */
     freeState(&state);
     init_dmr_session_with_nfm_width(&opts, &state, (RtlSdrContext*)fake_ctx, 16000);
+    dsd_engine_note_run_start(&opts, &state);
     g_analog_req_result = -1;
     state.ui_msg[0] = '\0';
     rc |= submit_config_mode(&opts, &state, DSDCFG_MODE_ANALOG, "config request refused");
     rc |= expect_back_on_dmr("config request refused: back on DMR", &opts, &state);
+    rc |= expect_int("config request refused: rolled back, the start tuning stays", dsd_state_tuning_moved(&state), 0);
     g_analog_req_result = 0;
 
     g_fake_analog_family = 0;
     opts.analog_nfm_bandwidth_hz = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
+    (void)remove("pending.csv");
+    (void)remove("back.csv");
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
     return rc;
 }
 
@@ -27864,9 +28072,13 @@ test_dmr_channel_set_command(void) {
     post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
     rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(opts, state), 1);
 
+    dsd_engine_note_run_start(opts, state);
     dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
     rc |= expect_int("channel set applied", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
+    /* Issue #903: the channels the receiver runs changed live, as a channel map imported live changes them. */
+    rc |= expect_int("an applied channel edit moves the tuning", dsd_state_tuning_moved(state), 1);
+    dsd_engine_note_run_start(opts, state);
     rc |= expect_true("channel set is the user's, beside the shared row",
                       dmr_t3_chan_effective_hz(state, 12U) == 451137500L
                           && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER
@@ -27893,6 +28105,7 @@ test_dmr_channel_set_command(void) {
     p.session_seq++;
     rc |= expect_int("another session is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
+    rc |= expect_int("a refused channel edit keeps the tuning", dsd_state_tuning_moved(state), 0);
     p = dmr_channel_edit(state, 15U, DMR_T3_OVERLAY_HIDE, -1);
     rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
@@ -30116,6 +30329,61 @@ test_frequency_entry_pauses_a_running_list(void) {
     freeState(&state);
     return rc;
 }
+
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+/*
+ * Issue #903 (PR2 review r4 ruling): Go to over a running -Y list, then its resume. The entry pauses the scan and marks
+ * the operator (operator_tuned), which keeps the calls heard there from any saved system; it does not move the tuning
+ * generation, so once the resume lands the list's rows learn again. An export while the operator holds the tuner says
+ * the list was not heard on the start tuning; one after the resume says it was.
+ */
+static int
+test_go_to_and_resume_keep_the_tuning_generation(void) {
+    static dsd_opts opts;
+    static dsd_state state;
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_ui_cmd_queue_go_to_gen") != 0) {
+        return expect_true("go to temp directory", 0);
+    }
+    init_decode_mode_context(&opts, &state);
+    int rc = expect_int("go to: policy row", dsd_tg_policy_set_mode(&state, 42, 42, "A"), 0);
+    arm_rigctl_fake(&opts, DSD_ANALOG_DEMOD_FM, 0);
+    g_rigctl_fake_freq_armed = 1;
+    seed_running_list(&opts, &state);
+    dsd_engine_note_run_start(&opts, &state);
+    arm_seam_tune(RTL_STREAM_TUNE_OK);
+    const uint32_t carrier_before = state.carrier_seq;
+    rc |= drain_entry(&opts, &state, 860000000U, "go to");
+    rc |= expect_int("go to: the scan paused for the operator, the receiver moved",
+                     opts.scanner_mode == 0 && state.lcn_scan_paused == 1 && state.operator_tuned == 1
+                         && state.carrier_seq != carrier_before,
+                     1);
+    rc |= expect_int("go to: the operator's tune leaves the tuning generation", dsd_state_tuning_moved(&state), 0);
+    dsd_app_tg_export_result result = {0};
+    rc |= export_talkgroups_to(&opts, &state, "held.csv", &result);
+    rc |= expect_int("go to: an export while the operator holds the tuner is not the start tuning's",
+                     result.tuning_moved, 1);
+    dsd_app_command_test_set_tune_leg(NULL);
+    rc |= drain_action(&opts, &state, DSD_APP_CMD_SCAN_RESUME, "go to: resume");
+    rc |= expect_int("go to: the resume lands and the scan has the tuner again",
+                     opts.scanner_mode == 1 && state.lcn_scan_paused == 0 && state.lcn_scan_resume_pending == 0
+                         && state.operator_tuned == 0,
+                     1);
+    rc |= expect_int("go to: after the resume the tuning is the run's start tuning", dsd_state_tuning_moved(&state), 0);
+    rc |= export_talkgroups_to(&opts, &state, "resumed.csv", &result);
+    rc |= expect_int("go to: an export after the resume is the start tuning's", result.tuning_moved, 0);
+    g_rigctl_fake_freq_armed = 0;
+    disarm_rigctl_fake(&opts);
+    opts.scanner_mode = 0;
+    freeState(&state);
+    (void)remove("held.csv");
+    (void)remove("resumed.csv");
+    if (dsd_test_temp_cwd_leave(&cwd) != 0) {
+        rc = 1;
+    }
+    return rc;
+}
+#endif
 
 /*
  * Issue #671: the operator moved the receiver off its session, so the calls heard from here on are filed as the
@@ -33712,6 +33980,9 @@ cmd_queue_behaviour_cases(void) {
     rc |= test_channel_scan_pause_services();
 #ifdef USE_RADIO
     rc |= test_frequency_entry_pauses_a_running_list();
+#ifdef DSD_NEO_TEST_IO_CONTROL_WRAP
+    rc |= test_go_to_and_resume_keep_the_tuning_generation();
+#endif
     rc |= test_manual_tunes_mark_the_operator();
     rc |= test_paused_list_controls_and_stops();
     rc |= test_trunk_scan_pauses_for_an_entry_and_resumes();
@@ -34030,6 +34301,7 @@ cmd_queue_behaviour_cases(void) {
     rc |= test_talkgroup_row_record_after_mode();
     rc |= test_talkgroup_row_token_commands();
     rc |= test_talkgroup_export_result();
+    rc |= test_tuning_generation_follows_live_changes();
     rc |= test_source_alias_commands();
     rc |= test_scoped_direct_key_mutes();
     rc |= test_scoped_row_option_commands();

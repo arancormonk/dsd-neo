@@ -1,6 +1,6 @@
 # DSD-neo Privacy Policy
 
-**Effective date: November 18, 2026**
+**Effective date: November 22, 2026**
 
 This policy covers the DSD-neo Android app (package `io.github.arancormonk.dsdneo`)
 distributed on Google Play. The same practices apply to the side-loaded Android APK and the
@@ -167,6 +167,12 @@ Recordings, call history, logs, and configuration created by the app are stored 
 device in the app's private storage. The app sends them anywhere only through a feature you
 turn on (such as rdio-scanner upload) or when you share or export them yourself.
 
+Each saved system also remembers the talkgroups heard on it, so its Talkgroups screen can
+show them in a later session: each talkgroup's number and protocol and when it was first and
+last heard, nothing about the radios or what was said. This list stays on your device and is
+not part of the app's backup file. It is removed when you clear it on the Talkgroups screen
+or delete the saved system.
+
 That configuration includes things you enter that are sensitive: your saved systems and the
 decryption keys you add to them, the rdio-scanner API key, your RadioReference username and
 any application key you entered. On desktop these are in DSD-neo's configuration files. The
@@ -181,10 +187,10 @@ removes its private data.
 
 In the Android app you can export its configuration yourself (Settings → Backup) as a file
 encrypted with a passphrase you choose. It holds your saved systems, keys and settings, but
-no recordings, call history or location. The app writes it only to the place you pick in
-Android's file picker and never uploads it on its own; if you pick a cloud service such as
-Google Drive, that service stores the file under its own terms. The developer never receives
-it.
+no recordings, call history, remembered talkgroups or location. The app writes it only to the
+place you pick in Android's file picker and never uploads it on its own; if you pick a cloud
+service such as Google Drive, that service stores the file under its own terms. The developer
+never receives it.
 
 Settings → Diagnostics keeps a short log on your device to help track down problems. Lines
 that could hold a key are removed from it, and so are lines that show a position sent over the

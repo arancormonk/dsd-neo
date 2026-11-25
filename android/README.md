@@ -135,6 +135,36 @@ baseline; the row's own key remains effective until rotation restores globals.
 Force mode similarly updates configuration while an explicit row override wins.
 The encryption wizard and live entry sheet are supplied by a later UI package.
 
+### Remembered talkgroups
+
+A saved system remembers the talkgroups heard on it, so its Talkgroups screen shows them again in the next session,
+even when the system has no talkgroup list. A remembered card's second line reads **Last heard** and how long ago.
+**Remember heard talkgroups** in the saved-system editor turns this on or off for that system. It is on by default,
+for systems saved before this version too. Turning it off keeps what was remembered; **Clear remembered talkgroups…**
+at the foot of the Talkgroups screen removes it, and stays available while the switch is off.
+
+Only a talkgroup the decoder verified from the call itself is remembered: the checked voice header of a P25 Phase 1
+or Phase 2 call, of a DMR call (Tier II and III, Capacity Plus, Connect Plus, Hytera XPT) or of an NXDN call, or a
+TETRA trunked group call setup followed by its speech. A grant alone, a call joined late without a header the decoder
+could check, and traffic the receive filters (NAC, color code, RAN) reject are not remembered, nor are EDACS, dPMR,
+D-STAR, YSF, M17, X2-TDMA, ProVoice or TETRA DMO calls, or reserved and all-call ids. The call must come from a live
+receiver while the session listens to a saved system: replays, Explore, a frequency you tuned by hand, `-Y` rows,
+imported trunk scan targets and frequency entries remember nothing, nor does anything heard once the session's tuning
+changed while it ran (another frequency, channel, control channel, input, decode mode or channel map, from the app or
+the control API). A dropout on the same frequency, a scan list's own steps and a trunked system's own voice and control
+channels do not count. In a scan list, a talkgroup heard on a target
+counts for the one saved system that target came from; an id that also belongs to another system or to an imported
+target counts for none.
+
+Each saved system keeps up to 2000 talkgroups. When it holds more, the one heard longest ago goes. **Forget this
+talkgroup** in a card's edit sheet (two taps) removes one; a later call adds it back. Remembering keeps only the
+number, its protocol and when it was first and last heard. Names and listen settings belong to the talkgroup list, so
+**Save talkgroup list** (below) keeps them. Deleting a saved system removes its remembered talkgroups, and editing a
+system's frequency or mode in place keeps them. The list is written about every 30 seconds while listening, and at
+Stop, when the app goes to the background and when it quits; if Android kills the app first, the last few calls can
+be missing from it. Remembered talkgroups are kept on this device only and are not part of a backup (see
+[Backup and restore](#backup-and-restore)).
+
 ### Editing and saving talkgroups
 
 Long-press a talkgroup card to rename it, change Listening/Not tuned, set
@@ -154,15 +184,31 @@ appears in the screen's message line. Over-the-air radio aliases learned while t
 stale; a list reload, an edit from another frontend or a scan rotation does, and then the sheet must be reopened.
 
 When the running session has no group file, **Save talkgroup list** exports the
-canonical policy, including aliases and ranges, to app-owned Imports storage.
-The UI waits for the decoder's retained successful result before registering the
-file and setting the saved system's group-list path. Later edits write that same
-file. If the saved system was deleted or acquired another group file while saving,
-the export remains in Imports without changing that system. Explore sessions save
-to Imports for later selection in a saved system. Scan-row exports are refused by
-the decoder. If completion fails or the session ends, the pending save is cleared.
-After 15 seconds without a result, **Try again** allows a new request. A retry uses
-a new path; late results from abandoned requests never associate a file.
+canonical policy, including aliases and ranges, to app-owned Imports storage. The
+export saves the table the edit sheet was opened on. The UI waits for the
+decoder's retained successful result, then adds the file to Imports, then sets it
+as the saved system's group list. Setting the list changes nothing else about
+the system: a RadioReference site keeps its site details, group and avoid. Later
+edits write that same file. Each step reports its own result. If a step after
+the export fails, the message says which and where the list got to: the
+exported file, and Imports if adding it there worked. Nothing is retried. If
+the saved system was deleted, retuned, moved to another receiver or acquired
+another group file while saving, or the decoder no longer ran the tuning the
+session started with when it wrote the export (another frequency, channel,
+control channel, input, decode mode, channel map or configuration, or a
+frequency you tuned by hand; a dropout on the same frequency does not count),
+the export remains in Imports without changing that system.
+Explore sessions, scan lists and operator holds save to Imports for later
+selection in a saved system. Scan-row exports are refused by the decoder, so
+Save is not offered there. A pending save survives the session ending: a result
+that arrives after Stop still completes it. After 15 seconds without a result,
+**Try again** allows a new request with a new path, and the earlier request's
+late result is ignored. If more exports finish at once than the app can read
+back, the message says the result was not received.
+
+Removing a talkgroup list you saved from Imports clears it from the systems that
+use it and keeps their RadioReference site details. Removing a RadioReference
+file still clears the site details of the systems that use it.
 
 ## The two-mode UI
 
@@ -916,7 +962,9 @@ key files, band plans, source ID lists, trunk scan targets, and the companion fi
 profiles with their keys, Signal search ranges and permanent avoids, and your settings, including the app-wide Extra
 decoder arguments and the RadioReference username and application-key override.
 
-It does not carry: call history, call recordings, replay recordings (the files replay systems play), Signal search's
+It does not carry: call history, the talkgroups saved systems remember (see
+[Remembered talkgroups](#remembered-talkgroups); a restore keeps the phone's own for each saved system the restored
+setup still has, and removes the rest), call recordings, replay recordings (the files replay systems play), Signal search's
 detection history, diagnostics, the last location fix, whether GPS roaming is on (its two distances are carried), the
 Listen tab the phone opens on and the order Listen sorts saved systems in (each phone remembers its own, and a restore
 keeps them), the Map settings, age filter and saved map area (a tile server address can hold a key; a restore keeps the

@@ -37,6 +37,7 @@
 namespace dsd_qt {
 
 class CallHistoryModel;
+class HeardTalkgroupStore;
 class MetricsModel;
 class P25NetworkModel; // WP-F2
 class DmrChannelsModel;
@@ -51,8 +52,12 @@ class UiController : public QObject {
     Q_OBJECT
     // WP-S2: QML supplies its complete overlay/pending-permission gate.
     Q_PROPERTY(bool autoStartBlocked MEMBER m_autoStartBlocked)
-    // WP-D1: copied retained outcome, polled even without decoder redraw.
-    Q_PROPERTY(QVariantMap talkgroupExportResult READ talkgroupExportResult NOTIFY talkgroupExportResultChanged)
+    // WP-D1: copied retained outcomes, polled even without decoder redraw. Issue #903: every export completion the
+    // last poll read, oldest first ({results: [...], missedThrough}), so two finishing between polls both arrive;
+    // missedThrough is the newest sequence that poll could not read (more finished than app-control keeps), else "0".
+    // Each result's tuningMoved says the receiver's tuning had changed since the run began as the export ran
+    // (dsd_app_tg_export_result::tuning_moved): its list was not heard on the session's start tuning.
+    Q_PROPERTY(QVariantMap talkgroupExportResults READ talkgroupExportResults NOTIFY talkgroupExportResultsChanged)
     Q_PROPERTY(QVariantMap decryptionResult READ decryptionResult NOTIFY decryptionResultChanged)
     Q_PROPERTY(int pollIntervalMs READ pollIntervalMs WRITE setPollIntervalMs NOTIFY pollIntervalChanged)
 
@@ -68,9 +73,13 @@ class UiController : public QObject {
     }
 
     QVariantMap
-    talkgroupExportResult() const {
-        return m_talkgroupExportResult;
+    talkgroupExportResults() const {
+        return m_talkgroupExportResults;
     }
+
+    /** @brief Issue #903: the sequence of the newest talkgroup list export result app-control holds now ("0": none), never
+     * older than the last poll read. An export queued after this read completes with a newer one. */
+    Q_INVOKABLE QString talkgroupExportSequenceNow() const;
 
     int pollIntervalMs() const;
     void setPollIntervalMs(int interval_ms);
@@ -110,6 +119,13 @@ class UiController : public QObject {
         m_recordingStatus = status;
     }
 
+    // Issue #903: the remembered talkgroups, written at most every 30 s of real time from the tick and at once after a
+    // session's last rows are ingested at Stop. It must outlive this controller.
+    void
+    setHeardTalkgroups(HeardTalkgroupStore* store) {
+        m_heardTalkgroups = store;
+    }
+
     // WP-S2: called for a consumed host attachment, never on preference changes. @p attachedKind is the kind of
     // the receiver that attached ("usb" for an RTL-SDR, "airspy"); only a target on that kind starts (#647 D3a).
     // @p companions: the other lists a scan target was last started with (issue #697), passed on as they are; the
@@ -132,10 +148,16 @@ class UiController : public QObject {
      */
     Q_INVOKABLE void flushHistory();
 
+    /**
+     * @brief flushHistory() for Main's accepted start, before it begins the new session (issue #903): a ring no session
+     * owns yet stays unbound (CallHistoryModel::refresh()), since it can only be the starting run's.
+     */
+    Q_INVOKABLE void flushHistoryBeforeStart();
+
   Q_SIGNALS:
     void autoStartRequested(const QString& kind, const QString& uid, const QStringList& companions);
     void pollIntervalChanged();
-    void talkgroupExportResultChanged();
+    void talkgroupExportResultsChanged();
     void decryptionResultChanged();
 
   private:
@@ -147,6 +169,8 @@ class UiController : public QObject {
     void refreshRedrawModels(const dsd_opts* opts_snapshot, const dsd_state* snapshot, bool live, bool new_target);
     void pollTalkgroupExport();
     void pollDecryptionResult();
+    /** @brief The tick's write of the remembered talkgroups: at once when @p sessionEnded, else when one is due. */
+    void flushHeardTalkgroups(bool sessionEnded);
     /** @brief Reset the target-scoped models when the scan target changed; true when it did. */
     bool invalidateForTarget(const dsd_opts* opts_snapshot, const dsd_state* snapshot);
     /** @brief The retained command answers read on every tick and at the session's end: the export, decryption and
@@ -182,8 +206,9 @@ class UiController : public QObject {
     UnitActivityModel* m_unitActivity = nullptr;
     PositionModel* m_positions = nullptr;
     RecordingStatus* m_recordingStatus = nullptr;
+    HeardTalkgroupStore* m_heardTalkgroups = nullptr;
     QTimer m_timer;
-    QVariantMap m_talkgroupExportResult;
+    QVariantMap m_talkgroupExportResults;
     quint64 m_talkgroupExportSequence = 0;
     QPointer<CommandBridge> m_commands;
     QVariantMap m_decryptionResult;

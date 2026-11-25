@@ -2958,6 +2958,42 @@ suite runs under this compiler.
   window and the AES-ECB block count are bounded the same way. A standard header resets confirmed mode, the MNIS
   P_HEAD flag and the assembler's arming, which only DPF 0-3 with blocks to follow and DD/R_HEAD with appended blocks
   set; `data_block_crc_valid` holds the header plus 127 block verdicts.
+- API note (verified talkgroup proof, issue #903): `dsd_call_state_note_verified_target()` records that a checked
+  message of the slot's ACTIVE call proved its group. It binds to the call whose `dsd_call_snapshot_transmission()` is
+  the given epoch and does nothing for any other, an ended one, or one already noted (`dsd_call_snapshot::heard_noted`).
+  It takes the options for the receive policy (issue #637) and notes no traffic the policy says is not this system's:
+  while an access-code filter (DCC, RAN, NAC) rejects the code the call's protocol and slot are decoded with now, or
+  is still Checking for one, or that code is no longer the one the call was received with
+  (`dsd_receive_identity_changed()`), the note does nothing and leaves the epoch unnoted, so a checked message once the
+  code is admitted can still prove it; a proof noted before a policy edit rejects the call stays (fragment trust). The
+  slot filter is not asked: it picks a timeslot of the same system, as a talkgroup avoid or lockout picks a talkgroup,
+  and neither stops a talkgroup being remembered. TETRA has no receive filter. The check runs once per note, after the
+  epoch and noted checks, and costs nothing with every filter off (`call_state_receive_code_admits()`). A proof that
+  rests on a message sent once per transmission (a P25 Phase 2 MAC_PTT, an NXDN Type-D VCALL) is lost for a call still
+  Checking when it came (fail closed); a repeated one (a P25 Phase 1 LDU1, a Phase 2 voice user and its traffic, a DMR
+  terminator after the header) can prove the call once its code is admitted. The first note runs
+  `dsd_heard_tg_ordinary()` (`<dsd-neo/core/heard_talkgroup.h>`) once and freezes the result as
+  `heard_variant` (a `dsd_heard_tg_variant`, NONE when the id is not an ordinary talkgroup) and `heard_id`; renders and
+  staged-row rebuilds only copy it. A new epoch, a reacquired one included, starts with none, so a proof is never
+  inherited from a grant, an earlier epoch or a reacquired identity. The note writes the epoch's own staged row and,
+  when the epoch already committed one, revises that row in place (`commit_rev` moves). `Event_History::heard_variant`
+  and `heard_id` come only from the row's own canonical call (`staged_is_own`): a non-canonical notice carries none. A
+  reacquisition merge keeps the row's proof and fills one it lacks, and a CRC failure marked on the row later leaves it
+  (fragment trust). `Event_History::live_input` is a fail-closed latch of `dsd_opts_input_is_live()` (`opts.h`: an
+  RTL-family input other than an I/Q replay, Pulse, UDP or TCP PCM; not files, stdin, symbol captures or
+  `--playfiles`): set at the row's first render, ANDed at every render and at the commit, ANDed across a merge, and
+  cleared when a proof revises a committed row while the input in force is not live, or after a render of the epoch's
+  staged row since that commit saw non-live input (a staged row a commit just cleared says nothing either way). A proof
+  noted while the input is not live closes it for good on the row that carries it: the note records the verdict on
+  the call (`dsd_call_snapshot::heard_live_input`), closes the epoch's staged row's latch at once (so a commit after a
+  switch back to live input, with no render between, reads it shut), and every render that copies the proof ANDs it
+  in, including the render that begins a row after the note. `Event_History::scan_list_row` and `scan_list_rev` record
+  the `-Y` scan-list row the call was heard on (`dsd_channel_label_scan_list_row()`, 1 + its index, and the list's
+  `lcn_list_rev`; 0 and 0 off any `-Y` row, including a paused scan), stamped and frozen with the channel label. These
+  all ride `push_event_history()`, `init_event_history()` and the whole-row copies (trunk-scan snapshots, the UI
+  snapshot, `dsd_app_history_tap_copy()`). Producers: TETRA TMO (TETRA Calls, "Verified talkgroup"), P25 Phase 1 and
+  Phase 2 (Protocols, "P25 verified talkgroup"), DMR ("DMR verified talkgroup"), NXDN ("NXDN verified talkgroup").
+  Test: `CORE_HEARD_TALKGROUP` (its build counts classifier runs through `dsd_heard_tg_test_eval_count()`).
 - API note (call history rows, issue #575): every `Event_History` row records the frequency its call was heard on
   (`freq_hz`, Hz, 0 unknown) and its access code (`access_code_kind`, a `dsd_access_code_kind`, and `access_code`; zero
   means none, so a memset-zero row reads as unknown). `<dsd-neo/core/access_code.h>` (`src/core/util/access_code.c`,
@@ -13853,6 +13889,27 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never
   a retune within a trunked system or a stream gap) forgets it with the foreign control stamp
   (`dsd_nxdn_forget_carrier_system()`).
+- NXDN verified talkgroup (issue #903, `nxdn_element.c`). The producer is a checked VCALL (0x01) of a confirmed
+  transmission whose call type opens a call, at its publication (`nxdn_vcall_publish()` →
+  `nxdn_vcall_note_heard_group()`), for a group call type (000, 001) naming slot 0's call. A VCALL naming no
+  destination, as one continuing a DCR call ("JPN DCR", no numeric ID) does, proves nothing and leaves the call to a
+  later VCALL. The variant needs positive evidence (`nxdn_vcall_heard_variant()`): Type-C on a composite control channel frame, or a traffic channel frame,
+  once `dsd_nxdn_type_c()`; conventional on a traffic channel frame with no Type-C decoded and no grant followed;
+  Type-D for a VCALL read with the Type-D layout on an RTCH2 frame with no Type-C decoded, and only once its
+  transmission's SCCH run is confirmed (`nxdn_confirm_scch_confirmed()`). A Type-D transmission sends its VCALL once,
+  on the header frame beside its first SCCH (TS 2-E Fig 6.1-5), so the group waits in `dsd_state::nxdn_heard_pending`,
+  bound to its call epoch, until the next confirmed SCCH (`nxdn_heard_note_pending_type_d()` in
+  `nxdn_scch_prepare_type_d()`), and is dropped if Type-C is decoded meanwhile or the call changed. The epoch, not the
+  logical transmission: an epoch reopened after a sync loss is seeded with the call's target, but its confirmation gate
+  restarted, so the run that confirms there received no VCALL of its own. Before any Type-C
+  message decodes, the LICH values a composite control channel shares with Type-D read as Type-D (above), so a
+  cold-start composite VCALL with either layout is not noted. The ARIB VCALL never is. The classifier gets the 16-bit
+  group (Type-C, conventional) or the full Type-D address `(prefix << 11) | id` (the call state keeps the 11-bit id),
+  the call type (its NXDN rows admit only 000/001, conventional only 001) and CC Option bit 6. A noted call costs a
+  later VCALL one field check. Known limits: a Type-C traffic channel heard with nothing decoded that says Type-C
+  (trunking off, its control channel never heard) reads as conventional, whose classifier row refuses 000; the SCCH
+  run is two 7-bit CRCs, so a cold-start composite frame whose SACCH passes as an SCCH two frames running (1 in 16384)
+  still reads as Type-D. Tests: `NXDN_COMPOSITE_CONTROL` (`test_heard_*`).
 - NXDN control traffic of another channel on a followed traffic channel (`dsd_nxdn_control_heard_is_foreign()`: trunking
   on, a voice channel tuned, and the followed frequency not this site's control channel; compared by channel,
   `dsd_nxdn_same_channel()`: closer than half the 6.25 kHz raster, since the control channel fields may hold the
@@ -14448,6 +14505,36 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
      tuner's, the DMR
      rest channel and branding, the NXDN site and channel plan) and the DMR grants' `trunk_vc_freq[]`.
   5. `state->carrier_seq` moves, so a decoder that buffered the left carrier's bursts drops them (see below).
+  The tuning generation (issue #903; `dsd_state::tuning_gen`) is fail-closed: every carrier boundary, input change and
+  decode-mode change reports to `dsd_state_note_tuning_move()` (`<dsd-neo/core/state.h>`, under the guard whenever a
+  watchdog tick can run) with why it moved (`dsd_tuning_move`), and the generation moves unless the reason is on its
+  allow-list, the only place exceptions live: (a) `DSD_TUNING_MOVE_TRUNK_FOLLOW`, a trunk follow and the return to the
+  system's control channel (follows never reach the boundary; a Return-to-CC and a P25 control-channel selection of the
+  system's own `p25_cc_freq` report it); (b) `_OWN_CC_HUNT`, the trunked candidate cycle; (c) `_OWN_SCAN_STEP`, a
+  `DSD_CARRIER_BOUNDARY_SCAN_STEP` (scan-row ownership attributes its calls; trunk-scan target switches never reach the
+  boundary); (d) `_STREAM_GAP`, a stream gap or a reopen on the same carrier; (e) `_RESTORED`, a failed UDP switch
+  that restarted its own endpoint (`dsd_engine_note_input_restored()`, `input_boundary ==
+  DSD_INPUT_BOUNDARY_RESTORED`), or a mode change put back; (f) `_OPERATOR`, an operator's tune
+  (`DSD_CARRIER_BOUNDARY_OPERATOR_TUNE`: the frequency entry and the tap, which set `operator_tuned` after the
+  boundary) or any tune while `operator_tuned` holds, which a scan resume clears, so a resumed scan list learns again.
+  Everything else moves it (`carrier_boundary_tuning_move()`, `ui_user_move_forgets_identity()`): a tune no operator
+  marks (an off-scan or trunked channel cycle, a stale scan row's landing, Signal search, a config's or an import's
+  tune), a P25 control-channel selection of another system, another source, a replay's recorded retune, and an input
+  replacement, which moves it at its commit (`dsd_engine_note_input_replaced()`), so an export later in the same
+  drain reads it. `apply_cfg_radio_input()` also moves it for a config retune that ran no boundary (a live Airspy
+  retune). A decode-mode change moves it once it has settled (`ui_commit_mode_tuning()`: the decoders, analog monitor
+  and kind and DMR single slot after the command, `ui_decode_mode_key()`, against before it), so a config `[mode]` the
+  front end refused and rolled back moves nothing; a switch onto the analog monitor the front end has still to take
+  waits (`g_analog_entry.commit_tuning`) and moves it only if taken, and an export while it waits reads moved. A
+  RadioReference apply, a channel map imported or cleared live, a DMR Tier III channel edit applied live
+  (`DSD_APP_CMD_DMR_CHANNEL_SET`), and a P25 band plan imported live move it as well (`ui_note_tuning_change()`). `run_tuning_gen` is the
+  generation the run started with: `dsd_engine_note_run_start()` takes it, and so does
+  `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an earlier
+  run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two differ) is
+  stamped on each history row at its first render (`Event_History::tuning_moved`, beside `operator_tuned`); each export
+  completion records it or a held tuner (`dsd_app_tg_export_result::tuning_moved`: moved, `operator_tuned` set as it
+  ran, or a mode change still waiting on the front end). A row or list heard after a live retune is not the saved system's (see UI, Qt, verified talkgroups and Save
+  talkgroup list).
   With the received identity the P25 patch table goes too (`dsd_p25_patch_clear_all()`: entries, owner, listening
   clock): a manual tune, a new source or input, a scan step or a replay retune names no system, so the next carrier
   never inherits another system's members or KEY=0 (with trunking off a replay loses patch membership at each recorded
@@ -15080,6 +15167,26 @@ Private per-protocol modules worth knowing about:
   `dmr_cspdu_cap_plus_slot_lsn()`), not the record's, so a slot whose identity expired with its call while the
   companion kept the carrier busy (no record left) takes the group a status names for its next call. Tests:
   `DMR_FLCO_PRIVACY_MODES`, `DMR_GRANT_POLICY`, `DMR_FLCO_FID0`, `DMR_CSBK_BRANDING`.
+- DMR verified talkgroup (`dmr_flco.c`, issue #903). Only a voice LC header or terminator proves a group
+  (`dmr_flco_note_heard_group()`): never an embedded LC, a grant or the voice sync that opens a grant's call, which
+  copies the grant's identity. The LC's own check must have passed (`dmr_flco_crc_checked()`: a RAS acceptance under
+  `-F` never counts), its payload be readable (no FEC failure, not protected), it be a voice channel user on slot 0 or
+  1, and its slot's ACTIVE DMR group call carry the target and source it names. A header notes after it published the
+  call; a terminator notes before it ends the slot, reading its target from the LC's bits in its variant's layout, as
+  its payload is not parsed yet. Eligible raw shapes and variants (`dmr_flco_heard_group_variant()`), the carrier's
+  trunking system the one the carrier's current checked messages name (`dsd_rxid_dmr_layout_trunk()`, the address
+  layout's source; the Capacity Max marker alone is no evidence). While the received identity only still holds a
+  vendor system (Capacity Plus, Connect Plus, XPT) past the no-carrier pass, which the next transmitter on the frequency
+  may not belong to, nothing is proved (`dmr_flco_stale_vendor_trunk()`) until a checked message names the carrier's
+  system again or a carrier boundary resets the record; a stale Tier III record reads as DMR either way. FLCO 0x00 under FID 0, a Kenwood scrambler LC or Hytera FID 0x68 is DMR (no trunking system or
+  Tier III) or Connect Plus with its 24-bit target, and Hytera XPT with its 16-bit target only while the XPT layout
+  the LC was read with (`dmr_address_layout_of()`) and the checked XPT evidence agree (either alone proves nothing); a
+  Capacity Plus carrier's standard LC proves nothing, and so does one read with the standard layout while the display
+  branding still names Capacity Plus or XPT (a trunk-scan revisit restores it before fresh evidence arrives). FID 0x10 FLCO 0x04 is Capacity Plus (its 8-bit group) on a carrier checked
+  messages named Capacity Plus, a rest LSN of the same checked LC included; FID 0x10 FLCO 0x10 (Capacity Max group
+  voice) is DMR on a checked Tier III carrier. Unit-to-unit calls and every other FLCO prove nothing.
+  `dsd_call_state_note_verified_target()` classifies the first proof of the transmission once. Tests:
+  `DMR_FLCO_HEARD_TG`.
 - DMR reasons and C_AHOY meaning (`src/protocol/dmr/dmr_reason.{c,h}`). The Tier II NACK_Rsp Reason Code (TS 102 361-2
   Table 7.13) and the Tier III C_ACKD / C_ACKU / P_ACKD / P_ACKU Reason (TS 102 361-4 Tables 7.42-7.45, plus
   MS_Duplex_Not_Supported 0x16 from the clause 7.2.8.2 text) are separate tables, as they give 0x21 different meanings;
@@ -15575,6 +15682,37 @@ Private per-protocol modules worth knowing about:
   that release is never received, so that call keeps whatever name its row had. The fast release is kept (maintainer
   decision): it returns the tuner to the control channel early, and an alias sent before the second END, or on a
   channel the fast release does not close, still names the call (see the Motorola alias invariant under Core).
+- P25 verified talkgroup (issue #903, `src/protocol/p25/p25_heard_tg.{c,h}`). The proof comes from the voice
+  channel's own checked message for the transmission, never from a TSBK/MBT grant or the SM's `identity_checked`
+  verdicts (an addressless start inherits those from the assignment). Phase 1: an LDU1 group voice-user link control
+  (LCO $00, Motorola LCGRGR) whose start the SM accepted, recovered by a hard RS decode (`p25_lcw_ctx::lc_hard`; a
+  soft-erasure retry and a TDULC never prove), trunked or conventional (`p25_lcw_accept_group_voice_user()`). Phase 2:
+  a CRC-passed MAC_PTT naming a non-zero group (`p25p2_xcch_emit_ptt()` → `p25p2_heard_tg_ptt()`), or a CRC-passed
+  live group voice user (`p25p2_vpdu_observe_voice()` → `p25p2_heard_tg_voice_user()`), which only waits on its call
+  (`dsd_state::p25_p2_heard_vu_epoch` and its group) until a 4V/2V burst of that same epoch on the slot proves it
+  (`p25p2_emit_voice_activity()` → `p25p2_heard_tg_traffic()`): BBAC §7.3.1 sends voice users for setups that fail.
+  Only a burst the DUID dispatch ran (`s_voice_dispatched` in `p25p2_frame.c`) with its DUID bits exactly the codeword
+  counts, judged from the byte the DUID read already assembled and only while a voice user waits on the slot, so a
+  burst otherwise costs one field check; a hard- or soft-corrected DUID, or a burst run outside the dispatch, is voice
+  but no proof. Tracking-only returns (IDLE, HANGTIME, a recent-end repeat) never wait, and an
+  epoch an addressless start reopens after a clean END is another epoch. Supergroup evidence is the message's own (a
+  regroup voice user: LCGRGR, MFID 0x90 regroup, standard group regroup; passed into the observer before its handler
+  updates the patch table), an active patch entry naming the group, or a checked regroup grant of the group the slot
+  follows (`p25_sm_note_regroup_grant()`, called by each regroup grant and grant update decoder after its dispatch,
+  keeps `p25_sm_slot_ctx_t::regroup_sg` on the accepted assignment for that group until it is cleared or a checked
+  grant replaces it, or a checked repeat starts the slot's next call: one naming another talker than the last checked
+  one (`p25_grant_duplicate_spend_another_call()`, against `p25_sm_slot_ctx_t::checked_src`, which only messages whose
+  source check passed set, a committed voice start (MAC_PTT) by its own source and not one inherited from the
+  assignment (`p25_voice_start_note_checked_talker()`), kept apart from `src`, which a failed-CRC repeat also sets for the follow) or one accepted
+  after the assignment's call ended
+  (`p25_grant_duplicate_spend_ended_call()`); a grant or repeat whose CRC failed (`-F`) spends nothing
+  (`p25_grant_spends_regroup_evidence()`; an unchecked grant that reassigns the slot to the same group keeps the mark,
+  `p25_grant_claim_slots()`), though it can still drive the follow; a regroup repeat marks the next call again after
+  its dispatch; `p25_sm_followed_regroup()`), when the proof is noted, frozen there with it. The grant's word needs no patch row: a
+  full table of live member-bearing patches takes no memberless row. Documented limit: a MAC_PTT names no supergroup
+  itself, so one naming a supergroup no followed regroup grant named, that no regroup grant or voice user has put in
+  the patch table (and no regroup voice user waiting on the same epoch) is remembered as an ordinary group. Test:
+  `P25_HEARD_TALKGROUP`.
 - P25 identity provenance (`p25_trunk_sm.c`, `<dsd-neo/protocol/p25/p25_trunk_sm.h>`, issue #800). Each slot's
   assignment and each `p25_sm_event_t` carry `identity_checked`: `P25_SM_IDENTITY_CHECKED_SOURCE`, `_TARGET` and
   `_KIND` (group or private), set only from the check the producer ran on the message (a grant's or MAC message's own
@@ -17161,6 +17299,18 @@ single "current call".
   against that copy by the same rules, so speech of the same transmission after a short gap starts a new decoder but
   keeps the count. A rename and a grant after D-TX CEASED apply to the copy as to a bound transmission; any other reset
   (`tetra_voice_reset()`: a BSCH of another cell, the end of the heard speech) drops it.
+- Verified talkgroup (issue #903). Trunked mode only (never direct mode or anonymous speech). Eligibility is read
+  while the CRC-checked D-SETUP is applied, before its address becomes the record's `called_ssi`
+  (`setup_verified_gssi()` into `tetra_call_t::verified_gssi`): the MAC address must name an SSI in the clear (address
+  type 001, 101 or 110), never a USSI, an SMI, an event label alone or an encrypted short identity left unrecovered,
+  and the basic service must be circuit mode speech, point to multipoint, acknowledged or broadcast (table 14.35). A
+  later D-SETUP of the call that names another identity or service takes it back; one naming no identity keeps it.
+  D-CONNECT and the floor PDUs never set it. Speech consumes it (`speech_proves_group()` in `speech_of_record()`):
+  the speech CRC passed, encrypted speech included, on a timeslot of the record's own allocation, while canonical
+  slot 0 carries the call with that group as its target, through `dsd_call_state_note_verified_target()` on the
+  active transmission. Each floor grant is a transmission of its own (D-TX CEASED ends it, and its trail opens
+  nothing), so a second grant on the call identifier is proven only by its own speech, and a set-up or grant followed
+  by silence proves nothing. Tests: `TETRA_CALLS` (`test_verified_group_*`).
 - Speech decoding. mbelib-neo's TETRA decoder (`mbe_tetraDecodeFrame()`, mbe-neo 2.6+) turns each 137-bit speech frame
   into 240 samples at 8 kHz; a CRC-failed or stolen frame goes to it as a bad frame, which it conceals. `tetra_voice.c`
   makes one decoder (`tetra_voice_t::codec`) at the first frame that plays, resets it (`mbe_tetraDecoderReset()`) when
@@ -19238,6 +19388,93 @@ Qt Quick frontend (`src/ui/qt`):
     in the log). Measured (`-O2`, this host): a poll that finds nothing new costs 0.05 us; one new commit costs about
     210 us on the tap thread, of which the 62 us copy holds the snapshot lock (as the publisher's own copy does); a
     minimal row spills as about 440 bytes (a named row about a kilobyte).
+  - Verified talkgroups to the remembered list (issue #903; `call_history_heard.{h,cpp}`, `heard_talkgroup_sink.h`).
+    `setHeardSink()` (`qt_ui.cpp` `wire_heard_talkgroups()`: the `HeardTalkgroupStore`, made after History so it
+    outlives it) receives `observe(owner, variant, id, when)` for each fragment reading that is the first to carry its
+    proof (`Event_History::heard_variant`, `heard_id`), taken on live input (`live_input`), not operator tuned, and
+    heard on the tuning its run started with (`tuning_moved` 0: the tuning generation, see Protocols,
+    `dsd_engine_carrier_boundary()`), whose owner resolves. It is called at every ingest point, before any trim: the foreground `refresh()`, the spill fold
+    (handoff and load) and the teardown fold of the tap's unwritten backlog (`ingestReading()`), at the fragment's own
+    time (its end, else its start), never the merged conversation's. A reload of the saved log observes nothing, and
+    the store applies its owner policy at the call (frozen there; nothing is re-ingested). What the load's spill fold
+    finds before a sink is set waits (`HeardPending`: first and last per talkgroup, per owner; past twice
+    `kHeardPendingPerOwner` (the store's cap) an owner keeps its newest, oldest last heard dropped first, ties to the
+    lower variant and id, so one owner's long spill never crowds out another's). Once per fragment:
+    the walk hands an owner only when the fragment's seen entry held no proof (`seenProven()`), and the ingest skips a
+    fragment whose row already holds its part's proof (`fragmentProven()`), so a spill line folded again adds nothing.
+    Owners: `setSessionOwners(session, single, scan)`, or with the session itself under one tap handoff
+    `beginSessionWithOwners(label, uid, single, scan)` (`Main.startWithMap()`'s call): the saved system of a
+    saved-system start, or for a scan-list start each target id one saved system's entry gives (`KnownFrequencyIndex::sessionTargetOwners()`: every launched
+    target file read before the engine's id dedupe; an id an imported file, a frequency entry or another saved system
+    also gives, and every id when a file cannot be read, is no one's; `scan_list_entry_owners()`, one index of a list's
+    entries per list, each id by its first entry). Explore and Signal
+    search own nothing. Owners are bound to ring generations (`HeardOwners::rings`, `HeardRingGeneration`): a row's
+    session is that of the generation holding its push stamp (`heard_owners_session_of()`; none, so no owner, for a
+    stamp no generation holds). A ring's first generation is the session it was first walked in, by the model or the
+    tap (`heard_owners_bind_ring()`; the tap returns its owners in `Result::heardOwners`, adopted with
+    `heard_owners_adopt_rings()`), so the last call of A's ring read after B's own ring is A's. Every session's start
+    marks the ring read last at the position read (`heard_owners_mark_start()`, `HeardRingMark`): a run that reuses
+    the last run's state (an embedding host) reuses its ring, and the new session's first read of that ring that finds
+    it pushed past the mark opens the new session's generation there, so its calls are its own while the old rows and
+    their revisions stay the old session's; the new session binding a ring of its own drops the mark (that ring was
+    not reused), and a re-read of the marked ring with nothing new leaves it. The call on the air
+    (`heardOwnerOnAir()`, `heard_owners_on_air_session()`) is the marking session's on a marked ring, else the ring's
+    newest generation's. Before Main asks the host for a
+    start it calls `holdCaptureForStart()` (the tap handed off, its last poll binding the old run's ring to the session
+    ending, and kept stopped) and `flushHistory()` (the GUI's read binds it too, even a ring no read had met during its
+    run). No starting run's ring exists yet, so both bind only the old run's. The flush after the host's accept
+    (`UiController::flushHistoryBeforeStart()`, `refresh(..., false)`) reads nothing of a snapshot whose ring no
+    session owns (`heard_owners_ring_bound()`), its commit revision included: such a ring can only be the starting
+    run's, and the first read after the new session begins takes in what it committed under that session. On a ring a
+    session owns, what that flush finds pushed since the last read is the old run's last or the new run's first on the
+    ring it reused, which nothing tells apart: those rows are no one's, fail closed (`readBeforeSession()`,
+    `heard_owners_note_unowned()`, `HeardOwners::unowned` windows `HeardRingWindow` per ring: `heard_owners_session_of()`
+    gives such a row, and its later revisions, no session; persisted as `u`, a ring's windows past 8 merged into one
+    spanning both, an unreadable entry making the whole ring no one's). History still logs them. The next
+    `beginSession*()` consumes the hold and starts the tap on the new session when the app is away
+    (`onApplicationStateChanged()` keeps that state); a start that begins none releases it (`releaseCaptureHold()` on
+    Main's refused and failed starts, and a `QTimer::singleShot(0)` safety release a begun session retires), and a hold
+    keeps `startBackgroundCapture()` from starting the tap meanwhile. With the tap stopped from before the request until
+    the new session, no read binds the starting run's ring to the old session. A row heard off any scan is the
+    single owner's; a scan member is its target's (`channel_label`), and an unnamed scan member (`-Y`) or any scan row
+    of a saved-system start is no one's; a read without published options resolves none. The tap resolves the owner
+    where it reads and the spill line carries it (`ho`). The newest 8 sessions' owners, their ring generations (at most
+    32 rings) and the start mark are persisted (`callHistory/heardOwners`, JSON), so a relaunched UI rejoining the
+    running session keeps them.
+    `clearAll()` while the tap runs hands it off first (its spill folded, so what it found is observed, its rings
+    adopted), then clears. History's Clear hides rows and un-hears nothing: a row the clear covers whose proof arrives
+    after the clear is learnt once (`noteClearedProof()`; the tap spills it as a `clearedProofLine()`, folded by
+    `foldClearedProof()`), when its seen entry of that ring exists and had no proof; one the seen map does not know gives
+    nothing (fail closed), and the row stays cleared. Each
+    fragment part keeps its own proof and latch (`FragmentPart::heardVariant`, `heardId`, `liveInput`); the row shows
+    its first proven part's proof and is live only while every part is. Persisted on rows, parts and seen entries
+    (`hv`, `hid`, `live`; older ones read none and not live), and change detection counts a proof gained or the latch
+    closed (`absorbSeenProof()`), so a late proof on a committed row is read again. Each part also keeps its display
+    owner (`viewOwner`, persisted `vo` on rows, parts and spill lines; `heard_owner_of()` without the learnable gate,
+    for the Talkgroups screen) and its ingest serial (`heardSerial`, in memory). A Forget or Clear in the store
+    cannot be undone by a later fold of a spill History already folded: `HeardTalkgroupStore::setBeforeEdit()` runs
+    `CallHistoryModel::settleSpill()` first (`spillSettler()`, wired in `qt_ui.cpp`; true once History is gone), which
+    folds what a running tap holds and, while a folded spill waits for its acknowledgement, waits out the queued saves
+    and writes History now, so the spill is acknowledged and emptied before the store removes anything. A failed write
+    keeps the spill, as every failed save does, sets `saveFailing` (History's not-saving line) until a save lands, and
+    the store refuses the edit (`forget()`/`clear()` return false with a diagnostic, nothing removed): the spill it
+    could not settle would bring the entries back after a death. Settled means no spill is left to replay: a spill no
+    fold read whole (a read that failed, or lines a failed truncate left: `acknowledgeSave()` drops its mark either way)
+    is folded again first, and once the save is done the spill must be empty (`CallHistorySpill::empty()`: a spill
+    confirmed absent (`json_store_definitely_missing()`) or an empty regular file; a stat that fails otherwise, such as
+    a folder that cannot be searched, is not empty), else the edit is refused (a warning; `saveFailing` only for the
+    save itself). Tests: `UI_QT_CALL_HISTORY_MODEL`
+    (`test_heard_*`: once per fragment, live/operator/scan/no-owner/no-options gates, a late proof and a CRC revision,
+    a merged conversation in both orders, the ring-bound owner across a relaunch, scan targets, the round trip, the new
+    ring at the pre-start flush, with a call committed before it, an old ring no read met during its run, a reused
+    ring's generations, a reused ring's calls committed before the flush after the accept, a cleared row's late proof),
+    `UI_QT_CALL_HISTORY_TAP` (`test_heard_*`: 1,001 groups spilled while suspended, by handoff and by process death; A's
+    last call during B's start; a shared scan id, a live-to-file switch and an operator tune through the tap; the
+    teardown backlog; a Forget after a fold, then a death before History's save; a Forget refused while History cannot
+    save; a Forget after a partial spill read; a Forget refused while the spill cannot be emptied, or checked; a spill recovery past 20,000 of one owner's groups; a reused ring through the tap; the start's hold; a Clear
+    while the tap runs; a cleared row's late proof), `UI_QT_HEARD_TALKGROUP_STORE`
+    (`test_before_edit_hook`, `test_before_edit_hook_refusal`), `UI_QT_SIGNAL_SEARCH` (`testKnownFrequencySessionTargetOwners`), `UI_QT_QML_SESSION_TOOLS`
+    (`test_accepted_starts_name_their_heard_owners`).
   - Tests: `UI_QT_CALL_HISTORY_MODEL` (uids, fragments, recording roles, B6), `UI_QT_CALL_HISTORY_TAP` (300 commits
     while suspended, a spill across a process death, a stop and a clear while away, write volume, a spill unwritable
     at the handoff and at teardown, a 50,000-row spill, a 200,000-row one and a long one of notices heard again in bounded memory, a read error mid-spill;
@@ -21137,7 +21374,7 @@ Qt Quick frontend (`src/ui/qt`):
   (a bundle's companions too, from `CsvBundleImport::stagedNames`; a reason still naming the staging folder is dropped
   for the generic line; none for a talkgroup list, whose parser skips bad rows rather than refusing). The commit, on the
   Qt thread, only renames and saves the index: a new file moves in under a free name (`unique_import_destination`,
-  skipping every `newTalkgroupListPath()` this process handed out, then `dsd_rename_noreplace`, the next name on
+  skipping every `newTalkgroupListPath()` name still reserved, then `dsd_rename_noreplace`, the next name on
   `EEXIST`) before `saveRows`, which on failure removes it again; a replace rechecks the row's path, in-memory revision
   and type (else `stale`), saves the index with the new counts first and then moves the copy over the stored path
   (`dsd_replace_file_with_temp`), putting the old index back if the move fails (both failing keeps the new rows in
@@ -21219,6 +21456,11 @@ Qt Quick frontend (`src/ui/qt`):
   a failure shows under the row and keeps the earlier file, and closing or reopening the wizard cancels the copy and
   drops its answer.
   `registerTalkgroupList()` saves the index before it adds the row and answers false, adding nothing, when it cannot.
+  An export name stays reserved while its Save talkgroup list request lasts (issue #903): a registration hands it to
+  its row, and `releaseTalkgroupListPath()` gives it back when the request ends any other way.
+  `fromRadioReference(row)` (its origin, or a RadioReference system id) is the one rule an update in place and a
+  removal read. Load saves its prune at once and keeps, for that launch only, which pruned rows were the user's own
+  files: `prunedUserFile(path)` reads their origin, never the file's name (issue #903).
   Document probes (#831): a document opened from another app is told apart before anything is asked.
   `inspectDocument(reference)` returns an id and `documentInspected(id, {kind, name})` answers it exactly once, queued;
   the probe runs on the import worker (`ImportService::probeDocument()`, capped at `backup::kMaxSealedBytes`) and
@@ -21756,7 +21998,13 @@ Qt Quick frontend (`src/ui/qt`):
   sends `name` only when its field no longer reads as it opened, so an editor opened before an Update from
   RadioReference does not undo that rename). `clearCsvPath` (a library file removed) and
   `invalidatePathProvenance` (a library file replaced with the user's own bytes, keeping the path; see "Replacing a
-  library file in place") apply it to every row naming the path. Load drops what a row outside a group cannot use: its
+  library file in place") apply it to every row naming the path, except that `clearCsvPath(path, false)` (the user's
+  own file, issue #903) keeps the provenance of a row that named the file only as its group list: a list the user
+  saved never described the site, so two sites sharing it both stay in their group. `attachGroupList(uid, path,
+  tuning)` (Save talkgroup list, issue #903) sets `groupCsvPath` alone, no edit and no provenance cleared, and only
+  while `groupListAttachable(uid, tuning)`: the system exists, has no list, every tuning-provenance field equals
+  the tuning captured when the list was requested (`groupListTuningFields()`: those fields and the receiver's), and
+  the captured receiver is the row's (`receiver_identity()`: source and endpoint, every receiver field captured). Load drops what a row outside a group cannot use: its
   `avoidSite` (a lone RadioReference site keeps its avoid: its "1 site" chooser lifts it), and the `siteName` and
   position older edits left when they cleared only the ids; its `place` stays (a conventional multi-repeater row has one
   and no ids). Load saves that with the UID repair (one warning when that save fails; the clear repeats at the next
@@ -21871,7 +22119,10 @@ Qt Quick frontend (`src/ui/qt`):
   Listen" above). User text lives in `ListenPins::text()`. The QML fixture publishes it over the real `AppPrefs`, clears
   pins for each test file, and `testContext.resetPins()` clears them between cases. Tests: `UI_QT_PERSISTENCE`.
 - Removing a library file (issue #801) runs in this order: `ImportsScreen.qml`'s Remove file clears the path from saved
-  systems (`SavedSystemsModel::clearCsvPath`), then from scan lists (`ScanListsModel::clearCsvPath`), then calls
+  systems (`SavedSystemsModel::clearCsvPath`, told the file's origin by `ImportedFilesModel::fromRadioReference()`;
+  the startup cleanup passes the pruned user files the same way, and an export it finds only through a reference left by
+  a clear that could not be saved, with no Imports row left to give its origin, by its name), then from scan lists
+  (`ScanListsModel::clearCsvPath`), then calls
   `ImportedFilesModel::remove()`, which deletes the file (one already gone counts as deleted) and its bundle folder
   before it saves the index without the row. File first, so a failure never leaves a copy no row names: a file that will
   not delete keeps its row, and an index save that fails after the delete leaves the row listed, naming a missing file,
@@ -21885,14 +22136,17 @@ Qt Quick frontend (`src/ui/qt`):
   returns false stops the flow with a notice and keeps the row, so Remove file again finishes it; "Removed" shows only
   when all three succeed. References already cleared stay cleared. At startup `qt_ui.cpp`'s `prune_missing_csv_paths()`
   (declared in `qt_ui.h` for its test) clears both the paths the library pruned this load (`takePrunedPaths()`) and
-  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. The
-  library saves its prune before that runs, so the second rule is what retries a clear whose save failed at an earlier
-  launch. A missing file outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
+  every `csvPaths()` entry of either model that lies under `ImportedFilesModel::libraryRoot()` and no longer exists. A
+  saved system naming a pruned user's file (`prunedUserFile()`: an exported list, a picked list, or an export a backup
+  restore renamed) as its group list keeps its site (issue #903); any other file counts as RadioReference's, including
+  one whose clear failed at an earlier launch (only the launch that prunes a row knows its origin). The second rule
+  covers a reference to a library file the index never held, and retries a failed clear at each launch. A missing file
+  outside the library is the user's own and stays named. "Gone" means confirmed absent, in the
   library's load and in that cleanup alike (`json_store_definitely_missing()`, issue #828): a file whose stat fails
   any other way (a folder that cannot be searched for now) keeps its row and every reference. Tests:
   `UI_QT_IMPORTED_FILES` (`test_remove_finishes_on_retry`, `test_unsearchable_copy_is_not_pruned`),
   `UI_QT_BACKUP_ARCHIVE` (`test_startup_clears_missing_library_paths_twice`,
-  `test_startup_keeps_paths_it_cannot_check`),
+  `test_startup_prune_keeps_a_user_file_site`, `test_startup_keeps_paths_it_cannot_check`),
   `UI_QT_SCAN_LIST_ROUNDTRIP` (`checkFallbackPathsClear`), `UI_QT_QML_CALL_LISTS` (`tst_imports_remove.qml`).
 - Replacing a library file in place (discussion #748): an update (`beginImport()` with the row's `replacePath`, Update
   from file) and `refreshGeneratedFile()` (RadioReference refresh) validate the staged copy on the import worker first
@@ -21927,12 +22181,94 @@ Qt Quick frontend (`src/ui/qt`):
   `test_failed_update_leaves_the_file`, `test_group_list_counts_read_the_file_now`), `UI_QT_QML_CALL_LISTS`
   (`tst_imports_live_reload.qml`, `tst_main_live_csv_apply.qml`), `UI_QT_CONTROLLER` (`test_reload_bridge`).
 - `talkgroup_list_model.{h,cpp}` polls the effective core policy's source-context/generation pair after call-history
-  ingestion, merging listed rows with uncovered talkgroups heard this session (history rows of `historySession`).
-  Every history change rescans the whole history (a merge can move a row to another session, so contributions are
-  not tracked incrementally). `CallHistoryModel` hands the heard ids over from its row storage through the
-  `HeardTalkgroupSource` Qt interface (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row;
-  any other history model is read by role name. Coverage is a binary search over the listed rows sorted by start
-  with a running maximum end, so overlapping ranges cover correctly (issue #718).
+  ingestion, merging listed rows with uncovered heard talkgroups. Every history change rereads the history's heard set
+  (a merge can move a row to another session, so contributions are not tracked incrementally). `CallHistoryModel`
+  hands the heard ids over from its row storage through the `HeardTalkgroupSource` Qt interface
+  (`heard_talkgroup_source.h`), not one QVariant `data()` lookup per role and row; any other history model is read by
+  role name (no owners, no ingest order). Coverage is a binary search over the listed rows sorted by start with a
+  running maximum end, so overlapping ranges cover correctly (issue #718).
+  - Remembered talkgroups (issue #903; `setHeardStore()`, wired in `qt_ui.cpp` `wire_heard_talkgroups()`). The heard
+    cards are the **viewed owner**'s: `viewedOwner` is the owner a call heard now would get
+    (`HeardTalkgroupSource::heardOwnerOnAir()`: `heard_owner_for()` on the snapshot's tuner stamps, the operator hold,
+    the scan and `dsd_channel_label_current()`, in the session the snapshot's ring is bound to), so the running saved
+    system, or under a scan list the target on air's system; empty for Explore, an operator tune and a target no single
+    saved system owns. Its cards are that owner's store entries (`entriesFor()`) plus this session's history fragments
+    whose `viewOwner` (resolved where the ring was read, from the ring's own session, whatever their proof) is that
+    owner, or for an empty owner the fragments no system owns, on the scan target on air (the row's channel, the
+    snapshot's `dsd_channel_label_current()`; empty off any scan target; `HeardTarget`), and always the `-Y` scan-list
+    row each fragment was heard on (`FragmentPart::scanListRow`, `scanListRev`, from `Event_History::scan_list_row`,
+    `scan_list_rev`, persisted `slr`/`sll`) against the snapshot's (`dsd_channel_label_scan_list_row()` and
+    `lcn_list_rev`; none off a `-Y` row): a `-Y` row's name is only a label, which two rows may share or lack, and two
+    rows of different modes may share a frequency, so each row is its own target, and a paused scan (Explore) or a
+    call heard during the pause never shares a card with a row.
+    Non-learnable traffic still shows for the
+    session, and another target's (two unowned targets, or two entries of one saved system, included) or an Explore
+    stretch's calls never do; the remembered entries are the owner's, whatever target. One card per number:
+    `HeardTalkgroupStore::policyId()` (NXDN Type-D by its 11-bit id, as the call state numbers it) collapses variants. `LastHeardRole` is the newest of
+    the entry's `last` and this session's fragments (each its end, else its start); `RememberedRole` marks a card the
+    store holds; listed rows have neither. `remembering` is `HeardTalkgroupStore::remembering(viewedOwner)`; entries
+    show while it is off. `observedDecryption()` is kept per viewed owner: a call's encryption goes to the owner it was
+    first seen active under (`cryptoOwnerOf()`, per slot by the ring and call epoch), an ended call keeps that owner (a
+    release to manual tuning ends the calls but keeps their snapshots), and an ended call never seen active is
+    recorded nowhere.
+  - Forget and Clear (`forgetTalkgroup()`/`clearRemembered()` for the viewed owner, `forgetTalkgroupOf()`/
+    `clearRememberedOf()` for an owner an edit sheet captured) remove every variant of the number from the store
+    (`HeardTalkgroupStore::forget()` matches by `policyId()`; a forget or clear the store refuses changes nothing and
+    returns false), then hide this session's fragments of it up to History's
+    ingest serial read after the store's before-edit hook (`heardSerial()`: `ingestReading()` gives each fragment taken
+    in as new the next serial, an update keeps its fragment's; not persisted, so a reloaded row is 0). A later call
+    shows the card again; an update of a call already logged (its end extending) does not. The marks are in memory,
+    per owner, and a new `historySession` drops them. History keeps the same marks for the process
+    (`HeardTalkgroupSource::heardForgotten()`, given by `hideHeardThroughNow()`): a proof that reaches a fragment it took
+    in by then (a checked message after the commit, an update of a row since trimmed reads serial 0) is not handed to
+    the store (`CallHistoryModel::heardForgottenSince()`), so it cannot bring the number back; a fragment taken in
+    after it, a new call, still is.
+  - The screen (issue #903; `qml/TalkgroupsScreen.qml`, `TalkgroupCard.qml`, `TalkgroupEditSheet.qml`). A remembered
+    card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the screen's
+    minute `ageTick`; a time ahead of the decode clock by its time, with its date off the viewer's local day:
+    `MapText.clockText()` on `savedSystems.localDay`); a card heard only this session keeps
+    "Heard in this session". A heard card has no name line. Its switch reads "Listen to talkgroup %1", and a remembered
+    card's switch name goes on with ", last heard %1" in the order it is drawn (not said again in its description). The
+    edit sheet opens with the card's `remembered` flag and `viewedOwner` (`openRow()`'s last two arguments) and offers
+    **Forget this talkgroup** (a second tap, as Remove) on a remembered card only, through `forgetTalkgroupOf()` with
+    that owner; the armed "Tap again to forget" and "Tap again to remove" are read out (`Navigation.announce()`). The
+    footer's last row holds **Save talkgroup list** (`saveOffered`: the owner's `canSaveList`, not `scanRowRefusesSave`,
+    decoder running; the sheet's button uses the same property) and **Clear remembered talkgroups…** (`hasRemembered`:
+    the viewed owner has an entry, remembering or not), side by side as the bulk actions are. With a screen reader on
+    (#860) neither is shown or hidden by a scan hop: both stay while the decoder runs, each disabled where it does not
+    apply. Clear asks first ("Forget the talkgroups remembered for %1?", naming the saved system through
+    `savedSystems.getByUid()`), and clears the owner it captured when it asked. A Forget or Clear the list refuses
+    (`forgetTalkgroupOf()`/`clearRememberedOf()` false: History could not settle its spill) leaves the sheet or the
+    confirmation open with one line in the alert colour as `ConfirmDialog`'s error (`forgetTalkgroupError`,
+    `clearRememberedError`, `Accessible.AlertMessage`, read out through `Navigation.announce()`): "Call history could
+    not be saved, so this talkgroup is still remembered." / "... so these talkgroups are still remembered."; tapping
+    again retries, and a reopen starts without it. With `remembering` on in session scope,
+    the session-only note says heard talkgroups are remembered and the scope note gives way to it (a scan row keeps its
+    own). `hasRemembered` follows the remembered numbers the model holds: read with them, and dropped at once by a
+    forget or clear of the viewed owner (`noteHasRemembered()`). The saved-system editor (`WizardScreen.qml`, Trunking
+    data) has the **Remember heard talkgroups** switch (`rememberTalkgroups`, on for a new system, kept by an edit, in
+    the draft fingerprint), and Home's store notice names `heard_talkgroups.json` "Remembered talkgroups"
+    (`Util.storeLabel()`). Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroups_screen.qml`, `tst_talkgroup_edit_sheet.qml`,
+    `tst_wizard_src.qml`, `tst_home_store_notices.qml`; the fixture's `CallLogStore` is a `HeardTalkgroupSource` over a
+    production `HeardTalkgroupStore`), `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`).
+  - Granular updates. Dirty flags (the policy's version, the store's `ownerChanged()` for the viewed owner, any
+    history change, the viewed owner, the session) gate every read: an idle tick reads and signals nothing. An observe
+    names the entries it changed (`ownerChanged(owner, entries)`: the one added or moved and any the cap evicted; empty
+    for a forget, clear or purge, which are read whole through `visitEntries()`), and the model looks each up
+    (`entryLast()`, one hash lookup) and merges only its number (`heardOf()`); a history change merges only the numbers
+    whose fragments moved (the history's heard set compared with the last one). So one call on an owner with 2000
+    remembered talkgroups is one entry read, one number merged and one row signal, never a pass over the cards. Only the
+    heard cards that moved are patched: a changed last heard or remembered flag is one `dataChanged`, a card heard or
+    gone one row insert or remove at its binary-searched place, with the not-tuned count kept as it goes. More than 32 inserts and removes at once (a session's start with
+    a long remembered list, an owner change), and any policy change, go through a whole-list compare (`diffRows()`:
+    rows matched by kind, bounds, pattern and occurrence, removed and inserted a run at a time, the rest changed in
+    place), so a heard card that gains a listed row is changed where it is. A new policy context (another table, a
+    target hop) is a reset, as before (#782). `workCountsForTest()` counts the reads, entries read, numbers merged and whole-list updates. Tests:
+    `UI_QT_TALKGROUP_LIST_MODEL` (`test_remembered_cards_at_session_start`, `test_transient_follows_the_target_on_air`
+    with a relaunch, `test_transient_scoped_to_the_target`, `test_variants_one_card_and_forget`,
+    `test_late_proof_does_not_undo_forget_or_clear`, `test_listed_rows_cover_remembered`, `test_incremental_updates`, `test_two_thousand_remembered`, `test_crypto_lookup_scoped_to_owner`,
+    `test_transient_scoped_to_the_scan_list_row`, `test_ended_call_crypto_keeps_its_owner`),
+    `UI_QT_QML_A11Y_CHURN` (`tst_a11y_talkgroups.qml`: a row added while hidden keeps the reader's card).
   `talkgroup_filter_model.{h,cpp}` filters by category and name/ID for `qml/TalkgroupsScreen.qml`, opened by the
   monitor session menu's **Talkgroups** entry. The screen shows a command's answer on one line,
   `talkgroupCommandToast` (issue #901 B3; it had a second copy above it, whose look it keeps: `Theme.fontSize(13)` in
@@ -21950,7 +22286,31 @@ Qt Quick frontend (`src/ui/qt`):
   `test_command_line_follows_the_text_size`), `UI_QT_QML_A11Y_CHURN`
   (`tst_a11y_talkgroups.qml` `test_engine_answer_is_one_node`), `UI_QT_METRICS_MODEL`
   (`test_ui_message_seq_moves_with_the_same_text`). The fixture's commands fake refuses a selection after
-  `testContext.setTalkgroupSelectionAccepted(false)`.
+  `testContext.setTalkgroupSelectionAccepted(false)`. **Save talkgroup list** (`qml/TalkgroupSaveFlow.qml`, issue #903): the
+  edit sheet sends the policy context and generation it opened with; `Main.qml` adds the standalone saved system
+  (`sessionSavedSystemUid`, empty for Explore, a scan list or a hold, which save to Imports only) and the tuning and
+  receiver the session was started with (`sessionTuning`, `tuningOf()`: an edit of the running system changes `sessionSystem`, but not the
+  frequency or decode mode the decoder runs; empty, attaching nothing, for a session a recreated Activity adopted). A
+  change the decoder applied live leaves the saved row as it was; the export's completion says whether there was one
+  (`tuningMoved`, `dsd_app_tg_export_result::tuning_moved`: the tuning generation had moved since the run began, or
+  the operator held the tuner, when the decoder ran the export, or the export never ran), decoder provenance read with the result itself, whatever the
+  snapshots showed by then and also after a Stop. The flow reads every completion since the last poll
+  (`UiController::talkgroupExportResults`, from `dsd_app_tg_export_results_since()`, with `missedThrough` naming a gap
+  past the 64 kept). A request's baseline is the newest result app-control holds when it is queued
+  (`UiController::talkgroupExportSequenceNow()`, read before the submit), not the last one polled, so a gap wholly
+  before it cannot end it. A request's completion runs registration in Imports, then
+  `SavedSystemsModel::attachGroupList()` only when it says the export ran on the start tuning (a completion that does
+  not say is refused); each step reports its own result, and a failed one ends the request where the list got to (the
+  exported file, and its Imports row if that worked), with no step offered again: the user saves again if they want.
+  An export Imports could not add leaves the decoder's list that file (`TalkgroupListModel::persistent`), so while
+  `groupFile` is still the flow's `unregisteredPath` the screen offers a new Save; any other list file still takes
+  none. `unregisteredPath` holds through a new Save until an export succeeds (which makes its own file the decoder's
+  list), so a replacement that fails to be created, queued or exported leaves Save offered. A request with no completion in 15 s offers Try again, which replaces it (its late result matches nothing);
+  one whose completion may be in a gap ends, reported as not received. A request that ends with no Imports row for its
+  file releases its reserved name. The screen's `scanRowRefusesSave` (persistence scope `scan`) hides every Save
+  button where the decoder refuses the export. Tests: `UI_QT_QML_CALL_LISTS` (`tst_talkgroup_save_flow.qml`),
+  `UI_QT_QML_SESSION_TOOLS` (`test_a_save_whose_registration_failed_can_be_made_again`), `UI_QT_CONTROLLER`
+  (`test_export_results_between_polls`).
   `CommandBridge` submits `TG_LISTEN_SET`/`TG_LISTEN_SET_ALL` through app-control; only the decoder thread mutates
   policy and atomically rewrites a configured group file. Scan-row lists remain session-only. **Lock out** shares
   this mutation path, preserving labels; with `persist_tg_lockouts` off it becomes **Avoid TG**, adding a session
@@ -24989,9 +25349,10 @@ that carries meaning reaches a screen reader one of these ways:
   its description (`PlexTextField`, `PlexInput`, the Airspy fields); Qt withholds a password field's name
   (`QQuickAccessibleAttached::name()` is empty while `passwordEdit`), so `PlexTextField` leads its description with the
   label there. A switch reads its title and rule (ToggleRow, the wizard's Trunking), a talkgroup card's listening
-  switch the talkgroup in its name, whether it is listened to in its state and the card's other lines (rank, tags, an
-  avoid) in its description, a `CallRow` its meta line, tags and time in its description, a choice row its lines in
-  its description. Such a sibling-read `Text` says so with `Accessible.ignored: true` and a comment.
+  switch the talkgroup (and a remembered card's last heard, issue #903) in its name, whether it is listened to in its
+  state and the card's other lines (rank, tags, an avoid) in its description, a `CallRow` its meta line, tags and time
+  in its description, a choice row its lines in its description. Such a sibling-read `Text` says so with
+  `Accessible.ignored: true` and a comment.
 - Decorative text (a scale's ends, a sizing probe, an overflow count, a glyph) stays plain.
 
 A heading (`MicroLabel`, a `ReadableText` with `heading: true`, the signal search's paused ranges row) sets
@@ -25669,10 +26030,12 @@ passbands. The scan-list, Home and Monitor QML cases run in `UI_QT_QML_CALL_LIST
   without the slot filter, for carrier-level facts such as a site broadcast (Signal search, issue #802 B11).
   Shared-vocoder invocations carry their owning protocol through `dsd_state::receive_context_*`, since YSF/dPMR
   temporarily borrow another protocol's decoder.
-- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Internal
-  acquisition continues while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into
-  a hold. Restoring a scan target preserves acquisition hints but clears its current received-code proof. The P25 and
-  DMR trunk state machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and
+- Core audio, recording and event paths combine receive admission with existing policy/provenance gates. Traffic that
+  an access-code filter rejects, or is still checking, proves no remembered talkgroup (issue #903,
+  `dsd_call_state_note_verified_target()`); the slot filter does not count for that. Internal acquisition continues
+  while output is Checking/rejected. Scanner and trunking activity cannot turn rejected media into a hold. Restoring a
+  scan target preserves acquisition hints but clears its current received-code proof. The P25 and DMR trunk state
+  machines keep `dsd_receive_carriers` (the code last verified on each voice frequency, 16 entries) and
   skip a grant whose remembered code the current policy rejects; a channel never verified still gets the acquisition
   window. Receive admission gates only holds and output: decode-progress evidence (the P25 reacquire watchdog, CQPSK
   timing memory, the CQPSK retry) runs whatever the verdict. The P25 conventional-activity hook carries its call's

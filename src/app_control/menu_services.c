@@ -2939,6 +2939,12 @@ svc_operator_carrier_boundary(dsd_opts* opts, dsd_state* state, int guard_held) 
     dmr_t3_chan_network_changed(opts, state);
 }
 
+void
+svc_operator_tune_carrier_boundary(dsd_opts* opts, dsd_state* state, int guard_held) {
+    dsd_engine_carrier_boundary(opts, state, DSD_CARRIER_BOUNDARY_OPERATOR_TUNE, guard_held);
+    dmr_t3_chan_network_changed(opts, state);
+}
+
 /* svc_rtl_tune_only(), and its carrier boundary: an accepted tune (applied or pending) puts the receiver on another
    carrier, which can sync before any no-carrier pass, so the boundary runs at this success point (issue #575).
    @p guard_held says whether the caller holds the P25 SM tick guard. */

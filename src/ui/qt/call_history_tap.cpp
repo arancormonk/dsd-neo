@@ -4,6 +4,7 @@
  */
 
 #include "call_history_tap.h"
+#include "json_store.h"
 
 #include <QDir>
 #include <QFile>
@@ -17,6 +18,9 @@
 #include <iterator>
 #include <new>
 #include <utility>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <atomic>
+#endif
 
 namespace dsd_qt {
 
@@ -26,6 +30,10 @@ namespace {
 constexpr qsizetype kMaxPendingRows = qsizetype{2} * (DSD_EVENT_HISTORY_LEN - 1);
 /* What the spill reader reads at a time; a spill line is about half a kilobyte, a named one about a kilobyte. */
 constexpr qsizetype kChunkBytes = qsizetype{16} * 1024;
+
+#ifdef DSD_NEO_TEST_HOOKS
+std::atomic<bool> g_truncate_fails{false};
+#endif
 
 } // namespace
 
@@ -70,10 +78,27 @@ CallHistorySpill::open(QFile* file, qint64* size) const {
 bool
 CallHistorySpill::truncateIfSize(qint64 size) {
     const std::lock_guard<std::mutex> lock(m_mutex);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (g_truncate_fails.load()) {
+        return false;
+    }
+#endif
     if (size <= 0 || QFileInfo(m_path).size() != size) {
         return false;
     }
     return QFile::resize(m_path, 0);
+}
+
+bool
+CallHistorySpill::empty() const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    const QFileInfo info(m_path);
+    if (!info.exists()) {
+        // Absent only when the stat says so: one that failed otherwise (a folder that cannot be searched, a loop, an
+        // I/O error) may hide lines a later fold would read.
+        return json_store_definitely_missing(m_path);
+    }
+    return info.isFile() && info.size() == 0;
 }
 
 void
@@ -95,6 +120,13 @@ CallHistorySpill::appendAttemptsForTest() const {
     const std::lock_guard<std::mutex> lock(m_mutex);
     return m_attempts;
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+CallHistorySpill::setTruncateFailsForTest(bool fail) {
+    g_truncate_fails.store(fail);
+}
+#endif
 
 CallHistorySpillReader::CallHistorySpillReader(QIODevice* device, qint64 limit)
     : m_device(device), m_remaining(qMax<qint64>(limit, 0)), m_chunk(kChunkBytes + 1, '\0') {}
@@ -205,6 +237,7 @@ CallHistoryTap::stop() {
     m_running = false;
     m_rings.reset();
     m_result.ordinals = m_context.ordinals.rings;
+    m_result.heardOwners = m_context.heardOwners;
     m_context = Context();
     // The final append failed too (the spill is still unwritable): the rows go to the model with the rest of the
     // result, since the next start clears what the tap holds.
@@ -284,6 +317,9 @@ CallHistoryTap::slotWalk(int slot, const dsd_app_history_tap_meta& meta) {
     // As refresh() attributes: unknown options cannot establish identity, and which rows carry it is each row's own
     // tuner-owner stamp (row_from_item(), issue #671), not the scan flags when the tap reads the ring.
     walk.systemUid = meta.opts_published != 0 ? m_context.sessionUid : QString();
+    // Issue #903: as refresh() resolves a row's owner, by the session its ring is bound to.
+    walk.heardOwners = &m_context.heardOwners;
+    walk.optsPublished = meta.opts_published != 0;
     walk.cleared = clear.active && (!clear.pending || m_clearBound[slot]);
     walk.clearedThrough = clear.pushSeq[slot];
     return walk;
@@ -320,7 +356,8 @@ CallHistoryTap::poll() {
         // The walk goes newest first; each slot's rows are held oldest first, so a backlog the spill cannot take
         // loses its oldest rows (a poll's slot 0 rows before its slot 1 rows).
         for (auto it = fresh.crbegin(); it != fresh.crend(); ++it) {
-            m_pending.append(CallHistoryModel::spillLine(*it));
+            m_pending.append(it->clearedProof ? CallHistoryModel::clearedProofLine(*it)
+                                              : CallHistoryModel::spillLine(*it));
         }
         // A seen entry that changed with no row to spill (an older build's entry taking its site text digest): this
         // copy of the seen map goes at stop, so the change goes to the model through the spill.

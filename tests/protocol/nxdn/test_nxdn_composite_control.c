@@ -8,12 +8,14 @@
  * built as the air carries them (LICH, a convolutionally coded FACCH1 and SACCH, the PN95 scramble) and read back by
  * nxdn_frame(), whose LICH reading, channel decoders and element decoder are the real ones. A composite control
  * channel's LICH values are also Type-D RTCH2 values: they read as RTCH_C once Type-C trunking decoded here, and as
- * Type-D until then.
+ * Type-D until then. The same frames drive the verified talkgroup proof (issue #903, test_heard_*): which variant a
+ * checked VCALL proves its group on, and when the reading is too ambiguous to prove any.
  */
 
 #include <dsd-neo/core/access_code.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/dibit.h>
+#include <dsd-neo/core/heard_talkgroup.h>
 #include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/received_identity.h>
@@ -205,12 +207,12 @@ sacch_encode(uint8_t out[60], uint8_t sf, uint8_t ran, const uint8_t elements[18
 }
 
 /*
- * One outbound frame: the LICH @p lich with its parity, a SACCH segment carrying @p ran, and two FACCH1s (either may be
- * NULL for an IDLE message), scrambled with the default PN95 sequence (nxdn_descramble_with_seed(), its own inverse).
+ * One outbound frame: the LICH @p lich with its parity, the 60 coded bits @p sacch60 in the SACCH's place (a SACCH
+ * segment, or a Type-D SCCH), and two FACCH1s (either may be NULL for an IDLE message), scrambled with the default PN95
+ * sequence (nxdn_descramble_with_seed(), its own inverse).
  */
 static void
-build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_elements, const uint8_t* facch_a,
-                  const uint8_t* facch_b) {
+build_frame_coded(uint8_t lich, const uint8_t sacch60[60], const uint8_t* facch_a, const uint8_t* facch_b) {
     uint8_t bits[364];
     uint8_t idle[80];
     DSD_MEMSET(bits, 0, sizeof(bits));
@@ -223,7 +225,7 @@ build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_el
         bits[2U * i] = (uint8_t)(((full | parity) >> (7U - i)) & 1U);
         bits[(2U * i) + 1U] = 1U;
     }
-    sacch_encode(&bits[16], sf, ran, sacch_elements);
+    DSD_MEMCPY(&bits[16], sacch60, 60U);
     facch1_encode(&bits[76], facch_a != NULL ? facch_a : idle);
     facch1_encode(&bits[220], facch_b != NULL ? facch_b : idle);
     for (size_t i = 0; i < 182U; i++) {
@@ -282,6 +284,15 @@ build_frame_scch(uint8_t lich, const uint8_t scch_elements[25], uint8_t crc_flip
     }
     nxdn_descramble_with_seed(g_frame, 182, 0U);
     g_frame_pos = 0U;
+}
+
+/* One outbound frame whose SACCH segment carries @p ran (build_frame_coded()). */
+static void
+build_frame_sacch(uint8_t lich, uint8_t ran, uint8_t sf, const uint8_t* sacch_elements, const uint8_t* facch_a,
+                  const uint8_t* facch_b) {
+    uint8_t sacch60[60];
+    sacch_encode(sacch60, sf, ran, sacch_elements);
+    build_frame_coded(lich, sacch60, facch_a, facch_b);
 }
 
 /* A frame whose SACCH is the first segment of an empty superframe (sf 3, part 1 of 4). */
@@ -1029,6 +1040,188 @@ test_operator_retune_drops_type_d_evidence(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/* The verified talkgroup proof (issue #903) of slot 0's call: its variant, or -1 while the call is not noted. */
+static long
+heard_variant(const dsd_state* state) {
+    dsd_call_snapshot call;
+    if (dsd_call_state_get(state, 0U, &call) <= 0 || call.heard_noted == 0U) {
+        return -1L;
+    }
+    return (long)call.heard_variant;
+}
+
+static long
+heard_id(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? (long)call.heard_id : -1L;
+}
+
+static long
+call_target(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? (long)call.ota_target_id : -1L;
+}
+
+static uint64_t
+call_transmission(const dsd_state* state) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(state, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+}
+
+/* A fresh session decoding NXDN48 (the sync the frame's voice and calls publish under). */
+static void
+heard_session(dsd_opts* opts, dsd_state* state) {
+    clear_state(opts, state);
+    state->synctype = state->lastsynctype = DSD_SYNC_NXDN_POS;
+}
+
+/* A VCALL (0x01) in a FACCH1's 80 elements: CC Option @p cc_option, Call Type @p call_type, @p source to @p target
+ * (TS 1-A §6.4.1.1; Type-D's 16-bit fields are the prefix and the 11-bit ID, TS 1-E Fig 6.4-1). */
+static void
+vcall_message(uint8_t message[80], uint8_t cc_option, uint8_t call_type, uint16_t source, uint16_t target) {
+    DSD_MEMSET(message, 0, 80U);
+    put_bits(message, 2U, 0x01U, 6U);
+    put_bits(message, 8U, cc_option, 8U);
+    put_bits(message, 16U, call_type, 3U);
+    put_bits(message, 24U, source, 16U);
+    put_bits(message, 40U, target, 16U);
+}
+
+/* RTCH outbound, superframe SACCH, two FACCH1s (TS 1-A Table 5.2-2): a Type-C or conventional traffic channel. */
+enum { LICH_RTCH_FACCH1_PAIR = 0x31 };
+
+static void
+send_vcall(dsd_opts* opts, dsd_state* state, uint8_t lich, uint8_t cc_option, uint8_t call_type, uint16_t target) {
+    uint8_t vcall[80];
+    vcall_message(vcall, cc_option, call_type, 2100U, target);
+    send_frame(opts, state, lich, 0x21U, vcall, NULL);
+}
+
+/*
+ * A Type-D RTCH2 outbound frame (TS 1-E; TS 2-E Fig 6.1-5): the LICH @p lich, an SCCH carrying @p scch (its 25 bits,
+ * CRC-7, four tail bits, coded, punctured and permuted as a SACCH is), and two FACCH1s (either may be NULL for an IDLE
+ * message; a voice frame's VCH fill reads as nothing).
+ */
+static void
+send_type_d_frame(dsd_opts* opts, dsd_state* state, uint8_t lich, const uint8_t scch[25], const uint8_t* facch_a) {
+    uint8_t trellis[36];
+    uint8_t coded[72];
+    uint8_t punctured[60];
+    uint8_t scch60[60];
+    DSD_MEMSET(trellis, 0, sizeof(trellis));
+    DSD_MEMCPY(trellis, scch, 25U);
+    put_bits(trellis, 25U, crc7_scch(trellis, 25), 7U);
+    conv_encode(trellis, 36U, coded);
+    size_t n = 0;
+    for (size_t k = 0; k < 6U; k++) {
+        for (size_t j = 0; j < 12U; j++) {
+            if (j != 5U && j != 11U) {
+                punctured[n++] = coded[(k * 12U) + j];
+            }
+        }
+    }
+    for (size_t i = 0; i < 60U; i++) {
+        scch60[i] = punctured[PERM_12_5[i]];
+    }
+    build_frame_coded(lich, scch60, facch_a, NULL);
+    (void)nxdn_frame(opts, state);
+}
+
+/* An outbound SCCH INFO1 (TS 1-E Fig 6.5-10): Free Repeaters 1 and 2, a clear call option. */
+static void
+scch_info1(uint8_t scch[25]) {
+    DSD_MEMSET(scch, 0, 25U);
+    put_bits(scch, 0U, 3U, 2U);
+    put_bits(scch, 3U, 1U, 5U);
+    put_bits(scch, 8U, 2U, 5U);
+}
+
+/* RTCH2 outbound: FACCH1 in both halves, and voice in both halves (TS 1-E; the RTCH_C values too). */
+enum {
+    LICH_TYPE_D_FACCH1_PAIR = 0x71,
+    LICH_TYPE_D_VOICE = 0x77,
+};
+
+/* A conventional channel (trunking off, no control channel decoded): a group call (001) is remembered as conventional,
+ * a broadcast call (000, trunked only) or an inter-system one is noted and refused by the classifier, a private call
+ * (100) is not noted. */
+static int
+test_heard_conventional(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("conventional: call", call_target(state), 7100L);
+    rc |= expect_long("conventional: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_CONV);
+    rc |= expect_long("conventional: id", heard_id(state), 7100L);
+
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 0U, 7100U);
+    rc |= expect_long("conventional 000: call", call_target(state), 7100L);
+    rc |= expect_long("conventional 000: noted, not a talkgroup", heard_variant(state), (long)DSD_HEARD_TG_NONE);
+
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 4U, 7100U);
+    rc |= expect_long("conventional private: call", call_target(state), 7100L);
+    rc |= expect_long("conventional private: not noted", heard_variant(state), -1L);
+
+    /* CC Option bit 6 (TS 1-A 6.5.11) says the group call is another system's: noted, and refused. */
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0x40U, 1U, 7100U);
+    rc |= expect_long("conventional inter-system: call", call_target(state), 7100L);
+    rc |=
+        expect_long("conventional inter-system: noted, not a talkgroup", heard_variant(state), (long)DSD_HEARD_TG_NONE);
+
+    /* A VCALL naming no destination (as one continuing a DCR call does) proves nothing, and leaves the proof to the
+       next VCALL that names the group. */
+    heard_session(opts, state);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 1U, 0U);
+    rc |= expect_long("conventional no destination: not noted", heard_variant(state), -1L);
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("conventional after no destination: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_CONV);
+    rc |= expect_long("conventional after no destination: id", heard_id(state), 7100L);
+    return rc;
+}
+
+/* A Type-C traffic channel the receiver followed from a control channel (a CAC said Type-C): 001 and 000 are
+ * remembered as Type-C; CC Option bit 6 (inter-system) reaches the classifier, which refuses it. */
+static int
+test_heard_type_c_traffic(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    follow_call_to_f(opts, state);
+    state->synctype = state->lastsynctype = DSD_SYNC_NXDN_POS;
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 1U, 1100U);
+    rc |= expect_long("Type-C 001: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_C);
+    rc |= expect_long("Type-C 001: id", heard_id(state), 1100L);
+
+    follow_call_to_f(opts, state);
+    state->synctype = state->lastsynctype = DSD_SYNC_NXDN_POS;
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 0U, 1100U);
+    rc |= expect_long("Type-C 000: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_C);
+
+    follow_call_to_f(opts, state);
+    state->synctype = state->lastsynctype = DSD_SYNC_NXDN_POS;
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0x40U, 1U, 1100U);
+    rc |= expect_long("Type-C inter-system: call", call_target(state), 1100L);
+    rc |= expect_long("Type-C inter-system: noted, not a talkgroup", heard_variant(state), (long)DSD_HEARD_TG_NONE);
+    return rc;
+}
+
+/* A traffic channel the receiver follows with nothing decoded to say Type-C: neither Type-C nor conventional. */
+static int
+test_heard_followed_without_type_c(dsd_opts* opts, dsd_state* state) {
+    int rc = 0;
+    heard_session(opts, state);
+    opts->trunk_enable = 1;
+    opts->trunk_is_tuned = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = FOLLOWED_F_HZ;
+    state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = FOLLOWED_F_HZ;
+    send_vcall(opts, state, LICH_RTCH_FACCH1_PAIR, 0U, 1U, 1100U);
+    rc |= expect_long("followed, no Type-C: call", call_target(state), 1100L);
+    rc |= expect_long("followed, no Type-C: not noted", heard_variant(state), -1L);
+    return rc;
+}
+
 /*
  * A current checked Type-D SCCH outranks an older Type-C site (issue #903): after a Type-C CCH_INFO on the frequency, an
  * outbound RTCH2 frame (LICH 0x63, never a composite value) whose own SCCH passed decodes its FACCH1 VCALL in the
@@ -1189,6 +1382,46 @@ test_same_frame_cch_info_discards_provisional_scch(dsd_opts* opts, dsd_state* st
         DSD_SNPRINTF(label, sizeof(label), "provisional scch (%s): call source", variants[with_cch]);
         rc |= expect_long(label, live_call_source(state), with_cch ? 99L : 100L);
     }
+    return rc;
+}
+
+/*
+ * The receiver starts on a composite control channel during a call: until a message says Type-C its frames read as
+ * Type-D, so its VCALL is not noted, with the Type-C layout (no SCCH said Type-D) or with the Type-D one (an SCCH misread
+ * on such a frame left the category). Once a CCH_INFO says Type-C, the next VCALL is a Type-C group's.
+ */
+static int
+test_heard_cold_composite(dsd_opts* opts, dsd_state* state) {
+    uint8_t cch[80];
+    int rc = 0;
+    heard_session(opts, state);
+    opts->trunk_enable = 1;
+    send_vcall(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("cold composite: call", call_target(state), 7100L);
+    rc |= expect_long("cold composite: not noted", heard_variant(state), -1L);
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("cold composite voice: not noted", heard_variant(state), -1L);
+
+    cch_info(cch, SITE_A, 0x20U, 5U);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    rc |= expect_long("cold composite: CCH_INFO says Type-C", dsd_nxdn_type_c(state), 1L);
+    send_vcall(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("composite after Type-C: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_C);
+    rc |= expect_long("composite after Type-C: id", heard_id(state), 7100L);
+
+    /* The "Type-D" category an SCCH misread left: the VCALL reads with the Type-D layout and still is not noted. */
+    heard_session(opts, state);
+    opts->trunk_enable = 1;
+    DSD_SNPRINTF(state->nxdn_location_category, sizeof(state->nxdn_location_category), "%s", "Type-D");
+    send_vcall(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("misread composite: Type-D layout", call_target(state), (long)nxdn_typed_low_id(7100U));
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    send_frame(opts, state, LICH_COMPOSITE_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("misread composite: not noted", heard_variant(state), -1L);
+    send_frame(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0x21U, cch, NULL);
+    send_vcall(opts, state, LICH_COMPOSITE_FACCH1_PAIR, 0U, 1U, 7100U);
+    rc |= expect_long("misread composite after Type-C: call", call_target(state), 7100L);
+    rc |= expect_long("misread composite after Type-C: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_C);
     return rc;
 }
 
@@ -1922,6 +2155,131 @@ test_checked_facch3_udch2_reads_type_d(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
+/*
+ * A Type-D call (TS 2-E Fig 6.1-5): its VCALL comes once, on the header frame's FACCH1, beside the transmission's first
+ * SCCH. The Type-D reading is proved when the next frame's SCCH confirms the SCCH run, and the group is remembered by
+ * its full address, prefix and ID. A header frame whose SCCH run never confirms proves nothing.
+ */
+static int
+test_heard_type_d(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t vcall[80];
+    int rc = 0;
+    scch_info1(scch);
+
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    rc |= expect_long("Type-D header: call", call_target(state), 5L);
+    rc |= expect_long("Type-D header: not yet noted", heard_variant(state), -1L);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    rc |= expect_long("Type-D voice: variant", heard_variant(state), (long)DSD_HEARD_TG_NXDN_D);
+    rc |= expect_long("Type-D voice: full id", heard_id(state), (long)nxdn_typed_full_id(3U, 5U));
+
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(7U, 100U), (uint16_t)nxdn_typed_full_id(7U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    rc |= expect_long("Type-D prefix 7: full id", heard_id(state), (long)nxdn_typed_full_id(7U, 5U));
+
+    /* A private Type-D call (100) is no group. */
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 4U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    rc |= expect_long("Type-D private: not noted", heard_variant(state), -1L);
+
+    /* The header frame alone: its SCCH run never confirms. */
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    send_frame(opts, state, LICH_TYPE_D_VOICE, 0x21U, NULL, NULL);
+    rc |= expect_long("Type-D unconfirmed SCCH run: not noted", heard_variant(state), -1L);
+
+    /* The group left waiting belongs to that transmission alone. The next call, a private one to the same ID (whose
+       VCALL waits for nothing), is another transmission: the SCCH run that then confirms drops the waiting group. */
+    const uint64_t left = call_transmission(state);
+    vcall_message(vcall, 0U, 4U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    rc |= expect_long("Type-D next call: same target", call_target(state), 5L);
+    rc |= expect_long("Type-D next call: another transmission", call_transmission(state) != left, 1L);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    rc |= expect_long("Type-D left-over group: not on the next call", heard_variant(state), -1L);
+
+    /* An SCCH run confirmed before the call (an RTCH2 sending SCCHs ahead of the header frame): the header frame's VCALL
+       is noted at once. */
+    heard_session(opts, state);
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, NULL);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    rc |= expect_long("Type-D run already confirmed: noted on the header", heard_variant(state),
+                      (long)DSD_HEARD_TG_NXDN_D);
+    rc |= expect_long("Type-D run already confirmed: full id", heard_id(state), (long)nxdn_typed_full_id(3U, 5U));
+    rc |= expect_long("Type-D run already confirmed: nothing waits", (long)state->nxdn_heard_pending.epoch, 0L);
+    return rc;
+}
+
+/*
+ * A Type-D group waiting for its SCCH run belongs to the call epoch whose VCALL named it. Sync is lost after the header
+ * frame, before any SCCH confirms the run; the no-carrier pass restarts the confirmation gate, and addressless voice
+ * reopens the call within its heal window (the same logical transmission, a new epoch seeded with the old target). The
+ * SCCH run that then confirms is the reopened epoch's, which received no VCALL of its own: nothing is noted.
+ */
+static int
+test_heard_type_d_reacquired_epoch(dsd_opts* opts, dsd_state* state) {
+    uint8_t scch[25];
+    uint8_t vcall[80];
+    int rc = 0;
+    scch_info1(scch);
+    heard_session(opts, state);
+    vcall_message(vcall, 0U, 1U, (uint16_t)nxdn_typed_full_id(3U, 100U), (uint16_t)nxdn_typed_full_id(3U, 5U));
+    send_type_d_frame(opts, state, LICH_TYPE_D_FACCH1_PAIR, scch, vcall);
+    dsd_call_snapshot first;
+    rc |= expect_long("Type-D reacquired: header call", dsd_call_state_get(state, 0U, &first) > 0, 1L);
+    rc |= expect_long("Type-D reacquired: header not yet noted", heard_variant(state), -1L);
+
+    rc |= expect_long("Type-D reacquired: sync lost",
+                      dsd_call_state_end_ex(state, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_SYNC_LOSS) > 0, 1L);
+    nxdn_confirm_reset(state);
+    /* The vocoder's first voice frame of the reopened segment, as mark_vocoder_call_media() observes it: no party. */
+    const dsd_call_observation voice = {.protocol = DSD_SYNC_NXDN_POS, .slot = 0U, .kind = DSD_CALL_KIND_VOICE};
+    rc |= expect_long("Type-D reacquired: voice reopens",
+                      dsd_call_state_observe(state, &voice, DSD_CALL_BOUNDARY_BEGIN), 1L);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    send_type_d_frame(opts, state, LICH_TYPE_D_VOICE, scch, NULL);
+    dsd_call_snapshot reopened;
+    rc |= expect_long("Type-D reacquired: call reopened", dsd_call_state_get(state, 0U, &reopened) > 0, 1L);
+    rc |= expect_long("Type-D reacquired: active", reopened.phase == DSD_CALL_PHASE_ACTIVE, 1L);
+    rc |= expect_long("Type-D reacquired: another epoch", reopened.epoch != first.epoch, 1L);
+    rc |= expect_long("Type-D reacquired: same transmission",
+                      dsd_call_snapshot_transmission(&reopened) == dsd_call_snapshot_transmission(&first), 1L);
+    rc |= expect_long("Type-D reacquired: seeded target", (long)reopened.ota_target_id, 5L);
+    rc |= expect_long("Type-D reacquired: run confirmed", nxdn_confirm_scch_confirmed(state), 1L);
+    rc |= expect_long("Type-D reacquired: not noted", heard_variant(state), -1L);
+    return rc;
+}
+
+/* The ARIB VCALL (F1/F2 set, type 0x21, an MFID, the body 8 elements later) publishes its call and is never noted. */
+static int
+test_heard_arib(dsd_opts* opts, dsd_state* state) {
+    uint8_t vcall[80];
+    int rc = 0;
+    heard_session(opts, state);
+    DSD_MEMSET(vcall, 0, sizeof(vcall));
+    put_bits(vcall, 0U, 3U, 2U);      // F1, F2
+    put_bits(vcall, 2U, 0x21U, 6U);   // ARIB VCALL
+    put_bits(vcall, 8U, 0x68U, 8U);   // MFID
+    put_bits(vcall, 24U, 1U, 3U);     // group call
+    put_bits(vcall, 32U, 2100U, 16U); // source
+    put_bits(vcall, 48U, 7100U, 16U); // target
+    send_frame(opts, state, LICH_RTCH_FACCH1_PAIR, 0x21U, vcall, NULL);
+    rc |= expect_long("ARIB: call", call_target(state), 7100L);
+    rc |= expect_long("ARIB: not noted", heard_variant(state), -1L);
+    return rc;
+}
+
 int
 main(void) {
     dsd_opts* opts = calloc(1, sizeof(*opts));
@@ -1979,6 +2337,13 @@ main(void) {
     rc |= test_known_composite_registration_alone_drops_the_type_d_scope(opts, state);
     rc |= test_checked_facch3_udch2_reads_type_d(opts, state);
     rc |= test_composite_frame_drops_a_lone_type_d_category(opts, state);
+    rc |= test_heard_conventional(opts, state);
+    rc |= test_heard_type_c_traffic(opts, state);
+    rc |= test_heard_followed_without_type_c(opts, state);
+    rc |= test_heard_cold_composite(opts, state);
+    rc |= test_heard_type_d(opts, state);
+    rc |= test_heard_type_d_reacquired_epoch(opts, state);
+    rc |= test_heard_arib(opts, state);
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});
     dsd_decode_clock_use_system();
 

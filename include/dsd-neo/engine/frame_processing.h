@@ -64,8 +64,9 @@ void dsd_engine_forget_carrier_decoding(dsd_opts* opts, dsd_state* state);
 
 /** What changed the carrier a carrier boundary leaves (issue #575). */
 typedef enum {
-    /* An accepted tune the user asked for to another carrier: a tap, a frequency entry, a channel cycle over a list no
-       followed system owns, an import's tune, a config's new frequency. */
+    /* An accepted tune to another carrier that no operator mark covers: a channel cycle over a list no followed system
+       owns, an import's tune, a config's new frequency, a Signal search tune. It moves the tuning generation unless
+       the operator holds the tuner (issue #903). */
     DSD_CARRIER_BOUNDARY_TUNE = 0,
     /* A radio stream started on another source than the one before it (dsd_engine_note_stream_source()). */
     DSD_CARRIER_BOUNDARY_SOURCE,
@@ -79,6 +80,10 @@ typedef enum {
        capture recorded. Not a move to another carrier: the boundary resets the decoding the gap cut and keeps the
        carrier (see dsd_engine_carrier_boundary()). */
     DSD_CARRIER_BOUNDARY_STREAM_GAP,
+    /* A tune (DSD_CARRIER_BOUNDARY_TUNE) the operator asked for that marks the calls heard after it as the operator's
+       (dsd_state::operator_tuned, set once the boundary has ended the calls left): a frequency entry or a tap. It keeps
+       the tuning generation (issue #903, DSD_TUNING_MOVE_OPERATOR). */
+    DSD_CARRIER_BOUNDARY_OPERATOR_TUNE,
 } dsd_carrier_boundary_kind;
 
 /** The one carrier boundary (issue #575): every place the receiver leaves a carrier for another runs it, in one order.
@@ -129,6 +134,11 @@ void dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_b
  *  so none can gate the new input's frames while a tune the new device is given afterwards is kept (issue #703). The
  *  caller holds the P25 SM tick guard, so no watchdog tick runs between the replacement and the reset. */
 void dsd_engine_note_input_replaced(dsd_state* state);
+
+/** A failed switch put the input it stopped back on its own endpoint (DSD_AUDIO_INPUT_RESTARTED): the stream was still
+ *  cut, so the engine ends the reception and the tune requests go as at a replacement, but the tuning stays the one in
+ *  force before the switch (issue #903, DSD_TUNING_MOVE_RESTORED). The caller holds the P25 SM tick guard. */
+void dsd_engine_note_input_restored(dsd_state* state);
 
 /** Note the source a radio stream just started on (issue #575): its kind of device and which one, never its settings
  *  or tuning (an RTL-SDR index, an rtl_tcp host and port, an Airspy serial, a SoapySDR device, a replay capture). A start

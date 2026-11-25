@@ -890,6 +890,7 @@ p25_handle_mbt_mfid90_group_regroup(dsd_opts* opts, dsd_state* state, const uint
     // The grant names the supergroup (both MBT CRCs passed: p25_mpdu_handle_trunking()): its row stays, its members
     // do not.
     p25_patch_update(state, group, /*is_patch*/ 1, /*active*/ 1);
+    p25_sm_note_regroup_grant(p25_sm_get_ctx(), group);
 }
 
 static void DSD_ATTR_USED

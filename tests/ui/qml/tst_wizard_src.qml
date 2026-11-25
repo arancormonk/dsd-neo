@@ -76,5 +76,34 @@ Item {
             compare(tc.wizard.srcCsvPath, "/data/imports/radio ID list.csv",
                     "openForEdit() must restore the saved radio ID list")
         }
+
+        // Issue #903: the editor's Remember heard talkgroups switch, on for a new system, saved with it, brought back
+        // by an edit and an unsaved change of it asks before it goes.
+        function test_04_remember_heard_talkgroups_switch() {
+            var row = findChild(tc.wizard, "wizardRememberTalkgroups")
+            verify(row !== null, "the editor has the switch")
+            compare(row.title, "Remember heard talkgroups")
+            verify(row.subtitle.length > 0, "it has a line of help")
+            verify(row.height >= 48)
+            verify(row.checked, "a new system remembers")
+            verify(!tc.wizard.hasUnsavedDraft())
+            row.toggled(false)
+            verify(!row.checked)
+            verify(tc.wizard.hasUnsavedDraft(), "turning it off is an edit")
+            tc.wizard.nameText = "Remember test"
+            tc.wizard.commit()
+            tc.savedRow = savedSystems.count - 1
+            compare(savedSystems.get(tc.savedRow).rememberTalkgroups, false)
+
+            tc.wizard.openForAdd(false)
+            verify(findChild(tc.wizard, "wizardRememberTalkgroups").checked, "a fresh add remembers again")
+
+            tc.wizard.openForEdit(tc.savedRow)
+            row = findChild(tc.wizard, "wizardRememberTalkgroups")
+            verify(!row.checked, "an edit brings back the saved answer")
+            row.toggled(true)
+            tc.wizard.commit()
+            compare(savedSystems.get(tc.savedRow).rememberTalkgroups, true)
+        }
     }
 }

@@ -57,6 +57,20 @@ Item {
                 return counts.chains[chain] + "x " + chain;
             }));
         }
+        // Every card of the list on show built. A list view builds the rows past its edge over later frames; a table
+        // replaced before then makes it cancel that build against the new, shorter list ("DelegateModel::cancel: index
+        // out range"). The app's poll tick never replaces a table that fast; a case that does, settles first. These
+        // tables are short, so every card is built.
+        function settleCards() {
+            var cards = item("talkgroupGrid");
+            tryVerify(function () {
+                for (var i = 0; i < cards.count; ++i) {
+                    if (cards.itemAtIndex(i) === null)
+                        return false;
+                }
+                return true;
+            }, 5000, "the cards settle");
+        }
         function chipTexts(chips) {
             var texts = [];
             for (var i = 0; i < chips.count; ++i) {
@@ -114,6 +128,7 @@ Item {
             talkgroupView.filterText = "";
             talkgroupView.filterTag = "";
             screen.visible = true;
+            settleCards();
             verify(testContext.applyTalkgroupTable(-1));
             testContext.resetCommands();
             testContext.setHostRunning(false);
@@ -219,15 +234,18 @@ Item {
                 verify(Math.abs(cards.contentY - cards.originY) < 1, "a new search starts from the top");
                 talkgroupView.filterText = "";
 
-                // A row added while hidden changes the table's bounds, which resets the list: from the top, even
-                // though the reader's card is still in it.
+                // A row added while hidden is one insert, not a reset (issue #903): the reader is back on their card.
                 cards.contentY = cards.originY + 600;
                 waitForRendering(cards);
+                top = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                idText = cards.itemAtIndex(top).idText;
                 screen.visible = false;
                 verify(testContext.pushTalkgroup(5031, "A", "Unit 5031", "LONG"));
                 screen.visible = true;
                 compare(cards.count, 31);
-                verify(Math.abs(cards.contentY - cards.originY) < 1, "a reset table starts from the top");
+                now = cards.indexAt(cards.width / 2, cards.contentY + 1);
+                verify(now >= 0);
+                compare(cards.itemAtIndex(now).idText, idText, "an added row keeps the reader on their card");
 
                 cards.contentY = cards.originY + 600;
                 waitForRendering(cards);
@@ -266,7 +284,8 @@ Item {
             var component = Qt.createComponent(uiDir + "/TalkgroupCard.qml");
             compare(component.status, Component.Ready, component.errorString());
             var card = component.createObject(screen.parent, {width: 300, idText: "1234", name: "Fire Dispatch",
-                tags: "Law", listening: true, listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1});
+                tags: "Law", listening: true, listed: true, priority: 2, preempt: true, temporaryAvoidCount: 1,
+                lastHeard: 0, remembered: false});
             verify(card !== null);
             var node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
             compare(node.name, "Listen to Fire Dispatch, talkgroup 1234");
@@ -276,7 +295,52 @@ Item {
             card.listed = false;
             node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
             compare(node.description, "Heard in this session");
+            // Issue #903: a remembered card's last heard, read with the talkgroup as it is drawn; a heard card has no
+            // name to read.
+            card.name = "";
+            card.remembered = true;
+            card.lastHeard = Math.floor(metrics.decodeNowMs / 1000) - 7200;
+            node = testContext.accessibleNode(findChild(card, "talkgroupListeningSwitch"));
+            compare(node.name, "Listen to talkgroup 1234, last heard 2 h ago");
+            compare(node.description, "");
             card.destroy();
+        }
+
+        // Issue #903 (#860): with a screen reader on, the footer's list actions hold still while a scan hops between a
+        // system that remembers talkgroups and a target no saved system owns, on a scan row with its own list or not:
+        // Save and Clear stay where they are, each disabled where it does not apply, and no node is shown or hidden.
+        function test_list_actions_hold_still_under_a_screen_reader() {
+            verify(screenReader.active, "this run has a screen reader on");
+            screen.visible = true;
+            testContext.setHostRunning(true);
+            var owner = "903-a11y-owner";
+            var clear = item("clearRememberedTalkgroups");
+            var save = item("footerSaveTalkgroupList");
+            verify(clear.visible && !clear.enabled, "shown, and disabled with nothing to clear");
+            verify(save.visible && !save.enabled, "shown, and disabled while the owner offers no Save");
+            screen.canSaveList = true;
+            verify(save.enabled);
+            testContext.setTalkgroupRemembering(owner, true);
+            testContext.rememberTalkgroup(owner, 1, 4242, 300);
+            testContext.setTalkgroupOwnerOnAir(owner);
+            tryCompare(clear, "enabled", true);
+            waitForRendering(screen);
+            testContext.startAccessibilityCount();
+            for (var i = 0; i < switches; ++i) {
+                // A hop a poll tick after the last, once its cards are built.
+                settleCards();
+                testContext.setTalkgroupScanScope(i % 2 === 0);
+                testContext.setTalkgroupOwnerOnAir(i % 2 === 0 ? "" : owner);
+                verify(clear.visible && save.visible, "Save and Clear stay on hop " + i);
+                compare(clear.enabled, i % 2 !== 0, "Clear applies only on the system's hops");
+                compare(save.enabled, i % 2 !== 0, "Save is refused on the scan row's hops");
+            }
+            compare(showHide(clear.parent), 0, churn());
+            testContext.stopAccessibilityCount();
+            screen.canSaveList = false;
+            testContext.setTalkgroupScanScope(false);
+            testContext.resetRememberedTalkgroups();
+            testContext.setHostRunning(false);
         }
 
         // An edit opened on table B carries B's policy version; a hop to table A under it leaves it at that, and

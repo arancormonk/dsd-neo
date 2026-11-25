@@ -45,6 +45,14 @@ typedef enum {
 dsd_channel_label_source dsd_channel_label_current_source(const dsd_opts* opts, const dsd_state* state);
 
 /**
+ * The `-Y` scan-list row dsd_channel_label_current() takes its label from, named or not (issue #903): the row heard
+ * (dsd_state_lcn_heard_row()) while the conventional scanner runs and no `--trunk-scan` target is on air.
+ *
+ * @return The row's index, or -1 for none (no `-Y` scan running, a paused one, a trunk-scan target on air).
+ */
+int dsd_channel_label_scan_list_row(const dsd_opts* opts, const dsd_state* state);
+
+/**
  * Resolve the label for the channel currently tuned.
  *
  * Trunk scan wins over the conventional scanner: with `--trunk-scan` enabled the

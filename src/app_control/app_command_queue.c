@@ -241,10 +241,12 @@ dsd_app_tg_export_results_since(uint64_t after_sequence, dsd_app_tg_export_resul
     return n;
 }
 
+static int ui_mode_tuning_commit_pending(void);
+
 /* Called after dispatch, including envelope rejection, before erasing the queued
  * request. Publish only export fields; other command payloads may carry secrets. */
 static void
-tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status) {
+tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status, const dsd_state* state) {
     if (cmd->id != DSD_APP_CMD_TG_LIST_EXPORT) {
         return;
     }
@@ -266,6 +268,11 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
         }
     }
     result.success = status == UI_CMD_APPLY_COMPLETED;
+    /* The tuning the export ran under (issue #903): moved since the run began, held by the operator, whose tunes mark
+       the calls heard rather than move the generation, or a mode change still to settle on the front end, which moves
+       it unless refused. An export that never ran ran under none. */
+    result.tuning_moved = state == NULL || dsd_state_tuning_moved(state) || state->operator_tuned != 0U
+                          || ui_mode_tuning_commit_pending();
     result.sequence = g_tg_export_result.sequence + 1U;
     // cppcheck-suppress knownConditionTrueFalse -- unsigned sequence wraps to zero at UINT64_MAX.
     if (result.sequence == 0) {
@@ -276,10 +283,10 @@ tg_export_publish_result_unlocked(const struct dsd_app_command* cmd, int status)
 }
 
 static void
-tg_export_publish_result(const struct dsd_app_command* cmd, int status) {
+tg_export_publish_result(const struct dsd_app_command* cmd, int status, const dsd_state* state) {
     ensure_mu_init();
     dsd_mutex_lock(&g_mu);
-    tg_export_publish_result_unlocked(cmd, status);
+    tg_export_publish_result_unlocked(cmd, status, state);
     dsd_mutex_unlock(&g_mu);
 }
 
@@ -318,7 +325,7 @@ dsd_app_command_session_set_open(int open) {
      * Admission and disposal share the producer lock: a racing late submission
      * is either erased here or rejected after the session closes. */
     while (g_head != g_tail) {
-        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED, NULL);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
@@ -630,7 +637,7 @@ ui_cmd_finish_input_switch(dsd_opts* opts, dsd_state* state, int rc, const char*
             ui_set_toast(state, 3, "Applied: %s -> %s", what, name);
             return UI_CMD_APPLY_COMPLETED;
         case DSD_AUDIO_INPUT_RESTARTED:
-            dsd_engine_note_input_replaced(state);
+            dsd_engine_note_input_restored(state); // the stream was cut, the input is its own again (issue #903)
             ui_input_left(opts, state);
             ui_set_toast(state, 5, "Failed: %s -> %s; the UDP input before it was restarted", what, name);
             return UI_CMD_APPLY_FAILED;
@@ -1504,16 +1511,27 @@ ui_rxid_guard_leave(int taken) {
     }
 }
 
+/* What the receiver decodes with changed by the command being applied (dsd_state_note_tuning_change(), issue #903):
+   under the P25 SM tick guard, which the call history's stamps read it under. */
+static void
+ui_note_tuning_change(dsd_state* state) {
+    const int taken = ui_rxid_guard_enter(g_apply_cmd_guard_held);
+    dsd_state_note_tuning_change(state);
+    ui_rxid_guard_leave(taken);
+}
+
 /* A tune the user asked for while trunking keeps the decoder's trunking state (it is not a carrier boundary), but the
    identity received before it is no longer this carrier's (D4: any user move clears it): the record starts over, after
    the calls the move ended took theirs, and what the frame sync holds buffered from the channel left heads no frame.
-   The P25 patch table follows ui_manual_move_patches() (@p same_system). Under the tick guard, which the caller holds
-   when @p guard_held. */
+   The P25 patch table follows ui_manual_move_patches() (@p same_system). The move reports to the tuning generation as
+   @p why (issue #903): a return to the system's control channel or its own candidate hunt stays on the system, any
+   other move does not. Under the tick guard, which the caller holds when @p guard_held. */
 static void ui_manual_move_patches(dsd_state* state, int same_system);
 
 static void
-ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system) {
+ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system, dsd_tuning_move why) {
     const int taken = ui_rxid_guard_enter(guard_held);
+    dsd_state_note_tuning_move(state, why);
     dsd_rxid_reset(state);
     dmr_ras_reset(state);
     ui_manual_move_patches(state, same_system);
@@ -1526,8 +1544,8 @@ ui_user_move_forgets_identity(dsd_state* state, int guard_held, int same_system)
    taught there are not the next network's (dmr_t3_chan_network_changed(), discussion #900 F2); a Return-to-CC goes
    back to the same network and keeps them. */
 static void
-ui_user_move_leaves_network(dsd_opts* opts, dsd_state* state, int guard_held, int same_system) {
-    ui_user_move_forgets_identity(state, guard_held, same_system);
+ui_user_move_leaves_network(dsd_opts* opts, dsd_state* state, int guard_held, int same_system, dsd_tuning_move why) {
+    ui_user_move_forgets_identity(state, guard_held, same_system, why);
     if (!same_system) {
         dmr_t3_chan_network_changed(opts, state);
     }
@@ -2243,8 +2261,9 @@ ui_cmd_handle_p25_cc_selection(dsd_opts* opts, dsd_state* state, uint32_t hz) {
         /* A new channel (issue #671): the selection dropped the modulation votes; the tone heard on the old one goes
            as the frequency entry's other branch drops it. */
         dsd_analog_rx_reset(state);
-        /* the selection ended the calls left */
-        ui_user_move_leaves_network(opts, state, g_apply_cmd_guard_held, same_system);
+        /* the selection ended the calls left; only the system's own control channel keeps its tuning (issue #903) */
+        ui_user_move_leaves_network(opts, state, g_apply_cmd_guard_held, same_system,
+                                    same_system ? DSD_TUNING_MOVE_TRUNK_FOLLOW : DSD_TUNING_MOVE_OTHER);
         ui_set_toast(state, 3, "%s: P25 control channel -> %s MHz",
                      result == DSD_TRUNK_TUNE_RESULT_PENDING ? "Accepted (pending)" : "Applied", mhz);
         return UI_CMD_APPLY_COMPLETED;
@@ -2396,8 +2415,9 @@ ui_cmd_rtl_set_freq_tune(dsd_opts* opts, dsd_state* state, uint32_t v, int* scan
     if (over_trunk_scan) {
         *scan_paused = trunk_scan_paused;
     } else {
-        /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575). */
-        svc_operator_carrier_boundary(opts, state, 0);
+        /* The receiver moved: the carrier boundary runs before anything decodes the new carrier (issue #575), the
+           operator's (operator_tuned is marked below). */
+        svc_operator_tune_carrier_boundary(opts, state, 0);
     }
     dsd_frame_sync_reset_mod_state();
     dsd_analog_rx_reset(state);
@@ -2464,6 +2484,17 @@ static void reset_call_tracking(dsd_opts* opts, dsd_state* state, int clear_trun
  * state that would otherwise slow or corrupt re-acquisition in decode mode
  * "auto".
  */
+/* The tap's tune and, once it is accepted, its carrier boundary (issue #575): the operator's, whom the tap marks after
+   the calls the boundary ended (issue #903). */
+static int
+ui_cmd_tap_tune(dsd_opts* opts, dsd_state* state, uint32_t hz) {
+    const int rc = svc_rtl_tune_only(opts, state, hz);
+    if (rc == 0 || rc == RTL_STREAM_TUNE_TIMEOUT) {
+        svc_operator_tune_carrier_boundary(opts, state, 0);
+    }
+    return rc;
+}
+
 static int
 ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     uint32_t v = 0;
@@ -2506,7 +2537,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
     if (ui_cmd_freq_payload_refused(state, v, &result)) {
         return result;
     }
-    int rc = svc_rtl_set_freq(opts, state, v);
+    int rc = ui_cmd_tap_tune(opts, state, v);
     const uint32_t applied = opts->rtlsdr_center_freq; /* io_control_set_freq() caches what a success applied */
     result = ui_cmd_apply_status_from_tune_rc(rc);
     char mhz[16];
@@ -2514,7 +2545,7 @@ ui_cmd_handle_manual_tune(dsd_opts* opts, dsd_state* state, const struct dsd_app
         /* Only after the tune is accepted, matching how trunk_tuning.c and the
          * manual return-to-CC path order this — never on the failure path. */
         dsd_frame_sync_reset_mod_state();
-        dsd_analog_rx_reset(state); // the tune itself ran the carrier boundary (svc_rtl_set_freq(), issue #575)
+        dsd_analog_rx_reset(state); // after the tune's carrier boundary (issue #575)
         /* A resume's row still in flight then commits nothing: the pause moved the scan session. */
         const int scan_paused = ui_cmd_pause_channel_scan_after_tune(opts, state);
         reset_call_tracking(opts, state, 1);
@@ -3272,6 +3303,7 @@ channel_map_import_apply(dsd_opts* opts, dsd_state* state, const char* path, int
     int rc = svc_import_channel_map(opts, state, path);
     if (rc == 0) {
         dmr_sm_note_system_replaced(dmr_sm_get_ctx()); // another map may be another system than an XPT site
+        ui_note_tuning_change(state);                  // the channels the receiver runs (issue #903)
     }
     char skipped[160];
     if (rc == 0 && svc_channel_map_refused_rows(opts, state, skipped, sizeof skipped) > 0) {
@@ -3325,6 +3357,7 @@ ui_cmd_handle_import_p25_bandplan(dsd_opts* opts, dsd_state* state, const struct
             int rc = svc_import_p25_bandplan(opts, state, path);
             result = ui_cmd_apply_status_from_service_rc(rc);
             if (rc == 0) {
+                ui_note_tuning_change(state); // where the receiver finds the system's channels (issue #903)
                 ui_set_toast(state, 3, "Applied: P25 band plan imported -> %s", path);
             } else if (rc != SVC_REFUSED_FOR_NEXT_START) { /* that refusal put its rule on the status line */
                 ui_set_toast(state, 4, "Failed: P25 band plan import -> %s", path);
@@ -3515,6 +3548,7 @@ ui_cmd_handle_import_channel_map_clear(dsd_opts* opts, dsd_state* state, const s
     }
     const int rc = svc_clear_channel_map(opts, state);
     if (rc == 0) {
+        ui_note_tuning_change(state); // the channels the receiver runs (issue #903)
         ui_set_toast(state, 3, "Applied: Channel map cleared");
     } else {
         ui_set_toast(state, 4, "Failed: Channel map clear");
@@ -4081,7 +4115,7 @@ apply_manual_return_to_cc_locked(dsd_opts* opts, dsd_state* state, int p25_live)
     }
     reset_call_tracking(opts, state, 1);
     manual_move_judge_after(opts, state, &judge, freq);
-    ui_user_move_forgets_identity(state, p25_live, same_system);
+    ui_user_move_forgets_identity(state, p25_live, same_system, DSD_TUNING_MOVE_TRUNK_FOLLOW);
     mark_cc_sync(state, 1);
     set_cc_symbol_timing(opts, state, sym_rate);
     if (p25_live) {
@@ -4224,7 +4258,7 @@ try_manual_candidate_cycle_locked(dsd_opts* opts, dsd_state* state, int p25_live
            (issue #575). */
         svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_leaves_network(opts, state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0, DSD_TUNING_MOVE_OWN_CC_HUNT);
         manual_move_judge_after(opts, state, &judge, cand);
     }
     hand_tetra_sm_over(opts, state);
@@ -4283,7 +4317,7 @@ lcn_cycle_finish(dsd_opts* opts, dsd_state* state, int row, long freq, int p25_l
            (issue #575), but the user moved, so what was received before is not this channel's identity. */
         svc_operator_carrier_boundary(opts, state, p25_live);
     } else {
-        ui_user_move_leaves_network(opts, state, p25_live, 0);
+        ui_user_move_leaves_network(opts, state, p25_live, 0, DSD_TUNING_MOVE_OTHER);
         manual_move_judge_after(opts, state, judge, freq);
     }
     hand_tetra_sm_over(opts, state);
@@ -5097,16 +5131,23 @@ apply_cfg_left_carrier(const dsd_state* state, uint32_t carrier_seq, uint64_t so
    the apply left it already (apply_cfg_left_carrier()). What is left is a reopen of the same source on the config's
    frequency, read as every frontend reads it (dsd_opts_tuned_freq_hz()): the input stays a radio input, so no input
    boundary or no-carrier pass ends the reception before the next carrier syncs. A start that failed put the old input
-   back, and the same source reopened for a new gain stays on its carrier. */
+   back, and the same source reopened for a new gain stays on its carrier. A carrier left moves the tuning generation:
+   no operator's tune marks the calls heard after it (issue #903). */
 static int
 apply_cfg_radio_input(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, const ui_cfg_rollback* before) {
     const uint32_t carrier_seq = state->carrier_seq;
     const uint64_t source_key = state->carrier_source_key;
     const unsigned int starts = svc_rtl_start_count();
     const int rc = apply_cfg_radio_input_tuned(opts, state, cfg, before);
-    if (!apply_cfg_left_carrier(state, carrier_seq, source_key, starts) && before->input.audio_in_type == AUDIO_IN_RTL
-        && opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
+    int left = apply_cfg_left_carrier(state, carrier_seq, source_key, starts);
+    if (!left && before->input.audio_in_type == AUDIO_IN_RTL && opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_opts_tuned_freq_hz(opts) != before->input.tuned_freq_hz) {
         svc_operator_carrier_boundary(opts, state, 1); // a config apply holds the guard
+        left = 1;
+    }
+    if (left) {
+        /* No operator's tune marks what is heard from here on (operator_tuned): the run's tuning moved (issue #903). */
+        ui_note_tuning_change(state);
     }
     return rc;
 }
@@ -5175,7 +5216,11 @@ apply_cfg_note_reopen(dsd_opts* opts, dsd_state* state, int rc, int old_staged_f
     if (rc == DSD_AUDIO_INPUT_KEPT) {
         return;
     }
-    dsd_engine_note_input_replaced(state);
+    if (rc == DSD_AUDIO_INPUT_RESTARTED) {
+        dsd_engine_note_input_restored(state); // the UDP input back on its own endpoint (issue #903)
+    } else {
+        dsd_engine_note_input_replaced(state);
+    }
     if (rc == DSD_AUDIO_INPUT_RESTARTED || rc == DSD_AUDIO_INPUT_LOST) {
         ui_input_left(opts, state);
     }
@@ -5239,7 +5284,7 @@ dsd_app_command_submit(int cmd_id, const void* payload, size_t payload_sz) {
         return DSD_APP_COMMAND_SUBMIT_REJECTED;
     }
     if (q_is_full_unlocked()) {
-        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED);
+        tg_export_publish_result_unlocked(&g_q[g_head], UI_CMD_APPLY_FAILED, NULL);
         dsd_app_publish_decryption_result(&g_q[g_head], DSD_APP_KEY_CANCELLED);
         dsd_app_scan_list_publish_result(&g_q[g_head], DSD_APP_SCAN_LIST_SET_DROPPED, NULL);
         dsd_app_dmr_channel_publish_result(&g_q[g_head], DSD_APP_DMR_CHANNEL_SET_DROPPED, NULL);
@@ -6276,6 +6321,10 @@ static struct {
     /* A mode change waits for the switch to settle before it forgets the identity of a protocol it no longer decodes
        (ui_commit_mode_identity()). */
     int commit_identity;
+    /* A mode change waits for the switch to settle before it moves the tuning generation (ui_commit_mode_tuning()),
+       measured from what the receiver decoded before it (ui_decode_mode_key()). */
+    int commit_tuning;
+    uint32_t tuning_mode_before;
     dsd_scan_settings before;
     ui_follow_state before_follow;    /* the follow state before the switch, as `before` is its settings */
     ui_edacs_addressing before_edacs; /* and the EDACS addressing */
@@ -6417,11 +6466,80 @@ ui_commit_mode_identity(dsd_opts* opts, dsd_state* state) {
     ui_forget_undecoded_identity(opts, state);
 }
 
+/* What the receiver decodes with, as a mode change moves the tuning generation (issue #903): the decoders on, the analog
+   monitor and its kind, and DMR's single slot, as the decode-mode presets set them. Two combinations no preset names
+   differ too. */
+static uint32_t
+ui_decode_mode_key(const dsd_opts* opts) {
+    const int analog = opts->analog_only && opts->monitor_input_audio;
+    const int decoders[] = {
+        opts->frame_dstar,
+        opts->frame_x2tdma,
+        opts->frame_p25p1,
+        opts->frame_p25p2,
+        opts->frame_nxdn48,
+        opts->frame_nxdn96,
+        opts->frame_dmr,
+        opts->frame_dpmr,
+        opts->frame_provoice,
+        opts->frame_ysf,
+        opts->frame_m17,
+        opts->frame_tetra,
+        analog,
+        opts->frame_dmr && opts->dmr_mono == 1,
+    };
+    uint32_t key = 0U;
+    for (size_t i = 0; i < sizeof decoders / sizeof decoders[0]; i++) {
+        key |= (uint32_t)(decoders[i] != 0) << i;
+    }
+    if (analog) {
+        key |= ((uint32_t)opts->analog_demod & 0xFFU) << 16U;
+    }
+    return key;
+}
+
+/* The mode change a command made has settled, or waits to (issue #903): the tuning generation moves when what the
+   receiver decodes with (ui_decode_mode_key()) is not what it was before the change, @p mode_before. A change put back
+   (a refusal, a rollback) ends on what it was and moves nothing. A switch onto the analog monitor the front end has
+   still to take or refuse waits for it (ui_analog_entry_settled()); a later change measures from before the one still
+   waiting. */
+static void
+ui_commit_mode_tuning(const dsd_opts* opts, dsd_state* state, uint32_t mode_before) {
+    if (g_analog_entry.commit_tuning) {
+        mode_before = g_analog_entry.tuning_mode_before;
+    }
+    if (g_analog_entry.armed) {
+        dsd_scan_settings now;
+        dsd_scan_settings_capture(opts, state, &now);
+        if (ui_analog_entry_unmoved(&now)) {
+            g_analog_entry.commit_tuning = 1;
+            g_analog_entry.tuning_mode_before = mode_before;
+            return;
+        }
+    }
+    g_analog_entry.commit_tuning = 0;
+    if (ui_decode_mode_key(opts) != mode_before) {
+        ui_note_tuning_change(state);
+    }
+}
+
+/* Whether a mode change waits for the front end before it moves the tuning generation (ui_commit_mode_tuning()). */
+static int
+ui_mode_tuning_commit_pending(void) {
+    return g_analog_entry.commit_tuning;
+}
+
 /* The armed switch has settled (taken, refused or dropped): nothing can put the settings from before it back any more,
    so a mode change that waited for it commits now, on the settings it leaves in force (ui_commit_mode_change()). */
 static void
 ui_analog_entry_settled(dsd_opts* opts, dsd_state* state) {
     g_analog_entry.armed = 0;
+    if (g_analog_entry.commit_tuning) {
+        g_analog_entry.commit_tuning = 0;
+        if (ui_decode_mode_key(opts) != g_analog_entry.tuning_mode_before) {
+            ui_note_tuning_change(state);
+        }
+    }
     if (g_analog_entry.commit_tetra) {
         g_analog_entry.commit_tetra = 0;
         dsd_decode_mode_commit_tetra(opts, state);
@@ -7061,6 +7179,28 @@ decode_mode_ensure_output(dsd_opts* opts, const dsd_state* state) {
     }
 }
 
+/* decode_mode_apply_value_noted()'s mode change once it stands: what the session, the decoder's hunt and its calls
+   carry over from the mode before (@p was_edacs_session, @p mode_before) is settled for the mode now in force. */
+static void
+decode_mode_settle_committed(dsd_opts* opts, dsd_state* state, int was_edacs_session, uint32_t mode_before) {
+    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
+    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
+        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
+    }
+    /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
+    state->tdma_carrier = 0U;
+    /* The decoder was hunting for a different protocol a moment ago: its
+       modulation votes describe frames of the old kind, and any call open on the
+       old protocol will never be closed by the new one. */
+    if (!dsd_scan_mode_updating(state)) {
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
+        reset_call_tracking(opts, state, 1);
+    }
+    /* After the outgoing calls ended and froze their identity. */
+    ui_commit_mode_identity(opts, state);
+    ui_commit_mode_tuning(opts, state, mode_before); // what the receiver decodes with (issue #903)
+}
+
 /**
  * @brief Switch which protocols are decoded, mid-session.
  *
@@ -7112,6 +7252,7 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
     const int was_analog_family = dsd_opts_is_analog_family(opts);
     const int was_kind = opts->analog_demod;
     const int was_edacs_session = dsd_edacs_session(opts, state);
+    const uint32_t mode_before = ui_decode_mode_key(opts);
     /* Asked before anything changes: a front end that would refuse the analog receive profile the new mode publishes
        leaves the session in its mode, instead of an analog decoder on a front end running something else. */
     if (decode_mode_check_receive_profile(opts, state, mode) != 0) {
@@ -7163,23 +7304,10 @@ decode_mode_apply_value_noted(dsd_opts* opts, dsd_state* state, dsdneoUserDecode
        to take or refuse has settled, and one put back finds the TETRA session it left whole. */
     ui_commit_mode_change(opts, state);
     if (put_back) {
+        ui_commit_mode_tuning(opts, state, mode_before); // put back: the decoders it left
         return UI_CMD_APPLY_FAILED;
     }
-    /* A switch that makes the session an EDACS one gets the -8 override startup gives one (as the EA toggle does). */
-    if (!was_edacs_session && dsd_edacs_session(opts, state)) {
-        (void)dsd_edacs_session_trunked_monitor_off(opts, state);
-    }
-    /* Under a scan's scope too: the carrier proves again, under the mode now in force, that it is two-slot TDMA. */
-    state->tdma_carrier = 0U;
-    /* The decoder was hunting for a different protocol a moment ago: its
-       modulation votes describe frames of the old kind, and any call open on the
-       old protocol will never be closed by the new one. */
-    if (!dsd_scan_mode_updating(state)) {
-        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
-        reset_call_tracking(opts, state, 1);
-    }
-    /* After the outgoing calls ended and froze their identity. */
-    ui_commit_mode_identity(opts, state);
+    decode_mode_settle_committed(opts, state, was_edacs_session, mode_before);
     decode_mode_toast_applied(opts, state, mode, replay_reopened, replay_rate_hz, replay_resampled, note, note_size);
     return UI_CMD_APPLY_COMPLETED;
 }
@@ -7752,6 +7880,7 @@ apply_rr_import(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* 
     }
     /* The commit point: from here on the import changes the session, and what fails is reported as a partial apply. */
     const dsdneoUserDecodeMode mode = (dsdneoUserDecodeMode)p.decode_mode;
+    ui_note_tuning_change(state); // the session is re-pointed at the imported system (issue #903)
     const int moves = rr_apply_moves_the_receiver(opts, &p);
     if (moves) {
         /* The import re-points the session at another system and tunes its channel: the carrier boundary runs first,
@@ -10480,14 +10609,17 @@ cfg_forget_rx_tone_on_boundary(dsd_opts* opts, dsd_state* state, int old_audio_i
 /* The apply commits here, past everything before it that can put the session back: a [mode] that stands leaves TETRA
    unless it is TETRA, once a switch onto the monitor the front end has still to take or refuse has settled, and one
    put back (a reopen that failed, a switch onto the monitor refused at once) finds the TETRA session whole
-   (dsd_stage_user_config_to_opts()). */
+   (dsd_stage_user_config_to_opts()). What the receiver decodes with then, against @p old_mode_key from before the apply,
+   says whether the config moved the tuning (issue #903): one put back moved nothing. */
 static void
-cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_edacs_session) {
+cfg_commit_mode(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int old_edacs_session,
+                uint32_t old_mode_key) {
     if (cfg->has_mode) {
         ui_commit_mode_change(opts, state);
     }
     /* A [mode], or an EDACS addressing mode the config set with or without one. */
     ui_commit_mode_identity(opts, state);
+    ui_commit_mode_tuning(opts, state, old_mode_key);
     /* A config that leaves the session an EDACS one it was not (edacs_ea, with or without a decode key, an
        EDACS/ProVoice [mode]) gets what startup gives one, as the EA toggle does; read after any rollback put the receive
        side back. */
@@ -10630,6 +10762,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     const int old_audio_channels = opts->pulse_digi_out_channels;
     const int old_audio_rate = opts->pulse_digi_rate_out;
     const dsdneoUserDecodeMode old_decode_mode = dsd_infer_decode_mode_preset_exact(opts);
+    const uint32_t old_mode_key = ui_decode_mode_key(opts);
     const int old_edacs_session = dsd_edacs_session(opts, state);
 
     DSD_SNPRINTF(old_audio_in_dev, sizeof old_audio_in_dev, "%s", opts->audio_in_dev);
@@ -10693,7 +10826,7 @@ cfg_apply(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, int
     int reconfigure_rc = ui_reconfigure_output_for_input_policy(opts, state);
     /* A width the front end refused after the check (put back, with a toast) fails the apply like a reconfigure. */
     reconfigure_rc |= apply_cfg_receive_family_change(opts, state, &cfg, &old_rx);
-    cfg_commit_mode(opts, state, &cfg, old_edacs_session);
+    cfg_commit_mode(opts, state, &cfg, old_edacs_session, old_mode_key);
 #ifdef USE_RADIO
     ui_cfg_note_refused_row(opts, state, radio_rc);
     cfg_settle_scan_owner(opts, state, &cfg, &owner, &lifecycle_before, radio_rc == 0);
@@ -10942,7 +11075,11 @@ apply_cmd_with_retained_result(dsd_opts* opts, dsd_state* state, const struct ds
     }
     if (c->id == DSD_APP_CMD_DMR_CHANNEL_SET) {
         codes->dmr_channel = dsd_app_apply_dmr_channel_set(opts, state, c);
-        return codes->dmr_channel == DSD_APP_DMR_CHANNEL_SET_OK ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+        if (codes->dmr_channel != DSD_APP_DMR_CHANNEL_SET_OK) {
+            return UI_CMD_APPLY_FAILED;
+        }
+        ui_note_tuning_change(state); // the channels the receiver runs, as a channel map applied live (issue #903)
+        return UI_CMD_APPLY_COMPLETED;
     }
     return UI_CMD_APPLY_UNHANDLED;
 }
@@ -12282,7 +12419,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
            effect before this command can start the stream again. */
         dsd_app_take_capture_stopped(opts, state);
         if (!ui_cmd_payload_is_valid(&cmd)) {
-            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD);
+            tg_export_publish_result(&cmd, UI_CMD_APPLY_INVALID_PAYLOAD, NULL);
             dsd_app_publish_decryption_result(&cmd, DSD_APP_KEY_INVALID);
             dsd_app_scan_list_publish_result(&cmd, DSD_APP_SCAN_LIST_SET_INVALID, state);
             dsd_app_dmr_channel_publish_result(&cmd, DSD_APP_DMR_CHANNEL_SET_INVALID, state);
@@ -12305,7 +12442,7 @@ dsd_app_drain_cmds(dsd_opts* opts, dsd_state* state) {
 #ifdef DSD_NEO_TEST_HOOKS
         g_test_last_result = result;
 #endif
-        tg_export_publish_result(&cmd, result);
+        tg_export_publish_result(&cmd, result, state);
         dsd_app_publish_decryption_result(&cmd, result);
         dsd_app_scan_list_publish_result(&cmd, codes.scan_list, state);
         dsd_app_dmr_channel_publish_result(&cmd, codes.dmr_channel, state);
