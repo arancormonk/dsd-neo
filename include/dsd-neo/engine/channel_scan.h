@@ -5,6 +5,7 @@
 #ifndef DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #define DSD_NEO_ENGINE_CHANNEL_SCAN_H
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/runtime/scan_row_edit.h>
@@ -28,6 +29,35 @@ int dsd_engine_channel_scan_step_manual(dsd_opts* opts, dsd_state* state);
 int dsd_engine_channel_scan_step_manual_dir(dsd_opts* opts, dsd_state* state, int dir);
 /** Inspect row ownership without servicing the tune; nonzero while a request or retry is outstanding. */
 int dsd_engine_channel_scan_waiting(const dsd_state* state);
+/** The decoder's side of the receiver's squelch gate (issue #899). A new analog channel starts closed in the receiver
+ * (rtl_stream_gate_closed_start()), and a write applies to the channel it is on: the decoder writes the gate, resolved at
+ * write time (dsd_scan_mode_channel_squelch(), with the digital family's dsd_scan_mode_digital_squelch()), only when none
+ * of its own tune or family requests is outstanding (a -Y row's, a trunk-scan target's, a timed-out manual tune's, a
+ * signal-search tune, an unsettled receive request). All decoder thread; nothing off an RTL-family input. */
+/** A commit or landing observed, or a family request made: the next settle with nothing outstanding writes. */
+void dsd_engine_receiver_gate_due(void);
+/** A command or coordinator switch begins (@p hold 1) or ends (0): no gate is written meanwhile, and one is due after
+ * the outermost ends. */
+void dsd_engine_receiver_gate_hold(int hold);
+/** Write the gate when it is due (a commit, landing or request observed, or @p changed: a command ran, the session's
+ * squelch moved) or the receiver reports a closed start on an analog session, and nothing of the decoder's own is
+ * outstanding. With nothing due on a digital session, nothing is read, resolved or written. */
+void dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed);
+/** The gate a write would give now (@p gate, @p digital, @p session, as
+ * dsd_rtl_stream_metrics_hook_write_squelch_gate() takes them), when one may be written: no command or switch holds the
+ * gate and nothing of the decoder's own is outstanding. Returns 1 when resolved, else 0 with nothing filled (and
+ * nothing resolved: the outstanding check comes first). */
+int dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                     dsd_squelch_setting* digital, dsd_squelch_setting* session);
+/** dsd_engine_receiver_gate_resolve() for a stream start (rtl_stream_start_gate): when the gate cannot be resolved (a
+ * tune outstanding, a command applying) it still fills @p session, the session's own squelch (the scan scope's
+ * configured one while a scope is in force; never the analog default nor a row's own), which the start runs off the
+ * monitor. Returns as dsd_engine_receiver_gate_resolve(). */
+int dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                           dsd_squelch_setting* digital, dsd_squelch_setting* session);
+/** dsd_engine_receiver_gate_settle() with @p changed: what the scan scope's entry points run through
+ * dsd_receiver_gate_settle_hook_set() (issue #899). */
+void dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state);
 /** Resolve an outstanding request before reading samples. Returns 1 while unsettled. */
 int dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state);
 /** Service a row transaction before dispatch/next sync search. Returns 1 when ready;
@@ -260,6 +290,21 @@ void dsd_engine_channel_scan_tetra_judge(const dsd_opts* opts, dsd_state* state)
  * receive-policy leave and its frame-loop yields, the voice gate, the per-visit cap and the timing view. A hold over an
  * avoided row suspends none of them, so the scan leaves it; the hold stays and keeps the row it lands on. */
 int dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state);
+/** What the armed recovery of a commit owed with nothing in flight says about the timed -Y step now (issue #899): the
+ * receiver moved for a row that never committed (a restaged tune failed, or its row went before its retry), so the gate
+ * stays closed and frames are held, and a sync the row keeps giving refreshes the hangtime anchor without decoding.
+ * The scan's service (dsd_engine_channel_scan_pending()) arms the recovery -t (at least 1 s) from the first pass that
+ * finds the scan so, a timed step that stages no tune (a placeholder parked on, a row not prepared) arms it again from
+ * that step, and the commit, a dropped row and every tune the scan stages clear it; received sync never moves it.
+ * While armed it governs the step below the per-visit cap and the avoided-row departure: 1 once due (@p now_m, decode
+ * monotonic clock, at or past it), 0 before (no step, whatever the hangtime rule says, so the scan follows the
+ * countdown it publishes). -1 when none is armed: the step's other rules decide. One read of
+ * dsd_state::lcn_owed_recovery_armed, and no lookup, when none is armed. Decoder thread. */
+int dsd_engine_channel_scan_owed_recovery_due(dsd_state* state, double now_m);
+/** The armed recovery's window for the -Y timing publication (issue #899): 1 with its deadline (decode monotonic
+ * clock) in @p deadline_m and the span it was armed with in @p span_s, so a live -t edit does not reshape a countdown
+ * already running; 0 when none is armed (one read, no lookup). Reads only; never arms. */
+int dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
 /** Whether a -Y scan sitting on an avoided row (dsd_engine_channel_scan_on_avoided_row()) steps off it now (issue
  * #644): ahead of its carrier, its dwell and an operator hold, as a trunk scan's departure goes. Only with somewhere to
  * go (a row a step can land on: dsd_engine_channel_scan_reachable_rows()), no tune of the scan's still in flight (a

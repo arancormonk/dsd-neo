@@ -130,6 +130,44 @@ Item {
             compare(item("squelchValue").text, "-55 dB");
         }
 
+        // Issue #899 (B13): whole-dB steps that never move against the button, down to the -120 dB floor and then
+        // off, on the default and on a row's own level (which used to stop at -100 dB); each edit tells the policy.
+        function test_level_steps_are_whole_and_monotonic() {
+            showAudioInput("-65.5 dB");
+            var sheet = openEditor();
+            function at(db) {
+                sheet.forgetRequests();
+                testContext.setMetric("squelchDb", db);
+                tryVerify(function () { return Math.abs(metrics.squelchDb - db) < 1e-9 });
+            }
+            at(-65.5);
+            mouseClick(item("squelchUp"));
+            compare(testContext.lastSquelchDb(), -60);
+            // One edit, which the decoder takes as an explicit squelch: the app's default ends there (issue #899).
+            compare(testContext.squelchCalls(), 1);
+            at(-3);
+            mouseClick(item("squelchUp"));
+            compare(testContext.squelchCalls(), 1, "up from -3 dB stays, never down to -5");
+            at(-118);
+            mouseClick(item("squelchDown"));
+            compare(testContext.lastSquelchDb(), -120);
+            at(-120);
+            mouseClick(item("squelchDown"));
+            compare(testContext.lastSquelchDb(), 0, "below the floor is off");
+            sheet.forgetRequests();
+            onAir(true, squelchField);
+            testContext.setMetric("effectiveSquelchDb", -110.0);
+            item("squelchScope").selected(1);
+            verify(sheet.rowSquelch);
+            mouseClick(item("squelchUp"));
+            compare(testContext.lastScanRowEdit().value.squelchDb, -105, "a row at -110 dB, not -100");
+            sheet.forgetRequests();
+            testContext.setMetric("effectiveSquelchDb", -120.0);
+            tryVerify(function () { return metrics.effectiveSquelchDb === -120.0 });
+            mouseClick(item("squelchDown"));
+            compare(testContext.lastScanRowEdit().value.squelchDb, 0);
+        }
+
         function test_choosing_noise_starts_at_the_default_margin() {
             showAudioInput("-120.0 dB");
             openEditor();

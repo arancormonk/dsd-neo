@@ -97,10 +97,37 @@ typedef void (*rtl_stream_tune_completion_callback)(uint64_t request_id, rtl_str
 int rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx);
 /**
  * @brief Start the stream threads and device I/O.
+ *
+ * For a caller with no decoder loop to write the squelch gate (issue #899): the stream runs the squelch the options it
+ * was created with hold from the first block, resolved as for a channel with no scan row on air, with no closed start.
+ * The decoder starts its streams with rtl_stream_start_gated().
  * @param ctx Stream context created by rtl_stream_create().
  * @return 0 on success; otherwise <0 on error.
  */
 int rtl_stream_start(RtlSdrContext* ctx);
+
+/**
+ * @brief The squelch gate one stream start runs (issue #899), resolved by the decoder for that start alone: no later
+ * start, and no start that opens nothing (a context already started, a failed start), can take it.
+ */
+typedef struct rtl_stream_start_gate {
+    int resolved;                /**< 1: none of the decoder's tunes or family requests was outstanding, so @p gate and
+                                      @p digital are its write for the channel the stream opens on, run from the first
+                                      block with no closed start; 0: an analog open starts closed until the decoder
+                                      writes */
+    dsd_squelch_setting gate;    /**< with @p resolved: as rtl_stream_write_squelch_gate()'s @p gate */
+    dsd_squelch_setting digital; /**< with @p resolved: as rtl_stream_write_squelch_gate()'s @p digital */
+    dsd_squelch_setting session; /**< always: the session's own squelch (never the analog-only default nor any scan
+                                      row's own), which the receiver runs off the monitor until the decoder writes */
+} rtl_stream_start_gate;
+
+/**
+ * @brief rtl_stream_start() on the gate @p start_gate the decoder resolved for this start (issue #899; one with
+ * rtl_stream_start_gate::resolved 0 starts an analog channel closed until the decoder writes; NULL: the options' own,
+ * run from the first block, as rtl_stream_start() does). The gate is an argument of this start only. Decoder thread.
+ * @return as rtl_stream_start().
+ */
+int rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate);
 /**
  * @brief Whether the last stream start failed at its analog channel check, and what it refused.
  *
@@ -548,6 +575,17 @@ int rtl_stream_set_symbol_profile(int symbol_rate_hz, int levels, int channel_pr
  */
 int rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                      int ted_sps_is_override);
+
+/**
+ * @brief rtl_stream_request_demod_profile() for a digital decode (issue #899): a typed digital scan row's or target's
+ * profile, or the digital mode the decoder switched to (a decode mode change, a CQPSK toggle). Only such a profile
+ * takes an analog family's front end off the analog monitor (demod_state::symbol_profile_on_analog), whatever channel
+ * filter it names. A profile requested with rtl_stream_request_demod_profile() (a frame-sync hunt's, a restore after a
+ * failed tune) applies only off the monitor: one the demod thread takes after the request that put the monitor back,
+ * in the same block boundary or a later one, lands nothing, and that request wins.
+ */
+int rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                            int ted_sps, int ted_sps_is_override);
 
 /**
  * @brief Queue a receive-family / analog profile change for the demod thread.
@@ -1007,6 +1045,47 @@ int rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
                                                         const rtl_stream_retune_analog_profile* analog);
 
 /**
+ * @brief Mark the retune queued for @p target_freq_hz as the decoder's own move to a new channel (issue #899; 0
+ * unmarks): where it lands (the controller's finalize, an external backend's landing) on the analog monitor, the
+ * receiver starts closed, every block muted, until the decoder writes the gate (rtl_stream_write_squelch_gate()),
+ * whatever the profile's family did there (applied, refused or superseded: the tuner moved). Attach it last:
+ * rtl_stream_prepare_retune_profile_for_target_with_gain() replaces the whole queued profile. With nothing queued for
+ * this target, a profile for the mark alone is queued, which lands nothing else and settles no receive request. A
+ * profile cleared, replaced, or whose retune fails lands nothing. Unmarking a profile still queued (its tune returned
+ * without taking it) drops one queued for the mark alone. Retunes nobody marks (trunking grants and hunts) keep the
+ * gate the receiver runs. Decoder thread.
+ */
+void rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel);
+
+/**
+ * @brief Mark the symbol profile queued for @p target_freq_hz a digital decode's (issue #899): a typed digital row's or
+ * target's, a trunked channel's. Attach it after the profile, as rtl_stream_prepare_retune_new_channel_for_target().
+ * Only a marked profile lands its symbol profile, CQPSK state and timing on an analog family's monitor, taking the
+ * front end off it; an unmarked one lands none of them there. Decoder thread.
+ */
+void rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz);
+
+/**
+ * @brief Write the squelch gate of the channel the receiver is on now (issue #899): @p gate on the analog monitor,
+ * @p digital (NULL: @p gate) off it (the digital family, or a typed digital scan row's symbol profile on the analog
+ * family). @p session (NULL: @p digital) is the session's own squelch, which the receiver runs at every later new
+ * channel or switch off the monitor until the decoder writes for it: no analog gate and no row's own squelch outlives
+ * its channel. Which of the two the receiver is on is what its last boundary recorded under the gate's lock; a write
+ * never reads the demodulator. The decoder's write opens a closed start (and so does
+ * rtl_stream_set_channel_squelch_setting()). The decoder writes only when none of its own tune or family requests is
+ * outstanding. Any thread.
+ */
+void rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                   const dsd_squelch_setting* session);
+
+/**
+ * @brief 1 while the receiver runs a new analog channel closed, waiting for the decoder's write (issue #899): a stream
+ * open with no gate resolved for it (rtl_stream_start_gate::resolved 0), a marked retune's landing, a family switch
+ * into analog or onto another kind, or a return to the monitor from a symbol profile. Lock-free; any thread.
+ */
+int rtl_stream_gate_closed_start(void);
+
+/**
  * @brief Number of live receive-family requests accepted so far (rtl_stream_request_analog_profile(),
  * rtl_stream_request_digital_family_landing()).
  *
@@ -1112,21 +1191,21 @@ void rtl_stream_set_p25_timing_proof(uint64_t proof);
 double rtl_stream_return_pwr(const RtlSdrContext* ctx);
 
 /**
- * @brief Set the channel squelch level in the demod state.
- *
- * Call this whenever opts->rtl_squelch_level changes to keep the demod
- * state in sync for channel-based squelching.
+ * @brief Set the channel squelch to a level, as rtl_stream_set_channel_squelch_setting() sets a LEVEL setting.
  *
  * @param level Linear power threshold (same units as rtl_squelch_level).
  */
 void rtl_stream_set_channel_squelch(float level);
 
 /**
- * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting as
- * rtl_stream_set_channel_squelch(), an AUTO one by its margin over the floor the demodulator learns, a NOISE one by
- * the FM quieting it opens at. AUTO and NOISE flag each sample (rtl_stream_read_ex()) of the analog monitor, the M17
- * encoder's monitor and the 9600 bit/s FSK path EDACS analog voice reads (issue #625; NOISE runs as AUTO there), and
- * gate nothing else.
+ * @brief Set the channel squelch from a whole setting (issue #518 follow-up): a LEVEL setting by its threshold, an AUTO
+ * one by its margin over the floor the demodulator learns, a NOISE one by the FM quieting it opens at (NULL: off). AUTO
+ * and NOISE flag each sample (rtl_stream_read_ex()) of the analog monitor, the M17 encoder's monitor and the 9600
+ * bit/s FSK path EDACS analog voice reads (issue #625; NOISE runs as AUTO there), and gate nothing else.
+ *
+ * The setting is the receiver's gate on the channel it is on now (issue #899), as a decoder write
+ * (rtl_stream_write_squelch_gate()) runs it: it ends a closed start, counted as one, and the decoder's next write is
+ * compared against it. The engine never calls it: its decoder writes the gate.
  */
 void rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting);
 
@@ -1141,10 +1220,23 @@ typedef struct {
     int plan_valid;      /**< 0 when the channel plan could not be designed (the gate then stays open) */
     double floor_power;  /**< the tracker's floor, mean |z|^2 (0 while learning) */
     double window_power; /**< the tracker's last 40 ms window's mean |z|^2 */
+    int closed_starts;   /**< new analog channels opened since the stream did, each after a closed start (issue #899) */
+    double closed_ms;    /**< how long the last of them ran closed, until the decoder wrote its gate */
+    uint64_t closed_samples; /**< the analog monitor samples the latest of them muted, counted where they were produced
+                                  (every block that took its closed gate, one finished after the opening write too) */
+    uint64_t unjudged_samples; /**< analog monitor samples produced open with no dynamic squelch since the stream
+                                    opened */
 } rtl_stream_squelch_status;
 
 /** @brief Fill @p out with the dynamic squelch's status; 0, or -1 for NULL. */
 int rtl_stream_get_squelch_status(rtl_stream_squelch_status* out);
+
+/**
+ * @brief Fill @p out with the squelch setting the receiver's next block takes (issue #899): what a start runs before
+ * the decoder's first write, for a check of the startup path. A closed start runs a LEVEL setting no channel power
+ * reaches (DSD_SQUELCH_LEVEL_CLOSED). Not part of the status the UI polls. 0, or -1 for NULL. Any thread.
+ */
+int rtl_stream_get_squelch_running(dsd_squelch_setting* out);
 
 /**
  * @brief Enable or disable RTL-SDR bias tee at runtime.

@@ -12,7 +12,8 @@ import "../../../src/ui/qt/qml/Util.js" as Util
 // Noise the buttons step the margin, the floor, the quieting or the reason it
 // is off reads below, and dB goes back to the level the setting kept beneath
 // it. A "this channel" edit offers Auto only on a row that takes it (an nfm or
-// am row) and Noise only on an nfm row; the AM monitor on its own has no Noise.
+// am row) and Noise only on an nfm row. A radio's AM monitor keeps Noise and
+// runs it as auto (issue #899); only an audio input's AM monitor has no Noise.
 Item {
     width: 420
     height: 1200
@@ -66,8 +67,13 @@ Item {
             testContext.setMetric("squelchReadout", "-120.0 dB");
             testContext.setMetric("squelchDb", -120.0);
             testContext.setMetric("squelchOff", false);
+            testContext.setMetric("squelchAnalogDefault", false);
             if (sheet) {
                 sheet.forgetRequests();
+                sheet.savesToSystem = false;
+                sheet.savedSquelch = "";
+                sheet.squelchSaveError = "";
+                sheet.squelchStoreError = "";
                 sheet.visible = false;
             }
             testContext.setHostRunning(false);
@@ -300,7 +306,8 @@ Item {
             compare(testContext.restoreSquelchCalls(), 1);
         }
 
-        function test_no_noise_on_the_am_monitor() {
+        // Where the engine refuses Noise (an audio input's AM monitor), the sheet offers none.
+        function test_no_noise_where_it_is_not_offered() {
             testContext.setMetric("squelchNoiseOffered", false);
             tryVerify(function () { return metrics.squelchNoiseOffered === false });
             var mode = findChild(sheet, "radioSquelchMode");
@@ -331,8 +338,35 @@ Item {
             compare(findChild(sheet, "radioSquelchMode").model.length, 2, "an am row has no noise squelch");
         }
 
-        // A noise setting that runs as auto -- the default on the AM monitor on
-        // its own, an am row that inherits it -- shows and steps as Auto.
+        // Issue #899 D4: a radio's AM monitor keeps a noise setting -- a saved Noise system switched to AM -- and
+        // runs it as auto. The sheet shows Noise, the status says it runs as auto, the buttons step its margin and
+        // keep Noise, and an explicit Auto tap sends Auto.
+        function test_noise_on_radio_am_stays_noise() {
+            testContext.setMetric("decodeMode", commands.decodeModeForFlag("-fM"));
+            testContext.setMetric("squelchNoiseOffered", true);
+            setNoise(true, true, 17, "as auto: floor -78.3 dB");
+            var mode = findChild(sheet, "radioSquelchMode");
+            compare(mode.model.length, 3, "dB, Auto and Noise on the AM monitor of a radio");
+            compare(mode.currentIndex, 2, "the configured Noise");
+            compare(findChild(sheet, "radioSquelchValue").text, "noise +17 dB");
+            var status = findChild(sheet, "radioSquelchAutoStatus");
+            verify(status.visible);
+            compare(status.text, "as auto: floor -78.3 dB");
+            tryCompare(findChild(sheet, "radioSquelchValue").Accessible, "name", "noise +17 dB (as auto: floor -78.3 dB)");
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.squelchNoiseCalls(), 1);
+            compare(testContext.lastSquelchMarginDb(), 18);
+            compare(testContext.squelchAutoCalls(), 0, "the margin keeps Noise");
+            sheet.forgetRequests();
+            mode.selected(1);
+            compare(testContext.squelchAutoCalls(), 1, "an explicit Auto tap is Auto");
+            compare(testContext.lastSquelchMarginDb(), 17);
+            compare(testContext.squelchNoiseCalls(), 1, "an Auto tap sends no Noise (each edit is explicit in the decoder)");
+            testContext.setMetric("decodeMode", 1);
+        }
+
+        // A noise setting that runs as auto where Noise is not offered, and on
+        // an am row that inherits it, shows and steps as Auto.
         function test_noise_where_it_runs_as_auto_steps_as_auto() {
             testContext.setMetric("squelchNoiseOffered", false);
             setNoise(true, true, 12, "as auto: floor -78.3 dB");
@@ -371,7 +405,233 @@ Item {
             verify(!findChild(sheet, "radioSquelchMode").visible, "no Auto on a row that refuses it");
             compare(findChild(sheet, "radioSquelchValue").text, "off");
             findChild(sheet, "radioSquelchUp").clicked();
-            compare(testContext.lastScanRowEdit().value.squelchDb, -100, "up from off is the row's floor");
+            compare(testContext.lastScanRowEdit().value.squelchDb, -120, "up from off is the row's floor");
+        }
+
+        // Issue #899 (B13, B15): a step makes a whole dB, never moves the wrong way, and the row floor is -120 dB.
+        function test_level_steps_are_whole_and_monotonic() {
+            function at(db) {
+                sheet.forgetRequests();
+                testContext.setMetric("squelchOff", false);
+                testContext.setMetric("squelchDb", db);
+                tryVerify(function () { return Math.abs(metrics.squelchDb - db) < 1e-9 });
+            }
+            at(-65.5);
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchDb(), -60, "a level from elsewhere steps to whole dB");
+            at(-65.5);
+            findChild(sheet, "radioSquelchDown").clicked();
+            compare(testContext.lastSquelchDb(), -70);
+            at(-7);
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchDb(), -5);
+            var calls = testContext.squelchCalls();
+            at(-3);
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.squelchCalls(), calls, "up from above -5 dB stays, never down to -5");
+            at(-118);
+            findChild(sheet, "radioSquelchDown").clicked();
+            compare(testContext.lastSquelchDb(), -120, "down to the floor first");
+            at(-120);
+            findChild(sheet, "radioSquelchDown").clicked();
+            compare(testContext.lastSquelchDb(), 0, "then off");
+            sheet.forgetRequests();
+            testContext.setMetric("squelchOff", true);
+            tryVerify(function () { return metrics.squelchOff === true });
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchDb(), -120, "up from off is the floor");
+            testContext.setMetric("squelchOff", false);
+
+            // "This channel": whole dB from -120 to 0 (0 is off), the same steps.
+            onAir(true, squelchField);
+            testContext.setMetric("effectiveSquelchDb", -110.0);
+            findChild(sheet, "radioScope").selected(1);
+            verify(sheet.rowSquelch);
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastScanRowEdit().value.squelchDb, -105, "not -100");
+            sheet.forgetRequests();
+            testContext.setMetric("effectiveSquelchDb", -120.0);
+            tryVerify(function () { return metrics.effectiveSquelchDb === -120.0 });
+            findChild(sheet, "radioSquelchDown").clicked();
+            compare(testContext.lastScanRowEdit().value.squelchDb, 0, "below -120 dB is off");
+            sheet.forgetRequests();
+            testContext.setMetric("effectiveSquelchDb", -1.0);
+            tryVerify(function () { return metrics.effectiveSquelchDb === -1.0 });
+            var edits = testContext.lastScanRowEdit();
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastScanRowEdit(), edits, "up from -1 dB sends nothing");
+        }
+
+        // Issue #899 (D5): on a session that does not save, the panel says the squelch lasts until Stop and where
+        // the default lives; a running signal search names the range instead.
+        function test_session_note() {
+            var note = findChild(sheet, "radioSquelchSessionNote");
+            verify(note.visible, "Explore and scan lists do not save");
+            compare(note.text, "Squelch changes here last until you stop listening. Settings sets the default.");
+            sheet.savesToSystem = true;
+            verify(!note.visible, "a saved system keeps the change");
+            sheet.savesToSystem = false;
+            var search = Qt.createQmlObject('import QtQuick; QtObject { property var status: ({owned: true, phase: 1}) }',
+                sheet, "search");
+            testContext.setSignalSearchModel(search);
+            tryCompare(note, "text", "Squelch comes from the search range while it searches.");
+            verify(note.visible);
+            search.status = {owned: true, phase: 7};
+            compare(note.text, "Squelch changes here last until you stop listening. Settings sets the default.");
+            testContext.setSignalSearchModel(null);
+            search.destroy();
+        }
+
+        SignalSpy {
+            id: clearSpy
+            signalName: "clearSavedSquelchRequested"
+        }
+
+        // Issue #899 (B11): a saved system's own squelch can be cleared, from the next start.
+        function test_clear_saved_squelch() {
+            var clear = findChild(sheet, "radioSquelchClearSaved");
+            verify(!clear.visible, "nothing saved, nothing to clear");
+            sheet.savesToSystem = true;
+            sheet.savedSquelch = "noise+17";
+            verify(clear.visible);
+            // Issue #899 (final-diff review r2): it removes the saved override, which promises nothing about the
+            // app default (Advanced arguments can decide the next start), as the audio sheet's button says.
+            compare(clear.text, "Remove saved squelch");
+            compare(clear.Accessible.name, "Remove Saved Squelch From This System");
+            verify(clear.Accessible.name.toLowerCase().indexOf(clear.text.toLowerCase()) >= 0,
+                "the spoken name contains the label");
+            verify(clear.height >= 48);
+            verify(clear.width < sheet.width / 2, "a content-width button, as This channel's Use default");
+            var row = findChild(sheet, "radioSquelchClearRow");
+            var when = null;
+            for (var child of row.children)
+                if (child !== clear && child.text !== undefined)
+                    when = child;
+            compare(when.text, "Applies from the next start.");
+            // Main clears it and the persistence says so; stand in for both.
+            function cleared() {
+                sheet.savedSquelch = "";
+                sheet.savedSquelchCleared = true;
+            }
+            sheet.clearSavedSquelchRequested.connect(cleared);
+            clearSpy.target = sheet;
+            clearSpy.clear();
+            clear.forceActiveFocus();
+            verify(clear.activeFocus);
+            clear.clicked();
+            sheet.clearSavedSquelchRequested.disconnect(cleared);
+            compare(clearSpy.count, 1);
+            compare(testContext.squelchCalls() + testContext.squelchNoiseCalls() + testContext.squelchAutoCalls(), 0,
+                "the running squelch is left alone");
+            verify(!clear.visible);
+            var note = findChild(sheet, "radioSquelchClearedNote");
+            verify(note.visible);
+            compare(note.text, "Saved squelch cleared for the next start.");
+            compare(sheet.announced, note.text, "the note is read out");
+            var mode = findChild(sheet, "radioSquelchMode");
+            var focused = sheet.Window.activeFocusItem;
+            verify(focused !== null && focused.Accessible.name === mode.model[mode.currentIndex],
+                "the keyboard goes to the chosen squelch segment");
+            sheet.savedSquelchCleared = false;
+            sheet.savesToSystem = false;
+            clearSpy.target = null;
+        }
+
+        // Issue #899 (B15): the unsaved-level reason shows only while a fixed level is the setting.
+        function test_save_error_only_under_a_level() {
+            sheet.savesToSystem = true;
+            sheet.squelchSaveError = "This level was set outside the app, so it is not saved.";
+            var shown = findChild(sheet, "radioSquelchSaveError");
+            verify(shown.visible, "under dB");
+            setNoise(true, true, 12, "quieting 23 dB");
+            verify(!shown.visible, "not under Noise");
+            setNoise(false, false, 12, "");
+            setAuto(true, true, 12, "learning");
+            verify(!shown.visible, "not under Auto");
+            setAuto(false, false, 12, "");
+            verify(shown.visible);
+            sheet.squelchSaveError = "";
+            sheet.savesToSystem = false;
+        }
+
+        // Issue #899: a saved squelch that could not be cleared or saved still applies at the next start, so that is
+        // shown whatever the setting, apart from the level-only warning, and a failed clear reads it out.
+        function test_store_error_under_any_setting() {
+            sheet.savesToSystem = true;
+            sheet.savedSquelch = "noise+12";
+            var failure = "Could not clear the saved squelch. Check available storage and try again.";
+            function failed() { sheet.squelchStoreError = failure; }
+            sheet.clearSavedSquelchRequested.connect(failed);
+            setNoise(true, true, 12, "quieting 23 dB");
+            findChild(sheet, "radioSquelchClearSaved").clicked();
+            sheet.clearSavedSquelchRequested.disconnect(failed);
+            var shown = findChild(sheet, "radioSquelchStoreError");
+            verify(shown.visible, "under Noise");
+            compare(shown.text, failure);
+            compare(shown.color, Ui.Theme.alert);
+            compare(sheet.announced, failure, "the failure is read out");
+            verify(!findChild(sheet, "radioSquelchClearedNote").visible);
+            verify(!findChild(sheet, "radioSquelchSaveError").visible, "the level-only warning stays apart");
+            setNoise(false, false, 12, "");
+            setAuto(true, true, 12, "learning");
+            verify(shown.visible, "under Auto");
+            setAuto(false, false, 12, "");
+            verify(shown.visible, "under dB");
+            sheet.squelchStoreError = "";
+            verify(!shown.visible);
+        }
+
+        // Issue #899: the app's default from Settings in force is marked "default" on the reading's status line, as
+        // the terminal's readout marks it, and the reading's speech says the same; an edit, or a session's own squelch,
+        // shows no marker.
+        function test_default_marker() {
+            testContext.setMetric("squelchAnalogDefault", true);
+            setNoise(true, true, 10, "quieting 23 dB");
+            var value = findChild(sheet, "radioSquelchValue");
+            var status = findChild(sheet, "radioSquelchAutoStatus");
+            compare(value.text, "noise +10 dB");
+            verify(status.visible);
+            compare(status.text, "default; quieting 23 dB");
+            compare(status.color, Ui.Theme.textSecondary);
+            tryCompare(value.Accessible, "name", "noise +10 dB (default; quieting 23 dB)");
+            // A status the noise squelch has none of yet still shows the marker.
+            setNoise(true, true, 10, "");
+            verify(status.visible);
+            compare(status.text, "default");
+            tryCompare(value.Accessible, "name", "noise +10 dB (default)");
+            setNoise(true, true, 10, "quieting 23 dB");
+            // A step is the user's own setting: no marker while it is outstanding.
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastSquelchMarginDb(), 11);
+            verify(!status.visible);
+            sheet.forgetRequests();
+            testContext.setMetric("squelchAnalogDefault", false);
+            tryCompare(status, "text", "quieting 23 dB");
+            tryCompare(value.Accessible, "name", "noise +10 dB (quieting 23 dB)");
+        }
+
+        // Issue #899 (final-diff review r2): "This channel" on an analog scan row that inherits the default shows the
+        // same marker, the shared decision (metrics.squelchAnalogDefault): the reading there is still the default's.
+        // A row edit outstanding hides it, as an edit of the default does.
+        function test_default_marker_on_an_inheriting_row() {
+            testContext.setMetric("squelchAnalogDefault", true);
+            setNoise(true, true, 10, "quieting 23 dB");
+            onAir(true, squelchField | widthField | commands.scanRowFieldTone);
+            testContext.setMetric("scanRowSynced", true);
+            findChild(sheet, "radioScope").selected(1);
+            verify(sheet.rowSquelch);
+            var value = findChild(sheet, "radioSquelchValue");
+            var status = findChild(sheet, "radioSquelchAutoStatus");
+            compare(value.text, "noise +10 dB");
+            verify(status.visible);
+            compare(status.text, "default; quieting 23 dB");
+            tryCompare(value.Accessible, "name", "noise +10 dB (default; quieting 23 dB)");
+            findChild(sheet, "radioSquelchUp").clicked();
+            compare(testContext.lastScanRowEdit().value.squelchMarginDb, 11, "the row's own edit");
+            verify(status.text.indexOf("default") < 0, "no marker while the row's edit is outstanding");
+            findChild(sheet, "radioScope").selected(0);
+            sheet.forgetRequests();
+            onAir(false, 0);
         }
     }
 }

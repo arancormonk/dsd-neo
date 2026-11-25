@@ -1149,6 +1149,10 @@ Window {
     // write back to (radio controls, the decryption profile for future starts).
     readonly property string sessionSavedSystemUid: !mainRoot.exploring && !mainRoot.sessionScanList && mainRoot.sessionSystem
         && !mainRoot.sessionSystem.signalSearch ? (mainRoot.sessionSystem.uid || "") : ""
+    // Issue #899 (B11): the squelch that saved system keeps ("" for none), which the Radio and Squelch sheets clear.
+    readonly property string sessionSavedSquelch: mainRoot.sessionSavedSystemUid.length > 0
+        && mainRoot.sessionSystem.radioSettings && mainRoot.sessionSystem.radioSettings.squelch !== undefined
+        ? String(mainRoot.sessionSystem.radioSettings.squelch) : ""
     property bool awaitingSessionInitialized: false
     // What the session was started as ("scan", "explore" or "saved") and the UID
     // that names it, decided when the host accepts the start. The
@@ -1933,7 +1937,7 @@ Window {
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "call-recording-option" || built.error === "call-recording-static-wav"
-                       || built.error === "iq-stream-extra") {
+                       || built.error === "iq-stream-extra" || built.error === "extra-incomplete") {
                 mainRoot.startError = built.errorText;
             } else if (built.error === "recording-missing") {
                 mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);
@@ -2369,6 +2373,15 @@ Window {
         anchors.fill: safeArea
         system: mainRoot.sessionSystem
         sessionSystemUid: mainRoot.sessionSavedSystemUid
+        // Issue #899 (B7, B11): the audio-input Squelch sheet saves to the session's saved system, as Radio does.
+        squelchSaveError: radioPersistence.error
+        squelchLevelSaveError: radioPersistence.squelchLevelError
+        squelchStoreError: radioPersistence.squelchStoreError
+        squelchSavesToSystem: radioPersistence.systemUid.length > 0
+        savedSquelch: mainRoot.sessionSavedSquelch
+        savedSquelchCleared: radioPersistence.squelchCleared
+        onSquelchSettingRequested: function (key, value) { radioPersistence.request(key, value); }
+        onClearSavedSquelchRequested: radioPersistence.clearSquelch()
         callsPending: mainRoot.sessionStarting
         onSystemProfileSaved: function (uid) {
             if (mainRoot.sessionSavedSystemUid === uid)
@@ -2895,7 +2908,12 @@ Window {
         anchors.fill: safeArea
         saveError: radioPersistence.error
         savesToSystem: radioPersistence.systemUid.length > 0
+        savedSquelch: mainRoot.sessionSavedSquelch
+        savedSquelchCleared: radioPersistence.squelchCleared
+        squelchSaveError: radioPersistence.squelchLevelError
+        squelchStoreError: radioPersistence.squelchStoreError
         onSettingRequested: function (key, value) { radioPersistence.request(key, value); }
+        onClearSavedSquelchRequested: radioPersistence.clearSquelch()
     }
 
     // WP-F5 diagnostics overlay.

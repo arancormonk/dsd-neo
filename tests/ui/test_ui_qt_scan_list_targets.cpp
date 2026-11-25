@@ -1,9 +1,11 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
+#include <QLatin1String>
 #include <QList>
 #include <QMap>
 #include <QPair>
@@ -13,6 +15,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <cstdio>
 #include <dsd-neo/core/safe_api.h>
@@ -234,8 +237,9 @@ test_simplex_digital_targets() {
                      == QStringLiteral("Simplex: %1 entries take no modulation: clear the modulation saved in this "
                                        "system's Radio settings.")
                             .arg(label));
+        // A digital row runs no dynamic squelch: a saved auto squelch goes to it as off (issue #899 B13, rowSquelch()).
         sys["radioSettings"] = QVariantMap{{"squelch", "auto+12"}};
-        check(build().ok && build().csv.endsWith(",\"Simplex\",--squelch auto+12\n"));
+        check(build().ok && build().csv.endsWith(",\"Simplex\",--squelch off\n"));
         sys.remove("radioSettings");
         // An unnamed system is named for its protocol.
         sys["name"] = "";
@@ -611,6 +615,74 @@ test_profile_mismatch_named_first() {
     check(build().ok && build().csv.contains("-1 0123456789"));
 }
 
+/* The options cell of the single row @p targets holds (its last CSV cell). */
+static QString
+optionsCell(const ScanListTargets& targets) {
+    const QStringList lines = QString::fromUtf8(targets.csv).split(QLatin1Char('\n'), Qt::SkipEmptyParts);
+    return lines.size() == 2 ? lines.at(1).section(QLatin1Char(','), 13)
+                             : QStringLiteral("<rows: %1>").arg(lines.size());
+}
+
+/* Issue #899 (B13): every row's squelch is one its row type takes. A saved system's own setting goes to its row as
+   the row runs it; a row with none carries none (it inherits; the decoder runs the app's default on an analog row,
+   --squelch-analog-default), an analog row as much as a digital one. */
+static void
+rowSquelch() {
+    QVariantMap entry{{"uid", "entry"}, {"kind", "system"}, {"systemUid", "sys"}, {"enabled", true}};
+    QVariantMap list{{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{entry}}};
+    QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"freqMhz", "851.5"}};
+    const auto saved = [&](const QString& flag, const QString& squelch) {
+        sys["decodeFlag"] = flag;
+        sys["radioSettings"] = QVariantMap{{"squelch", squelch}};
+        return scan_list_targets(list, QVariantList{sys});
+    };
+
+    const struct {
+        const char* flag;
+        const char* saved;
+        const char* row;
+        bool warns;
+    } cases[] = {
+        {"-fM", "noise+17", "--squelch auto+17", false},
+        {"-fM", "noise", "--squelch auto+10", false},
+        {"-fM", "auto+12", "--squelch auto+12", false},
+        {"-fA", "noise+17", "--squelch noise+17", false},
+        {"-fA", "AUTO+9", "--squelch auto+9", false},
+        {"-ft", "auto+12", "--squelch off", false},
+        {"-ft", "noise+8", "--squelch off", false},
+        {"-fs", "noise+8", "--squelch off", false},
+        {"-ft", "-60", "--squelch -60", false},
+        {"-fA", "-110", "--squelch -110", false},
+        {"-fA", "-65.5", "--squelch -66", true},
+        {"-fA", "-0.25", "--squelch -1", true},
+        {"-fA", "1", "--squelch -1", true},
+        {"-fA", "-130", "--squelch -120", true},
+        {"-fA", "off", "--squelch off", false},
+        {"-fA", "0", "--squelch off", false},
+    };
+
+    for (const auto& c : cases) {
+        const auto targets = saved(c.flag, c.saved);
+        check(targets.ok && optionsCell(targets) == QLatin1String(c.row));
+        check(targets.warnings.isEmpty() != c.warns);
+    }
+    sys.remove("radioSettings");
+
+    for (const char* flag : {"-fA", "-fM", "-ft", "-fs"}) {
+        sys["decodeFlag"] = QLatin1String(flag);
+        const auto targets = scan_list_targets(list, QVariantList{sys});
+        check(targets.ok && optionsCell(targets).isEmpty() && targets.warnings.isEmpty());
+    }
+    // A frequency entry carries none either, nfm, am or digital.
+    for (const QString& protocol : {QStringLiteral("nfm"), QStringLiteral("am"), QStringLiteral("p25")}) {
+        const QVariantMap freqEntry{
+            {"uid", "f"}, {"kind", "freq"}, {"protocol", protocol}, {"freqMhz", "462.5625"}, {"enabled", true}};
+        const auto targets = scan_list_targets(
+            {{"uid", "list"}, {"sourceType", "usb"}, {"entries", QVariantList{freqEntry}}}, QVariantList{});
+        check(targets.ok && optionsCell(targets).isEmpty());
+    }
+}
+
 static void
 expect(const char* what, bool ok) {
     if (!ok) {
@@ -656,10 +728,12 @@ main(int argc, char** argv) {
     QVariantMap sys{{"uid", "sys"}, {"name", "Example"}, {"decodeFlag", "-ft"}, {"freqMhz", "851.5"}};
     auto build = [&]() { return scan_list_targets(list, QVariantList{sys}); };
     sys["radioSettings"] = QVariantMap{{"modulation", 1}, {"squelch", "auto+12"}};
-    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch auto+12"));
+    // Issue #899 (B13): a P25 row takes no auto squelch (the row parser refuses one), and the system ran it as off on
+    // its own: the row says off, so a session level from the extra options cannot gate it either.
+    check(build().ok && build().csv.contains(",cqpsk,,\"Example\",--squelch off"));
     entry["modulation"] = "c4fm";
     list["entries"] = QVariantList{entry};
-    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch auto+12"));
+    check(build().ok && build().csv.contains(",c4fm,,\"Example\",--squelch off"));
     entry.remove("modulation");
     list["entries"] = QVariantList{entry};
     sys["decodeFlag"] = "-fA";
@@ -1044,6 +1118,7 @@ main(int argc, char** argv) {
     raw["gainDb"] = 60;
     const auto rawTargets = scan_list_targets(savedList, QVariantList{raw});
     check(!rawTargets.ok && rawTargets.error.contains("Gain must be 0..49 dB"));
+    rowSquelch();
     test_protocol_catalog();
     test_simplex_digital_targets();
     test_nxdn_row_keys();

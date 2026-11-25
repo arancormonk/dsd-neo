@@ -170,21 +170,22 @@ Item {
             tryVerify(function () { return !sheet.rowScope });
         }
 
-        // A row that follows a default under the row range's -100 dB floor: a step up lands on the floor, never
-        // on off, which only a step down reaches.
-        function test_a_step_up_from_below_the_row_floor_lands_on_it() {
-            var defaults = [-110, -120];
-            for (var i = 0; i < defaults.length; i++) {
+        // Issue #899 (B13): a row's own level goes down to -120 dB, as the row grammar takes it. A step from a row
+        // at -110 dB moves 5 dB from it (it used to jump to the old -100 dB floor), and a step down stops on the
+        // -120 dB floor before off, which only a step down from the floor reaches.
+        function test_a_row_level_steps_within_minus_120() {
+            var cases = [{from: -110, up: -105, down: -115}, {from: -120, up: -115, down: 0}];
+            for (var i = 0; i < cases.length; i++) {
                 onAir(true, squelchField, squelchField, 0);
-                testContext.setMetric("effectiveSquelchDb", defaults[i]);
-                tryVerify(function () { return metrics.effectiveSquelchDb === defaults[i] });
+                testContext.setMetric("effectiveSquelchDb", cases[i].from);
+                tryVerify(function () { return metrics.effectiveSquelchDb === cases[i].from });
                 findChild(sheet, "radioScope").selected(1);
                 verify(sheet.rowScope);
                 findChild(sheet, "radioSquelchUp").clicked();
-                compare(testContext.lastScanRowEdit().value.squelchDb, -100, "up from " + defaults[i]);
+                compare(testContext.lastScanRowEdit().value.squelchDb, cases[i].up, "up from " + cases[i].from);
                 sheet.forgetRequests();
                 findChild(sheet, "radioSquelchDown").clicked();
-                compare(testContext.lastScanRowEdit().value.squelchDb, 0, "down from " + defaults[i] + " is off");
+                compare(testContext.lastScanRowEdit().value.squelchDb, cases[i].down, "down from " + cases[i].from);
                 sheet.forgetRequests();
                 findChild(sheet, "radioScope").selected(0);
             }

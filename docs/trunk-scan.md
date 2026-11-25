@@ -1541,7 +1541,7 @@ without it inherits the global. Accepted values are `0` or `1000..3600000`, the 
 configuration while a target is parked records the configured global, not the parked target's override.
 
 `--squelch-db <dB>` is accepted on every target type as well. It sets the squelch while the target is
-parked: whole dB from `-100` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
+parked: whole dB from `-120` to `0`, the units of `[input] rtl_sql`, where `0` switches the squelch off for that
 target and omitting the switch inherits the configured default. `--squelch <setting>` is the same option in the
 squelch grammar: `off`, a level, on `nfm-conventional` and `am-conventional` targets `auto[+N]`, and on
 `nfm-conventional` targets `noise[+N]`; an auto or noise squelch inherited by a digital target is off there, and a

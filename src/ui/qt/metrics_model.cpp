@@ -1062,6 +1062,13 @@ MetricsModel::fillTunerGain(View& next, const dsd_opts* opts_snapshot, const dsd
  * frontends cannot disagree about a row. On radio and audio input alike (issue #628). */
 void
 MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, const dsd_state* snapshot) {
+    /* Issue #899: the decoder's answer to the last tagged squelch request, from the state snapshot it publishes with
+     * the scan scope's configured squelch, read whatever the input so an answer is never lost to an input that shows no
+     * squelch. Whether it was applied comes with the tag, so a frontend confirms or drops the request from one
+     * publication, whichever scope the request edited. */
+    next.configured_squelch_request_answered =
+        snapshot != nullptr ? static_cast<int>(snapshot->squelch_request_answered & 0x7fffffffU) : 0;
+    next.configured_squelch_request_applied = snapshot != nullptr && snapshot->squelch_request_applied != 0U;
     dsd_app_squelch_view squelch{};
     if ((!next.radio_input && !next.squelch_audio_input)
         || dsd_app_squelch_view_get(opts_snapshot, snapshot, &squelch) != 0) {
@@ -1070,6 +1077,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.configured_squelch_off = false;
         next.effective_squelch_off = false;
         next.squelch_row_override = false;
+        next.squelch_analog_default = false;
         next.squelch_readout.clear();
         next.configured_squelch_auto = false;
         next.effective_squelch_auto = false;
@@ -1079,6 +1087,8 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
         next.configured_squelch_margin_db = 0;
         next.effective_squelch_margin_db = 0;
         next.configured_squelch_level_off = false;
+        next.configured_squelch_level_whole = false;
+        next.configured_squelch_level_whole_db = 0;
         next.squelch_auto_status.clear();
         next.squelch_gate_open = false;
         return;
@@ -1088,6 +1098,7 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.configured_squelch_off = squelch.configured_off != 0U;
     next.effective_squelch_off = squelch.effective_off != 0U;
     next.squelch_row_override = squelch.row_override != 0U;
+    next.squelch_analog_default = squelch.analog_default != 0U;
     char readout[96];
     (void)dsd_app_squelch_view_format(&squelch, readout, sizeof readout);
     next.squelch_readout = QString::fromUtf8(readout);
@@ -1095,11 +1106,16 @@ MetricsModel::fillSquelchOverride(View& next, const dsd_opts* opts_snapshot, con
     next.effective_squelch_auto = squelch.effective_auto != 0U;
     next.configured_squelch_noise = squelch.configured_noise != 0U;
     next.effective_squelch_noise = squelch.effective_noise != 0U;
-    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot, snapshot) == 0;
+    /* Issue #899 D4: a radio input's AM monitor runs a noise setting as auto, so only audio input refuses it there. */
+    next.squelch_noise_offered = dsd_squelch_noise_has_no_fm(opts_snapshot, snapshot) == 0
+                                 || dsd_squelch_input_kind(opts_snapshot) == DSD_SQUELCH_INPUT_RADIO;
     /* A level setting keeps the margin it had, which Auto or Noise starts from again. */
     next.configured_squelch_margin_db = squelch.configured_margin_db;
     next.effective_squelch_margin_db = squelch.effective_margin_db;
     next.configured_squelch_level_off = dsd_squelch_is_off(squelch.configured_level);
+    int whole_db = 0;
+    next.configured_squelch_level_whole = dsd_squelch_level_is_whole_db(squelch.configured_level, &whole_db) == 1;
+    next.configured_squelch_level_whole_db = next.configured_squelch_level_whole ? whole_db : 0;
     char status[40];
     (void)dsd_app_squelch_view_dynamic_status(&squelch, status, sizeof status);
     next.squelch_auto_status = QString::fromUtf8(status);

@@ -2843,7 +2843,7 @@ test_stream_retune_keeps_pair_alignment(void) {
     stream_open(r, 1, 1);
     assert(wait_until([&] { return r.reader.samples.load() > 4096U; }, kWaitMs));
     for (int i = 0; i < 8; ++i) {
-        assert(dsd_rtl_stream_test_request_retune(851000000L + (long)i * 25000L, 2000) == 0);
+        assert(dsd_rtl_stream_test_request_retune(851000000L + (long)i * 25000L, static_cast<int>(kWaitMs)) == 0);
         const uint64_t before = r.reader.samples.load();
         assert(wait_until([&] { return r.reader.samples.load() > before + 2048U; }, kWaitMs));
     }

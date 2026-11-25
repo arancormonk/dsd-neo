@@ -89,7 +89,7 @@ class CommandBridge : public QObject {
     Q_INVOKABLE int receiveField(int kind) const;
     /**
      * @brief Submit a session edit of one @p field (a scanRowField*) of the row @p context names, with @p action (a
-     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -100..0; 0 = off) or
+     * scanRowEdit*). For SET, @p value carries the field's value: squelchDb (whole dB, -120..0; 0 = off) or
      * squelchMode squelchModeAuto with squelchMarginDb (an nfm or am row's auto squelch), squelchMode
      * squelchModeNoise with squelchMarginDb (an nfm row's noise squelch), widthHz, toneMode with
      * toneList, or gainDb (0 = AGC). Returns whether it was queued; the decoder refuses what the row
@@ -343,27 +343,40 @@ class CommandBridge : public QObject {
     /** @brief Set tuner gain in dB (0 selects automatic gain). */
     Q_INVOKABLE bool setTunerGain(int gain_db) const;
 
-    /** @brief Set the RTL power squelch threshold, in dB. */
-    Q_INVOKABLE bool setSquelchDb(double db) const;
+    /**
+     * @brief Set the configured default's power squelch threshold, in dB (0 or more is off).
+     *
+     * Issue #899: each squelch setter returns the request's tag, a positive int, once it is queued (0 when it is not),
+     * which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has handled that request, with
+     * configuredSquelchRequestApplied saying whether it applied it: what lets a caller save the setting only on the
+     * decoder's answer to it.
+     */
+    Q_INVOKABLE int setSquelchDb(double db) const;
 
     /**
      * @brief Set the auto squelch: open @p marginDb (squelchMarginMinDb..squelchMarginMaxDb) over the noise floor
-     * the demodulator learns on each channel. Like setSquelchDb() it edits the configured default.
+     * the demodulator learns on each channel. Like setSquelchDb() it edits the configured default and returns the
+     * request's tag (0 when not queued).
      */
-    Q_INVOKABLE bool setSquelchAuto(int marginDb) const;
+    Q_INVOKABLE int setSquelchAuto(int marginDb) const;
 
     /**
      * @brief Set the noise squelch: open an FM channel when its discriminator noise above voice quiets by @p marginDb
-     * (squelchMarginMinDb..squelchMarginMaxDb). Like setSquelchDb() it edits the configured default; the AM monitor
-     * refuses it.
+     * (squelchMarginMinDb..squelchMarginMaxDb). Like setSquelchDb() it edits the configured default and returns the
+     * request's tag (0 when not queued); the AM monitor of audio input refuses it.
      */
-    Q_INVOKABLE bool setSquelchNoise(int marginDb) const;
+    Q_INVOKABLE int setSquelchNoise(int marginDb) const;
 
     /**
      * @brief Put the configured default back on the level it kept beneath a dynamic squelch, exactly as stored (a
      * legacy linear threshold included, which a whole-dB reading cannot carry).
+     *
+     * Issue #899: returns what was asked for, so a caller can save that level and no other -- {request, off,
+     * whole, db}: the request's tag, which MetricsModel::configuredSquelchRequestAnswered shows once the decoder has
+     * handled it (configuredSquelchRequestApplied: whether it applied it); whether the level is Off; whether it is a whole dB the app's controls make, and that dB (0 when it
+     * is not). Null when nothing was submitted.
      */
-    Q_INVOKABLE bool restoreSquelchLevel() const;
+    Q_INVOKABLE QVariant restoreSquelchLevel() const;
 
     /** @brief Set the dongle's crystal correction, in parts per million. */
     Q_INVOKABLE bool setPpm(int ppm) const;

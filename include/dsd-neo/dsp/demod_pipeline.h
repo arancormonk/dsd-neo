@@ -330,6 +330,16 @@ float dsd_cqpsk_agc_alpha(int tetra_chain);
 void dsd_demod_reset_filter_state(struct demod_state* d);
 
 /**
+ * The stream moved to another channel (a reset on another centre, whatever names it, not a gap or a reacquire on the
+ * same one): a stream open's mark for the auto squelch (demod_state::squelch_new_stream) no longer names the channel
+ * the next tracker context is on, so it goes (issue #899). The IO layer calls it where it resets the demod for such a
+ * move.
+ *
+ * @param d Demodulator state; NULL is ignored.
+ */
+void dsd_demod_squelch_note_retune(struct demod_state* d);
+
+/**
  * Prepare @p plan as the live I/Q rate step's candidate (issue #806; dsd_live_iq_step_prepare() on
  * demod_state::live_iq_step) with this pipeline's capacities: a block brings the step at most MAXIMUM_BUF_LENGTH / 2
  * complex samples halved by each of the plan's passes, and the step writes it to a DSD_DEMOD_WORKBUF_LENGTH work

@@ -65,8 +65,15 @@ test_value_checks(void) {
     assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 1);
     v.squelch_db = 3;
     assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 0);
-    assert(strstr(err, "-100 to 0") != NULL);
-    v.squelch_db = -101;
+    assert(strcmp(err, "squelch takes whole dB from -120 to 0 (0 = off)") == 0);
+    /* Issue #899: the same -120..0 range the row grammar loads. */
+    v.squelch_db = -110;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_NFM, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 1);
+    v.squelch_db = -120;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 1);
+    v.squelch_db = -121;
+    assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, err, sizeof err) == 0);
+    assert(strcmp(err, "squelch takes whole dB from -120 to 0 (0 = off)") == 0);
     assert(dsd_scan_row_edit_value_valid(DSD_SCAN_MODE_P25, DSD_SCAN_ROW_FIELD_SQUELCH, &v, NULL, 0) == 0);
     /* The noise squelch: nfm rows only, 3 to 30 dB of quieting. */
     v.squelch_mode = DSD_SQUELCH_MODE_NOISE;

@@ -27,6 +27,8 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
+#include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -146,6 +148,13 @@ typedef struct {
        restaged there (dsd_engine_channel_scan_stream_reopened()). */
     uint64_t stop_request;
     uint64_t stop_source_key;
+    /* The timed step's recovery of a commit owed with nothing in flight (issue #899): when it is due, on the decode
+       monotonic clock (0 for none), and the -t (at least 1 s) it was armed with, which the timing publication counts
+       down. Armed by the scan's service at the first pass that finds the commit owed, and again by a timed step that
+       stages no tune; cleared with the commit owed (a commit, a dropped row) and by every tune staged. Received sync
+       never moves it. dsd_state::lcn_owed_recovery_armed follows it. */
+    double owed_recovery_m;
+    double owed_recovery_span_s;
     /* Whether the list (lcn_list_rev tetra_rows_list) has a typed tetra-dmo row (issue #890 D5), counted once per list:
        a scan of such a list holds the TETRA state across its rows (dsd_engine_scan_tetra_landing()). */
     uint64_t tetra_rows_list;
@@ -206,6 +215,14 @@ channel_scan_obtain(dsd_state* state) {
     scan->session = dsd_scan_row_edit_new_session();
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, scan, channel_scan_free);
     return scan;
+}
+
+/* No recovery of an owed commit is armed any more (issue #899). */
+static void
+channel_scan_owed_recovery_clear(dsd_state* state, channel_scan* scan) {
+    scan->owed_recovery_m = 0.0;
+    scan->owed_recovery_span_s = 0.0;
+    state->lcn_owed_recovery_armed = 0U;
 }
 
 static channel_scan_row_edit*
@@ -467,6 +484,10 @@ channel_scan_commit(dsd_opts* opts, dsd_state* state, channel_scan* scan) {
     const uint64_t landed_request = scan->request;
     scan->request = 0;
     scan->needs_commit = 0;
+    channel_scan_owed_recovery_clear(state, scan);
+    /* The row is committed: the receiver, closed on an analog row since its landing, runs the row's gate (issue
+       #899). */
+    dsd_engine_receiver_gate_settle(opts, state, 1);
     dsd_engine_channel_scan_resume_landed(opts, state);
     /* The row landed and committed: an analog call on audio input is heard on its frequency (issue #667 D9), and an
        entry waiting on it holds it (issue #644). */
@@ -549,6 +570,131 @@ channel_scan_request_result(const channel_scan* scan) {
     return scan->request ? dsd_trunk_tuning_request_status(scan->request, NULL) : DSD_TRUNK_TUNE_RESULT_FAILED;
 }
 
+/* The decoder's side of the receiver's squelch gate (issue #899). The receiver starts a new analog channel closed and
+   reports it (rtl_stream_gate_closed_start()); a gate write applies to whatever channel it is on. So the decoder writes
+   the gate, resolved at write time (dsd_scan_mode_channel_squelch()), only when none of its own tune or family requests
+   is outstanding (receiver_gate_outstanding()): the receiver is then on the channel the options describe. It writes
+   after every commit or landing it observes and every change it is told of (s_rx_write_due), and whenever the receiver
+   reports a closed start on an analog session with nothing outstanding, so no channel stays muted for good. While a
+   command is applied or a coordinator switches (dsd_engine_receiver_gate_hold()) it writes nothing. With nothing due on
+   a digital session it reads, resolves and writes nothing. Decoder thread only. */
+static int s_rx_write_due;
+static int s_rx_hold;
+
+/* Whether a -Y row's tune is outstanding for the gate: requested, retrying, or landed and owed its commit. The commit
+   stays owed when the row it landed for goes before its retry (the list replaced, the row rewritten): the receiver has
+   moved and no row owns it until the next row commits, as dsd_engine_channel_scan_service_sync() holds frames. */
+static int
+channel_scan_gate_waiting(const dsd_state* state) {
+    const channel_scan* scan = channel_scan_get(state);
+    return scan && (scan->request != 0 || scan->retry || scan->needs_commit);
+}
+
+/* Whether a tune or family request of the decoder's own is outstanding: a -Y row's (channel_scan_gate_waiting()), a
+   trunk-scan target's retune, a timed-out manual tune still followed to its completion, a signal-search visit's or
+   restore's tune, or a receive request the demod thread has not applied. */
+static int
+receiver_gate_outstanding(const dsd_state* state) {
+    return channel_scan_gate_waiting(state) || dsd_engine_trunk_scan_retune_pending(state)
+           || dsd_engine_manual_tune_awaited() || dsd_engine_signal_search_tune_pending(state)
+           || dsd_rtl_stream_metrics_hook_receive_requests_pending();
+}
+
+void
+dsd_engine_receiver_gate_due(void) {
+    s_rx_write_due = 1;
+}
+
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    if (hold) {
+        s_rx_hold++;
+        return;
+    }
+    if (s_rx_hold > 0) {
+        s_rx_hold--;
+        s_rx_write_due |= s_rx_hold == 0;
+    }
+}
+
+void
+dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    s_rx_write_due |= changed;
+    if (s_rx_hold) {
+        return;
+    }
+    if (!s_rx_write_due) {
+        /* A closed start the decoder has not seen (a tune that landed after the decoder took it as done): looked for
+           only on an analog session, with one lock-free load. */
+        if (!dsd_opts_is_analog_family(opts) || !dsd_rtl_stream_metrics_hook_gate_closed_start()) {
+            return;
+        }
+        s_rx_write_due = 1;
+    }
+    dsd_squelch_setting gate;
+    dsd_squelch_setting digital;
+    dsd_squelch_setting session;
+    if (!dsd_engine_receiver_gate_resolve(opts, state, &gate, &digital, &session)) {
+        return;
+    }
+    s_rx_write_due = 0;
+    (void)dsd_rtl_stream_metrics_hook_write_squelch_gate(&gate, &digital, &session);
+}
+
+int
+dsd_engine_receiver_gate_resolve(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                 dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    if (!opts || !gate || !digital || !session || s_rx_hold || receiver_gate_outstanding(state)) {
+        return 0;
+    }
+    *gate = dsd_scan_mode_channel_squelch(opts, state);
+    *digital = dsd_scan_mode_digital_squelch(opts, state);
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 1;
+}
+
+int
+dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                       dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    if (!opts || !gate || !digital || !session) {
+        return 0;
+    }
+    if (dsd_engine_receiver_gate_resolve(opts, state, gate, digital, session)) {
+        return 1;
+    }
+    /* A start whose gate cannot be resolved still runs the session's own squelch off the monitor. */
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 0;
+}
+
+void
+dsd_engine_receiver_gate_settle_now(const dsd_opts* opts, const dsd_state* state) {
+    dsd_engine_receiver_gate_settle(opts, state, 1);
+}
+
+/* Pace the timed step's recovery of a commit owed with nothing in flight -t (at least 1 s) from @p now_m (issue #899),
+   keeping the span it was armed with. */
+static void
+channel_scan_owed_recovery_arm(const dsd_opts* opts, dsd_state* state, channel_scan* scan, double now_m) {
+    const double span_s = opts->trunk_hangtime >= 1.0f ? (double)opts->trunk_hangtime : 1.0;
+    scan->owed_recovery_m = now_m + span_s;
+    scan->owed_recovery_span_s = span_s;
+    state->lcn_owed_recovery_armed = 1U;
+}
+
+/* The scan's service found nothing in flight (no request, no retry): a commit still owed has its recovery paced from
+   the first service that finds it so, on a -Y scan. One read when none is owed. */
+static void
+channel_scan_owed_recovery_note(const dsd_opts* opts, dsd_state* state, channel_scan* scan) {
+    if (scan->needs_commit && !(scan->owed_recovery_m > 0.0) && opts->scanner_mode == 1
+        && opts->trunk_scan_enabled != 1) {
+        channel_scan_owed_recovery_arm(opts, state, scan, dsd_decode_now_mono_s());
+    }
+}
+
 /* An entry on a typed list's row waits on the attempt staged for it (issue #644). One naming no attempt, or one no
    longer outstanding (no request, retry or commit of it left), would wait for good: it fails here, kept for its toast,
    as its attempt's failure would have failed it. */
@@ -584,6 +730,7 @@ dsd_engine_channel_scan_pending(dsd_opts* opts, dsd_state* state) {
         return dsd_engine_channel_scan_waiting(state);
     }
     if (!scan->request) {
+        channel_scan_owed_recovery_note(opts, state, scan);
         return 0;
     }
     const dsd_trunk_tune_result result = channel_scan_request_result(scan);
@@ -847,21 +994,11 @@ channel_scan_check_rows(const dsd_opts* opts, dsd_state* state, channel_scan* sc
     channel_scan_warn_rows_width(opts, state, scan, dsp_rate_hz, same_rate ? configured_changed : 0U);
 }
 
-/* The squelch an analog row runs with: its own, else the configured one. */
+/* The squelch an analog row runs with (dsd_squelch_channel_gate()): its own, else the analog default on a radio input
+   while no squelch was set (issue #899), else the configured one. */
 static dsd_squelch_setting
 channel_scan_analog_squelch(const dsd_opts* opts, const dsd_state* state, const dsd_scan_option_values* row) {
-    if (row && (row->present & DSD_SCAN_OPT_SQUELCH)) {
-        return dsd_squelch_mode_is_dynamic(row->squelch_mode)
-                   ? dsd_squelch_setting_dynamic(row->squelch_mode, row->squelch_margin_db)
-                   : dsd_squelch_setting_of_level(dsd_squelch_level_from_sql((double)row->squelch_db));
-    }
-    const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    if (configured) {
-        return dsd_squelch_mode_is_dynamic(configured->rtl_squelch_mode)
-                   ? dsd_squelch_setting_dynamic(configured->rtl_squelch_mode, configured->rtl_squelch_margin_db)
-                   : dsd_squelch_setting_of_level(configured->rtl_squelch_level);
-    }
-    return dsd_squelch_setting_of_opts(opts);
+    return dsd_squelch_channel_gate(opts, state, row, 1);
 }
 
 /* Whether that squelch holds the row on noise: off, or at -100 dB and below, every block re-arms its carrier hold, so
@@ -1129,10 +1266,59 @@ dsd_engine_channel_scan_on_avoided_row(const dsd_state* state) {
     return row >= 0 && row < state->lcn_freq_count && dsd_state_trunk_lcn_avoid_get(state, (size_t)row);
 }
 
+/* Whether the receiver moved for a row that never committed and nothing of the scan's is in flight to commit one: a
+   restaged tune that failed after a landing, or its row gone before its retry (issue #899). */
+static int
+channel_scan_owes_idle(const channel_scan* scan) {
+    return scan && scan->needs_commit && scan->request == 0 && !scan->retry;
+}
+
+static int
+channel_scan_commit_owed_idle(const dsd_state* state) {
+    return channel_scan_owes_idle(channel_scan_get(state));
+}
+
+int
+dsd_engine_channel_scan_owed_recovery_due(dsd_state* state, double now_m) {
+    /* The flag first: with none armed, the step decision's question costs one read and no lookup. */
+    if (!state || !state->lcn_owed_recovery_armed) {
+        return -1;
+    }
+    channel_scan* scan = channel_scan_get(state);
+    if (!channel_scan_owes_idle(scan) || !(scan->owed_recovery_m > 0.0)) {
+        if (scan) {
+            channel_scan_owed_recovery_clear(state, scan);
+        } else {
+            state->lcn_owed_recovery_armed = 0U;
+        }
+        return -1;
+    }
+    return now_m >= scan->owed_recovery_m ? 1 : 0;
+}
+
+int
+dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s) {
+    if (!state || !deadline_m || !span_s || !state->lcn_owed_recovery_armed) {
+        return 0;
+    }
+    const channel_scan* scan = channel_scan_get(state);
+    if (!scan || !(scan->owed_recovery_m > 0.0)) {
+        return 0;
+    }
+    *deadline_m = scan->owed_recovery_m;
+    *span_s = scan->owed_recovery_span_s;
+    return 1;
+}
+
 /* Whether the typed tetra-dmo row on air owes a departure for a chain the scan found cannot run on air (issue #890 D5,
-   dsd_engine_channel_scan_tetra_judge()). One read without a scan extension. */
+   dsd_engine_channel_scan_tetra_judge()). Only while the session holds the TETRA state, which a list with a tetra-dmo
+   row sets at its landing (dsd_engine_scan_tetra_landing()): without it no row was judged, and a healthy pass of any
+   other list makes no lookup for it (issue #899's pass cost). */
 static int
 channel_scan_tetra_departing(const dsd_state* state) {
+    if (!state->tetra_ext_scan_held) {
+        return 0;
+    }
     const channel_scan* scan = channel_scan_get(state);
     if (!scan || scan->tetra_skip == DSD_ENGINE_TETRA_ROW_OK
         || dsd_engine_scan_tetra_row_waits((dsd_engine_tetra_row)scan->tetra_skip)) {
@@ -1154,7 +1340,11 @@ dsd_engine_channel_scan_on_departing_row(const dsd_state* state) {
 
 int
 dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
-    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state);
+    /* A hold keeps the row on air. With a commit owed and nothing in flight no row is on air to keep (the receiver
+       stays muted and frames held until one commits): the scan recovers as an unheld one does, by its next timed step,
+       whose row the hold then keeps (issue #899). */
+    return state && state->lcn_scan_hold && !dsd_engine_channel_scan_on_departing_row(state)
+           && !channel_scan_commit_owed_idle(state);
 }
 
 /* The running -Y scan whose list has a tetra-dmo row, and with no step of its own in flight (issue #890 D5), or NULL: a
@@ -1163,7 +1353,9 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
    departure keeps its pacing). */
 static channel_scan*
 channel_scan_tetra_judging(const dsd_opts* opts, const dsd_state* state) {
-    channel_scan* scan = state ? channel_scan_get(state) : NULL;
+    /* The held TETRA state first (set at the landing of a list with a tetra-dmo row): any other list's pass makes no
+       lookup here (issue #899's pass cost). */
+    channel_scan* scan = state && state->tetra_ext_scan_held ? channel_scan_get(state) : NULL;
     if (!opts || !scan || !scan->has_tetra_rows || opts->scanner_mode != 1 || opts->trunk_scan_enabled == 1
         || dsd_engine_channel_scan_waiting(state)) {
         return NULL;
@@ -1518,15 +1710,27 @@ static dsd_trunk_tune_result
 channel_scan_tune_staged(dsd_opts* opts, dsd_state* state, channel_scan* scan, const dsd_scan_settings* next) {
     dsd_scan_settings before;
     dsd_scan_settings_capture(opts, state, &before);
+    /* The staged row's settings stand in the options only while its tune goes out: no gate is written meanwhile, and
+       the row's own once it commits (issue #899). */
+    dsd_engine_receiver_gate_hold(1);
+    /* A new attempt: an owed commit's recovery is paced afresh from the end of this one, if it ends unlanded. */
+    channel_scan_owed_recovery_clear(state, scan);
+    /* The squelch the row on air runs, the analog default included, which the capture holds only as configured. */
+    dsd_squelch_standing before_squelch;
+    dsd_squelch_standing_capture(opts, &before_squelch);
     dsd_scan_settings_restore(next, opts, state);
     scan->family_requests = dsd_engine_scan_family_requests(opts);
     scan->familyless_supersedes = dsd_engine_scan_familyless_retune_supersedes(opts);
     scan->family_attached = dsd_engine_scan_retune_attaches_family(opts, state, state->samplesPerSymbol);
     /* The output generation before the tune is issued: only a newer capture can be the row's (issue #834). */
     dsd_engine_scan_landing_note_tune(state);
+    /* The row's retune is a new channel (issue #899): an analog one starts closed where it lands, and opens on the
+       row's gate once the row commits. */
     const dsd_trunk_tune_result result =
-        dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, &scan->request);
+        dsd_engine_scan_tune_to_freq(opts, state, scan->row_freq, state->samplesPerSymbol, 1, &scan->request);
     dsd_scan_settings_restore(&before, opts, state);
+    dsd_squelch_standing_restore(opts, &before_squelch);
+    dsd_engine_receiver_gate_hold(0);
     /* A new attempt is named by its first request; a restage keeps the name. An entry waiting on the row is this
        attempt's (issue #644). */
     if (scan->attempt == 0U) {
@@ -1642,7 +1846,15 @@ dsd_engine_channel_scan_step(dsd_opts* opts, dsd_state* state) {
     /* Another row's tune begins: an entry waiting on a landing is no longer the operator's last word (issue #644). */
     dsd_engine_scan_entry_intent_cancel(state);
     (void)channel_scan_begin_step(state, 1);
-    return channel_scan_start_row(opts, state, channel_scan_next_row(state));
+    const int result = channel_scan_start_row(opts, state, channel_scan_next_row(state));
+    /* A step that staged no tune (a placeholder parked on, a row not prepared) leaves a commit owed as it found it: the
+       next recovery waits a full pace from this step, so a placeholder keeps its dwell (issue #899). A tune staged
+       cleared the pace; if it ends unlanded, the next service paces the recovery afresh. */
+    channel_scan* scan = state->lcn_owed_recovery_armed ? channel_scan_get(state) : NULL;
+    if (scan && scan->owed_recovery_m > 0.0) {
+        channel_scan_owed_recovery_arm(opts, state, scan, dsd_decode_now_mono_s());
+    }
+    return result;
 }
 
 /* Where a manual step in direction @p dir starts looking (issue #666). Forward: the cursor. Back: the row before the
@@ -1799,10 +2011,11 @@ channel_scan_restore_frontend(const dsd_opts* opts, dsd_state* state, int row_ti
    every frame of the manual session), the row on air, and the staged row's options (else
    dsd_engine_scan_tuning_row_options() would hand them to a rigctl request) and keys. */
 static void
-channel_scan_drop_row(channel_scan* scan) {
+channel_scan_drop_row(dsd_state* state, channel_scan* scan) {
     scan->request = 0;
     scan->retry = 0;
     scan->needs_commit = 0;
+    channel_scan_owed_recovery_clear(state, scan);
     scan->tuned = 0;
     scan->committed_row = -1;
     /* The pause runs its own carrier boundary (the entry's tune) or forget (in place): no move stays owed. */
@@ -1851,6 +2064,34 @@ channel_scan_release_entry(dsd_state* state) {
     }
 }
 
+/* channel_scan_release()'s leave of the scan scope, and where a scan was @p active, its return to the session's
+   front end. Returns whether that queued a monitor request. The session's squelch gate is written once a family switch
+   the leave makes has applied, never onto the row's channel before it (issue #899). */
+static int
+channel_scan_leave_scope(dsd_opts* opts, dsd_state* state, int active) {
+    /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
+    const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
+    dsd_engine_receiver_gate_hold(1);
+    dsd_scan_mode_leave(opts, state);
+    /* With the configured settings back, the TETRA state the rows held goes cold, and goes unless they run TETRA
+       (issue #890). */
+    dsd_engine_scan_tetra_release(opts, state);
+    int monitor_request = 0;
+    if (active) {
+        /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
+           leaves for the manual session, which no target names (issue #671). */
+        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
+        monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
+        /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
+         * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
+         * the analog profile request stays the leave's last. */
+        dsd_engine_scan_rigctl_restore(opts, state);
+    }
+    dsd_engine_receiver_gate_hold(0);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    return monitor_request;
+}
+
 /* The -Y scan's leave (@p keep 0) and pause (@p keep 1, issue #671). Every end of a scan moves the session, so a row
    tune still pending from it never commits its row afterwards. A pause ends the calls whatever the list (an untyped one
    has no scope); a leave ends them where a scan is active, and where an untyped list runs (issue #644 B-3), while
@@ -1868,6 +2109,9 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
     dsd_engine_scan_quiet_note_change(state);
     channel_scan_release_entry(state);
     channel_scan* scan = channel_scan_get(state);
+    /* The session takes over the channel the receiver is on, or the one a row's retune still outstanding lands
+       (issue #899). */
+    dsd_engine_receiver_gate_due();
     const int already_left = !keep && state->lcn_scan_paused && !state->lcn_scan_resume_pending;
     const int active =
         !already_left
@@ -1879,31 +2123,16 @@ channel_scan_release(dsd_opts* opts, dsd_state* state, int keep, int in_place) {
         dsd_engine_scan_forget_carrier(opts, state);
     }
     if (keep && scan) {
-        channel_scan_drop_row(scan);
+        channel_scan_drop_row(state, scan);
     } else {
         (void)dsd_state_ext_set(state, DSD_STATE_EXT_ENGINE_CHANNEL_SCAN, NULL, NULL);
+        /* The timer went with the scan. */
+        state->lcn_owed_recovery_armed = 0U;
     }
     channel_scan_clear_published_row(state);
     dsd_scan_groups_leave(state);
     dsd_scan_maps_leave(state);
-    /* The landing decision the row on air was timed with goes with its scope; the restore decides by it too. */
-    const int row_timed_digital_family = dsd_scan_mode_timed_digital_family(state);
-    dsd_scan_mode_leave(opts, state);
-    /* With the configured settings back, the TETRA state the rows held goes cold, and goes unless they run TETRA
-       (issue #890). */
-    dsd_engine_scan_tetra_release(opts, state);
-    int monitor_request = 0;
-    if (active) {
-        /* A trunk-scan target's P25 modulation stays with its scope while the coordinator owns the tuner; a pause
-           leaves for the manual session, which no target names (issue #671). */
-        dsd_frame_sync_reset_acquisition(opts, state, !dsd_trunk_scan_owns_tuner(opts, state));
-        monitor_request = channel_scan_restore_frontend(opts, state, row_timed_digital_family);
-        /* A rigctl peer that demodulated an am row, or ran a row's own passband, goes back to what the configured
-         * session asks for: no later tune outside a scan would undo it (issue #526). It queues no receive request, so
-         * the analog profile request stays the leave's last. */
-        dsd_engine_scan_rigctl_restore(opts, state);
-    }
-    return monitor_request;
+    return channel_scan_leave_scope(opts, state, active);
 }
 
 int
@@ -2014,8 +2243,11 @@ dsd_engine_channel_scan_stream_reopened(const dsd_opts* opts, const dsd_state* s
        stop published has nothing to roll back. But a restart is a retune boundary: the stream opened on the settings in
        force before the stop (the row committed last, or the configured ones), not this row's, whose receive profile
        reaches the front end only with its own tune. So the row is restaged (channel_scan_restage()), and its landing
-       is the ordinary one, the row's whole profile with it. */
+       is the ordinary one, the row's whole profile with it. The receiver has moved with no row committed on it: the
+       commit is owed as at a landing (channel_scan_commit()), so a restaged tune that fails leaves the gate closed and
+       frames held until a row commits, never the outgoing row's gate on this frequency (issue #899). */
     dsd_trunk_tuning_request_disown(request);
+    scan->needs_commit = 1;
     channel_scan_restage(scan);
 }
 

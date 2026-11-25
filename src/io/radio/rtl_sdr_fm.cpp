@@ -245,6 +245,15 @@ struct RtlRetuneProfile {
     /* g_tuner_autogain_set_seq when the gain profile was copied in: an explicit autogain setting made after it is
        newer than tuner_autogain_on. */
     uint32_t tuner_autogain_seq = 0U;
+    /* The retune puts the receiver on a new channel (issue #899, rtl_stream_prepare_retune_new_channel_for_target()):
+       its landing on the analog family starts closed. new_channel_only marks a profile queued for that alone, which
+       applies nothing else and settles no receive request. */
+    int new_channel_only = 0;
+    int new_channel = 0;
+    /* The symbol profile is a digital decode's (a typed digital row's or target's, a trunked channel's), stated by the
+       engine that queued it (rtl_stream_prepare_retune_digital_decode_for_target()): it may take an analog family's
+       front end off the monitor. One nobody marked lands no symbol profile there (issue #899). */
+    int digital_decode = 0;
     uint32_t request_id = 0U;
     uint32_t target_freq_hz = 0U;
 };
@@ -375,7 +384,31 @@ static struct controller_state controller;
  * stores this word alone and leaves the level as it was, so a block that took the old LEVEL word still gates on the old
  * level; a switch to LEVEL stores the level before this word (release; the demod thread's acquire load then sees it),
  * so a block that took the new word gates on the new level. No block runs ungated between them. */
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The same word, with every load of it counted, for the case that checks the status the telemetry polls reads none
+   (issue #899): a load anywhere, the getter's or one written inline, counts. */
+namespace {
+struct SquelchWordCounted {
+    std::atomic<uint32_t> word{0U};
+    std::atomic<int> loads{0};
+
+    uint32_t
+    load(std::memory_order order) {
+        loads.fetch_add(1, std::memory_order_relaxed);
+        return word.load(order);
+    }
+
+    void
+    store(uint32_t value, std::memory_order order) {
+        word.store(value, order);
+    }
+};
+} // namespace
+
+static SquelchWordCounted g_squelch_auto_word;
+#else
 static std::atomic<uint32_t> g_squelch_auto_word{0U};
+#endif
 /* The parts of the floor's context the demod thread does not hold itself: the tuner gain as last applied (tenths of a
  * dB, AUTO_GAIN under the tuner's AGC), the bias tee, and the device (a hash of its spec, at open). */
 static std::atomic<int> g_squelch_tuner_gain{AUTO_GAIN};
@@ -564,6 +597,43 @@ static std::atomic<int> g_fsk_phase_cfo_valid{0};
 static std::atomic<double> g_fsk_phase_cfo_hz{0.0};
 static std::mutex g_pending_retune_profile_mutex;
 static RtlRetuneProfile g_pending_retune_profile;
+
+/* The receiver's squelch gate (issue #899). A new channel on the analog monitor (dsd_demod_analog_monitor_active())
+   starts closed (kGateClosed: every block muted): a stream open, a retune the decoder marks as a new channel
+   (rtl_stream_prepare_retune_new_channel_for_target()) landing there, a family switch into the analog family or onto
+   another analog kind, and any return to the monitor from a symbol profile (a typed digital scan row's, or CQPSK, on the
+   analog family). Only the decoder's write (rtl_stream_write_squelch_gate()) opens it, and a write applies to whatever
+   channel the receiver is on: the decoder writes only when none of its own tune or family requests is outstanding.
+   Off the monitor (the digital family, or a symbol profile on the analog family) a write runs the gate the decoder
+   gives for the digital family (a digital row's own squelch, else the session's), and a new channel or a switch off
+   the monitor runs the session's own squelch the decoder last gave (g_gate_session: never the analog-only default, nor
+   any row's own, which belong to their channel) until the decoder writes for it; anything else off the monitor keeps
+   the gate it runs, and does no gate work. Which of the two the receiver is on is g_gate_monitor, taken from the
+   demodulator at each boundary by the thread that changed it, so a write never reads the demodulator. All under
+   g_pending_retune_profile_mutex; g_gate_closed is read without it (rtl_stream_gate_closed_start()). */
+static dsd_squelch_setting g_gate_running = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
+static dsd_squelch_setting g_gate_session = {DSD_SQUELCH_MODE_LEVEL, 0.0, DSD_SQUELCH_MARGIN_DEFAULT_DB};
+static int g_gate_monitor = 0;
+static std::atomic<int> g_gate_closed{0};
+/* When the closed start began, and what the last one lasted (rtl_stream_squelch_status::closed_ms): the mute a landing
+   adds, the decoder's time to write the new channel's gate. */
+static uint64_t g_gate_closed_since_ns = 0U;
+static std::atomic<int> g_gate_closed_starts{0};
+static std::atomic<double> g_gate_closed_ms{0.0};
+/* Counted where the analog monitor's output is produced (demod_count_monitor_gate()): the samples the latest closed
+   start muted (every block that took its closed gate, one finished after the opening write included; started over at
+   each closed start), and those produced open with no dynamic squelch judging them since the stream opened
+   (rtl_stream_squelch_status). */
+static std::atomic<uint64_t> g_gate_closed_samples{0U};
+static std::atomic<uint64_t> g_gate_unjudged_samples{0U};
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* The boundaries that took the gate's lock (rtl_stream_gate_boundary()), for the cases that check a digital-only
+   boundary does no gate work. */
+static std::atomic<int> g_test_gate_boundary_locks{0};
+#endif
+/* A level no channel power reaches: the level gate mutes every block. */
+static const dsd_squelch_setting kGateClosed = {DSD_SQUELCH_MODE_LEVEL, DSD_SQUELCH_LEVEL_CLOSED,
+                                                DSD_SQUELCH_MARGIN_DEFAULT_DB};
 static std::atomic<uint32_t> g_replay_event_retune_count{0};
 static std::atomic<uint32_t> g_replay_event_mute_count{0};
 static std::atomic<uint32_t> g_replay_event_reset_count{0};
@@ -587,6 +657,7 @@ static std::atomic<uint32_t> g_replay_pending_previous_center_hz{0};
 
 static void rtl_stream_consume_demod_profile_request(void);
 static void rtl_stream_clear_demod_profile_request(void);
+static void rtl_stream_retire_stopped_stream_requests(void);
 static int rtl_stream_consume_fsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_cqpsk_reacquire_pending(struct demod_state* d);
 static int rtl_stream_consume_fsk_modem_config_pending(struct demod_state* d);
@@ -601,6 +672,9 @@ static const int kRetuneDiagBlocks = 20;
 static uint32_t rtl_stream_bump_output_generation(void);
 static void rtl_stream_signal_output_waiters(struct output_state* outp);
 static void rtl_stream_clear_retune_profile(RtlRetuneProfile* profile);
+static void rtl_stream_gate_open(const rtl_stream_start_gate* start);
+static void rtl_stream_gate_boundary(int new_channel, int was_monitor);
+static void rtl_stream_store_channel_squelch(const dsd_squelch_setting* setting);
 static int rtl_stream_clamp_retune_ted_sps(int sps);
 static int rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32_t target_freq_hz);
 static int rtl_stream_take_pending_retune_profile(RtlRetuneProfile* out_profile, uint32_t request_id,
@@ -3109,6 +3183,12 @@ demod_reset_on_retune(struct demod_state* s, DemodRetuneResetPlan plan) {
         demod_apply_pending_ted_override(s);
     }
     demod_reset_histories_for_output_mode(s);
+    /* A stream open's mark for the auto squelch is the channel it opened on: a reset on another centre drops it,
+       whatever names the reset (a hop that also lands a pending PPM correction is labelled one, a replayed gap can
+       follow a retune). Only the open's own reset and a reset on the same centre keep it. */
+    if (reason != DemodRetuneResetReason::FreshStream && plan.previous_center_freq_hz != plan.next_center_freq_hz) {
+        dsd_demod_squelch_note_retune(s);
+    }
     demod_log_post_retune_state(s, plan, fll_freq_before);
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
     if (s == &demod) {
@@ -5143,6 +5223,24 @@ demod_finish_voice_lane(struct demod_state* d, int resample, int phase, size_t c
     return voice;
 }
 
+/* The analog monitor's @p n output samples of a block (issue #899): muted by a closed start (closed outright, so
+   flagged), or produced open with no dynamic squelch judging them (no flags, and no level gate that closed the block).
+   Counted on FM and AM alike, whatever scaling their output takes; nothing off the monitor (the M17 encoder's FM audio,
+   symbol and discriminator output) is. */
+static void
+demod_count_monitor_gate(const struct demod_state* d, int flagged, size_t n) {
+    if (!dsd_demod_analog_monitor_active(d)) {
+        return;
+    }
+    if (d->channel_squelched) {
+        if (flagged) {
+            g_gate_closed_samples.fetch_add(n, std::memory_order_relaxed);
+        }
+    } else if (!flagged) {
+        g_gate_unjudged_samples.fetch_add(n, std::memory_order_relaxed);
+    }
+}
+
 /* The block's output as the ring takes it: resampled and scaled as its kind wants. Returns the sample count (0: none)
  * and points @p out_data at the samples, @p out_voice at the voice lane's beside them (NULL: the block has none) and
  * @p out_flags at their flags (NULL: the block has none). */
@@ -5174,6 +5272,9 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
         if (scaled) {
             apply_output_scale(d, d->resamp_outbuf, out_n);
         }
+        if (!digital_output) {
+            demod_count_monitor_gate(d, flagged, (size_t)out_n);
+        }
         *out_data = d->resamp_outbuf;
         *out_flags = flagged ? d->resamp_outflags : NULL;
         *out_voice = demod_finish_voice_lane(d, 1, phase, (size_t)out_n, out_flags, d->resamp_outflags);
@@ -5181,6 +5282,9 @@ demod_finish_output_block(struct demod_state* d, const float** out_data, const f
     }
     if (scaled) {
         apply_output_scale(d, d->result, d->result_len);
+    }
+    if (!digital_output) {
+        demod_count_monitor_gate(d, flagged, (size_t)d->result_len);
     }
     *out_data = d->result;
     *out_flags = flagged ? d->result_flags : NULL;
@@ -5612,13 +5716,15 @@ demod_take_tetra_direct_bursts(struct demod_state* d) {
     d->tetra_direct_bursts = g_tetra_direct_bursts.load(std::memory_order_acquire) ? 1 : 0;
 }
 
-/* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker). */
+/* The demod thread, after a block: what the dynamic squelch shows (the noise squelch when it ran, else the tracker).
+   Whether one ran is what it says, not the block's flags: a closed start flags every sample closed with neither
+   running (issue #899). */
 static void
 demod_publish_squelch_status(const struct demod_state* d) {
     dsd_squelch_floor_status st;
     dsd_squelch_floor_get_status(&d->squelch_floor, &st);
-    const int active = d->result_flags_active ? 1 : 0;
-    const int noise = active && d->squelch_noise_ran ? 1 : 0;
+    const int noise = d->squelch_noise_ran ? 1 : 0;
+    const int active = (noise || d->squelch_auto_ran) ? 1 : 0;
     dsd_noise_squelch_status ns;
     dsd_noise_squelch_get_status(&d->noise_squelch, &ns);
     int gate_open = active ? st.gate_open : 1;
@@ -9581,19 +9687,68 @@ stream_open_warn_low_dsp_bw(const dsd_opts* opts, int dsp_rate_hz, int cqpsk) {
     return 0;
 }
 
-/* FNV-1a of the input spec: the device part of the auto squelch's floor context. */
+static uint32_t
+squelch_device_hash_byte(uint32_t h, unsigned char c) {
+    return (h ^ (uint32_t)c) * 16777619U;
+}
+
+/* The fields (from 0, colon-separated) of an rtl, rtltcp or Airspy spec that set no noise, into @p skip: its start
+   frequency, squelch field and volume (rtl and rtltcp: frequency, gain, PPM, bandwidth, squelch, volume; Airspy, after
+   an optional serial=: frequency, bandwidth, squelch, volume). Returns 0 for any other spec. */
+static int
+squelch_device_spec_unkeyed_fields(const char* spec, int* skip) {
+    int freq = -1;
+    int sql_after = 4;
+    if (dsd_opts_audio_in_dev_is_rtltcp_spec(spec)) {
+        freq = 3;
+    } else if (dsd_opts_audio_in_dev_is_rtl_spec(spec)) {
+        freq = 2;
+    } else if (dsd_opts_audio_in_dev_is_airspy_spec(spec)) {
+        freq = strncmp(spec, "airspy:serial=", 14) == 0 ? 2 : 1;
+        sql_after = 2;
+    }
+    if (freq < 0) {
+        return 0;
+    }
+    skip[0] = freq;
+    skip[1] = freq + sql_after;
+    skip[2] = freq + sql_after + 1;
+    return 1;
+}
+
+/* FNV-1a of the input spec: the device part of the auto squelch's floor context. In an rtl, rtltcp or Airspy spec the
+   start frequency, the squelch field and the volume are left out (the key has the applied frequency, and the other two
+   set no noise), and so are empty fields at its end, so a start at another frequency, squelch or volume finds the
+   floors learned before; every other field counts as written, and any other spec counts whole. (A parsed Airspy spec
+   is already rewritten to its device alone, airspy[:serial=...], before a stream opens.) */
 static uint32_t
 squelch_device_hash(const char* spec) {
     uint32_t h = 2166136261U;
-    for (const char* c = spec ? spec : ""; *c != '\0'; c++) {
-        h ^= (uint32_t)(unsigned char)*c;
-        h *= 16777619U;
+    const char* text = spec ? spec : "";
+    int skip[3] = {-1, -1, -1};
+    const int layout = squelch_device_spec_unkeyed_fields(text, skip);
+    int field = 0;
+    int separators = 0;
+    for (const char* c = text; *c != '\0'; c++) {
+        if (layout && *c == ':') {
+            field++;
+            separators++;
+            continue;
+        }
+        if (layout && (field == skip[0] || field == skip[1] || field == skip[2])) {
+            continue;
+        }
+        /* The colons before a field's text, so the fields kept keep their places. */
+        for (; separators > 0; separators--) {
+            h = squelch_device_hash_byte(h, (unsigned char)':');
+        }
+        h = squelch_device_hash_byte(h, (unsigned char)*c);
     }
     return h;
 }
 
 static int
-stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
+stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz, const rtl_stream_start_gate* start_gate) {
     g_squelch_device_hash.store(squelch_device_hash(opts ? opts->audio_in_dev : NULL), std::memory_order_relaxed);
     dongle_init(&dongle);
     rtl_demod_init_for_mode(&demod, &output, opts, demod_base_rate_hz);
@@ -9617,10 +9772,16 @@ stream_open_init_pipeline(const dsd_opts* opts, int demod_base_rate_hz) {
     input_ring_enable_space_notify(&input_ring, 0);
     controller_init(&controller);
     rtl_demod_config_from_env_and_opts(&demod, opts);
-    /* The squelch the session opens with, whole: a level, or the auto squelch's margin. */
-    {
-        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
-        rtl_stream_set_channel_squelch_setting(&squelch);
+    /* The squelch gate the session opens with (issue #899): the one the decoder resolved for this start. A start with
+       none (rtl_stream_start(): a caller with no decoder loop to write the gate) runs the options' own from the first
+       block, resolved as for a channel with no scan row on air: a closed start would wait for a write that never
+       comes. No retune of a stream before this one is outstanding. */
+    if (start_gate) {
+        rtl_stream_gate_open(start_gate);
+    } else {
+        const dsd_squelch_setting session = dsd_squelch_channel_gate(opts, NULL, NULL, 0);
+        const rtl_stream_start_gate own = {1, dsd_squelch_channel_gate(opts, NULL, NULL, 1), session, session};
+        rtl_stream_gate_open(&own);
     }
     rtl_demod_select_defaults_for_mode(&demod, opts, &output);
     if (stream_prepare_internals(opts) != 0) {
@@ -10646,14 +10807,14 @@ stream_open_apply_initial_gain(RadioSourceKind source_kind) {
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
-                                     int replay_dsp_bw_hz) {
+                                     int replay_dsp_bw_hz, const rtl_stream_start_gate* start_gate) {
     stream_open_reset_auto_ppm_state(opts);
 
     /* A replay or a raw I/Q stream runs the bandwidth its rate plan settled on (stream_open_plan_replay_rate(),
        stream_open_prepare_net_config()); opts keeps the request. */
     rtl_dsp_bw_hz = (radio_source_has_fixed_tuning(source_kind) && replay_dsp_bw_hz > 0) ? replay_dsp_bw_hz
                                                                                          : opts->rtl_dsp_bw_khz * 1000;
-    if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz) != 0) {
+    if (stream_open_init_pipeline(opts, rtl_dsp_bw_hz, start_gate) != 0) {
         return -1;
     }
     stream_open_enable_default_autogain(opts, source_kind);
@@ -10729,10 +10890,11 @@ extern "C" int dsd_rtl_stream_soft_stop(void);
  * and starts async capture plus worker threads.
  *
  * @param opts Decoder options used to configure the pipeline.
+ * @param start_gate The squelch gate the decoder resolved for this open (issue #899; NULL: the options' own).
  * @return 0 on success, negative on error.
  */
 extern "C" int
-dsd_rtl_stream_open(dsd_opts* opts) {
+dsd_rtl_stream_open(dsd_opts* opts, const rtl_stream_start_gate* start_gate) {
     dsd_rtl_stream_forget_start_refusal();
     rtl_stream_advance_session_generation();
     if (!opts) {
@@ -10770,7 +10932,8 @@ dsd_rtl_stream_open(dsd_opts* opts) {
     if (prepared != 0) {
         return -1;
     }
-    if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded, replay_dsp_bw_hz)
+    if (stream_open_configure_pipeline_state(opts, source_kind, &replay_cfg, replay_cfg_loaded, replay_dsp_bw_hz,
+                                             start_gate)
         != 0) {
         // g_stream exists once stream_open_init_pipeline() succeeded, so every later
         // failure (device open, ring resize, initial tuner programming) leaves rings,
@@ -10867,6 +11030,7 @@ dsd_rtl_stream_soft_stop(void) {
         dsd_thread_join(demod.thread);
         stream_set_lifecycle_flag(g_stream->demod_thread_started, 0);
     }
+    rtl_stream_retire_stopped_stream_requests();
     /* No block of this stream reaches the search tap any more. Left there, its capture would outlive it: a search
        started on the next stream before that stream's first block would take the time since this one's last block for
        a stalled input. */
@@ -12558,15 +12722,28 @@ rtl_stream_apply_cqpsk_toggle(int onoff) {
     }
 }
 
-extern "C" void
-rtl_stream_toggle_cqpsk(int onoff) {
+/* The toggle under the demod-family switch gate. With @p gate_boundary it is a squelch gate boundary of its own (issue
+   #899): off the analog monitor the receiver runs the session's gate and records that it left it, so a later write or
+   request selects the digital gate; back onto it, a new analog channel starts closed; under the switch gate, so the next
+   block already runs it. Without, the caller's own boundary follows (a profile applied, a retune landing). */
+static void
+rtl_stream_toggle_cqpsk_switched(int onoff, int gate_boundary) {
     /* Arm the gate unconditionally: deciding based on demod.cqpsk_enable here
      * would itself be a cross-thread read of a demod-owned field. The gate is
      * cheap when nothing changes and this path is rare (UI/profile switches). */
     const int gate = rtl_stream_enter_demod_family_switch_gate();
+    const int was_monitor = gate_boundary ? dsd_demod_analog_monitor_active(&demod) : 0;
     rtl_stream_apply_cqpsk_toggle(onoff);
+    if (gate_boundary) {
+        rtl_stream_gate_boundary(0, was_monitor);
+    }
     rtl_stream_publish_demod_profile_snapshot();
     rtl_stream_leave_demod_family_switch_gate(gate);
+}
+
+extern "C" void
+rtl_stream_toggle_cqpsk(int onoff) {
+    rtl_stream_toggle_cqpsk_switched(onoff, 1);
 }
 
 /* ---------------- Deferred demod-profile application ----------------
@@ -12582,6 +12759,9 @@ static std::mutex g_profile_req_m;
 static std::atomic<int> g_profile_req_pending{0};
 /* Guarded by g_profile_req_m: */
 static int g_profile_req_has_demod = 0; /* a demod (symbol/CQPSK/timing) profile is queued */
+/* The queued demod profile is a digital decode's (rtl_stream_request_decode_demod_profile()), not a frame-sync hunt's
+   or a restore's: only such a profile takes an analog family's front end off the monitor (issue #899). */
+static int g_profile_req_digital_decode = 0;
 /* Receive-family request (rtl_stream_request_analog_profile), applied before the demod profile of the same
  * consume so that a family switch followed by the new family's symbol profile lands in that order. */
 static int g_profile_req_analog_family = -1; /* -1 = none queued */
@@ -12864,12 +13044,30 @@ static int rtl_stream_landing_ted_sps(int ted_sps, int ted_sps_is_override, int 
  * thread with no pipeline running) versus the ungated body (the demod
  * thread applying a consumed request; arming the gate there would deadlock
  * waiting for its own block to finish). */
+/* A requested or retuned symbol profile, applied as rtl_stream_set_symbol_profile() does (issue #899). One its requester
+   marked a digital decode's (@p digital_decode: a typed digital row's or target's, a digital mode switched to) takes an
+   analog family's front end off the monitor whatever channel filter it names; any other (a frame-sync hunt's, a
+   restore's) applies only off the monitor and leaves that as it is. Returns rtl_stream_set_symbol_profile()'s result. */
+static int
+rtl_stream_apply_decode_symbol_profile(int symbol_rate_hz, int levels, int channel_profile, int digital_decode) {
+    const int rc = rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
+    if (rc == 0 && digital_decode) {
+        demod.symbol_profile_on_analog = demod.analog_family ? 1 : 0;
+    }
+    return rc;
+}
+
 static void
 rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int chan, int ted_sps,
-                                      int ted_sps_is_override, int use_gate) {
+                                      int ted_sps_is_override, int use_gate, int digital_decode) {
+    if (!digital_decode && dsd_demod_analog_monitor_active(&demod)) {
+        /* A profile no digital decode asked for (a frame-sync hunt's, a restore's) never takes the monitor away: one
+           that lands after the request that put the monitor back is stale, and that request wins (issue #899). */
+        return;
+    }
     if (cqpsk >= 0) {
         if (use_gate) {
-            rtl_stream_toggle_cqpsk(cqpsk);
+            rtl_stream_toggle_cqpsk_switched(cqpsk, 0);
         } else {
             rtl_stream_apply_cqpsk_toggle(cqpsk);
         }
@@ -12888,7 +13086,7 @@ rtl_stream_apply_demod_profile_params(int cqpsk, int sym_rate, int levels, int c
         }
     }
     if (sym_rate > 0) {
-        if (rtl_stream_set_symbol_profile(sym_rate, levels, chan) != 0) {
+        if (rtl_stream_apply_decode_symbol_profile(sym_rate, levels, chan, digital_decode) != 0) {
             LOG_WARN("RTL: requested demod profile rejected (rate=%d levels=%d profile=%d).\n", sym_rate, levels, chan);
         }
     }
@@ -12948,9 +13146,9 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
     return rtl_stream_demod_request_repeats_published(cqpsk, rate, levels, chan, ted, ovr);
 }
 
-extern "C" int
-rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
-                                 int ted_sps_is_override) {
+static int
+rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                               int ted_sps_is_override, int digital_decode) {
     if (symbol_rate_hz > 0 && levels != 2 && levels != 4) {
         return -1;
     }
@@ -12969,7 +13167,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
          * (rtl_stream_clear_demod_profile_request). */
         const int symbol_rate_before_hz = demod.symbol_rate_hz;
         rtl_stream_apply_demod_profile_params(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
-                                              ted_sps_is_override, 1);
+                                              ted_sps_is_override, 1, digital_decode);
         rtl_stream_follow_fsk_resample_decision(symbol_rate_before_hz);
         rtl_stream_settle_all_requests();
         return 0;
@@ -12987,6 +13185,7 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
         rtl_stream_note_receive_change_locked();
     }
     g_profile_req_has_demod = 1;
+    g_profile_req_digital_decode = digital_decode ? 1 : 0;
     g_profile_req_cqpsk = cqpsk_enable;
     g_profile_req_sym_rate = symbol_rate_hz;
     g_profile_req_levels = levels;
@@ -12995,6 +13194,20 @@ rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int level
     g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
     g_profile_req_pending.store(1, std::memory_order_release);
     return 0;
+}
+
+extern "C" int
+rtl_stream_request_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
+                                 int ted_sps_is_override) {
+    return rtl_stream_queue_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                          ted_sps_is_override, 0);
+}
+
+extern "C" int
+rtl_stream_request_decode_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                        int ted_sps, int ted_sps_is_override) {
+    return rtl_stream_queue_demod_profile(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                          ted_sps_is_override, 1);
 }
 
 /* ---------------- Receive family and analog profile ----------------
@@ -13195,6 +13408,9 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
     return valid ? 0 : -1;
 }
 
+static void rtl_stream_queue_family_request_locked(int family, int kind, int width_hz, int digital_landing,
+                                                   int cqpsk_explicit);
+
 /* Body of rtl_stream_request_analog_profile(), and of rtl_stream_request_digital_family_landing() with
  * @p digital_landing set (the digital family only): that family request then lands the digital family's landing
  * whichever family the front end runs where it applies, with @p cqpsk_explicit saying whether the CQPSK state of the
@@ -13217,6 +13433,13 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
         rtl_stream_settle_all_requests();
         return 0;
     }
+    rtl_stream_queue_family_request_locked(family, kind, width_hz, digital_landing, cqpsk_explicit);
+    return 0;
+}
+
+/* rtl_stream_queue_family_request() for a running stream, under g_profile_req_m. */
+static void
+rtl_stream_queue_family_request_locked(int family, int kind, int width_hz, int digital_landing, int cqpsk_explicit) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk_after = (family == DSD_RX_FAMILY_ANALOG) ? 0 : rtl_stream_requested_cqpsk_locked();
     g_profile_req_family_after = family;
@@ -13244,7 +13467,6 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
        the two requests, where the consume holds the family request for its own profile instead. */
     g_profile_req_has_demod = 0;
     g_profile_req_pending.store(1, std::memory_order_release);
-    return 0;
 }
 
 extern "C" int
@@ -13384,6 +13606,7 @@ namespace {
  * (rtl_stream_take_demod_profile_request()). */
 struct TakenProfileRequest {
     int has_demod;
+    int digital_decode;
     int digital_landing;
     int landing_explicit;
     int analog_family;
@@ -13417,6 +13640,7 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
         return 0;
     }
     out->has_demod = g_profile_req_has_demod;
+    out->digital_decode = g_profile_req_digital_decode;
     out->digital_landing = g_profile_req_digital_landing;
     out->landing_explicit = g_profile_req_landing_explicit;
     out->analog_family = g_profile_req_analog_family;
@@ -13437,6 +13661,19 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     return 1;
 }
 
+/* The gate where the demod thread applied a request: a family switch of @p family (negative: none, or refused) and/or a
+   symbol profile (@p has_demod), which it found the stream on the analog monitor (@p was_monitor) of @p kind_before for
+   (issue #899). Onto the monitor from anywhere off it (the digital family, or a symbol profile on the analog family:
+   a typed digital scan row's, CQPSK), or onto another analog kind, starts a new channel closed; off the monitor from
+   it the receiver runs the session's gate. A width change on the same kind, a request refused whole, or one that
+   leaves the receiver off the monitor where it was (a P25 Phase 1 CQPSK re-push at each sync) moves nothing. */
+static void
+rtl_stream_family_request_boundary(int family, int has_demod, bool was_monitor, int kind_before) {
+    if (family >= 0 || has_demod) {
+        rtl_stream_gate_boundary(was_monitor && demod.analog_demod != kind_before, was_monitor ? 1 : 0);
+    }
+}
+
 static void
 rtl_stream_consume_demod_profile_request(void) {
     if (!g_profile_req_pending.load(std::memory_order_acquire)) {
@@ -13455,6 +13692,8 @@ rtl_stream_consume_demod_profile_request(void) {
        the demod rate. On the digital family only the output chain is designed again; the switch itself happens only
        from the analog family. */
     const bool leaves_analog = demod.analog_family != 0;
+    const bool was_monitor = dsd_demod_analog_monitor_active(&demod) != 0;
+    const int kind_before = demod.analog_demod;
     const bool lands_on_digital =
         req.has_demod && req.analog_family == DSD_RX_FAMILY_DIGITAL && (leaves_analog || req.digital_landing);
     if (lands_on_digital) {
@@ -13467,7 +13706,7 @@ rtl_stream_consume_demod_profile_request(void) {
     }
     if (req.has_demod) {
         rtl_stream_apply_demod_profile_params(req.cqpsk, req.sym_rate, req.levels, req.chan, req.ted_sps,
-                                              req.ted_sps_is_override, 0);
+                                              req.ted_sps_is_override, 0, req.digital_decode);
     }
     if (lands_on_digital) {
         if (!leaves_analog) {
@@ -13477,7 +13716,29 @@ rtl_stream_consume_demod_profile_request(void) {
     } else if (req.has_demod) {
         rtl_stream_follow_fsk_resample_decision(symbol_rate_before_hz);
     }
+    rtl_stream_family_request_boundary(req.analog_family, req.has_demod, was_monitor, kind_before);
     rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
+}
+
+/* Drop the queued request no demod thread will take, and settle every request numbered so far (g_profile_req_m held):
+ * none of them lands on a stream after this. */
+static void
+rtl_stream_retire_demod_profile_request_locked(void) {
+    g_profile_req_pending.store(0, std::memory_order_relaxed);
+    g_profile_req_has_demod = 0;
+    g_profile_req_analog_family = -1;
+    g_profile_req_digital_landing = 0;
+    g_profile_req_landing_explicit = 0;
+    rtl_stream_settle_all_requests();
+}
+
+/* A stopped stream's requests (issue #899): its demod thread is joined, so a request it never took cannot land on it,
+ * nor on the next stream, whose open discards it. Retired here, it no longer reads as outstanding to the decoder
+ * between the stop and that open, where it would hold the next stream's start closed. */
+static void
+rtl_stream_retire_stopped_stream_requests(void) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    rtl_stream_retire_demod_profile_request_locked();
 }
 
 /* Discard any unconsumed queued request, and the digital decode modes a
@@ -13489,16 +13750,11 @@ rtl_stream_consume_demod_profile_request(void) {
 static void
 rtl_stream_clear_demod_profile_request(void) {
     std::lock_guard<std::mutex> lock(g_profile_req_m);
-    g_profile_req_pending.store(0, std::memory_order_relaxed);
-    g_profile_req_has_demod = 0;
-    g_profile_req_analog_family = -1;
-    g_profile_req_digital_landing = 0;
-    g_profile_req_landing_explicit = 0;
     /* A refusal the previous stream recorded is not this stream's: it opens on the options as they are, so a request
        its predecessor refused says nothing about what it runs. */
     g_rx_req_refused_seq.store(0U, std::memory_order_relaxed);
     g_rx_req_replaced_run.store(0U, std::memory_order_relaxed);
-    rtl_stream_settle_all_requests();
+    rtl_stream_retire_demod_profile_request_locked();
     g_noted_digital_modes.store(0U, std::memory_order_release);
 }
 
@@ -13545,6 +13801,88 @@ rtl_stream_retune_profile_matches_target(const RtlRetuneProfile* profile, uint32
         return 0;
     }
     return profile->target_freq_hz == target_freq_hz;
+}
+
+/* The receiver runs @p gate (g_pending_retune_profile_mutex held, as for every channel helper here). */
+static void
+rtl_stream_gate_apply_locked(const dsd_squelch_setting* gate) {
+    rtl_stream_store_channel_squelch(gate);
+}
+
+/* The receiver runs @p runs on the channel it is on (g_pending_retune_profile_mutex held): the decoder's write, or a
+   public setter's. A closed start it ends is counted. */
+static void
+rtl_stream_gate_run_locked(const dsd_squelch_setting* runs) {
+    const int closed = g_gate_closed.load(std::memory_order_relaxed);
+    if (closed) {
+        /* The muted samples go on being counted where they are produced (demod_count_monitor_gate()): a block that took
+           the closed gate before this write still counts when it is finished. */
+        g_gate_closed_ms.store((double)(dsd_realtime_mono_ns() - g_gate_closed_since_ns) / 1.0e6,
+                               std::memory_order_relaxed);
+        g_gate_closed_starts.fetch_add(1, std::memory_order_relaxed);
+    }
+    if (closed || !dsd_squelch_setting_equal(&g_gate_running, runs)) {
+        g_gate_running = *runs;
+        g_gate_closed.store(0, std::memory_order_release);
+        rtl_stream_gate_apply_locked(&g_gate_running);
+    }
+}
+
+/* The receiver is on a new channel (@p new_channel: one the decoder marked, or another analog kind), or switched family
+   or profile from the analog monitor or off it (@p was_monitor), at a boundary where the rest of a landing or a switch
+   applies (issue #899), on the thread that applied it with the reconfigure or family-switch gate held, so the first
+   block after it already runs under the gate set here. On the analog monitor a new channel, or the monitor entered
+   from off it, starts closed, and anything else keeps the gate it runs. Off the monitor a new channel, or the monitor
+   left, runs the session's gate, so no analog-only default and no row's own squelch outlives the channel it was
+   written for; a boundary that stays off the monitor on the same channel (a digital symbol profile pushed again, an
+   unmarked retune) takes no lock and keeps the gate it runs. */
+static void
+rtl_stream_gate_boundary(int new_channel, int was_monitor) {
+    const int monitor = dsd_demod_analog_monitor_active(&demod);
+    if (!monitor && !was_monitor && !new_channel) {
+        return;
+    }
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_gate_boundary_locks.fetch_add(1, std::memory_order_relaxed);
+#endif
+    const int entered_monitor = monitor && (!was_monitor || !g_gate_monitor);
+    g_gate_monitor = monitor;
+    if (monitor) {
+        if (new_channel || entered_monitor) {
+            g_gate_closed.store(1, std::memory_order_release);
+            g_gate_closed_since_ns = dsd_realtime_mono_ns();
+            g_gate_closed_samples.store(0U, std::memory_order_relaxed);
+            rtl_stream_gate_apply_locked(&kGateClosed);
+        }
+        return;
+    }
+    if (g_gate_closed.load(std::memory_order_relaxed) || !dsd_squelch_setting_equal(&g_gate_running, &g_gate_session)) {
+        g_gate_closed.store(0, std::memory_order_release);
+        g_gate_running = g_gate_session;
+        rtl_stream_gate_apply_locked(&g_gate_running);
+    }
+}
+
+/* A stream opens on a new channel, under @p start (rtl_stream_start_gate): a gate the decoder resolved for this start
+   runs from the first block, the analog gate on the monitor and the digital one off it, with no closed start; with none
+   resolved an open on the monitor starts closed, and off it runs the session's own squelch. */
+static void
+rtl_stream_gate_open(const rtl_stream_start_gate* start) {
+    const int monitor = dsd_demod_analog_monitor_active(&demod);
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    const int resolved = start->resolved ? 1 : 0;
+    g_gate_monitor = monitor;
+    g_gate_session = start->session;
+    g_gate_running = !resolved ? start->session : (monitor ? start->gate : start->digital);
+    const int closed = monitor && !resolved;
+    g_gate_closed.store(closed, std::memory_order_release);
+    g_gate_closed_since_ns = dsd_realtime_mono_ns();
+    g_gate_closed_starts.store(0, std::memory_order_relaxed);
+    g_gate_closed_ms.store(0.0, std::memory_order_relaxed);
+    g_gate_closed_samples.store(0U, std::memory_order_relaxed);
+    g_gate_unjudged_samples.store(0U, std::memory_order_relaxed);
+    rtl_stream_gate_apply_locked(closed ? &kGateClosed : &g_gate_running);
 }
 
 static int
@@ -13625,6 +13963,7 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
         profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
         g_pending_retune_profile = profile;
     }
+    g_pending_retune_profile.new_channel_only = 0;
     g_pending_retune_profile.analog_family = analog->family;
     g_pending_retune_profile.analog_kind = analog->kind;
     g_pending_retune_profile.analog_width_hz = analog->width_hz;
@@ -13633,6 +13972,60 @@ rtl_stream_prepare_retune_analog_profile_for_target(uint32_t target_freq_hz,
     g_pending_retune_profile.family_request_count = g_live_family_requests.load(std::memory_order_acquire);
     g_pending_retune_profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
     return 0;
+}
+
+extern "C" void
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    const int queued = g_pending_retune_profile.active && g_pending_retune_profile.target_freq_hz == target_freq_hz;
+    if (!new_channel) {
+        /* A tune that returned without taking the profile queued for it: that profile marks no new channel any more,
+           and one queued for that alone goes. */
+        if (queued && g_pending_retune_profile.new_channel_only) {
+            rtl_stream_clear_retune_profile(&g_pending_retune_profile);
+        } else if (queued) {
+            g_pending_retune_profile.new_channel = 0;
+        }
+        return;
+    }
+    if (!queued) {
+        /* Nothing else queued for this target: a profile for the new channel alone, which lands nothing else (no CQPSK
+           family, symbol profile, timing or gain) and settles no receive request. */
+        RtlRetuneProfile profile{};
+        profile.active = 1;
+        profile.new_channel_only = 1;
+        profile.cqpsk_enable = -1;
+        profile.target_freq_hz = target_freq_hz;
+        profile.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
+        profile.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
+        g_pending_retune_profile = profile;
+    }
+    g_pending_retune_profile.new_channel = 1;
+}
+
+extern "C" void
+rtl_stream_prepare_retune_digital_decode_for_target(uint32_t target_freq_hz) {
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    if (g_pending_retune_profile.active && g_pending_retune_profile.target_freq_hz == target_freq_hz) {
+        g_pending_retune_profile.digital_decode = 1;
+    }
+}
+
+extern "C" void
+rtl_stream_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                              const dsd_squelch_setting* session) {
+    if (!gate) {
+        return;
+    }
+    const dsd_squelch_setting* off_monitor = digital ? digital : gate;
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    g_gate_session = session ? *session : *off_monitor;
+    rtl_stream_gate_run_locked(g_gate_monitor ? gate : off_monitor);
+}
+
+extern "C" int
+rtl_stream_gate_closed_start(void) {
+    return g_gate_closed.load(std::memory_order_acquire);
 }
 
 extern "C" uint32_t
@@ -13790,6 +14183,7 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->published_forced = g_pub_capture_rate_forced.load(std::memory_order_relaxed);
     out->input_ring_capacity_floats = input_ring.capacity;
     out->centered_iq = dongle.centered_iq;
+    out->new_stream_mark = demod.squelch_new_stream;
 }
 
 static void
@@ -13909,6 +14303,7 @@ struct TestCaptureSession {
     int ppm_error;
     int rate_out;
     int complex_rate;
+    int squelch_new_stream;
     uint32_t applied_hz;
 };
 
@@ -13927,9 +14322,12 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     g_test_capture_session.ppm_error = load_dongle_ppm_error();
     g_test_capture_session.rate_out = demod.rate_out;
     g_test_capture_session.complex_rate = demod.complex_rate;
+    g_test_capture_session.squelch_new_stream = demod.squelch_new_stream;
     g_test_capture_session.applied_hz = controller.last_applied_freq_hz.load(std::memory_order_acquire);
     g_test_capture_session.saved = test_capture_program_enter(dev, center_hz, 0);
     store_dongle_ppm_error(0);
+    /* A stream open marks the stream for the auto squelch (rtl_demod_config.cpp); the session's start stands in. */
+    demod.squelch_new_stream = 1;
     const int rc = controller_program_initial_device(&controller, opts);
     test_capture_note_ring_rate(rc);
     /* The start's finalize ends its transaction and publishes the chain (controller_finalize_dsp_chain()). */
@@ -13939,6 +14337,20 @@ rtl_stream_test_capture_session_begin(struct rtl_device* dev, const dsd_opts* op
     controller.last_applied_freq_hz.store(rc == 0 ? center_hz : 0U, std::memory_order_release);
     test_capture_program_result(rc, out);
     return 0;
+}
+
+/* A session's manual retune to @p center_hz with @p ppm_error asked of it (a pending correction when it differs), applied,
+ * finalized and completed as the controller lands one; its completion in @p out_completion. */
+static int
+test_capture_session_manual_retune(uint32_t center_hz, int ppm_error, int* out_completion) {
+    int ppm_rc = 0;
+    int reconfigured = 0;
+    int refused = 0;
+    const int rc =
+        controller_apply_reconfigure(&controller, center_hz, ppm_error, NULL, &ppm_rc, &reconfigured, &refused);
+    *out_completion = controller_manual_retune_completion_result(
+        rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
+    return rc;
 }
 
 extern "C" int
@@ -13977,13 +14389,9 @@ rtl_stream_test_capture_session_step(int step, uint32_t center_hz, int value, rt
         if (value > 0) {
             demod.rate_in = value;
         }
-        int ppm_rc = 0;
-        int reconfigured = 0;
-        int refused = 0;
-        rc = controller_apply_reconfigure(&controller, center_hz, load_dongle_ppm_error(), NULL, &ppm_rc, &reconfigured,
-                                          &refused);
-        completion = controller_manual_retune_completion_result(
-            rc, reconfigured, refused, center_hz, controller.last_applied_freq_hz.load(std::memory_order_acquire));
+        rc = test_capture_session_manual_retune(center_hz, load_dongle_ppm_error(), &completion);
+    } else if (step == RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM) {
+        rc = test_capture_session_manual_retune(center_hz, value, &completion);
     }
     if (out) {
         test_capture_program_result(rc, out);
@@ -14043,6 +14451,7 @@ rtl_stream_test_capture_session_end(void) {
     store_dongle_ppm_error(g_test_capture_session.ppm_error);
     demod.rate_out = g_test_capture_session.rate_out;
     demod.complex_rate = g_test_capture_session.complex_rate;
+    demod.squelch_new_stream = g_test_capture_session.squelch_new_stream;
     controller.last_applied_freq_hz.store(g_test_capture_session.applied_hz, std::memory_order_release);
     rtl_stream_publish_tuner_gain();
     g_test_capture_session = TestCaptureSession{};
@@ -14520,6 +14929,27 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile) {
     demod.ted_sps_override = profile->ted_override ? ted_sps : 0;
 }
 
+/* The CQPSK state, symbol profile and TED of a retune profile that applied no family of its own, or the digital one
+   (@p lands_digital_family). One its engine did not mark a digital decode's (RtlRetuneProfile::digital_decode) lands
+   none of them on the analog monitor, which only a digital decode's profile takes away (issue #899). */
+static void
+rtl_stream_apply_retune_symbols(const RtlRetuneProfile* profile, int lands_digital_family) {
+    if (!profile->digital_decode && dsd_demod_analog_monitor_active(&demod)) {
+        return;
+    }
+    int cqpsk = -1;
+    int channel_profile = -1;
+    rtl_stream_retune_symbol_family(profile, lands_digital_family, &cqpsk, &channel_profile);
+    if (cqpsk >= 0) {
+        rtl_stream_toggle_cqpsk_switched(cqpsk, 0);
+    }
+    if (profile->symbol_rate_hz > 0 && (profile->levels == 2 || profile->levels == 4)) {
+        (void)rtl_stream_apply_decode_symbol_profile(profile->symbol_rate_hz, profile->levels, channel_profile,
+                                                     profile->digital_decode);
+    }
+    rtl_stream_apply_retune_ted(profile);
+}
+
 /* The receive part of a retune profile that applies on its target, after its gain profile: the receive-family switch,
  * then the symbol profile and its TED. Returns 1 when the profile asked for an analog channel the demod rate cannot
  * run, as rtl_stream_apply_retune_profile() does, else 0. @p out_lands_digital_family is set to 1 once the symbol
@@ -14532,6 +14962,14 @@ rtl_stream_apply_retune_ted(const RtlRetuneProfile* profile) {
 static int
 rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* out_lands_digital_family) {
     *out_lands_digital_family = 0;
+    /* The tuner is on the profile's target: a new channel the decoder marked starts here, whatever the rest of the
+       profile does, on the family the receiver runs once the rest has applied (issue #899). */
+    const bool was_monitor = dsd_demod_analog_monitor_active(&demod) != 0;
+    if (profile->new_channel_only) {
+        rtl_stream_gate_boundary(1, was_monitor ? 1 : 0);
+        return 0;
+    }
+    const int kind_before = demod.analog_demod;
     uint32_t retired_through = 0U;
     const int family = rtl_stream_apply_retune_family(profile, &retired_through);
     if (family != RTL_RETUNE_FAMILY_CONTINUE) {
@@ -14539,7 +14977,10 @@ rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* ou
            CQPSK family or the FSK discriminator back on and take the monitor output away, so it is dropped here,
            as rtl_stream_request_analog_profile() drops one queued before an analog request. A refused analog
            profile drops it too: it was queued for an analog target. So does a superseded one: the live requests
-           after it chose the family and the symbol profile the front end runs. */
+           after it chose the family and the symbol profile the front end runs. A landing onto the monitor from off
+           it, or onto another analog kind, is a new channel too. */
+        rtl_stream_gate_boundary(profile->new_channel || (was_monitor && demod.analog_demod != kind_before),
+                                 was_monitor ? 1 : 0);
         return family == RTL_RETUNE_FAMILY_REFUSED ? 1 : 0;
     }
 
@@ -14549,20 +14990,11 @@ rtl_stream_apply_retune_receive_profile(const RtlRetuneProfile* profile, int* ou
        rtl_stream_apply_pending_retune_profile_for_target()), so a front end already on the digital family lands the
        output rate a switch would too. */
     const int lands_digital_family = rtl_stream_retune_lands_digital_family(profile);
-    int cqpsk = -1;
-    int channel_profile = -1;
-    rtl_stream_retune_symbol_family(profile, lands_digital_family, &cqpsk, &channel_profile);
-    if (cqpsk >= 0) {
-        rtl_stream_toggle_cqpsk(cqpsk);
-    }
-
-    int symbol_rate_hz = profile->symbol_rate_hz;
-    int levels = profile->levels;
-    if (symbol_rate_hz > 0 && (levels == 2 || levels == 4)) {
-        (void)rtl_stream_set_symbol_profile(symbol_rate_hz, levels, channel_profile);
-    }
-
-    rtl_stream_apply_retune_ted(profile);
+    rtl_stream_apply_retune_symbols(profile, lands_digital_family);
+    /* Where the profile left the receiver: on the monitor a marked landing, or a return to it, starts closed; off it (the
+       digital family, or a typed digital scan row's symbol profile on the analog family) a marked landing, or one that
+       left the monitor, runs the session's gate, and an unmarked one there (a trunking grant) keeps the gate. */
+    rtl_stream_gate_boundary(profile->new_channel, was_monitor ? 1 : 0);
     /* An older analog request this profile retired settles once the profile it gave way to has applied. */
     rtl_stream_settle_requests_through(retired_through);
     *out_lands_digital_family = lands_digital_family;
@@ -14704,10 +15136,25 @@ rtl_stream_apply_pending_retune_profile_for_target(uint32_t target_freq_hz, int 
         g_test_external_landing_hook(g_test_external_landing_ctx);
     }
 #endif
+    if (profile.new_channel_only) {
+        /* The new channel alone (issue #899): it starts before the old channel's output goes, and otherwise this is a
+           landing with no profile, which forgets the record and, on a move, starts the demodulator over and flushes
+           the output as one does (the reset leaves the squelch gate, so the new channel stays closed). */
+        int lands_digital_family = 0;
+        (void)rtl_stream_apply_retune_receive_profile(&profile, &lands_digital_family);
+        g_external_retune_freq_hz.store(0U, std::memory_order_release);
+        if (flush) {
+            rtl_stream_reset_demod_for_external_move();
+            rtl_stream_flush_for_external_retune();
+        }
+        rtl_stream_leave_demod_family_switch_gate(gate);
+        return;
+    }
     /* Under the gate, so a controller retune's finalize cannot forget the record between this read and the clear. */
     const uint32_t previous_freq_hz = g_external_retune_freq_hz.exchange(target_freq_hz, std::memory_order_acq_rel);
     if (peer_moved || previous_freq_hz != target_freq_hz) {
         rtl_demod_clear_filter_histories(&demod);
+        dsd_demod_squelch_note_retune(&demod);
     }
     if (flush) {
         rtl_stream_flush_for_external_retune();
@@ -16019,7 +16466,7 @@ rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out) {
     rtl_stream_publish_demod_profile_snapshot();
 
     /* CQPSK on, queued: pending until the demod thread takes it, even when the output generation moves first. */
-    (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     out->first_seq = rtl_stream_receive_request_seq();
     out->queued_outcome = rtl_stream_receive_request_outcome(out->first_seq);
     out->requested_cqpsk_while_pending = rtl_stream_requested_cqpsk();
@@ -16032,10 +16479,10 @@ rtl_stream_test_rx_request_outcomes(rtl_stream_test_rx_request_result* out) {
     out->published_cqpsk_after_consume = rx_request_test_published_cqpsk();
 
     /* CQPSK off, then replaced by another request before a consume: settled with it. */
-    (void)rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(0, 0, 0, -1, -1, 0);
     const uint32_t replaced_seq = rtl_stream_receive_request_seq();
     out->second_seq_follows = replaced_seq == out->first_seq + 1U ? 1 : 0;
-    (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     rtl_stream_consume_demod_profile_request();
     out->replaced_outcome = rtl_stream_receive_request_outcome(replaced_seq);
 
@@ -16798,7 +17245,9 @@ rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t nex
 
     *out_result = {};
     out_result->fll_freq_before = test_demod.fll_band_edge_state.freq;
+    test_demod.squelch_new_stream = 1;
     plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->new_stream_mark_after = test_demod.squelch_new_stream;
     out_result->retained_fll_scale = plan.retained_fll_scale;
     out_result->reset_retained_fll = plan.reset_retained_fll ? 1 : 0;
     out_result->restored_cached_fll = plan.restore_cached_fll ? 1 : 0;
@@ -16843,7 +17292,9 @@ rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_
     test_demod.complex_rate = next_rate_out_hz;
     DemodRetuneResetPlan plan = demod_retune_reset_plan(retune_reset_reason_from_name(reason), previous_center_freq_hz,
                                                         next_center_freq_hz, previous_rate_out_hz, next_rate_out_hz);
+    test_demod.squelch_new_stream = 1;
     plan = demod_reset_on_retune(&test_demod, plan);
+    out_result->new_stream_mark_after = test_demod.squelch_new_stream;
     out_result->pre_after = test_demod.fll_band_edge_state.pre_freq;
     out_result->freq_after = test_demod.fll_band_edge_state.freq;
     out_result->phasor_re_after = test_demod.fll_band_edge_state.pre_re;
@@ -18112,7 +18563,7 @@ family_test_switch_to_digital(const dsd_opts* digital_opts, const rtl_stream_tes
 /* The DMR symbol profile a typed scan row queues, timed for the monitor's 48 kHz output. */
 static int
 family_test_request_dmr_row_profile(void) {
-    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    return rtl_stream_request_decode_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
 }
 
 /* A symbol profile the -fA session applies on its own, with no family request, consumed at a block boundary: the DSP
@@ -18122,7 +18573,7 @@ static void
 family_test_apply_profile_under_analog(int which, rtl_stream_test_family_switch_result* out) {
     if (which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE
         || which == RTL_STREAM_TEST_UNDER_ANALOG_CQPSK_TOGGLE_QUEUED) {
-        (void)rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+        (void)rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     } else if (which == RTL_STREAM_TEST_UNDER_ANALOG_TYPED_ROW) {
         (void)family_test_request_dmr_row_profile();
     } else {
@@ -18800,8 +19251,8 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     out->row_am = dsd_demod_am_active(&demod);
     out->row_kind = demod.analog_demod;
 
-    /* dsd_engine_rtl_profile_snapshot_restore(): the CQPSK state and symbol profile the monitor published before the
-       tune. */
+    /* A symbol profile restored as dsd_engine_rtl_profile_snapshot_restore() queues one (4800/4 on WIDE): a digital
+       decode's, like the row's, whatever filter it names. */
     rc |= rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_WIDE, 10, 0);
     family_test_demod_thread_boundary();
     out->am_after_restore = dsd_demod_am_active(&demod);
@@ -18820,6 +19271,7 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
     row.channel_profile = DSD_CH_LPF_PROFILE_P25_C4FM;
     row.ted_sps = 10;
     row.target_freq_hz = kFamilyTestRetuneHz;
+    row.digital_decode = 1; /* a typed row's, as the engine marks it */
     /* Queued after the live requests above, as the scanner queues it: none supersedes it. */
     row.familyless_supersedes = g_familyless_retune_supersedes.load(std::memory_order_acquire);
     rc |= family_test_land_retune(&stream_opts, demod.rate_out, demod.rate_out, demod.rate_out, &row);
@@ -18848,7 +19300,7 @@ rtl_stream_test_am_monitor_symbol_profiles(int rate_hz, rtl_stream_test_am_symbo
 /* The DSP menu's CQPSK toggle turned on under the analog family and taken at a block boundary. */
 static int
 family_test_cqpsk_on_taken(void) {
-    const int rc = rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0);
+    const int rc = rtl_stream_request_decode_demod_profile(1, 0, 0, -1, -1, 0);
     family_test_demod_thread_boundary();
     return rc;
 }
@@ -19796,10 +20248,19 @@ squelch_test_ring_checks(void) {
     return 0;
 }
 
+/* Whether the status the demod publishes now shows no dynamic squelch running. */
+static int
+squelch_test_status_inactive(void) {
+    demod_publish_squelch_status(&demod);
+    rtl_stream_squelch_status st;
+    return rtl_stream_get_squelch_status(&st) == 0 && !st.active && !st.noise && st.gate_open == 1;
+}
+
 /* The status the demod publishes, while the tracker runs and after. */
 static int
 squelch_test_status_checks(void) {
     demod.result_flags_active = 1;
+    demod.squelch_auto_ran = 1;
     demod.squelch_floor.state = DSD_SQUELCH_FLOOR_KNOWN;
     demod.squelch_floor.floor_power = 1e-5;
     demod.squelch_floor.window_power = 3e-5;
@@ -19814,12 +20275,13 @@ squelch_test_status_checks(void) {
     if (st.noise || fabs(st.quieting_db) > 1e-12) {
         return 12;
     }
-    demod.result_flags_active = 0;
-    demod_publish_squelch_status(&demod);
-    if (rtl_stream_get_squelch_status(&st) != 0 || st.active || st.noise || st.gate_open != 1) {
+    /* The flags alone (a closed start's, with no dynamic squelch run) publish none. */
+    demod.squelch_auto_ran = 0;
+    if (!squelch_test_status_inactive()) {
         return 12;
     }
-    return 0;
+    demod.result_flags_active = 0;
+    return squelch_test_status_inactive() ? 0 : 12;
 }
 
 /* The status while the noise squelch runs: its gate and quieting, not the tracker's. */
@@ -19900,6 +20362,11 @@ rtl_stream_test_squelch_plumbing(void) {
     ring_clear(&output);
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return failed;
+}
+
+extern "C" uint32_t
+rtl_stream_test_squelch_device_hash(const char* spec) {
+    return squelch_device_hash(spec);
 }
 
 extern "C" int
@@ -20295,6 +20762,7 @@ rtl_stream_test_retune_analog_profile_at_rate(uint32_t target_hz, int rate_hz, i
     if (with_cqpsk_symbol_profile) {
         rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, 1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 10,
                                                                0, NULL);
+        rtl_stream_prepare_retune_digital_decode_for_target(target_hz);
     }
     const rtl_stream_retune_analog_profile analog = {family, kind, width_hz, 0};
     out->queued_rc = rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
@@ -20442,6 +20910,8 @@ family_test_queue_symbol_profile(uint32_t target_hz, int symbol_profile) {
     }
     rtl_stream_prepare_retune_profile_for_target_with_gain(target_hz, family_test_symbol_profile_cqpsk(symbol_profile),
                                                            4800, 4, channel_profile, 10, 0, NULL);
+    /* A typed row's, as the engine marks it (dsd_engine_prepare_retune_profile_for_target()). */
+    rtl_stream_prepare_retune_digital_decode_for_target(target_hz);
 }
 
 /* Whether a retune profile is queued for @p target_hz (rtl_stream_take_pending_retune_profile() would take it). */
@@ -20702,6 +21172,880 @@ rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_f
     family_test_release_buffers();
     fsk_reacquire_test_cleanup_output_ring(initialized_output);
     return 0;
+}
+
+/* The receiver's squelch word as a mode (issue #899): rtl_stream_set_channel_squelch_setting()'s g_squelch_auto_word. */
+static int
+channel_gate_test_mode(void) {
+    return (int)(g_squelch_auto_word.load(std::memory_order_acquire) & 0xFFU);
+}
+
+static int
+channel_gate_test_margin(void) {
+    return (int)((g_squelch_auto_word.load(std::memory_order_acquire) >> 8) & 0xFFU);
+}
+
+/* Whether the receiver runs the closed gate: a level no channel power reaches. */
+static int
+channel_gate_test_closed(void) {
+    return (channel_gate_test_mode() == DSD_SQUELCH_MODE_LEVEL
+            && demod.channel_squelch_level.load(std::memory_order_acquire) > 1.0e30f)
+               ? 1
+               : 0;
+}
+
+/* The receiver's gate at a stream open with none resolved for it, the session's own squelch @p session. */
+static void
+channel_gate_test_open_unresolved(const dsd_squelch_setting* session) {
+    const rtl_stream_start_gate start = {0, *session, *session, *session};
+    rtl_stream_gate_open(&start);
+}
+
+/* A stream open on @p opts's family under Off, written by the decoder, nothing queued. */
+static void
+channel_gate_test_open(const dsd_opts* opts) {
+    rtl_stream_clear_pending_retune_profile();
+    rtl_stream_clear_demod_profile_request();
+    (void)family_test_seed_open(opts, 48000, 0);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open_unresolved(&off);
+    rtl_stream_write_squelch_gate(&off, NULL, NULL);
+}
+
+/* The controller's landing of the profile queued for @p target_hz (taken first, as schedule_manual_retune() takes it);
+   returns what its finalize said about a refusal. */
+static int
+channel_gate_test_controller_land(const dsd_opts* opts, uint32_t target_hz) {
+    RtlRetuneProfile profile{};
+    const int taken = rtl_stream_take_pending_retune_profile(&profile, 7U, target_hz);
+    return family_test_finalize_on_pipeline(&controller, opts, target_hz, taken ? &profile : NULL);
+}
+
+/* Queue an NFM retune for @p target_hz, marked a new channel when @p mark. */
+static void
+channel_gate_test_queue(uint32_t target_hz, int width_hz, int mark) {
+    const rtl_stream_retune_analog_profile analog = {DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, width_hz, 0};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target(target_hz, &analog);
+    rtl_stream_prepare_retune_new_channel_for_target(target_hz, mark);
+}
+
+/* Whether the receiver runs @p gate's level (within a tolerance), as a LEVEL gate. */
+static int
+channel_gate_test_runs_level(double level) {
+    return channel_gate_test_mode() == DSD_SQUELCH_MODE_LEVEL
+                   && fabsf(demod.channel_squelch_level.load(std::memory_order_acquire) - (float)level) < 1e-9f
+               ? 1
+               : 0;
+}
+
+/* The analog landings through the controller's finalize (issue #899): a marked one starts closed, whatever the
+   profile's family did, and the decoder's write opens it. */
+static void
+channel_gate_test_controller_cases(const dsd_opts* opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    uint32_t hz = kFamilyTestRetuneHz;
+    channel_gate_test_open(opts);
+    channel_gate_test_queue(hz, 0, 1);
+    out->outstanding_open = !channel_gate_test_closed() && !rtl_stream_gate_closed_start();
+    (void)channel_gate_test_controller_land(opts, hz);
+    out->landing_closed = channel_gate_test_closed();
+    out->landing_reported = rtl_stream_gate_closed_start();
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    out->write_opened = !channel_gate_test_closed() && !rtl_stream_gate_closed_start();
+    out->write_mode = channel_gate_test_mode();
+    out->write_margin = channel_gate_test_margin();
+
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    channel_gate_test_queue(hz, 0, 1);
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    (void)channel_gate_test_controller_land(opts, hz);
+    out->superseded_closed = channel_gate_test_closed();
+
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    channel_gate_test_queue(hz, 0, 1);
+    rtl_stream_clear_pending_retune_profile();
+    (void)channel_gate_test_controller_land(opts, hz);
+    out->cleared_kept = !channel_gate_test_closed() && channel_gate_test_runs_level(0.0);
+
+    /* 200 kHz: no NFM channel the 48 kHz demod rate runs, refused where it lands; the tuner moved all the same. */
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    RtlRetuneProfile wide{};
+    wide.active = 1;
+    wide.cqpsk_enable = -1;
+    wide.target_freq_hz = hz;
+    wide.analog_family = DSD_RX_FAMILY_ANALOG;
+    wide.analog_kind = DSD_ANALOG_DEMOD_FM;
+    wide.analog_width_hz = 200000;
+    wide.family_request_count = g_live_family_requests.load(std::memory_order_acquire);
+    wide.family_request_seq = g_rx_req_seq.load(std::memory_order_acquire);
+    wide.new_channel = 1;
+    out->refused = family_test_finalize_on_pipeline(&controller, opts, hz, &wide);
+    out->refused_closed = channel_gate_test_closed();
+
+    /* The mark alone: nothing else of the profile applies. */
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    const int symbol_rate_before = demod.symbol_rate_hz;
+    const int ted_before = demod.ted_sps;
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)channel_gate_test_controller_land(opts, hz);
+    out->mark_only_closed = channel_gate_test_closed();
+    out->mark_only_symbols_kept = (demod.symbol_rate_hz == symbol_rate_before && demod.ted_sps == ted_before) ? 1 : 0;
+
+    /* A retune nobody marked (a protocol's) keeps the gate the receiver runs. */
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    channel_gate_test_queue(hz, 0, 0);
+    (void)channel_gate_test_controller_land(opts, hz);
+    out->unmarked_kept = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
+}
+
+/* An external backend's landing, from the decoder's thread: closed, and the mark alone keeps the family and a live
+   request queued before it. */
+static void
+channel_gate_test_external_cases(const dsd_opts* opts, rtl_stream_test_channel_gate_result* out) {
+    uint32_t hz = kFamilyTestRetuneHz + 200000U;
+    channel_gate_test_open(opts);
+    channel_gate_test_queue(hz, 0, 1);
+    (void)family_test_apply_external_retune(hz);
+    out->external_closed = channel_gate_test_closed();
+
+    hz += 12500U;
+    channel_gate_test_open(opts);
+    const int family_before = demod.analog_family;
+    family_test_queue_with_pipeline(DSD_RX_FAMILY_ANALOG, 12500, 0);
+    const uint32_t queued_seq = rtl_stream_receive_request_seq();
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)family_test_apply_external_retune(hz);
+    out->mark_only_external_closed = channel_gate_test_closed();
+    out->mark_only_family_kept = demod.analog_family == family_before ? 1 : 0;
+    {
+        std::lock_guard<std::mutex> lock(g_profile_req_m);
+        out->mark_only_request_kept = (g_profile_req_pending.load(std::memory_order_acquire)
+                                       && g_profile_req_analog_family == DSD_RX_FAMILY_ANALOG
+                                       && g_rx_req_seq.load(std::memory_order_relaxed) == queued_seq)
+                                          ? 1
+                                          : 0;
+    }
+    rtl_stream_clear_demod_profile_request();
+}
+
+/* A live analog request of @p kind and @p width_hz, taken at the next block boundary. */
+static void
+channel_gate_test_analog_request(int kind, int width_hz) {
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, kind, width_hz);
+    test_stream_set(NULL);
+    family_test_demod_thread_boundary();
+}
+
+/* Live family requests (issue #899): one into the analog family, or onto another analog kind, starts closed; a width
+   change does not; one into the digital family runs the digital gate the decoder gave, never the analog one. */
+static void
+channel_gate_test_family_cases(const dsd_opts* analog_opts, const dsd_opts* digital_opts,
+                               rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting minus40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    channel_gate_test_open(digital_opts);
+    rtl_stream_write_squelch_gate(&minus40, NULL, NULL);
+    family_test_queue_with_pipeline(DSD_RX_FAMILY_ANALOG, 12500, 0);
+    family_test_demod_thread_boundary();
+    out->family_switched = demod.analog_family != 0 ? 1 : 0;
+    out->family_closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    rtl_stream_write_squelch_gate(&noise10, &minus40, NULL);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_FM, 16000);
+    out->width_kept = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_AM, 0);
+    out->kind_closed = channel_gate_test_closed();
+    rtl_stream_write_squelch_gate(&noise10, &minus40, NULL);
+    family_test_queue_with_pipeline(DSD_RX_FAMILY_DIGITAL, 0, 1);
+    family_test_demod_thread_boundary();
+    out->digital_switched = demod.analog_family == 0 ? 1 : 0;
+    out->digital_runs_digital =
+        !channel_gate_test_closed() && channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+    rtl_stream_write_squelch_gate(&noise10, &minus40, NULL);
+    out->digital_write_runs_digital = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+
+    /* An analog channel under noise +10 (digital gate -40 dB): a retune nobody marked that lands the digital family (a
+       control-channel hunt) runs the digital gate. */
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &minus40, NULL);
+    rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 0};
+    (void)rtl_stream_prepare_retune_analog_profile_for_target(kFamilyTestRetuneHz + 700000U, &digital);
+    (void)channel_gate_test_controller_land(digital_opts, kFamilyTestRetuneHz + 700000U);
+    out->hunt_runs_digital = demod.analog_family == 0 && !channel_gate_test_closed()
+                             && channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+
+    /* Refused as it is asked for (200 kHz): nothing moves. */
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 200000);
+    test_stream_set(NULL);
+    family_test_demod_thread_boundary();
+    out->refused_kept = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
+
+    /* A marked retune retires a queued analog request and starts closed; the decoder writes, and the symbol-only
+       request after it leaves that gate alone. */
+    channel_gate_test_open(analog_opts);
+    family_test_queue_with_pipeline(DSD_RX_FAMILY_ANALOG, 16000, 0);
+    const uint32_t retire_hz = kFamilyTestRetuneHz + 900000U;
+    channel_gate_test_queue(retire_hz, 12500, 1);
+    (void)channel_gate_test_controller_land(analog_opts, retire_hz);
+    out->retired_closed = channel_gate_test_closed();
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    family_test_queue_with_pipeline(-1, 0, 1);
+    family_test_demod_thread_boundary();
+    out->retired_kept = channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10;
+
+    /* An open on the analog family starts closed until the decoder writes, and starts its closed-start count and
+       duration over. */
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    (void)family_test_seed_open(analog_opts, 48000, 0);
+    channel_gate_test_open_unresolved(&off);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    out->open_counts_reset = (status.closed_starts == 0 && fabs(status.closed_ms) < 1e-9) ? 1 : 0;
+    out->open_closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    out->open_opened = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE;
+    (void)rtl_stream_get_squelch_status(&status);
+    out->open_counted = status.closed_starts == 1 ? 1 : 0;
+}
+
+/* A start the decoder resolved the gate for (round 9) runs it from its first block, with no closed start, and the
+   status names what the next block takes; a start with none resolved starts closed (round 10: the gate is an argument
+   of the start, so nothing of an earlier start's remains). */
+static void
+channel_gate_test_resolved_open_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    (void)family_test_seed_open(analog_opts, 48000, 0);
+    const rtl_stream_start_gate resolved = {1, noise10, off, off};
+    rtl_stream_gate_open(&resolved);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    dsd_squelch_setting runs{};
+    (void)rtl_stream_get_squelch_running(&runs);
+    out->resolved_open_runs = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+                               && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == 0
+                               && dsd_squelch_setting_equal(&runs, &noise10))
+                                  ? 1
+                                  : 0;
+    channel_gate_test_open_unresolved(&off);
+    (void)rtl_stream_get_squelch_running(&runs);
+    out->resolved_open_once = (channel_gate_test_closed() && rtl_stream_gate_closed_start()
+                               && runs.mode == DSD_SQUELCH_MODE_LEVEL && runs.level > 1.0e30)
+                                  ? 1
+                                  : 0;
+}
+
+/* A typed digital -Y row on an -fA session (round 8): its marked landing puts its symbol profile in place with no
+   digital family, so the receiver leaves the monitor though the family flag stays; the row's samples run the digital
+   gate until its commit. A pause in place there asks the monitor back, a new analog channel. */
+static void
+channel_gate_test_typed_row_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+    const uint32_t hz = kFamilyTestRetuneHz + 1100000U;
+    rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    out->typed_landing_off_monitor = demod.analog_family != 0 && !dsd_demod_analog_monitor_active(&demod);
+    out->typed_landing_open = !channel_gate_test_closed() && !rtl_stream_gate_closed_start();
+    out->typed_landing_runs_digital = channel_gate_test_runs_level(0.0);
+    /* The row commits: the decoder writes the DMR row's gate (Off) and the session's digital one (Off). */
+    rtl_stream_write_squelch_gate(&off, &off, NULL);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_FM, 0);
+    out->typed_pause_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->typed_pause_closed = channel_gate_test_closed();
+    out->typed_pause_reported = rtl_stream_gate_closed_start();
+}
+
+/* The monitor's output block of @p n samples that took a gate: flagged closed (@p closed) or open with no flags, as
+   demod_finish_output_block() finishes it, unresampled. */
+static void
+channel_gate_test_finish_block(int n, int closed) {
+    const int saved_resamp = demod.resamp_enabled;
+    const int saved_voice = demod.voice_lane_active;
+    demod.resamp_enabled = 0;
+    demod.voice_lane_active = 0;
+    demod.result_len = n;
+    demod.result_flags_active = closed;
+    demod.channel_squelched = closed;
+    const float* data = NULL;
+    const float* voice = NULL;
+    const uint8_t* flags = NULL;
+    (void)demod_finish_output_block(&demod, &data, &voice, &flags);
+    demod.result_len = 0;
+    demod.result_flags_active = 0;
+    demod.channel_squelched = 0;
+    demod.resamp_enabled = saved_resamp;
+    demod.voice_lane_active = saved_voice;
+}
+
+/* The monitor's output block of @p n samples that took a gate, flagged closed (@p closed) or open, through the output
+   resampler, as demod_finish_output_block() finishes it with the resampler on. Returns the samples it produced. */
+static size_t
+channel_gate_test_finish_resampled_block(int n, int closed) {
+    const int saved_voice = demod.voice_lane_active;
+    demod.voice_lane_active = 0;
+    for (int i = 0; i < n; i++) {
+        demod.result[i] = 0.0f;
+        demod.result_flags[i] = closed ? (uint8_t)DSD_SQUELCH_FLAG_CLOSED : (uint8_t)0U;
+    }
+    demod.result_len = n;
+    demod.result_flags_active = closed;
+    demod.channel_squelched = closed;
+    const float* data = NULL;
+    const float* voice = NULL;
+    const uint8_t* flags = NULL;
+    const size_t produced = demod_finish_output_block(&demod, &data, &voice, &flags);
+    demod.result_len = 0;
+    demod.result_flags_active = 0;
+    demod.channel_squelched = 0;
+    demod.voice_lane_active = saved_voice;
+    return produced;
+}
+
+/* An AM channel's closed start and open blocks with its output resampler on (round 10): counted in the output samples
+   produced (resamp_process_block_flags()), not the block's input length. */
+static void
+channel_gate_test_am_resampled_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_AM, 0);
+    const int saved_resamp = demod.resamp_enabled;
+    demod.resamp_enabled = resamp_design(&demod, 1, 2);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    const uint64_t closed_before = status.closed_samples;
+    const size_t produced =
+        channel_gate_test_finish_resampled_block(48, 1) + channel_gate_test_finish_resampled_block(48, 1);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_resampled_closed_produced = (int)produced;
+    out->am_resampled_closed_counted =
+        (demod.resamp_enabled && dsd_demod_am_active(&demod) && status.closed_samples == closed_before + produced) ? 1
+                                                                                                                   : 0;
+    rtl_stream_write_squelch_gate(&off, NULL, NULL);
+    const uint64_t unjudged_before = status.unjudged_samples;
+    const size_t open_produced = channel_gate_test_finish_resampled_block(48, 0);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_resampled_unjudged_counted =
+        (open_produced > 0U && status.unjudged_samples == unjudged_before + open_produced) ? 1 : 0;
+    demod.resamp_enabled = saved_resamp;
+}
+
+/* A direct rtl_stream_toggle_cqpsk() on the NFM monitor (round 10) is a gate boundary of its own: it takes the front
+   end off the monitor, so the receiver runs the session's gate from it, and a digital symbol request and the
+   decoder's write after it select the digital gate. */
+static void
+channel_gate_test_cqpsk_toggle_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting minus40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &minus40, &off);
+    rtl_stream_toggle_cqpsk(1);
+    out->cqpsk_toggle_off_monitor = !dsd_demod_analog_monitor_active(&demod);
+    out->cqpsk_toggle_runs_session = (!channel_gate_test_closed() && channel_gate_test_runs_level(0.0)) ? 1 : 0;
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 0);
+    test_stream_set(NULL);
+    family_test_demod_thread_boundary();
+    rtl_stream_write_squelch_gate(&noise10, &minus40, &off);
+    out->cqpsk_toggle_write_runs_digital = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+    rtl_stream_toggle_cqpsk(0);
+}
+
+/* One block of @p pairs complex samples of a low tone through the demod thread's squelch take, full_demod() and the
+   status it publishes, as the demod thread runs them. */
+static void
+channel_gate_test_run_block(int pairs) {
+    for (int k = 0; k < pairs; k++) {
+        const float phase = 0.0625f * (float)k;
+        const size_t at = (size_t)k * 2U;
+        demod.input_cb_buf[at] = 0.5f * cosf(phase);
+        demod.input_cb_buf[at + 1U] = 0.5f * sinf(phase);
+    }
+    demod.lowpassed = demod.input_cb_buf;
+    demod.lp_len = pairs * 2;
+    demod_take_squelch_setting(&demod);
+    full_demod(&demod);
+    demod_publish_squelch_status(&demod);
+}
+
+/* A block produced on a closed start (round 9) publishes no dynamic squelch status: the receiver mutes it outright,
+   and neither the tracker nor the noise squelch ran on it, whatever ran on the channel before. */
+static void
+channel_gate_test_closed_status_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    channel_gate_test_run_block(4096);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    out->running_status_active = status.active;
+    const uint32_t hz = kFamilyTestRetuneHz + 1300000U;
+    channel_gate_test_queue(hz, 0, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    channel_gate_test_run_block(4096);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->closed_block_flagged = (channel_gate_test_closed() && demod.result_flags_active && demod.result_len > 0
+                                 && demod.result_flags[0] == DSD_SQUELCH_FLAG_CLOSED)
+                                    ? 1
+                                    : 0;
+    out->closed_status_inactive = (!status.active && !status.noise && status.gate_open == 1) ? 1 : 0;
+    demod.result_len = 0;
+    demod.result_flags_active = 0;
+    demod.lp_len = 0;
+}
+
+/* The closed start's samples are counted where they are produced (round 8): a block that took the closed gate counts
+   for that closed start even when the decoder's write opened the gate before the block finished; the landing
+   telemetry runs on the analog monitor only, never on the M17 encoder's monitor. */
+static void
+channel_gate_test_telemetry_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    channel_gate_test_open_unresolved(&off);
+    /* The block takes the closed gate, the decoder's write opens it, then the block is finished. */
+    rtl_stream_write_squelch_gate(&off, NULL, NULL);
+    channel_gate_test_finish_block(64, 1);
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    out->in_flight_counted = status.closed_samples == 64U ? 1 : 0;
+
+    const uint64_t unjudged_before = status.unjudged_samples;
+    channel_gate_test_finish_block(32, 0);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->monitor_unjudged_counted = status.unjudged_samples == unjudged_before + 32U ? 1 : 0;
+
+    demod.analog_family = 0;
+    demod.m17_encoder_monitor = 1;
+    const int encoder = dsd_demod_encoder_monitor_active(&demod);
+    channel_gate_test_finish_block(32, 0);
+    channel_gate_test_finish_block(16, 1);
+    demod.m17_encoder_monitor = 0;
+    demod.analog_family = 1;
+    rtl_stream_squelch_status after{};
+    (void)rtl_stream_get_squelch_status(&after);
+    out->encoder_uncounted =
+        (encoder && after.unjudged_samples == status.unjudged_samples && after.closed_samples == status.closed_samples)
+            ? 1
+            : 0;
+
+    /* An AM channel (-fM), whose output is not FM-scaled (round 9): its closed start's blocks before a delayed write,
+       and its open blocks under Off. */
+    channel_gate_test_open(analog_opts);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_AM, 0);
+    const int am_closed = dsd_demod_am_active(&demod) && channel_gate_test_closed();
+    channel_gate_test_finish_block(48, 1);
+    channel_gate_test_finish_block(48, 1);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_closed_counted = (am_closed && status.closed_samples == 96U) ? 1 : 0;
+    rtl_stream_write_squelch_gate(&off, NULL, NULL);
+    const uint64_t am_unjudged_before = status.unjudged_samples;
+    channel_gate_test_finish_block(24, 0);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->am_unjudged_counted = status.unjudged_samples == am_unjudged_before + 24U ? 1 : 0;
+}
+
+/* Two digital rows (round 9): the decoder's write for a digital row with its own -40 dB runs it; a marked landing of
+   the next digital row runs the session's Off from its first block, before the decoder writes for that row, never the
+   outgoing row's own. An unmarked retune there (a trunking grant) keeps the running gate, and repeated symbol
+   requests on the digital family (a P25 Phase 1 CQPSK re-push at every accepted sync) do no gate work at all. */
+static void
+channel_gate_test_digital_row_cases(const dsd_opts* digital_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting minus40 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(digital_opts);
+    rtl_stream_write_squelch_gate(&minus40, &minus40, &off);
+    out->digital_row_runs_own = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+    uint32_t hz = kFamilyTestRetuneHz + 1700000U;
+    rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)channel_gate_test_controller_land(digital_opts, hz);
+    out->digital_landing_runs_session =
+        (demod.analog_family == 0 && !channel_gate_test_closed() && channel_gate_test_runs_level(0.0)) ? 1 : 0;
+
+    rtl_stream_write_squelch_gate(&minus40, &minus40, &off);
+    hz += 12500U;
+    rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
+    (void)channel_gate_test_controller_land(digital_opts, hz);
+    out->digital_grant_kept = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+
+    const int locks_before = g_test_gate_boundary_locks.load(std::memory_order_relaxed);
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    for (int i = 0; i < 50; i++) {
+        (void)rtl_stream_request_demod_profile(1, 4800, 4, DSD_CH_LPF_PROFILE_P25_CQPSK, 0, 0);
+        family_test_demod_thread_boundary();
+    }
+    test_stream_set(NULL);
+    out->digital_repush_locks = g_test_gate_boundary_locks.load(std::memory_order_relaxed) - locks_before;
+    out->digital_repush_kept = channel_gate_test_runs_level(dsd_squelch_level_from_sql(-40.0));
+
+    /* The status the telemetry polls (rounds 12, 13) loads nothing of the gate word the receiver runs; the getter does. */
+    const int reads_before = g_squelch_auto_word.loads.load(std::memory_order_relaxed);
+    rtl_stream_squelch_status status{};
+    for (int i = 0; i < 50; i++) {
+        (void)rtl_stream_get_squelch_status(&status);
+    }
+    out->digital_poll_running_reads = g_squelch_auto_word.loads.load(std::memory_order_relaxed) - reads_before;
+    dsd_squelch_setting runs{};
+    (void)rtl_stream_get_squelch_running(&runs);
+    out->digital_getter_running_reads =
+        g_squelch_auto_word.loads.load(std::memory_order_relaxed) - reads_before - out->digital_poll_running_reads;
+}
+
+/* The public squelch setters run through the gate (round 9): the decoder's next write compares against what they set,
+   and one made on a closed start ends it as a write would. */
+static void
+channel_gate_test_public_setter_cases(const dsd_opts* analog_opts, rtl_stream_test_channel_gate_result* out) {
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    rtl_stream_set_channel_squelch(0.0f);
+    const int level_off = channel_gate_test_runs_level(0.0);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    out->public_level_then_write =
+        (level_off && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10) ? 1 : 0;
+    rtl_stream_set_channel_squelch_setting(&off);
+    const int setting_off = channel_gate_test_runs_level(0.0);
+    rtl_stream_write_squelch_gate(&noise10, NULL, NULL);
+    out->public_setting_then_write =
+        (setting_off && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10) ? 1 : 0;
+
+    const uint32_t hz = kFamilyTestRetuneHz + 1500000U;
+    channel_gate_test_queue(hz, 0, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    const int closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    rtl_stream_squelch_status status{};
+    (void)rtl_stream_get_squelch_status(&status);
+    const int starts_before = status.closed_starts;
+    rtl_stream_set_channel_squelch_setting(&noise10);
+    (void)rtl_stream_get_squelch_status(&status);
+    out->public_ends_closed =
+        (closed && !channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+         && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && status.closed_starts == starts_before + 1)
+            ? 1
+            : 0;
+}
+
+/* What a channel-gate case runs inside channel_gate_test_fixture(): @p analog_opts an -fA session's, @p digital_opts a
+   digital one's, @p ctx the case's own. */
+typedef void (*ChannelGateTestBody)(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx);
+
+/* Run @p body on the receiver with its output ring, the stream stand-in and both sessions' options set up, and put the
+   receiver back as it was afterwards. 0, or -2 when the fixture could not be set up. */
+static int
+channel_gate_test_fixture(ChannelGateTestBody body, void* ctx) {
+    int initialized_output = 0;
+    if (fsk_reacquire_test_prepare_output_ring(0U, &initialized_output) != 0) {
+        fsk_reacquire_test_cleanup_output_ring(initialized_output);
+        return -2;
+    }
+    const uint32_t saved_word = g_squelch_auto_word.load(std::memory_order_relaxed);
+    const float saved_level = demod.channel_squelch_level.load(std::memory_order_relaxed);
+    const FamilyTestSaved saved = family_test_save();
+    test_stream_set(NULL);
+    /* The options for the fixture's lifetime only (a dsd_opts is never static or on the stack). */
+    dsd_opts* analog_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*analog_opts)));
+    dsd_opts* digital_opts = static_cast<dsd_opts*>(calloc(1, sizeof(*digital_opts)));
+    const int rc = (analog_opts && digital_opts) ? 0 : -2;
+    if (rc == 0) {
+        analog_opts->analog_only = 1;
+        analog_opts->monitor_input_audio = 1;
+        g_cqpsk_toggle_test_stream.output = &output;
+        g_cqpsk_toggle_test_stream.opts = analog_opts;
+        body(analog_opts, digital_opts, ctx);
+    }
+    rtl_stream_clear_pending_retune_profile();
+    rtl_stream_clear_demod_profile_request();
+    {
+        const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+        channel_gate_test_open_unresolved(&off);
+        rtl_stream_write_squelch_gate(&off, NULL, NULL);
+    }
+    family_test_restore(saved);
+    family_test_release_buffers();
+    demod.channel_squelch_level.store(saved_level, std::memory_order_relaxed);
+    g_squelch_auto_word.store(saved_word, std::memory_order_relaxed);
+    g_cqpsk_toggle_test_stream.opts = NULL;
+    free(analog_opts);
+    free(digital_opts);
+    fsk_reacquire_test_cleanup_output_ring(initialized_output);
+    return rc;
+}
+
+static void
+channel_gate_test_all_cases(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    rtl_stream_test_channel_gate_result* out = static_cast<rtl_stream_test_channel_gate_result*>(ctx);
+    channel_gate_test_controller_cases(analog_opts, out);
+    channel_gate_test_external_cases(analog_opts, out);
+    channel_gate_test_family_cases(analog_opts, digital_opts, out);
+    channel_gate_test_typed_row_cases(analog_opts, out);
+    channel_gate_test_telemetry_cases(analog_opts, out);
+    channel_gate_test_closed_status_cases(analog_opts, out);
+    channel_gate_test_public_setter_cases(analog_opts, out);
+    channel_gate_test_digital_row_cases(digital_opts, out);
+    channel_gate_test_resolved_open_cases(analog_opts, out);
+    channel_gate_test_am_resampled_cases(analog_opts, out);
+    channel_gate_test_cqpsk_toggle_cases(analog_opts, out);
+}
+
+extern "C" int
+rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out) {
+    if (!out) {
+        return -1;
+    }
+    *out = {};
+    return channel_gate_test_fixture(channel_gate_test_all_cases, out);
+}
+
+namespace {
+/* The typed digital row of rtl_stream_test_typed_row_gate() and what it found. */
+struct TypedRowGateCase {
+    rtl_stream_test_typed_row_profile profile;
+    rtl_stream_test_typed_row_gate_result out;
+};
+} // namespace
+
+/* An -fA session under noise +10 (Off for the digital family) puts a typed digital row's profile in place, by a marked
+   retune landing or by a live symbol request, then pauses in place (its FM request back to the monitor). */
+static void
+channel_gate_test_typed_row_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    (void)digital_opts;
+    TypedRowGateCase* c = static_cast<TypedRowGateCase*>(ctx);
+    const rtl_stream_test_typed_row_profile* p = &c->profile;
+    rtl_stream_test_typed_row_gate_result* out = &c->out;
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+    if (p->by_request) {
+        test_stream_set(&g_cqpsk_toggle_test_stream);
+        (void)rtl_stream_request_decode_demod_profile(p->cqpsk, p->symbol_rate_hz, p->levels, p->channel_profile, 0, 0);
+        test_stream_set(NULL);
+        family_test_demod_thread_boundary();
+    } else {
+        const uint32_t hz = kFamilyTestRetuneHz + 1300000U;
+        rtl_stream_prepare_retune_profile_for_target_with_gain(hz, p->cqpsk, p->symbol_rate_hz, p->levels,
+                                                               p->channel_profile, 0, 0, NULL);
+        rtl_stream_prepare_retune_digital_decode_for_target(hz);
+        rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+        (void)channel_gate_test_controller_land(analog_opts, hz);
+    }
+    out->family_kept = demod.analog_family != 0 ? 1 : 0;
+    out->off_monitor = !dsd_demod_analog_monitor_active(&demod) && !dsd_demod_dynamic_squelch_path(&demod);
+    out->landing_open = !channel_gate_test_closed() && !rtl_stream_gate_closed_start();
+    out->runs_digital = channel_gate_test_runs_level(0.0);
+    /* What the stream publishes says the same (no analog profile on air), and a demod rate change's refresh of the
+       analog channel leaves the row's profile in place. */
+    rtl_stream_publish_demod_profile_snapshot();
+    out->published_off_monitor = rtl_stream_get_analog_profile(NULL, NULL, NULL) == 0 ? 1 : 0;
+    char err[DSD_ANALOG_ERROR_TEXT_MAX];
+    (void)rtl_demod_refresh_analog_channel_for_rate(&demod, err, sizeof err);
+    out->refresh_kept = !dsd_demod_analog_monitor_active(&demod);
+    /* The row commits (the decoder writes Off for it and for the digital family), then pauses in place. */
+    rtl_stream_write_squelch_gate(&off, &off, NULL);
+    channel_gate_test_analog_request(DSD_ANALOG_DEMOD_FM, 0);
+    out->pause_monitor = dsd_demod_analog_monitor_active(&demod);
+    out->pause_closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+}
+
+extern "C" int
+rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
+                               rtl_stream_test_typed_row_gate_result* out) {
+    if (!profile || !out) {
+        return -1;
+    }
+    TypedRowGateCase c = {*profile, {}};
+    const int rc = channel_gate_test_fixture(channel_gate_test_typed_row_body, &c);
+    *out = c.out;
+    return rc;
+}
+
+namespace {
+/* rtl_stream_test_pause_against_hunt()'s order and result. */
+struct PauseHuntCase {
+    int order;
+    rtl_stream_test_pause_hunt_result out;
+};
+} // namespace
+
+/* The in-place pause's FM request, or a frame-sync hunt's symbol request (the DMR shape the hunt asks for, no digital
+   decode's), queued for the demod thread. */
+static void
+pause_hunt_test_queue(int hunt) {
+    test_stream_set(&g_cqpsk_toggle_test_stream);
+    if (hunt) {
+        (void)rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    } else {
+        (void)rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 0);
+    }
+    test_stream_set(NULL);
+}
+
+/* An -fA session under noise +10 (Off for the digital family) with a typed DMR row landed and committed pauses in place:
+   its FM request and a stale frame-sync hunt request, in @p order (0: FM then hunt, one block boundary; 1: FM, a
+   boundary, hunt, a boundary; 2: hunt then FM, one boundary; 3: hunt, a boundary, FM, a boundary). */
+static void
+pause_hunt_test_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    (void)digital_opts;
+    PauseHuntCase* c = static_cast<PauseHuntCase*>(ctx);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    channel_gate_test_open(analog_opts);
+    rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+    const uint32_t hz = kFamilyTestRetuneHz + 1500000U;
+    rtl_stream_prepare_retune_profile_for_target_with_gain(hz, 0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 0, 0, NULL);
+    rtl_stream_prepare_retune_digital_decode_for_target(hz);
+    rtl_stream_prepare_retune_new_channel_for_target(hz, 1);
+    (void)channel_gate_test_controller_land(analog_opts, hz);
+    c->out.row_off_monitor = !dsd_demod_analog_monitor_active(&demod);
+    rtl_stream_write_squelch_gate(&off, &off, NULL);
+    const int hunt_first = c->order >= 2;
+    const int split = (c->order % 2) != 0;
+    pause_hunt_test_queue(hunt_first);
+    if (split) {
+        family_test_demod_thread_boundary();
+    }
+    pause_hunt_test_queue(!hunt_first);
+    family_test_demod_thread_boundary();
+    c->out.monitor = dsd_demod_analog_monitor_active(&demod);
+    c->out.closed = channel_gate_test_closed() && rtl_stream_gate_closed_start();
+    /* The decoder writes the session's gates once the pause's request settled. */
+    rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+    c->out.analog_gate = !channel_gate_test_closed() && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE
+                         && channel_gate_test_margin() == 10;
+}
+
+extern "C" int
+rtl_stream_test_pause_against_hunt(int order, rtl_stream_test_pause_hunt_result* out) {
+    if (!out || order < 0 || order > 3) {
+        return -1;
+    }
+    PauseHuntCase c = {order, {}};
+    const int rc = channel_gate_test_fixture(pause_hunt_test_body, &c);
+    *out = c.out;
+    return rc;
+}
+
+namespace {
+/* The landing thread of rtl_stream_test_gate_write_during_landings(). */
+struct GateWriteRace {
+    const dsd_opts* analog_opts = nullptr;
+    const dsd_opts* digital_opts = nullptr;
+    int rounds = 0;
+    std::atomic<int> landings{0};
+    std::atomic<int> writes{0};
+    /* The round each thread has reached (round 10): both meet at every round before its write and its landing, so
+       neither banks progress for later rounds however the two are scheduled (one core included). The same round's
+       write and landing are then ordered by nothing but the gate's lock, which is what TSan checks; a round's
+       operations happen-before the next round's, only through this meeting. A write that read the demodulator is
+       reported in every run, one core included (the round-8 fix reverted). */
+    std::atomic<int> writer_round{0};
+    std::atomic<int> lander_round{0};
+};
+} // namespace
+
+/* Arrive at @p round on @p mine and wait until @p theirs has too. */
+static void
+gate_write_race_meet(std::atomic<int>* mine, const std::atomic<int>* theirs, int round) {
+    mine->store(round, std::memory_order_release);
+    while (theirs->load(std::memory_order_acquire) < round) {
+        dsd_thread_yield();
+    }
+}
+
+static DSD_THREAD_RETURN_TYPE DSD_RTL_THREAD_CALL
+gate_write_race_lander(void* arg) {
+    GateWriteRace* race = static_cast<GateWriteRace*>(arg);
+    const rtl_stream_retune_analog_profile digital = {DSD_RX_FAMILY_DIGITAL, DSD_ANALOG_DEMOD_FM, 0, 0};
+    for (int i = 0; i < race->rounds; i++) {
+        /* Digital first, so the last landing is the marked NFM one. */
+        const uint32_t hz = kFamilyTestRetuneHz + 25000U * (uint32_t)(i % 8);
+        const int analog = (i % 2) != 0;
+        if (analog) {
+            channel_gate_test_queue(hz, 0, 1);
+        } else {
+            (void)rtl_stream_prepare_retune_analog_profile_for_target(hz, &digital);
+        }
+        /* The profile is taken before the meeting (as schedule_manual_retune() takes it) and lands after it: the
+           landing's demodulator writes come after the last lock it took, so a write of this round that runs before
+           them has no lock between them, and one that read the demodulator would race them. */
+        RtlRetuneProfile profile{};
+        const int taken = rtl_stream_take_pending_retune_profile(&profile, 7U, hz);
+        gate_write_race_meet(&race->lander_round, &race->writer_round, i + 1);
+        /* The writer's turn first where one core runs both: it met this round already, and writes once it runs. */
+        dsd_thread_yield();
+        (void)family_test_finalize_on_pipeline(&controller, analog ? race->analog_opts : race->digital_opts, hz,
+                                               taken ? &profile : NULL);
+        race->landings.fetch_add(1, std::memory_order_relaxed);
+    }
+    DSD_THREAD_RETURN;
+}
+
+namespace {
+/* rtl_stream_test_gate_write_during_landings()'s rounds and result. */
+struct GateWriteRaceCase {
+    int rounds;
+    rtl_stream_test_gate_write_race_result* out;
+    int rc;
+};
+} // namespace
+
+static void
+gate_write_race_body(const dsd_opts* analog_opts, const dsd_opts* digital_opts, void* ctx) {
+    GateWriteRaceCase* c = static_cast<GateWriteRaceCase*>(ctx);
+    rtl_stream_test_gate_write_race_result* out = c->out;
+    channel_gate_test_open(analog_opts);
+    const dsd_squelch_setting off = dsd_squelch_setting_of_level(0.0);
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_noise(10);
+    GateWriteRace race;
+    race.analog_opts = analog_opts;
+    race.digital_opts = digital_opts;
+    race.rounds = c->rounds;
+    dsd_thread_t lander{};
+    if (dsd_thread_create(&lander, gate_write_race_lander, &race) != 0) {
+        c->rc = -3;
+        return;
+    }
+    for (int i = 0; i < race.rounds; i++) {
+        gate_write_race_meet(&race.writer_round, &race.lander_round, i + 1);
+        rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+        race.writes.fetch_add(1, std::memory_order_relaxed);
+    }
+    (void)dsd_thread_join(lander);
+    out->landings = race.landings.load(std::memory_order_acquire);
+    out->writes = race.writes.load(std::memory_order_acquire);
+    rtl_stream_write_squelch_gate(&noise10, &off, NULL);
+    out->final_open = (!channel_gate_test_closed() && !rtl_stream_gate_closed_start()
+                       && channel_gate_test_mode() == DSD_SQUELCH_MODE_NOISE && channel_gate_test_margin() == 10)
+                          ? 1
+                          : 0;
+}
+
+extern "C" int
+rtl_stream_test_gate_write_during_landings(int rounds, rtl_stream_test_gate_write_race_result* out) {
+    if (!out || rounds < 2 || (rounds % 2) != 0) {
+        return -1;
+    }
+    *out = {};
+    GateWriteRaceCase c = {rounds, out, 0};
+    const int rc = channel_gate_test_fixture(gate_write_race_body, &c);
+    return rc != 0 ? rc : c.rc;
 }
 
 /* Threads waiting to take the reconfigure gate (reconfigure_gate_take()). */
@@ -21225,7 +22569,7 @@ family_test_note_front_end(rtl_stream_test_front_end_state* out) {
 /* The DMR session's own symbol profile, timed for the 48 kHz output. */
 static int
 family_test_request_dmr_session_profile(void) {
-    return rtl_stream_request_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
+    return rtl_stream_request_decode_demod_profile(0, 4800, 4, DSD_CH_LPF_PROFILE_12K5, 10, 0);
 }
 
 /* The -Y leave of a DMR session (channel_scan_restore_frontend()): the family-less retunes outstanding superseded, the
@@ -21731,20 +23075,13 @@ dsd_rtl_stream_return_pwr(void) {
     return (double)g_channel_pwr.load(std::memory_order_relaxed);
 }
 
-/**
- * @brief Set the channel squelch level in the demod state.
- */
-extern "C" void
-rtl_stream_set_channel_squelch(float level) {
-    /* The level before the word that makes it the one in force (see g_squelch_auto_word). */
-    demod.channel_squelch_level.store(level, std::memory_order_relaxed);
-    g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_LEVEL, std::memory_order_release);
-}
-
-extern "C" void
-rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
-    if (!setting || !dsd_squelch_mode_is_dynamic(setting->mode)) {
-        rtl_stream_set_channel_squelch(setting ? (float)setting->level : 0.0f);
+/* The demodulator's channel squelch takes @p setting, bare (the gate's lock held: rtl_stream_gate_apply_locked()). */
+static void
+rtl_stream_store_channel_squelch(const dsd_squelch_setting* setting) {
+    if (!dsd_squelch_mode_is_dynamic(setting->mode)) {
+        /* The level before the word that makes it the one in force (see g_squelch_auto_word). */
+        demod.channel_squelch_level.store((float)setting->level, std::memory_order_relaxed);
+        g_squelch_auto_word.store((uint32_t)DSD_SQUELCH_MODE_LEVEL, std::memory_order_release);
         return;
     }
     int margin = setting->margin_db;
@@ -21755,6 +23092,22 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     }
     /* The word alone: the level stays for a block that took the LEVEL word before this store (see g_squelch_auto_word). */
     g_squelch_auto_word.store((uint32_t)setting->mode | ((uint32_t)margin << 8), std::memory_order_release);
+}
+
+/**
+ * @brief Set the channel squelch level in the demod state.
+ */
+extern "C" void
+rtl_stream_set_channel_squelch(float level) {
+    const dsd_squelch_setting setting = dsd_squelch_setting_of_level((double)level);
+    rtl_stream_set_channel_squelch_setting(&setting);
+}
+
+extern "C" void
+rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
+    const dsd_squelch_setting runs = setting ? *setting : dsd_squelch_setting_of_level(0.0);
+    std::lock_guard<std::mutex> lock(g_pending_retune_profile_mutex);
+    rtl_stream_gate_run_locked(&runs);
 }
 
 extern "C" int
@@ -21771,6 +23124,24 @@ rtl_stream_get_squelch_status(rtl_stream_squelch_status* out) {
     out->plan_valid = g_squelch_status_plan_valid.load(std::memory_order_relaxed);
     out->floor_power = (double)g_squelch_status_floor.load(std::memory_order_relaxed);
     out->window_power = (double)g_squelch_status_window_power.load(std::memory_order_relaxed);
+    out->closed_starts = g_gate_closed_starts.load(std::memory_order_relaxed);
+    out->closed_ms = g_gate_closed_ms.load(std::memory_order_relaxed);
+    out->closed_samples = g_gate_closed_samples.load(std::memory_order_relaxed);
+    out->unjudged_samples = g_gate_unjudged_samples.load(std::memory_order_relaxed);
+    return 0;
+}
+
+extern "C" int
+rtl_stream_get_squelch_running(dsd_squelch_setting* out) {
+    if (!out) {
+        return -1;
+    }
+    /* What the next block takes (demod_take_squelch_setting()): the word, and under a LEVEL word its level. */
+    const uint32_t word = g_squelch_auto_word.load(std::memory_order_acquire);
+    const int mode = (int)(word & 0xFFU);
+    *out = dsd_squelch_mode_is_dynamic(mode)
+               ? dsd_squelch_setting_dynamic(mode, (int)((word >> 8) & 0xFFU))
+               : dsd_squelch_setting_of_level((double)demod.channel_squelch_level.load(std::memory_order_relaxed));
     return 0;
 }
 

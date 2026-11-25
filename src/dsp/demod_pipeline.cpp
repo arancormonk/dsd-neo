@@ -729,11 +729,18 @@ dsd_demod_reset_filter_state(struct demod_state* d) {
         d->cqpsk_agc_avg = 1.0f;
     }
     post_decim_reset_state(d);
-    /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor and starts its
-       windows (and the coherence history) over, so none spans the reset; at another it moves the floor. The noise
-       squelch's next block starts it over. */
+    /* The auto squelch's next block takes its context afresh: at the same context it keeps the floor, closes the gate
+       and starts its windows (and the coherence history) over, so none spans the reset; at another it moves the floor.
+       The noise squelch's next block starts it over. */
     d->squelch_auto_ran = 0;
     d->squelch_noise_ran = 0;
+}
+
+void
+dsd_demod_squelch_note_retune(struct demod_state* d) {
+    if (d) {
+        d->squelch_new_stream = 0;
+    }
 }
 
 /* The analog width the channel plan is designed for, or 0 for the profile design. Gated on the analog family's monitor
@@ -2156,8 +2163,9 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
     if (dsd_squelch_step_model_matches(&d->squelch_step_model, &d->live_iq_step.plan)) {
         return 0;
     }
-    /* A new model, or none after a failed build: the plans designed under this key (from no model, or another one)
-       are designed again at the next block. */
+    /* A new model, or none after a failed build: the plans taken under this key (from no model, or another one) are
+       taken again at the next block. The floor plan is designed again; the noise plan is designed again, or taken from
+       the kept plans, which hold only valid plans designed from the model their key's step names. */
     d->squelch_plan.set = 0;
     d->noise_plan.set = 0;
     dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
@@ -2193,10 +2201,47 @@ squelch_floor_ensure_plan(struct demod_state* d) {
     d->squelch_plan = k;
 }
 
+/* The kept noise squelch plan designed for @p k, now taken; NULL when none is kept. */
+static const dsd_noise_squelch_plan*
+squelch_noise_cached_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    for (int i = 0; i < DSD_DEMOD_NOISE_PLAN_CACHE; i++) {
+        dsd_demod_noise_plan_entry* e = &d->noise_plan_cache[i];
+        if (e->used != 0U && squelch_plan_key_same(&e->key, k)) {
+            e->used = ++d->noise_plan_cache_clock;
+            return &e->plan;
+        }
+    }
+    return NULL;
+}
+
+/* Keep @p plan, designed for @p k, in an empty entry or in place of the one taken longest ago. */
+static void
+squelch_noise_keep_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k,
+                        const dsd_noise_squelch_plan* plan) {
+    dsd_demod_noise_plan_entry* slot = &d->noise_plan_cache[0];
+    for (int i = 1; i < DSD_DEMOD_NOISE_PLAN_CACHE && slot->used != 0U; i++) {
+        dsd_demod_noise_plan_entry* e = &d->noise_plan_cache[i];
+        if (e->used < slot->used) {
+            slot = e;
+        }
+    }
+    slot->key = *k;
+    slot->plan = *plan;
+    slot->used = ++d->noise_plan_cache_clock;
+}
+
+/* The noise squelch takes the plan for the channel plan in force: the one it has, one kept from before (a scan
+   alternating widths), or one designed now and kept. A plan that cannot be designed is not kept (that costs little). */
 static void
 squelch_noise_ensure_plan(struct demod_state* d) {
     const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
     if (squelch_plan_key_same(&d->noise_plan, &k)) {
+        return;
+    }
+    const dsd_noise_squelch_plan* kept = squelch_noise_cached_plan(d, &k);
+    if (kept != NULL) {
+        dsd_noise_squelch_set_plan(&d->noise_squelch, kept);
+        d->noise_plan = k;
         return;
     }
     dsd_noise_squelch_plan plan;
@@ -2214,6 +2259,10 @@ squelch_noise_ensure_plan(struct demod_state* d) {
         const int count = squelch_cascade_stages(k.passes, stages);
         (void)dsd_noise_squelch_plan_design(&plan, taps, k.taps_len, stages, count, k.rate_hz);
     }
+    d->noise_plan_designs++;
+    if (plan.valid) {
+        squelch_noise_keep_plan(d, &k, &plan);
+    }
     dsd_noise_squelch_set_plan(&d->noise_squelch, &plan);
     d->noise_plan = k;
 }
@@ -2227,13 +2276,23 @@ squelch_flag_histories_reset(struct demod_state* d) {
     DSD_MEMSET(d->resamp_flag_hist, DSD_SQUELCH_FLAG_CLOSED, sizeof(d->resamp_flag_hist));
 }
 
-/* The tracker takes the context it runs in: a gap since it last ran starts its windows over, and a new context moves
-   the floor (remembered for the context left, seeded from the cache for the one taken, or learned). A floor kept
-   through a gap ages like a cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital
-   traffic) it is learned again, neither kept nor stored for its channel with a fresh stamp. */
+/* The tracker takes the context it runs in: a gap since it last ran (a stream open or restart, a reconnect, a spell
+   under another squelch) is a stream boundary, which keeps the floor, closes the gate and starts the windows over, and a
+   new context moves the floor (remembered for the context left, seeded from the cache for the one taken, or learned),
+   and drops a hold a restart left on the context before. The first context it takes on a stream the IO layer opened
+   (demod_state::squelch_new_stream, which level, off and digital blocks before it leave in place) holds a floor the
+   cache seeds as a kept one is (dsd_squelch_floor_stream_restart()): the sample time its age counts stopped while no
+   stream ran, so it is no fresher than a kept floor. A retune seeds it as before, the open's mark gone with it
+   (dsd_demod_squelch_note_retune()). A live
+   plan change is not a gap: the tracker takes it in squelch_floor_ensure_plan(). A floor kept through a gap ages like a
+   cached one: past DSD_SQUELCH_FLOOR_STALE_S of sample time (the level squelch, digital traffic) it is learned again,
+   neither kept nor stored for its channel with a fresh stamp. */
 static void
 squelch_auto_take_context(struct demod_state* d) {
     dsd_squelch_floor* t = &d->squelch_floor;
+    /* A stream open's mark lasts until the tracker's first context on the reopened stream, whatever ran before it. */
+    const int new_stream = d->squelch_new_stream;
+    d->squelch_new_stream = 0;
     const int same =
         d->squelch_context_applied_set && dsd_squelch_floor_key_equal(&d->squelch_context_applied, &d->squelch_context);
     if (d->squelch_auto_ran && same) {
@@ -2244,11 +2303,14 @@ squelch_auto_take_context(struct demod_state* d) {
         dsd_squelch_floor_reset(t);
     }
     if (same) {
-        dsd_squelch_floor_restart_windows(t);
+        dsd_squelch_floor_stream_restart(t);
     } else {
         dsd_squelch_floor_change_context(t, &d->squelch_cache,
                                          d->squelch_context_applied_set ? &d->squelch_context_applied : NULL,
                                          &d->squelch_context);
+        if (new_stream && t->state != DSD_SQUELCH_FLOOR_LEARNING) {
+            dsd_squelch_floor_stream_restart(t);
+        }
     }
     squelch_flag_histories_reset(d);
     d->squelch_context_applied = d->squelch_context;
@@ -2390,6 +2452,12 @@ full_demod_update_channel_state(struct demod_state* d, int streamed) {
         d->squelch_gate_open = 0;
         for (int k = 0; k < d->lp_len; k++) {
             d->lowpassed[k] = 0.0f;
+        }
+        if (squelch_level >= (float)DSD_SQUELCH_LEVEL_CLOSED) {
+            /* Closed outright (issue #899): each sample flagged closed too, so a decoder that reads the flags (a
+               dynamic squelch in its options) neither plays nor learns its gain from the zeros. */
+            DSD_MEMSET(d->result_flags, DSD_SQUELCH_FLAG_CLOSED, (size_t)(d->lp_len >> 1));
+            d->result_flags_active = 1;
         }
         return;
     }

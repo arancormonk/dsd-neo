@@ -125,6 +125,17 @@ typedef struct {
     dsd_live_iq_step_plan step;
 } dsd_demod_squelch_plan_key;
 
+/* Noise squelch plans kept for the channel plans run last (issue #899): designing one calibrates on 2 s of noise (tens
+   of milliseconds on the demod thread), so a scan that alternates NFM widths designs each one once. */
+enum { DSD_DEMOD_NOISE_PLAN_CACHE = 4 };
+
+/* One kept plan: what it was designed for, and when it was last taken (0: empty). */
+typedef struct {
+    dsd_demod_squelch_plan_key key;
+    dsd_noise_squelch_plan plan;
+    uint64_t used;
+} dsd_demod_noise_plan_entry;
+
 struct demod_state {
 #ifdef __cplusplus
     demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -264,6 +275,11 @@ struct demod_state {
     /* Analog receive family (the -fA monitor; not the M17 encoder, which shares the analog front end). While set,
        channel_lpf_width_hz > 0 drives the channel filter instead of channel_lpf_profile. */
     int analog_family;
+    /* 1 while a digital decode's symbol profile (a typed digital scan row's) runs on the analog family without a family
+       switch, whatever channel filter it names (TETRA's 18000/4 off CQPSK filters with WIDE, as the monitor does): the
+       front end is then off the analog monitor (dsd_demod_analog_monitor_active()). Set where a requested or retuned
+       symbol profile applies on the analog family, cleared wherever the analog channel is applied again. */
+    int symbol_profile_on_analog;
     /* 1 for the M17 encoder's monitor (issue #625): the FM/WIDE front end the encoder reads, set when the stream
        opens. Not part of the analog family, but the dynamic squelch runs on it (dsd_demod_encoder_monitor_active()). */
     int m17_encoder_monitor;
@@ -319,6 +335,11 @@ struct demod_state {
     int result_flags_active;
     /* 1 when the previous block ran the tracker, and the context it ran in. */
     int squelch_auto_ran;
+    /* Set by the IO layer at a stream open, cleared when the auto squelch's tracker first takes a context after it (a
+       level, off or digital block before that leaves it set) or when the stream retunes to another channel first
+       (dsd_demod_squelch_note_retune()): a floor the cache seeds for that context is held as one kept through a
+       restart (issue #899). */
+    int squelch_new_stream;
     int squelch_context_applied_set;
     dsd_squelch_floor_key squelch_context_applied;
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
@@ -338,6 +359,11 @@ struct demod_state {
     dsd_squelch_floor_key noise_context;
     dsd_demod_squelch_plan_key noise_plan;
     dsd_noise_squelch noise_squelch;
+    /* The valid plans designed for the last channel plans, the one taken longest ago giving way, and how many plans
+       were designed (a count for tests). Demod thread only. */
+    dsd_demod_noise_plan_entry noise_plan_cache[DSD_DEMOD_NOISE_PLAN_CACHE];
+    uint64_t noise_plan_cache_clock;
+    uint64_t noise_plan_designs;
     /* The noise both squelches see through the live I/Q rate step (issue #806): built for the step's active plan in
        the rate chain's transaction (dsd_demod_squelch_step_model_sync()), and the source of both plans while the
        step runs. Released by rtl_demod_cleanup(). */
@@ -536,14 +562,14 @@ static_assert(sizeof(demod_state::voice_resamp_hist) % DSD_DEMOD_BUF_ALIGN == 0,
 /*
  * Whether the analog family's monitor audio, on the analog channel, is what the demodulator produces. The width-driven
  * channel filter and the published analog profile describe that path only. A symbol profile applied without a family
- * switch leaves the family flag set but moves the front end off that path, and keeps its own profile filter: a CQPSK
- * toggle under -fA moves the output to symbols, and a typed digital scan row's profile puts the row's channel profile
- * in place of the analog (WIDE) one while the monitor output stays.
+ * switch leaves the family flag set but moves the front end off that path: a CQPSK toggle under -fA moves the output to
+ * symbols, and a typed digital scan row's profile is a digital decode's (symbol_profile_on_analog) while the monitor
+ * output stays, whatever channel profile it names (TETRA's off CQPSK is WIDE, as the monitor's is).
  */
 static inline int
 dsd_demod_analog_monitor_active(const struct demod_state* d) {
-    return (d && d->analog_family && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR && !d->cqpsk_enable
-            && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
+    return (d && d->analog_family && !d->symbol_profile_on_analog && d->output_kind == DSD_DEMOD_OUTPUT_AUDIO_MONITOR
+            && !d->cqpsk_enable && d->channel_lpf_profile == DSD_CH_LPF_PROFILE_WIDE)
                ? 1
                : 0;
 }

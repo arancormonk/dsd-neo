@@ -8,6 +8,7 @@
 #include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/spec_fields.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <limits.h>
 #include <math.h>
 #include <stdint.h>
@@ -380,9 +381,12 @@ test_spec_squelch_grammar(void) {
     rc |= expect_squelch("rtl: noise+14", opts, DSD_SQUELCH_MODE_NOISE, 0.0, 14);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:off:2");
     (void)dsd_rtl_input_spec_apply(opts);
-    /* Not a squelch: nothing changes. */
+    /* Not a squelch: the spec is refused (issue #899 B14) and nothing changes. */
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:162.475M:30:-2:48:loud:2");
-    (void)dsd_rtl_input_spec_apply(opts);
+    if (dsd_rtl_input_spec_apply(opts) != -1) {
+        DSD_FPRINTF(stderr, "rtl: loud was not refused\n");
+        rc = 1;
+    }
     rc |= expect_squelch("rtl: loud", opts, DSD_SQUELCH_MODE_LEVEL, 0.0, 0);
     /* --squelch wins. */
     opts->rtl_squelch_cli_set = 1;
@@ -409,6 +413,332 @@ test_spec_squelch_grammar(void) {
     }
     rc |= expect_squelch("soapy: auto+8", soapy, DSD_SQUELCH_MODE_AUTO, 0.25, 8);
     free(soapy);
+    return rc;
+}
+
+/* Issue #899 B14: a spec's squelch field reads as --squelch does, in rtl:, rtltcp: and soapy: specs alike. A field
+ * --squelch would refuse fails the spec with a message naming the field (it was ignored, leaving the -110 dB default,
+ * or, on Soapy, turned the whole tuning tail into device args at 850 MHz), and the spec changes nothing. An empty field
+ * keeps its place and leaves the squelch, mode and level, as it was. Genuine Soapy device args stay device args. */
+static int
+expect_refused_squelch(const char* spec) {
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts->rtl_squelch_margin_db = 12;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+    g_log_text[0] = '\0';
+    int applied = 99;
+    const int nrc = strncmp(spec, "soapy:", 6) == 0 ? dsd_normalize_soapy_input_spec(opts, &applied)
+                                                    : dsd_rtl_input_spec_apply(opts);
+    int rc = 0;
+    if (nrc != -1 || !strstr(g_log_text, "squelch field \"auto+31\"") || !strstr(g_log_text, "3 to 30")) {
+        DSD_FPRINTF(stderr, "%s: rc=%d log '%s', want the squelch field refused\n", spec, nrc, g_log_text);
+        rc = 1;
+    }
+    if (strcmp(opts->audio_in_dev, spec) != 0 || opts->rtlsdr_center_freq != 155340000U || opts->rtl_gain_value != 11
+        || opts->rtl_volume_multiplier != 3 || opts->rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE
+        || opts->rtl_squelch_margin_db != 12 || opts->rtltcp_hostname[0] != '\0') {
+        DSD_FPRINTF(stderr, "%s: refused spec changed opts dev=%s freq=%u gain=%d vol=%d mode=%d host=%s\n", spec,
+                    opts->audio_in_dev, opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtl_volume_multiplier,
+                    opts->rtl_squelch_mode, opts->rtltcp_hostname);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* The field reader itself: the grammar --squelch takes (a linear power over 300 too), and an error that names the
+   field, the input and the grammar's reason for one it refuses, which leaves @p out alone. */
+static int
+test_spec_squelch_field_parse(void) {
+    int rc = 0;
+    dsd_squelch_setting s = dsd_squelch_setting_auto(12);
+    g_log_text[0] = '\0';
+    if (dsd_spec_squelch_field_parse("rtl:", "noise+9", &s) != 0 || s.mode != DSD_SQUELCH_MODE_NOISE || s.margin_db != 9
+        || g_log_text[0] != '\0') {
+        DSD_FPRINTF(stderr, "field parse noise+9: mode %d margin %d log '%s'\n", s.mode, s.margin_db, g_log_text);
+        rc = 1;
+    }
+    if (dsd_spec_squelch_field_parse("airspy:", "301", &s) != 0 || s.mode != DSD_SQUELCH_MODE_LEVEL
+        || fabs(s.level - 301.0) > 1e-9) {
+        DSD_FPRINTF(stderr, "field parse 301: mode %d level %g\n", s.mode, s.level);
+        rc = 1;
+    }
+    if (dsd_spec_squelch_field_parse("rtl:", "auto+31", &s) != -1 || s.mode != DSD_SQUELCH_MODE_LEVEL
+        || !strstr(g_log_text, "Invalid squelch field \"auto+31\" in the rtl: input")
+        || !strstr(g_log_text, "3 to 30")) {
+        DSD_FPRINTF(stderr, "field parse auto+31: mode %d log '%s'\n", s.mode, g_log_text);
+        rc = 1;
+    }
+    g_log_text[0] = '\0';
+    if (dsd_spec_squelch_field_parse("soapy:", "loud", &s) != -1 || !strstr(g_log_text, "\"loud\" in the soapy:")
+        || !strstr(g_log_text, "expected off")) {
+        DSD_FPRINTF(stderr, "field parse loud: log '%s'\n", g_log_text);
+        rc = 1;
+    }
+    if (dsd_spec_squelch_field_parse("rtl:", "noise", NULL) != -1) {
+        DSD_FPRINTF(stderr, "field parse into NULL was not refused\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+static int
+test_spec_squelch_field_refused(void) {
+    static const char* const refused[] = {
+        "rtl:0:154.43M:30:0:24:auto+31:3",
+        "rtltcp:radio.example:1234:154.43M:30:0:24:auto+31:3",
+        "soapy:driver=foo:154.43M:30:0:24:auto+31:3",
+        "soapy::154.43M:30:0:24:auto+31:3",
+        "soapy:154.43M:30:0:24:auto+31:3",
+        /* More fields than a tuning tail holds: refused on the squelch, not taken whole as device args. */
+        "soapy:driver=foo:154.43M:30:0:24:auto+31:3:a:b:c:d:e:f:g:h:i:j:k",
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+        rc |= expect_refused_squelch(refused[i]);
+    }
+    /* --squelch wins over a field it can read, not over one it cannot. */
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    opts->rtl_squelch_cli_set = 1;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:0:154.43M:30:0:24:auto+31:3");
+    if (dsd_rtl_input_spec_apply(opts) != -1) {
+        DSD_FPRINTF(stderr, "auto+31 under --squelch was not refused\n");
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* Issue #899: a K, M or G frequency after an empty frequency place (`soapy:driver=x::851M`, which skipping empty fields
+   once tuned) is refused with a hint, not taken whole as device args at the default frequency; the rule that such a
+   number is always a frequency, never device args, covers the place after it too. A bare number there stays device
+   args, as one out of range in the frequency place does. */
+static int
+test_soapy_frequency_after_an_empty_place_refused(void) {
+    /* However many empty fields come between the device args and the frequency, the run reaching past the 16 fields
+       the reader stores included: the frequency as the 16th field (the last stored), the 17th and the 18th (the
+       first two past them), and after a long run with more fields behind it. */
+    static const char* const refused[] = {"soapy:driver=x::851M",  "soapy:driver=x::851.375M:30", "soapy:::851M",
+                                          "soapy:driver=x:::851M", "soapy:driver=x::::851M:30",   "soapy::::851M"};
+
+    static const struct {
+        size_t empty_fields;
+        const char* after;
+    } long_runs[] = {{14U, "851M"}, {15U, "851M"}, {16U, "851M"}, {16U, "851M:30:0"}, {40U, "851.375M"}};
+
+    const size_t n_short = sizeof refused / sizeof refused[0];
+    const size_t n_long = sizeof long_runs / sizeof long_runs[0];
+    int rc = 0;
+    for (size_t i = 0; i < n_short + n_long; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        char spec[256];
+        if (i < n_short) {
+            DSD_SNPRINTF(spec, sizeof spec, "%s", refused[i]);
+        } else {
+            char colons[64];
+            const size_t run = long_runs[i - n_short].empty_fields;
+            DSD_MEMSET(colons, ':', run + 1U);
+            colons[run + 1U] = '\0';
+            DSD_SNPRINTF(spec, sizeof spec, "soapy:driver=x%s%s", colons, long_runs[i - n_short].after);
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
+        g_log_text[0] = '\0';
+        int applied = 99;
+        const int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        if (nrc != -1 || applied != 0 || !strstr(g_log_text, "Soapy frequency must follow the device args")
+            || !strstr(g_log_text, "'851") || strcmp(opts->audio_in_dev, spec) != 0
+            || opts->rtlsdr_center_freq != 155340000U) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u log '%s'\n", spec, nrc, applied,
+                        opts->audio_in_dev, opts->rtlsdr_center_freq, g_log_text);
+            rc = 1;
+        }
+        free(opts);
+    }
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=x::1234567");
+    int applied = 99;
+    if (dsd_normalize_soapy_input_spec(opts, &applied) != 0 || applied != 0
+        || strcmp(opts->audio_in_dev, "soapy:driver=x::1234567") != 0) {
+        DSD_FPRINTF(stderr, "soapy:driver=x::1234567 -> %s applied=%d\n", opts->audio_in_dev, applied);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* The Soapy tuning tail keeps every field in its place, as rtl: and rtltcp: do: `:24::1` is an empty squelch (mode and
+   level kept) and volume 1, where skipping the empty field read the 1 as the squelch (a linear power) and left the
+   volume as it was. An empty device-args field is no args. */
+static int
+test_soapy_tuning_fields_keep_their_place(void) {
+    static const struct {
+        const char* spec;
+        const char* dev;
+        int mode;
+        int margin;
+        int volume;
+    } cases[] = {
+        {"soapy::154.43M:30:0:24:noise+17:3", "soapy", DSD_SQUELCH_MODE_NOISE, 17, 3},
+        {"soapy:driver=foo:154.43M:30:0:24::1", "soapy:driver=foo", DSD_SQUELCH_MODE_AUTO, 12, 1},
+        {"soapy:154.43M:30:0:24::2", "soapy", DSD_SQUELCH_MODE_AUTO, 12, 2},
+        {"soapy:driver=foo:154.43M::::noise+9:1", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 9, 1},
+        /* Surplus empty fields at the end are no fields: the tuning stays, the interior empty slots keep their places,
+           even when the empty ones take the tail past the fields a tuning tail holds. */
+        {"soapy:driver=foo:154.43M:30:0:24:noise+17:3:", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 17, 3},
+        {"soapy::154.43M:30:0:24::2:::", "soapy", DSD_SQUELCH_MODE_AUTO, 12, 2},
+        {"soapy:driver=foo:154.43M::::noise+9:1:", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 9, 1},
+        {"soapy:driver=foo:154.43M:30:0:24:noise+17:3::::::::::::", "soapy:driver=foo", DSD_SQUELCH_MODE_NOISE, 17, 3},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts->rtl_squelch_margin_db = 12;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", cases[i].spec);
+        int applied = 0;
+        const int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        if (nrc != 0 || applied != 1 || strcmp(opts->audio_in_dev, cases[i].dev) != 0
+            || opts->rtlsdr_center_freq != 154430000U || opts->rtl_squelch_mode != cases[i].mode
+            || opts->rtl_squelch_margin_db != cases[i].margin || fabs(opts->rtl_squelch_level - 0.25) > 1e-12
+            || opts->rtl_volume_multiplier != cases[i].volume) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u mode=%d margin=%d level=%g vol=%d\n",
+                        cases[i].spec, nrc, applied, opts->audio_in_dev, opts->rtlsdr_center_freq,
+                        opts->rtl_squelch_mode, opts->rtl_squelch_margin_db, opts->rtl_squelch_level,
+                        opts->rtl_volume_multiplier);
+            rc = 1;
+        }
+        free(opts);
+    }
+    /* The empty squelch field on rtl: and rtltcp: too. */
+    static const char* const rtl_specs[] = {"rtl:0:154.43M:30:0:24::1", "rtltcp:radio.example:1234:154.43M:30:0:24::1"};
+    for (size_t i = 0; i < sizeof rtl_specs / sizeof rtl_specs[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        opts->rtl_squelch_margin_db = 12;
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", rtl_specs[i]);
+        if (dsd_rtl_input_spec_apply(opts) != 1 || opts->rtl_squelch_mode != DSD_SQUELCH_MODE_AUTO
+            || opts->rtl_squelch_margin_db != 12 || fabs(opts->rtl_squelch_level - 0.25) > 1e-12
+            || opts->rtl_volume_multiplier != 1) {
+            DSD_FPRINTF(stderr, "%s: mode=%d margin=%d level=%g vol=%d\n", rtl_specs[i], opts->rtl_squelch_mode,
+                        opts->rtl_squelch_margin_db, opts->rtl_squelch_level, opts->rtl_volume_multiplier);
+            rc = 1;
+        }
+        free(opts);
+    }
+    /* A field list that is all empty is the default device, as "soapy:" is. */
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy::");
+    int applied = 99;
+    if (dsd_normalize_soapy_input_spec(opts, &applied) != 0 || applied != 0
+        || strcmp(opts->audio_in_dev, "soapy") != 0) {
+        DSD_FPRINTF(stderr, "soapy:: -> %s applied=%d\n", opts->audio_in_dev, applied);
+        rc = 1;
+    }
+    free(opts);
+    return rc;
+}
+
+/* A bracketed address in the device args (SoapyRemote's `remote=[2001:db8::1]`) keeps its colons, which end no field
+   (issue #899): its groups are never read as tuning fields. `1e6` read as a frequency took `abcd` four places on as a
+   squelch field and refused the spec; the args, with or without a port after them, reach the driver whole, as
+   before. The address is device args like any other, so a tuning tail can follow it, and a squelch field the tail
+   holds is read as in any other spec. An unclosed bracket runs to the end of the tail. */
+static int
+test_soapy_bracketed_address_keeps_its_colons(void) {
+    static const char* const opaque[] = {
+        "soapy:driver=remote,remote=[2001:1e6:abcd:0:0:abcd:0:1]",
+        "soapy:driver=remote,remote=[2001:1e6:abcd:0:0:abcd:0:1]:55132",
+        "soapy:remote=[1e6:2e6:3e6:4e6:5e6:6e6:7e6:8e6]",
+        "soapy:driver=remote,remote=[2001:1e6:abcd:0:0:abcd:0:1",
+        "soapy:driver=remote,remote=[2001:1e6:abcd::1]:1234567",
+    };
+    int rc = 0;
+    for (size_t i = 0; i < sizeof opaque / sizeof opaque[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", opaque[i]);
+        g_log_text[0] = '\0';
+        int applied = 99;
+        const int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        if (nrc != 0 || applied != 0 || strcmp(opts->audio_in_dev, opaque[i]) != 0
+            || opts->rtlsdr_center_freq != 155340000U || fabs(opts->rtl_squelch_level - 0.25) > 1e-12) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u level=%g log '%s'\n", opaque[i], nrc, applied,
+                        opts->audio_in_dev, opts->rtlsdr_center_freq, opts->rtl_squelch_level, g_log_text);
+            rc = 1;
+        }
+        free(opts);
+    }
+
+    static const struct {
+        const char* spec;
+        const char* dev;
+    } tuned[] = {
+        {"soapy:driver=remote,remote=[2001:1e6:abcd:0:0:abcd:0:1]:154.43M:30:0:24:noise+17:3",
+         "soapy:driver=remote,remote=[2001:1e6:abcd:0:0:abcd:0:1]"},
+        {"soapy:remote=[::1]:154.43M:30:0:24:noise+17:3:", "soapy:remote=[::1]"},
+    };
+
+    for (size_t i = 0; i < sizeof tuned / sizeof tuned[0]; i++) {
+        dsd_opts* opts = alloc_seeded_opts();
+        if (!opts) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", tuned[i].spec);
+        int applied = 0;
+        const int nrc = dsd_normalize_soapy_input_spec(opts, &applied);
+        if (nrc != 0 || applied != 1 || strcmp(opts->audio_in_dev, tuned[i].dev) != 0
+            || opts->rtlsdr_center_freq != 154430000U || opts->rtl_gain_value != 30 || opts->rtl_dsp_bw_khz != 24
+            || opts->rtl_squelch_mode != DSD_SQUELCH_MODE_NOISE || opts->rtl_squelch_margin_db != 17
+            || opts->rtl_volume_multiplier != 3) {
+            DSD_FPRINTF(stderr, "%s: rc=%d applied=%d dev=%s freq=%u gain=%d bw=%d mode=%d margin=%d vol=%d\n",
+                        tuned[i].spec, nrc, applied, opts->audio_in_dev, opts->rtlsdr_center_freq, opts->rtl_gain_value,
+                        opts->rtl_dsp_bw_khz, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
+                        opts->rtl_volume_multiplier);
+            rc = 1;
+        }
+        free(opts);
+    }
+
+    /* The squelch field after a bracketed address is the tail's own, read as any spec's. */
+    dsd_opts* opts = alloc_seeded_opts();
+    if (!opts) {
+        return 1;
+    }
+    static const char refused[] = "soapy:remote=[::1]:154.43M:30:0:24:loud";
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", refused);
+    g_log_text[0] = '\0';
+    int applied = 99;
+    if (dsd_normalize_soapy_input_spec(opts, &applied) != -1 || applied != 0
+        || !strstr(g_log_text, "Invalid squelch field \"loud\"") || strcmp(opts->audio_in_dev, refused) != 0) {
+        DSD_FPRINTF(stderr, "%s: applied=%d dev=%s log '%s'\n", refused, applied, opts->audio_in_dev, g_log_text);
+        rc = 1;
+    }
+    free(opts);
     return rc;
 }
 
@@ -1034,6 +1364,11 @@ main(void) {
     rc |= test_spec_gain_overflow_refused();
     rc |= test_spec_frequency_rounds_to_the_hz();
     rc |= test_spec_squelch_grammar();
+    rc |= test_spec_squelch_field_parse();
+    rc |= test_spec_squelch_field_refused();
+    rc |= test_soapy_tuning_fields_keep_their_place();
+    rc |= test_soapy_frequency_after_an_empty_place_refused();
+    rc |= test_soapy_bracketed_address_keeps_its_colons();
     rc |= test_spec_bandwidth_field();
     rc |= test_non_soapy_noop();
     rc |= test_soapy_args_only_noop();

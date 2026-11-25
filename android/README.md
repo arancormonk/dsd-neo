@@ -43,6 +43,74 @@ one and use the setting from Settings again. A saved system's PPM is a plain
 field: leave it empty for the same. A scan list entry's gain has **Inherit**:
 the entry then uses its saved system's gain, else the list's.
 
+## Squelch
+
+**The default:** analog FM and AM channels run with the squelch on: **Noise**, at
++10 dB (`noise+10`). An idle channel stays quiet. Noise makes its first decision
+40 ms into a transmission, so on FM a transmission opens the squelch within its
+first 40 ms. AM channels, and NFM at the 8 and 10 kHz widths, run it as Auto
+instead, which has other limits (see below). To change it, open Settings, then
+**Radio defaults · next start**, and under **Squelch** choose **Off**, **Auto**
+or **Noise**, with its margin for Auto and Noise. The change applies from the
+next start.
+
+The app hands the setting to the decoder with every session, and when the input
+is a radio (an RTL-SDR, rtl_tcp, an Airspy, or one that Extra decoder arguments
+choose) the decoder runs it on each analog channel until a squelch is set:
+
+- a saved system or pin set to NFM or AM, unless it has a squelch of its own,
+  saved from the Radio sheet while listening, which always wins;
+- Explore once you pick NFM or AM in the Radio sheet, at the same moment as the
+  switch. Explore starts on Auto decode, a digital decode, with the squelch off;
+  picking a digital mode again turns the default off again;
+- each NFM and AM entry of a scan list that has no squelch of its own (an AM entry
+  runs it as Auto), in lists the app builds and in target CSVs you import alike;
+- Signal search's **Explore here** on a detection it heard as NFM or AM. A
+  running search uses each range's listening squelch instead.
+
+A squelch you set while listening (the Radio or Squelch sheet, the terminal, the
+control API), a saved squelch, or a `--squelch` in Extra decoder arguments is
+yours for the rest of the session: picking a mode never changes it, Off included.
+While the default is the squelch in force, the Radio sheet marks it **default**
+under the squelch reading, on **This channel** of a scan entry that uses it too.
+
+It does not apply to digital decodes (P25, DMR, NXDN, TETRA and the rest, EDACS's
+analog calls included), which run with the squelch off as before, or to audio and
+file inputs (a switch to one takes it out).
+
+AM has no FM noise to measure, so on AM channels, and on NFM at the 8 and 10 kHz
+widths, Noise runs as **Auto** with the same margin, and the reading says so.
+Auto has two limits there:
+
+- When the stream starts over (a switch between FM and AM, a retune to the same
+  frequency, a PPM change, or a gap in the input), a transmission that goes on
+  through it is muted for up to 40 ms, 80 ms at worst, before it plays again
+  (Noise on FM mutes it for its first 40 ms), plus the few ms a new channel
+  stays muted until its squelch is set.
+- Auto first learns the channel's noise. While it is learning, it opens only for
+  what sounds like a carrier, so a transmission already on the air plays at once,
+  and so does a steady carrier or spur (a dongle's birdie, or a distant carrier a
+  few dB over the noise). Auto never learns such a channel's noise and keeps
+  playing it, as with the squelch off: lock the channel out, or use a level.
+
+**What changes when you update** from a version without this setting (an older
+backup restores to this default too):
+
+- Weak NFM signals, about 7 to 8 dB over the noise on a 12.5 kHz channel or
+  weaker, no longer play. Lower the margin, or choose Off, for such a channel.
+- Analog call history now fills in: with the squelch off, analog calls are not
+  kept. With **Record calls** on (or per-call recording turned on with `-P` in
+  Extra decoder arguments), analog calls are recorded too.
+- Analog scan entries no longer hold the scan on noise.
+- The first 40 ms of a channel's audio after each start or tune stays closed (up
+  to 80 ms where Auto runs). A new analog channel also stays muted until the
+  squelch for it is set, a few ms after the tune lands.
+- AM channels, and NFM at the 8 and 10 kHz widths, run it as Auto: Auto learns
+  each new channel's noise in its first moments. Meanwhile noise stays quiet, but
+  a transmission already on the air plays, and so can a steady carrier or spur
+  (see above).
+- Digital decodes are unchanged.
+
 ## Saved encryption keys
 
 Saved systems store `encKeyType` (`""`, `basic`, `hex`, `rc4`, or `scrambler`),
@@ -538,9 +606,10 @@ channel number, not its frequency. If DSD-neo does not know that channel's frequ
   sheet says so and offers **Try saving again**; until it is saved, Monitor keeps a **Tier III channels** row that
   opens the list. If the system's extra decoder arguments (or the app's) also name a channels file with
   `--dmr-chan-overrides`, the channels you saved with the system are used instead of that file whenever the system
-  has any. Extra decoder arguments that end on an option missing its value can take the next argument as that value,
-  as they would on the command line: a `--profile` with nothing after it loses the saved channels, and some options
-  (`-C` with nothing after it) stop the start instead. Restoring or removing a channel that nothing saved with the system sets lasts until you stop listening, and
+  has any. If the system's extra decoder arguments, or the app's, end with an option that still needs its value (a
+  `--profile` or `-C` with nothing after it) or contain a bare `--`, the system does not start: the app says so, and
+  you can give the option its value or remove it. Restoring or removing a channel that nothing saved with the system
+  sets lasts until you stop listening, and
   the sheet says so. If DSD-neo can't write your channels when the system starts (the device is out of storage, say),
   the system starts without them and Home says so until a start passes them again.
 - **Not under trunk scan.** While a trunk scan runs, the channels can be viewed but not changed. If you switch the
@@ -2814,8 +2883,9 @@ the list but apply to the whole session at its next start: lists that differ can
 together ("Different skip-silent setting"). An unchecked box stays off even when Extra
 decoder arguments load a config file
 (`--config`) that turns its setting on. See [Skipping silent channels](../docs/trunk-scan.md#skipping-silent-channels).
-Per-target squelch is CSV-only: import a target CSV whose `options` carry
-`--squelch-db <dB>` (whole dB from -100 to 0, 0 = off, omitted = inherit). It is not a
+The list gives each entry the squelch of its saved system; an entry with none runs the
+session's, which on NFM and AM entries is the app's default ([Squelch](#squelch)). Any other per-target squelch is CSV-only: import a target CSV whose `options` carry
+`--squelch-db <dB>` (whole dB from -120 to 0, 0 = off, omitted = inherit). It is not a
 decoder argument, so Extra decoder arguments cannot set it. The target preview lists each
 target's squelch, or inherit. While such a target is on air, the Radio panel shows its
 threshold with a **row** badge and the default beside it; the squelch buttons change that

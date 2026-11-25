@@ -12,10 +12,12 @@
 #include <algorithm>
 #include <array>
 #include <cmath>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <utility>
 #include "radio_settings.h"
 #include "scan_entry_name.h"
@@ -542,6 +544,57 @@ targetCells(const QVariantMap& entry, const QVariantMap& sys, const Target& targ
     return cells;
 }
 
+/* A dynamic setting in the row grammar's own words: "auto+N" or "noise+N". */
+QString
+dynamicText(int mode, int marginDb) {
+    return (mode == DSD_SQUELCH_MODE_NOISE ? QStringLiteral("noise+") : QStringLiteral("auto+"))
+           + QString::number(marginDb);
+}
+
+/* An active level as a row takes it: the whole dB the config export writes (dsd_squelch_level_whole_db(): nearest,
+   -120..-1, never 0, which a row reads as off); @p rounded set when that is not the level itself
+   (dsd_squelch_level_is_whole_db()), the same rule the Radio sheet saves by. */
+QString
+rowLevelText(double level, bool* rounded) {
+    int db = -1;
+    (void)dsd_squelch_level_whole_db(level, &db);
+    *rounded = dsd_squelch_level_is_whole_db(level, nullptr) == 0;
+    return QString::number(db);
+}
+
+/* The --squelch value target @p target's row carries (issue #899, B13; see scan_list_targets()), or empty for none. */
+QString
+rowSquelch(const QVariantMap& sys, const Target& target, ScanListTargets& out) {
+    const int kind = analogKindForFlag(target.decode);
+    const auto radio = sys.value("radioSettings").toMap();
+    if (!radio.contains("squelch")) {
+        return {};
+    }
+    const QString text = radio.value("squelch").toString();
+    dsd_squelch_setting setting{};
+    const QByteArray bytes = text.toUtf8();
+    if (dsd_squelch_setting_parse(bytes.constData(), &setting, nullptr, 0U) != 0) {
+        return {};
+    }
+    if (dsd_squelch_setting_is_dynamic(&setting)) {
+        if (kind < 0) {
+            return QStringLiteral("off");
+        }
+        const int mode = kind == DSD_ANALOG_DEMOD_AM ? DSD_SQUELCH_MODE_AUTO : setting.mode;
+        return dynamicText(mode, setting.margin_db);
+    }
+    if (dsd_squelch_setting_is_off(&setting)) {
+        return QStringLiteral("off");
+    }
+    bool rounded = false;
+    const QString level = rowLevelText(setting.level, &rounded);
+    if (rounded) {
+        out.warnings << sys.value("name").toString()
+                            + QStringLiteral(": the saved squelch level runs as %1 dB in the scan list.").arg(level);
+    }
+    return level;
+}
+
 QString
 appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVariantMap& list, QSet<QString>& seen,
              QSet<QString>& ids, QString& csv, ScanListTargets& out) {
@@ -574,9 +627,9 @@ appendTarget(const QVariantMap& entry, const QVariantList& systems, const QVaria
     if (target.widthHz > 0) {
         options << scan_list_width_option_name(analogKindForFlag(target.decode)) << QString::number(target.widthHz);
     }
-    const auto radio = sys.value("radioSettings").toMap();
-    if (radio.contains("squelch")) {
-        options << QStringLiteral("--squelch") << radio.value("squelch").toString();
+    const QString squelch = rowSquelch(sys, target, out);
+    if (!squelch.isEmpty()) {
+        options << QStringLiteral("--squelch") << squelch;
     }
     const QString src = sys.value("srcCsvPath").toString();
     if (!src.isEmpty() && src != list.value("srcCsvPath").toString()) {

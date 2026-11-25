@@ -72,10 +72,23 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
  */
 extern "C" int
 rtl_stream_start(RtlSdrContext* ctx) {
+    return rtl_stream_start_gated(ctx, NULL);
+}
+
+/**
+ * @brief Start the stream on the squelch gate the decoder resolved for this start (issue #899).
+ *
+ * @param ctx Stream context created by rtl_stream_create().
+ * @param start_gate The gate, this start's alone (NULL: the options the context was created with, run from the first
+ * block).
+ * @return 0 on success; otherwise <0 on error.
+ */
+extern "C" int
+rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     if (!ctx || !ctx->stream) {
         return -1;
     }
-    return ctx->stream->start();
+    return ctx->stream->start(start_gate);
 }
 
 /**

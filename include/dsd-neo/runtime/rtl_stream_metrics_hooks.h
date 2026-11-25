@@ -79,6 +79,13 @@ typedef struct {
     void (*set_channel_squelch)(double mean_power);
     /** The whole channel squelch setting: a LEVEL threshold or an AUTO margin over the learned floor. */
     void (*set_channel_squelch_setting)(const dsd_squelch_setting* setting);
+    /** The receiver's squelch gate (issue #899): write it for the channel on air (rtl_stream_write_squelch_gate()),
+        whether a new analog channel waits closed for that write (rtl_stream_gate_closed_start()), and whether any
+        receive request the decoder made is still unsettled (rtl_stream_receive_request_outcome()). */
+    void (*write_squelch_gate)(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                               const dsd_squelch_setting* session);
+    int (*gate_closed_start)(void);
+    int (*receive_requests_pending)(void);
     /* Receive family / analog profile request (dsd_rx_family, dsd_analog_demod, width in Hz; 0 = default). */
     int (*apply_analog_profile)(int family, int kind, int width_hz);
     /* A digital family request that lands the digital family's landing whichever family the front end runs
@@ -149,19 +156,36 @@ int dsd_rtl_stream_metrics_hook_input_level(dsd_input_level_snapshot* out);
 int dsd_rtl_stream_metrics_hook_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz,
                                                     int levels, int channel_profile, int ted_sps);
 /**
- * @brief Hand the demodulator's channel squelch a new threshold.
+ * @brief Hand a demodulator's channel squelch a new threshold, bare: whatever channel it is on, with no closed start.
  *
- * Scan rows and targets that override the squelch (issue #521) reach the RTL demodulator
- * only through this hook; the engine maps it to rtl_stream_set_channel_squelch(). Returns 0
- * when forwarded and -1 when no radio backend is installed.
+ * The engine installs neither bare setter (issue #899): on a radio backend the gate is written only through
+ * dsd_rtl_stream_metrics_hook_write_squelch_gate(), by the engine's settle (dsd_receiver_gate_settle_hook_run()), so
+ * this returns -1 there. It remains the fallback of a runtime with no engine installed (a test's own table, which then
+ * takes the setting as it is). Returns 0 when forwarded and -1 when the table has no such hook.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch(double mean_power);
 /**
- * @brief Hand the demodulator a whole squelch setting (issue #518 follow-up): through set_channel_squelch_setting, or,
- * when only set_channel_squelch is installed, as a threshold (an AUTO setting is then off). Returns 0 when forwarded and
- * -1 when neither is installed or @p setting is NULL.
+ * @brief Hand a demodulator a whole squelch setting, bare (issue #518 follow-up): through set_channel_squelch_setting,
+ * or, when only set_channel_squelch is installed, as a threshold (an AUTO setting is then off). As for the level
+ * setter, the engine installs neither (issue #899): a scan scope's push reaches a radio through the engine's settle,
+ * and only a runtime with no engine installed falls back to this. Returns 0 when forwarded and -1 when neither is
+ * installed or @p setting is NULL.
  */
 int dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_setting* setting);
+
+/**
+ * @brief Write the squelch gate of the receiver's channel on air (issue #899, rtl_stream_write_squelch_gate()): @p gate
+ * on the analog monitor, @p digital off it, and @p session, the session's own squelch a later new channel off the
+ * monitor runs until the next write. 0, or -1 when no radio backend is installed or @p gate is NULL.
+ */
+int dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                                   const dsd_squelch_setting* session);
+/** @brief 1 while a new analog channel waits closed for the decoder's write (rtl_stream_gate_closed_start()); 0 with
+ * none or no radio backend. Lock-free. */
+int dsd_rtl_stream_metrics_hook_gate_closed_start(void);
+/** @brief 1 while a receive request the decoder made is unsettled (the demod thread has not applied it); 0 with none or
+ * no radio backend. */
+int dsd_rtl_stream_metrics_hook_receive_requests_pending(void);
 /**
  * @brief Ask the RTL front end for a receive family and, for analog, a demodulator kind and channel width.
  *

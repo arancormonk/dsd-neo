@@ -21,6 +21,7 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_types.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/platform/sockets.h>
@@ -79,8 +80,9 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     g_rtl_start_calls++;
     if (g_rtl_start_replay_center != 0U && g_rtl_create_opts != NULL) {
         g_rtl_create_opts->iq_replay_center_freq = g_rtl_start_replay_center;
@@ -1209,15 +1211,38 @@ test_rtltcp_invalid_and_partial_tuning_tokens(void) {
     if (init_test_runtime(&opts, &state) != 0) {
         return 1;
     }
-    /* An unparseable squelch token is not a request to switch the squelch off:
-     * the setting the session already had has to survive it. */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24:loud:3");
+    /* An unparseable squelch token is not a request to switch the squelch off, nor one to keep the squelch the session
+     * already had (issue #899 B14): --squelch refuses it, so the start stops, naming the field, and the spec changes
+     * nothing. An empty field keeps its place and the squelch, and the volume after it still reads. */
+    static const char* const unparseable[] = {"rtltcp:sql.example:1234:450M:11:0:24:loud:3",
+                                              "rtltcp:sql.example:1234:450M:11:0:24:auto+31:3"};
+    for (size_t i = 0; i < sizeof unparseable / sizeof unparseable[0]; i++) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", unparseable[i]);
+        opts->rtl_squelch_level = 0.25;
+        opts->rtl_volume_multiplier = 2;
+        char log[4096] = {0};
+        if (run_lifecycle_capturing_banner(opts, state, log, sizeof log, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        test_rc |= expect_true("rtltcp unparseable sql refuses the start", rc != 0);
+        test_rc |= expect_contains("rtltcp unparseable sql names the field", log, "squelch field");
+        test_rc |=
+            expect_double_near("rtltcp unparseable sql keeps the threshold", opts->rtl_squelch_level, 0.25, 1e-12);
+        test_rc |= expect_true("rtltcp unparseable sql sets nothing",
+                               opts->rtl_volume_multiplier == 2 && opts->rtlsdr_center_freq != 450000000U);
+    }
+    free_test_runtime(opts, state);
+
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:sql.example:1234:450M:11:0:24::3");
     opts->rtl_squelch_level = 0.25;
     rc = dsd_engine_run_with_lifecycle(opts, state, NULL);
-    test_rc |= expect_true("rtltcp unparseable sql run ok", rc == 0);
-    test_rc |=
-        expect_double_near("rtltcp unparseable sql keeps previous threshold", opts->rtl_squelch_level, 0.25, 1e-12);
-    test_rc |= expect_true("rtltcp unparseable sql still parses volume", opts->rtl_volume_multiplier == 3);
+    test_rc |= expect_true("rtltcp empty sql run ok", rc == 0);
+    test_rc |= expect_double_near("rtltcp empty sql keeps the threshold", opts->rtl_squelch_level, 0.25, 1e-12);
+    test_rc |= expect_true("rtltcp empty sql still parses volume", opts->rtl_volume_multiplier == 3);
 
     free_test_runtime(opts, state);
 
@@ -1286,6 +1311,42 @@ test_soapy_setup_normalizes_args_and_tuning(void) {
     test_rc |= expect_omits("soapy banner does not invent a threshold", banner, "SQ=-120");
 
     free_test_runtime(opts, state);
+    return test_rc;
+}
+
+/* Issue #899: the SoapySDR tuning notice names the squelch the receiver opens with, the analog default included and
+   marked as the live readout marks it, not the spec's 0 it was read before: an NFM start with
+   --squelch-analog-default noise+10 reads SQ=noise+10dB (default), a digital one SQ=off. */
+static int
+test_soapy_banner_names_the_analog_default(void) {
+    int test_rc = 0;
+    for (int analog = 1; analog >= 0; analog--) {
+        dsd_opts* opts = NULL;
+        dsd_state* state = NULL;
+        if (init_test_runtime(&opts, &state) != 0) {
+            return 1;
+        }
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy:162.475M:30:0:48:0:2");
+        opts->analog_only = analog;
+        opts->analog_demod = DSD_ANALOG_DEMOD_FM;
+        test_rc |=
+            expect_true("banner default option", dsd_squelch_analog_default_parse(opts, "noise+10", NULL, 0U) == 0);
+        char banner[8192] = {0};
+        int rc = 0;
+        if (run_lifecycle_capturing_banner(opts, state, banner, sizeof banner, &rc) != 0) {
+            free_test_runtime(opts, state);
+            return 1;
+        }
+        test_rc |= expect_true("banner default run ok", rc == 0);
+        if (analog) {
+            test_rc |= expect_contains("an NFM start names the default", banner, "SQ=noise+10dB (default) VOL=2");
+            test_rc |= expect_omits("an NFM start does not say off", banner, "SQ=off");
+        } else {
+            test_rc |= expect_contains("a digital start runs off", banner, "SQ=off VOL=2");
+            test_rc |= expect_omits("a digital start names no default", banner, "(default)");
+        }
+        free_test_runtime(opts, state);
+    }
     return test_rc;
 }
 
@@ -1964,10 +2025,11 @@ test_config_channel_map_weighs_the_tone_filter(void) {
 }
 
 /*
- * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) a --squelch noise is refused, a
- * noise setting that came from an input spec or the config runs as auto with the same N and says so, and the FM
- * monitor takes it as set. Without a radio input it runs on audio input (issue #628) without a word at startup: the
- * PCM noise squelch says so itself if the input has no room or no band. --squelch auto there is off and says so.
+ * --squelch noise needs FM (issue #518 follow-up): on the AM monitor (-fM, no scan) of a radio input a noise setting
+ * runs as auto with the same N and says so, whatever set it: --squelch as much as an input spec or the config (issue
+ * #899 D4: --squelch noise there stopped the start), and the FM monitor takes it as set. Without a radio input it
+ * runs on audio input (issue #628) without a word at startup, on AM audio too (where it is off): the PCM noise squelch
+ * says so itself if the input has no room or no band. --squelch auto there is off and says so.
  */
 static int
 test_noise_squelch_needs_fm(void) {
@@ -1980,13 +2042,14 @@ test_noise_squelch_needs_fm(void) {
         int mode;
         int ok;
     } cases[] = {
-        {"soapy:driver=test:118.1M:7:0:24", "--squelch noise needs an FM channel", NULL, 1, 1, DSD_SQUELCH_MODE_NOISE,
-         0},
+        {"soapy:driver=test:118.1M:7:0:24", "The noise squelch needs an FM channel; this AM channel runs auto+12dB.",
+         "--squelch noise needs an FM", 1, 1, DSD_SQUELCH_MODE_NOISE, 1},
         {"soapy:driver=test:118.1M:7:0:24:noise+12:2", "runs auto+12dB", "--squelch noise needs an FM", 1, 0,
          DSD_SQUELCH_MODE_NOISE, 1},
         {"soapy:driver=test:162.475M:7:0:24", "SQ=noise+12dB", "--squelch noise needs an FM", 0, 1,
          DSD_SQUELCH_MODE_NOISE, 1},
         {NULL, NULL, "needs a radio input", 0, 1, DSD_SQUELCH_MODE_NOISE, 1},
+        {NULL, NULL, "needs an FM channel", 1, 1, DSD_SQUELCH_MODE_NOISE, 1},
         {NULL, "--squelch auto needs a radio input", "needs an FM", 0, 1, DSD_SQUELCH_MODE_AUTO, 1},
     };
 
@@ -2415,6 +2478,7 @@ main(void) {
     rc |= test_trunk_scan_turns_off_rtl_udp_control();
     rc |= test_rtltcp_invalid_and_partial_tuning_tokens();
     rc |= test_soapy_setup_normalizes_args_and_tuning();
+    rc |= test_soapy_banner_names_the_analog_default();
     rc |= test_iq_replay_guard_and_requested_setup();
     rc |= test_lifecycle_hooks_start_after_setup_and_stop_before_cleanup();
 #ifdef SIGHUP

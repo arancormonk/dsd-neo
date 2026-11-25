@@ -31,6 +31,8 @@
 #include <QVariantList>
 #include <QVariantMap>
 #include <Qt>
+#include <QtGlobal>
+#include <cmath>
 #include <cstdio>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/frontend_runtime.h>
@@ -39,12 +41,18 @@
 #include <dsd-neo/core/init.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/wav_recording.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/bootstrap.h>
 #include <dsd-neo/runtime/cli.h>
+#include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
+#include <dsd-neo/runtime/squelch.h>
+#include <dsd-neo/runtime/telemetry.h>
 #include <memory>
 #include <qtenvironmentvariables.h>
 #include <stdint.h>
@@ -279,6 +287,60 @@ test_scan_list(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
     prefs.setRecordCalls(false);
 }
 
+/* Issue #899: a generated scan list's plain nfm row carries no squelch of its own (it inherits), and the session's argv
+   passes the app's default for the decoder to run on it, as every radio start does; an Advanced --squelch comes after
+   it and is the session's explicit squelch. The decoder reads both as the command line says. */
+void
+test_scan_list_rows_inherit(dsd_qt::AppPrefs& prefs, Sessions& sessions) {
+    const struct {
+        const char* squelch;
+        const char* extra;
+        int mode;
+        int ended;
+    } cases[] = {
+        {"noise+10", "", DSD_SQUELCH_MODE_NOISE, 0},
+        {"auto+14", "", DSD_SQUELCH_MODE_AUTO, 0},
+        {"noise+10", "--squelch -1", DSD_SQUELCH_MODE_NOISE, 1},
+        {"off", "", DSD_SQUELCH_MODE_LEVEL, 0},
+    };
+
+    dsd_qt::ScanListsModel lists;
+    expect("the nfm scan list is added", lists.add({{"name", "Simplex"},
+                                                    {"sourceType", "usb"},
+                                                    {"entries", QVariantList{QVariantMap{{"kind", "freq"},
+                                                                                         {"name", "Ops"},
+                                                                                         {"protocol", "nfm"},
+                                                                                         {"freqMhz", "154.43"},
+                                                                                         {"enabled", true}}}}}));
+    const QVariantMap list = lists.get(lists.count() - 1);
+    for (const auto& c : cases) {
+        prefs.setSquelch(QString::fromLatin1(c.squelch));
+        prefs.setExtraArgs(QString::fromLatin1(c.extra));
+        dsd_qt::ScanListStarter starter(&prefs, nullptr);
+        starter.setRecordingSessions(&sessions);
+        Host host;
+        expect("the scan list starts", starter.start(list, &host).value("started").toBool());
+        const qsizetype at = host.argv.indexOf(QStringLiteral("--trunk-scan"));
+        QFile csv(host.argv.value(at + 1));
+        const bool read = at >= 0 && csv.open(QIODevice::ReadOnly);
+        const QString row = read ? QString::fromUtf8(csv.readAll()).trimmed().section(QLatin1Char('\n'), 1) : QString();
+        Decoder decoder;
+        const bool parsed = parse(host.argv, decoder);
+        const dsd_opts* opts = decoder.opts.get();
+        const bool ok = row.contains(QStringLiteral("nfm-conventional,154430000,"))
+                        && !row.contains(QStringLiteral("--squelch")) && parsed && opts->squelch_default_mode == c.mode
+                        && (opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED) == (c.ended != 0);
+        if (!ok) {
+            DSD_FPRINTF(stderr, "  squelch=%s extra=%s row=%s parsed=%d mode=%d state=%d\n", c.squelch, c.extra,
+                        qPrintable(row), parsed ? 1 : 0, opts->squelch_default_mode, opts->squelch_default_state);
+        }
+        expect("the nfm row inherits, and the decoder holds the app's default", ok);
+    }
+    expect("the scan list is removed", lists.remove(lists.count() - 1));
+    prefs.setSquelch(QStringLiteral("noise+10"));
+    prefs.setExtraArgs(QString());
+}
+
 /* Start @p args as the decoder host does (dsd_runtime_bootstrap(): a config file named with --config loads first, then
    the command line goes over it), into @p decoder. */
 bool
@@ -394,6 +456,289 @@ struct LiveSession {
         return dsd_app_drain_cmds(decoder.opts.get(), decoder.state.get());
     }
 };
+
+/* The squelch the decoder holds now: its mode, its margin for a dynamic one, its level in dB (0 for off). */
+bool
+squelchIs(const dsd_opts* opts, int mode, int margin, double db) {
+    if (opts->rtl_squelch_mode != mode) {
+        return false;
+    }
+    if (mode != DSD_SQUELCH_MODE_LEVEL) {
+        return opts->rtl_squelch_margin_db == margin;
+    }
+    const double level = dsd_squelch_level_from_sql(db);
+    return db == 0.0 ? !(opts->rtl_squelch_level > 0.0) : std::fabs(opts->rtl_squelch_level - level) <= level * 1e-9;
+}
+
+/* A session started from @p system through the real builder, parsed and with its radio spec read as the engine reads
+   it when the input opens (a radio input), the squelch it opens with settled as the engine's setup settles it, the
+   frontend runtime up on it. */
+struct LiveStart {
+    Decoder decoder;
+
+    LiveStart(dsd_qt::AppPrefs& prefs, const QVariantMap& system, const QString& kind, bool* ok) {
+        dsd_qt::SessionArgsBuilder builder(&prefs);
+        Host host;
+        *ok = builder.start(system, &host, kind).value("started").toBool() && parse(host.argv, decoder)
+              && dsd_rtl_input_spec_apply(decoder.opts.get()) == 1;
+        decoder.opts->audio_in_type = AUDIO_IN_RTL; // as the engine sets it when the radio opens
+        (void)dsd_squelch_analog_default_sync(decoder.opts.get(), decoder.state.get());
+        dsd_app_frontend_runtime_start(decoder.opts.get(), decoder.state.get());
+    }
+
+    ~LiveStart() { dsd_app_frontend_runtime_stop(); }
+
+    LiveStart(const LiveStart&) = delete;
+    LiveStart& operator=(const LiveStart&) = delete;
+
+    int
+    drain() {
+        return dsd_app_drain_cmds(decoder.opts.get(), decoder.state.get());
+    }
+};
+
+/* The decoder's notice line now. */
+QString
+uiMessage(const LiveStart& live) {
+    return QString::fromUtf8(live.decoder.state->ui_msg);
+}
+
+/* Issue #899: the dB choice puts back the level kept beneath a dynamic squelch and says what it asked for, tagged, so
+ * the Radio sheet saves that level and only on a snapshot taken after the decoder answered the request. */
+void
+test_restore_level_says_what_it_asked(dsd_qt::AppPrefs& prefs) {
+    dsd_qt::CommandBridge bridge;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    bool ok = false;
+    LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+    dsd_opts* opts = live.decoder.opts.get();
+    expect("an Explore start parses", ok);
+    expect("a level, then noise above it", bridge.setSquelchDb(-60.0) && live.drain() == 1 && bridge.setSquelchNoise(12)
+                                               && live.drain() == 1
+                                               && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, 0.0));
+    dsd_telemetry_publish_opts_snapshot(opts);
+    dsd_telemetry_publish_snapshot(live.decoder.state.get());
+    const QVariant asked = bridge.restoreSquelchLevel();
+    const QVariantMap level = asked.toMap();
+    const int request = level.value(QStringLiteral("request")).toInt();
+    expect("the restore says the level it asked for",
+           asked.isValid() && request > 0 && !level.value(QStringLiteral("off")).toBool()
+               && level.value(QStringLiteral("whole")).toBool() && level.value(QStringLiteral("db")).toInt() == -60);
+    const dsd_state* state = live.decoder.state.get();
+    expect("not answered before the decoder handles it",
+           state->squelch_request_answered != static_cast<uint32_t>(request));
+    expect("the decoder handles it", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
+    expect("and answers its tag, applied",
+           state->squelch_request_answered == static_cast<uint32_t>(request) && state->squelch_request_applied == 1U);
+    expect("off beneath noise",
+           bridge.setSquelchDb(0.0) && live.drain() == 1 && bridge.setSquelchNoise(12) && live.drain() == 1);
+    dsd_telemetry_publish_opts_snapshot(opts);
+    const QVariantMap off = bridge.restoreSquelchLevel().toMap();
+    expect("comes back as off with a new tag",
+           off.value(QStringLiteral("off")).toBool() && off.value(QStringLiteral("request")).toInt() != request
+               && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+}
+
+/* Issue #899 (final-diff review r2): every squelch edit the Radio and Squelch sheets save is tagged, not only a
+ * restore: each setter returns its request's tag, which the decoder answers once it handles that request, so the
+ * sheets save a setting only on the decoder's answer to it. A level goes as the whole setting, stored as the dB setter
+ * always stored it (0 dB or more is off). */
+void
+test_every_squelch_edit_is_tagged(dsd_qt::AppPrefs& prefs) {
+    dsd_qt::CommandBridge bridge;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    bool ok = false;
+    LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+    dsd_opts* opts = live.decoder.opts.get();
+    expect("an Explore start parses", ok);
+    const dsd_state* state = live.decoder.state.get();
+    const auto answered = [state](int request) {
+        return state->squelch_request_answered == static_cast<uint32_t>(request)
+               && state->squelch_request_applied == 1U;
+    };
+    const int level = bridge.setSquelchDb(-60.0);
+    expect("a level edit is tagged", level > 0 && state->squelch_request_answered != static_cast<uint32_t>(level));
+    expect("and answered once handled",
+           live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0) && answered(level));
+    const int noise = bridge.setSquelchNoise(12);
+    expect("a noise edit, with a tag of its own", noise > level);
+    expect("answered", live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 12, -60.0) && answered(noise));
+    const int automatic = bridge.setSquelchAuto(14);
+    expect("an auto edit too", automatic > noise && live.drain() == 1
+                                   && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 14, -60.0) && answered(automatic));
+    const int off = bridge.setSquelchDb(0.0);
+    expect("0 dB is off",
+           off > automatic && live.drain() == 1 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 14, 0.0) && answered(off));
+    expect("a margin the decoder cannot take is not sent",
+           bridge.setSquelchNoise(31) == 0 && bridge.setSquelchAuto(2) == 0 && live.drain() == 0);
+    expect("nor a level that is no number", bridge.setSquelchDb(std::nan("")) == 0 && live.drain() == 0);
+}
+
+/* Issue #899: the app's default squelch follows a live decode switch on the decoder, with the switch itself: one
+ * command, through the real bridge and queue. Explore starts on Auto with the squelch off; picking NFM brings Noise +10
+ * in, picking P25 again leaves it exactly off; once anyone sets one (the app, the control API, a config), or when a
+ * saved system or the Advanced arguments name one, no switch touches it, an Off or a value equal to the default as
+ * much as another. The switch's own message stands. */
+void
+test_live_decode_switch_squelch(dsd_qt::AppPrefs& prefs) {
+    dsd_qt::CommandBridge bridge;
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    {
+        bool ok = false;
+        LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+        dsd_opts* opts = live.decoder.opts.get();
+        expect("an Explore start parses", ok);
+        expect("and starts with the squelch off", squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+        expect("picking NFM is one command", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1);
+        expect("and the app's default comes in with it",
+               opts->analog_only == 1 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0));
+        expect("the switch's message stands", uiMessage(live) == QStringLiteral("Decoding Analog"));
+        expect("picking AM keeps the configured noise (AM runs it as auto)",
+               bridge.setDecodeMode(DSDCFG_MODE_AM) && live.drain() == 1 && opts->analog_demod == DSD_ANALOG_DEMOD_AM
+                   && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0) && uiMessage(live).startsWith("Decoding AM"));
+        expect("and back to NFM runs noise", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                                                 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0));
+        expect("picking P25 again", bridge.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1);
+        expect("leaves the squelch exactly off", opts->analog_only == 0
+                                                     && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0)
+                                                     && uiMessage(live).startsWith("Decoding P25"));
+        expect("picking DMR leaves it off", bridge.setDecodeMode(DSDCFG_MODE_DMR) && live.drain() == 1
+                                                && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+        expect("Explore Auto to AM brings the default in as noise",
+               bridge.setDecodeMode(DSDCFG_MODE_AM) && live.drain() == 1
+                   && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0) && uiMessage(live).startsWith("Decoding AM"));
+        // TETRA's rate advice is the switch's message. A build without a radio front end plans no DSP rate, so gives
+        // no advice: the plain switch message stands there.
+        expect("picking TETRA takes it out", bridge.setDecodeMode(DSDCFG_MODE_TETRA) && live.drain() == 1
+                                                 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+#ifdef USE_RADIO
+        expect("and its rate advice stands", uiMessage(live).startsWith("Decoding TETRA: "));
+#else
+        expect("and its message stands", uiMessage(live) == QStringLiteral("Decoding TETRA"));
+#endif
+        expect("NFM again brings it in again", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                                                   && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0));
+        expect("the user's own squelch is sent", bridge.setSquelchAuto(15) && live.drain() == 1);
+        expect("and a switch to P25 leaves it", bridge.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1
+                                                    && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 15, 0.0));
+        expect("as does one back to NFM", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                                              && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 15, 0.0));
+    }
+#ifdef USE_RADIO
+    {
+        // A switch the decoder refuses (AM's 6 kHz channel does not fit a 6 kHz DSP bandwidth) leaves the squelch off,
+        // and its refusal is the message the operator reads. Only the radio front end checks the bandwidth.
+        QVariantMap narrow = explore;
+        narrow.insert(QStringLiteral("bandwidthKhz"), 6);
+        bool ok = false;
+        LiveStart live(prefs, narrow, QStringLiteral("explore"), &ok);
+        dsd_opts* opts = live.decoder.opts.get();
+        expect("an Explore start at 6 kHz parses", ok && opts->rtl_dsp_bw_khz == 6);
+        expect("picking AM there is sent", bridge.setDecodeMode(DSDCFG_MODE_AM) && live.drain() == 1);
+        const QString refusal = uiMessage(live);
+        expect("and refused: the decoder stays digital, the squelch exactly off",
+               opts->analog_only == 0 && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+        expect("with the refusal shown", refusal.startsWith(QStringLiteral("Failed: AM")));
+        if (!refusal.startsWith(QStringLiteral("Failed: AM"))) {
+            DSD_FPRINTF(stderr, "  ui_msg=%s\n", qPrintable(refusal));
+        }
+    }
+#endif
+    {
+        // A squelch set elsewhere (the control API, a config) is explicit: no switch replaces it, an Off or the
+        // default's own value as much as a level.
+        const struct {
+            int mode;
+            int margin;
+            double db;
+            int first;
+            int second;
+        } outside[] = {
+            {DSD_SQUELCH_MODE_LEVEL, 0, -70.0, DSDCFG_MODE_ANALOG, DSDCFG_MODE_P25P1},
+            {DSD_SQUELCH_MODE_LEVEL, 0, 0.0, DSDCFG_MODE_ANALOG, DSDCFG_MODE_AM},
+            {DSD_SQUELCH_MODE_NOISE, 10, 0.0, DSDCFG_MODE_P25P1, DSDCFG_MODE_ANALOG},
+            {DSD_SQUELCH_MODE_NOISE, 14, 0.0, DSDCFG_MODE_P25P1, DSDCFG_MODE_DMR},
+        };
+
+        for (const auto& c : outside) {
+            bool ok = false;
+            LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+            dsd_opts* opts = live.decoder.opts.get();
+            expect("an Explore start parses again", ok);
+            dsd_app_squelch_setting_payload api = {};
+            api.mode = c.mode;
+            api.margin_db = c.margin;
+            api.level = c.db < 0.0 ? dsd_squelch_level_from_sql(c.db) : 0.0;
+            expect("a squelch from outside the app applies",
+                   dsd_app_command_submit(DSD_APP_CMD_RTL_SET_SQL_SETTING, &api, sizeof api) >= 0 && live.drain() == 1
+                       && squelchIs(opts, c.mode, c.margin, c.db));
+            expect("and no switch replaces it", bridge.setDecodeMode(c.first) && live.drain() == 1
+                                                    && squelchIs(opts, c.mode, c.margin, c.db)
+                                                    && bridge.setDecodeMode(c.second) && live.drain() == 1
+                                                    && squelchIs(opts, c.mode, c.margin, c.db));
+        }
+    }
+    {
+        prefs.setSquelch(QStringLiteral("auto+12"));
+        QVariantMap nfm = explore;
+        nfm.insert(QStringLiteral("decodeFlag"), QStringLiteral("-fA"));
+        bool ok = false;
+        LiveStart live(prefs, nfm, QStringLiteral("saved"), &ok);
+        dsd_opts* opts = live.decoder.opts.get();
+        expect("an NFM start parses", ok);
+        expect("and starts with the Settings default", squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 12, 0.0));
+        expect("a switch to AM keeps it", bridge.setDecodeMode(DSDCFG_MODE_AM) && live.drain() == 1
+                                              && squelchIs(opts, DSD_SQUELCH_MODE_AUTO, 12, 0.0));
+        expect("a switch to P25 takes it out", bridge.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1
+                                                   && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+        prefs.setSquelch(QStringLiteral("noise+10"));
+    }
+    for (const auto& own : {QVariantMap{{QStringLiteral("radioSettings"),
+                                         QVariantMap{{QStringLiteral("squelch"), QStringLiteral("-60")}}}},
+                            QVariantMap{{QStringLiteral("extraArgs"), QStringLiteral("--squelch -60")}}}) {
+        QVariantMap system = explore;
+        system.insert(own);
+        bool ok = false;
+        LiveStart live(prefs, system, QStringLiteral("saved"), &ok);
+        dsd_opts* opts = live.decoder.opts.get();
+        expect("a start with its own squelch parses", ok && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
+        expect("no switch touches it", bridge.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                                           && bridge.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1
+                                           && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, -60.0));
+    }
+}
+
+/* Issue #899: the decoder owns where the default stands, so a UI recreated over a running session (Android's Activity,
+ * the decoder in its service) needs nothing to take back: a new bridge's switch brings it in, and after anyone's edit no
+ * bridge's switch ever does. */
+void
+test_reattached_decode_switch_squelch(dsd_qt::AppPrefs& prefs) {
+    const QVariantMap explore{{QStringLiteral("sourceType"), QStringLiteral("usb")},
+                              {QStringLiteral("freqMhz"), QStringLiteral("851.375")}};
+    bool ok = false;
+    LiveStart live(prefs, explore, QStringLiteral("explore"), &ok);
+    dsd_opts* opts = live.decoder.opts.get();
+    expect("an Explore start parses for the recreated UI", ok);
+    {
+        dsd_qt::CommandBridge recreated;
+        expect("a recreated UI's switch to NFM brings the default in",
+               recreated.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                   && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 10, 0.0));
+        expect("and back to P25 takes it out", recreated.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1
+                                                   && squelchIs(opts, DSD_SQUELCH_MODE_LEVEL, 0, 0.0));
+    }
+    {
+        dsd_qt::CommandBridge first;
+        expect("a user edit", first.setSquelchNoise(18) && live.drain() == 1);
+    }
+    dsd_qt::CommandBridge recreated;
+    expect("ends it for every later bridge", recreated.setDecodeMode(DSDCFG_MODE_P25P1) && live.drain() == 1
+                                                 && recreated.setDecodeMode(DSDCFG_MODE_ANALOG) && live.drain() == 1
+                                                 && squelchIs(opts, DSD_SQUELCH_MODE_NOISE, 18, 0.0));
+}
 
 /* Settings applies Record calls and unknown-only to a running session (D8): through the real bridge and queue, the
  * slot files open in the folder the session was started with, and close again; RecordingStatus shows each switch
@@ -1174,9 +1519,14 @@ main(int argc, char** argv) {
         test_saved_system(prefs, sessions);
         test_explore(prefs, sessions);
         test_scan_list(prefs, sessions);
+        test_scan_list_rows_inherit(prefs, sessions);
         test_scan_list_switches_over_a_config(prefs, sessions, dir.filePath(QStringLiteral("config")));
         test_status_readings();
         test_live_commands(prefs, sessions);
+        test_live_decode_switch_squelch(prefs);
+        test_restore_level_says_what_it_asked(prefs);
+        test_every_squelch_edit_is_tagged(prefs);
+        test_reattached_decode_switch_squelch(prefs);
         test_live_unknown_only_first(prefs, sessions);
         test_live_record_on_keeps_extra_hold(prefs, sessions);
         test_live_settings_behind_a_queued_start(prefs, sessions);

@@ -357,8 +357,8 @@ Options are parsed once when the list is loaded. They are a restricted argument 
 | `--scan-voice-only`, `--no-scan-voice-only` | Enable/disable the conventional voice gate; digital modes (an analog row holds on carrier instead). |
 | `--scan-voice-qualify-ms`, `--scan-voice-hold-ms` | Conventional voice-gate intervals, `100..600000` milliseconds; digital modes. |
 | `--scan-max-visit-ms <ms>` | Maximum time on this row or target per visit; `0` disables the cap for it, otherwise `1000..3600000` milliseconds. All modes, and every trunk-target type. |
-| `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-100` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
-| `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-100` to `0`, `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel, or `noise[+N]`, the [noise squelch](cli.md#noise-squelch---squelch-noise) opening at N dB (3 to 30, default 10) of FM quieting. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only; `noise` on `nfm` rows and `nfm-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
+| `--squelch-db <dB>` | This row's or target's squelch threshold, in whole dB from `-120` to `0`, the same units as `[input] rtl_sql` and the `sql` field of `-i rtl:`; `0` switches the squelch off for this row alone. All modes, and every trunk-target type. |
+| `--squelch <setting>` | The same option in the squelch grammar: `off`, whole dB from `-120` to `0`, `auto[+N]`, the [auto squelch](cli.md#auto-squelch---squelch-auto) N dB (3 to 30, default 10) over the noise floor learned on this channel, or `noise[+N]`, the [noise squelch](cli.md#noise-squelch---squelch-noise) opening at N dB (3 to 30, default 10) of FM quieting. Levels and `off` on every row and trunk-target type; `auto` on `nfm` and `am` rows and `nfm-conventional` and `am-conventional` targets only; `noise` on `nfm` rows and `nfm-conventional` targets only. A row names one of `--squelch` and `--squelch-db`. |
 | `--nfm-bandwidth-hz <Hz>` | This analog row's or target's NFM channel width, whole Hz from `8000` to `25000` (for example `12500`). `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
 | `--am-bandwidth-hz <Hz>` | This analog row's or target's AM channel width, whole Hz from `5000` to `20000` (for example `8333` for 8.33 kHz airband spacing). `am` rows and `am-conventional` targets only; a digital or blank row is told it `needs mode am`, and an `nfm` row refuses it as `not supported for this mode/target`. A row carries one width. |
 | `--tone-allow <list>`, `--tone-block <list>`, `--no-tone-filter` | This analog row's or target's CTCSS/DCS receive policy (see [Analog rows](#analog-rows)): hear only traffic carrying a listed tone or code, mute it, or no filter on this row whatever is configured. `<list>` is supported CTCSS tones and DCS codes separated by `/`, such as `67.0/100.0/D023N`. One option in three spellings, so a row names one of them once. `nfm` rows and `nfm-conventional` targets only; a digital or blank row is told it `needs mode nfm`, and an `am` row refuses it as `not supported for this mode/target`. |
@@ -376,7 +376,7 @@ selection, decoder flags and scanner-wide `-t` are not accepted in `options`.
 configured default when the scanner moves on or stops. A row that omits it inherits the default (`--squelch`,
 `[input] rtl_sql`, the `sql` field of `-i rtl:...`, or whatever the squelch control last set, an auto squelch
 included); `0` or `off` switches the squelch off for that row only; any other value is a threshold in dB.
-Positive numbers (the legacy linear form some CLI inputs accept), values below `-100` and fractional dB are rejected
+Positive numbers (the legacy linear form some CLI inputs accept), values below `-120` and fractional dB are rejected
 with a row diagnostic, and so is `auto` on a digital or blank row: a digital channel runs no auto squelch, so an
 inherited one is off there. On an RTL-SDR, rtl_tcp, SoapySDR or Airspy input the threshold
 gates the demodulator, so a row set well above its signal level decodes nothing: on a trunk-system target it gates
@@ -529,7 +529,7 @@ analog row whose squelch is off or at -100 dB or below: noise then keeps its car
 block, so only the visit cap or a manual advance or avoid moves on. The auto and noise squelches (`--squelch auto`,
 `--squelch noise`, the row's own or inherited) close on noise on a radio input, so a row running one draws no warning.
 On audio input the noise squelch closes an `nfm` row on noise too (it learns its reference from the input; see "Noise
-squelch on audio input" in `docs/cli.md`); the auto squelch, and the noise squelch on an `am` row, are off there and
+squelch on audio input" in `docs/cli.md`); the auto squelch, and a noise squelch an `am` row inherits, are off there and
 the row is warned about as an open one.
 
 On an `nfm` row or `nfm-conventional` target the tone policy (issue #527) is the configured receive policy
@@ -1420,6 +1420,16 @@ Qt/Android scan lists generate the trunk-scan target format described in
 scoped `-G`, and direct keys use scoped `-b`/`-H`/`-1`/`-R` so their activation and
 mute/force semantics match standalone sessions. Key CSVs use `keys_hex_csv` or
 `keys_dec_csv`; frontend generation never uses `single_key_*`.
+
+Each generated row carries a squelch its row type takes (issue #899). A saved system's own squelch goes to its row
+as the row runs it: noise on an `am` row as `auto` with the same margin, a dynamic squelch on a digital row as
+`off`, and a level as whole dB from `-120` to `-1` (a level that is not a whole dB is rounded, and the list says
+so). A row with no squelch of its own carries none and inherits the session's. The app starts the scan with its
+Settings default as `--squelch-analog-default` (`noise+10` unless changed there), which the decoder runs on such an
+`nfm` or `am` row (an `am` row runs noise as auto) while no squelch is set; the app's Advanced arguments can set the
+session's squelch (`--squelch`), which those rows then run. An imported target CSV (a list whose targets come from a
+file) runs the same way: its analog rows with no `--squelch` of their own get the default too
+([cli.md](cli.md#analog-default-squelch---squelch-analog-default)).
 
 The generator refuses comma, double quote and line breaks in file paths. Spaces
 are supported: an options cell contains `-G "absolute path/group list.csv"`

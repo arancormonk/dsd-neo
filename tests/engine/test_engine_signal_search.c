@@ -14,6 +14,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/p25_patch.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/received_identity.h>
 #include <dsd-neo/core/safe_api.h>
@@ -23,6 +24,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -44,6 +46,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/trunk_scan_hooks.h>
 #include <stddef.h>
@@ -268,17 +271,45 @@ rtl_stream_enforce_tuner_autogain(int value) {
 void
 rtl_stream_clear_pending_retune_profile(void) {}
 
+/* The retunes marked a new channel (issue #899): the receiver starts closed where one lands on the analog family. */
+static int g_retune_marks;
+
+void
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
+    (void)target_freq_hz;
+    if (new_channel) {
+        g_retune_marks++;
+    }
+}
+
+/* The engine's side of the receiver's gate (issue #899; channel_scan.c, not linked here): how deep the holds are, so a
+   case sees that a family request or retune went out while the decoder wrote no gate. */
+static int g_gate_hold_depth;
+
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    g_gate_hold_depth += hold ? 1 : -1;
+    assert(g_gate_hold_depth >= 0);
+}
+
+void
+dsd_engine_receiver_gate_due(void) {}
+
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {
     (void)cfg;
     return 0;
 }
 
+/* Issue #899: whether the last live family request went out under the decoder's gate hold. */
+static int family_in_hold;
+
 int
 rtl_stream_request_analog_profile(int f, int kind, int width) {
     (void)kind;
     (void)width;
     family = f;
+    family_in_hold = g_gate_hold_depth > 0;
     return 0;
 }
 
@@ -814,6 +845,44 @@ test_restore_retune_carries_family(dsd_opts* o, dsd_state* s, dsd_signal_search_
     assert(status.phase == DSD_SEARCH_STOPPED && o->analog_only == 1);
     o->analog_only = 0;
     o->analog_nfm_bandwidth_hz = 0;
+}
+
+/* Issue #899: Stop gives an NFM session with the analog default its gate back before the live family request of the
+   restore, so the restored analog channel never runs under the search's gate: the receiver holds Noise +10 when the
+   family is asked for, and the options hold the default in force. */
+static void
+test_restore_hands_back_the_analog_default_first(dsd_opts* o, dsd_state* s, dsd_signal_search_config* config) {
+    char error[192];
+    live = 1;
+    o->rtlsdr_center_freq = 100000000;
+    o->analog_only = 1;
+    o->analog_demod = DSD_ANALOG_DEMOD_FM;
+    o->squelch_default_mode = DSD_SQUELCH_MODE_NOISE;
+    o->squelch_default_margin_db = 10;
+    assert(dsd_squelch_analog_default_sync(o, s) == 1 && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    config->session_id = 53;
+    assert(dsd_engine_signal_search_start(o, s, config, observer, NULL, error, sizeof(error)) == 0);
+    tick(o, s);
+    assert(o->squelch_default_state != DSD_SQUELCH_DEFAULT_APPLIED);
+    family_in_hold = 0;
+    const int marks_before = g_retune_marks;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    land(o, s); // the span tune the start queued; the restore follows it
+    const dsd_squelch_setting noise10 = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10);
+    /* Round 7, "closed start, no IDs": the session comes back on a new channel the restore's retune is marked as, and
+       its family request goes out under the decoder's gate hold, so nothing the session resolves to reaches the range's
+       channel; the decoder writes the session's gate, the analog default, once the retune and request have landed. */
+    assert(target == 100000000 && family == DSD_RX_FAMILY_ANALOG && family_in_hold);
+    assert(g_retune_marks == marks_before + 1 && g_gate_hold_depth == 0);
+    assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    const dsd_squelch_setting session_gate = dsd_scan_mode_channel_squelch(o, s);
+    assert(dsd_squelch_setting_equal(&session_gate, &noise10) == 1);
+    land(o, s); // the restore tune
+    assert(status.phase == DSD_SEARCH_STOPPED && o->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED);
+    (void)dsd_squelch_analog_default_release(o);
+    o->squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
+    o->squelch_default_state = DSD_SQUELCH_DEFAULT_IDLE;
+    o->analog_only = 0;
 }
 
 /* Fresh input never trips the stall timeout when its timestamp advances during the read. The timeout uses real
@@ -2145,7 +2214,13 @@ test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_sign
     live = 0; // the input goes away before the restore tune lands
     tick(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED && boundary == before + 1 && snapshots == published && tag_clear());
+    /* Issue #899, round 8: the restore tune went with the input; the stopped search, which nothing polls any more,
+       holds no tune the decoder's gate waits for, so a radio reopened in this session gets its gate. */
+    assert(!dsd_engine_signal_search_tune_pending(s));
     live = 1;
+    assert(!dsd_engine_signal_search_tune_pending(s));
+    tick(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
 
     one = tag_config(config, 75, 0, 0);
     start_tag_session(o, s, &one);
@@ -2161,6 +2236,50 @@ test_stop_then_input_lost_one_boundary(dsd_opts* o, dsd_state* s, const dsd_sign
     act(o, s, DSD_SEARCH_ACTION_STOP);
     land(o, s);
     assert(status.phase == DSD_SEARCH_STOPPED && tag_clear());
+
+    /* The input goes while a visit's tune is outstanding: the search fails, and the tune went with the input. Once the
+       radio is back, nothing waits on that tune, and a Stop restores at once. */
+    one = tag_config(config, 76, 0, 0);
+    start_tag_session(o, s, &one);
+    land(o, s);
+    ready = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && dsd_engine_signal_search_tune_pending(s));
+    live = 0;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_ERROR && !dsd_engine_signal_search_tune_pending(s));
+    live = 1;
+    tune_pending = 0;
+    tick(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
+    const uint32_t tickets_before = ticket;
+    act(o, s, DSD_SEARCH_ACTION_STOP);
+    assert(ticket == tickets_before + 1 && target == 100000000U);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_STOPPED && tag_clear() && !dsd_engine_signal_search_tune_pending(s));
+}
+
+/* Issue #899: a visit's tune the receiver deferred holds no ticket, and the search retries it from
+   the TUNING phase. Until that retry lands, the tune is outstanding for the decoder's gate: the range's squelch, staged
+   at the queue, is not written onto the channel being left, so the write stays due for the landing. Before the fix
+   only a ticket counted, and the deferral let the gate write the range's squelch there and clear the write due. */
+static void
+test_deferred_visit_tune_stays_pending(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 77, 1, 0);
+    start_tag_session(o, s, &one);
+    land(o, s);
+    assert(status.phase == DSD_SEARCH_SEARCHING && !dsd_engine_signal_search_tune_pending(s));
+    ready = 1;
+    defer = 1;
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && !tune_pending && !status.hit.ended);
+    assert(dsd_engine_signal_search_tune_pending(s));
+    tick(o, s);
+    assert(status.phase == DSD_SEARCH_TUNING && tune_pending && dsd_engine_signal_search_tune_pending(s));
+    land(o, s);
+    assert(status.phase != DSD_SEARCH_TUNING && !dsd_engine_signal_search_tune_pending(s));
+    stop_tag_session(o, s);
+    assert(!dsd_engine_signal_search_tune_pending(s));
 }
 
 /* Hold and its release stay on the same visit: the tag does not change. */
@@ -5572,6 +5691,7 @@ main(void) {
     test_error_is_a_carrier_boundary(o, s, &config);
     test_auto_baseline_dispatches_dmr(o, s, &config);
     test_restore_retune_carries_family(o, s, &config);
+    test_restore_hands_back_the_analog_default_first(o, s, &config);
     test_capture_freshness(o, s, &config);
     test_request_failure_messages(o, s, &config);
     test_clipping_span_skipped(o, s);
@@ -5594,6 +5714,7 @@ main(void) {
     test_visit_tag_stop_restore(o, s, &config);
     test_visit_tag_stop_with_input_lost(o, s, &config);
     test_stop_then_input_lost_one_boundary(o, s, &config);
+    test_deferred_visit_tune_stays_pending(o, s, &config);
     test_visit_tag_hold_keeps(o, s, &config);
     test_session_end_keeps_tag_until_final_close(o, s, &config);
     test_visit_tag_cleared_at_search_start(o, s, &config);

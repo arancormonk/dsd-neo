@@ -156,7 +156,7 @@ test_trunk_tunes(dsd_opts* opts, dsd_state* state) {
     proven();
     uint64_t request_id = 0U;
     rc |= expect("a scanner tune is accepted",
-                 dsd_engine_scan_tune_to_freq(opts, state, 853012500L, 0, &request_id) == DSD_TRUNK_TUNE_RESULT_OK);
+                 dsd_engine_scan_tune_to_freq(opts, state, 853012500L, 0, 0, &request_id) == DSD_TRUNK_TUNE_RESULT_OK);
     rc |= expect("a scanner tune withdraws the proof", withdrawn());
 
     opts->use_rigctl = 0;

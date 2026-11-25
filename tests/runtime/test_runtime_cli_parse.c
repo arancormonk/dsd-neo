@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <inttypes.h>
 #include <limits.h>
 #include <math.h>
@@ -12354,6 +12355,108 @@ test_squelch_option(void) {
     return test_rc;
 }
 
+/* --squelch-analog-default <auto[+N]|noise[+N]> (issue #899) in both spellings: the default the decoder runs on an
+ * analog channel of a radio input. --squelch, before or after it, is an explicit squelch that ends it; off and a level
+ * are refused (no default is the option left out), naming the grammar and never repeating the text. */
+static int
+run_squelch_default_args(int argc, const char* const* args, dsd_opts* opts, int* rc, int* exit_rc, char* output,
+                         size_t output_size) {
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!state || argc > 4) {
+        free(state);
+        return -1;
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    initOpts(opts);
+    initState(state);
+    char buf[5][40];
+    char* argv[6] = {NULL};
+    DSD_SNPRINTF(buf[0], sizeof buf[0], "%s", "dsd-neo");
+    argv[0] = buf[0];
+    for (int i = 0; i < argc; i++) {
+        DSD_SNPRINTF(buf[i + 1], sizeof buf[i + 1], "%s", args[i]);
+        argv[i + 1] = buf[i + 1];
+    }
+    int argc_effective = 0;
+    *exit_rc = 0;
+    *rc = parse_args_capture_stderr(argc + 1, argv, opts, state, &argc_effective, exit_rc, output, output_size);
+    freeState(state);
+    free(state);
+    return 0;
+}
+
+static int
+test_squelch_analog_default_option(void) {
+    static const struct {
+        const char* args[4];
+        int argc;
+        int mode;
+        int margin;
+        int ended;
+    } good[] = {
+        {{"--squelch-analog-default", "noise+12"}, 2, DSD_SQUELCH_MODE_NOISE, 12, 0},
+        {{"--squelch-analog-default=auto"}, 1, DSD_SQUELCH_MODE_AUTO, 10, 0},
+        {{"--squelch-analog-default", "noise", "--squelch=off"}, 3, DSD_SQUELCH_MODE_NOISE, 10, 1},
+        {{"--squelch=-60", "--squelch-analog-default", "noise+10"}, 3, DSD_SQUELCH_MODE_NOISE, 10, 1},
+        {{"--squelch", "noise+10", "--squelch-analog-default", "noise+10"}, 4, DSD_SQUELCH_MODE_NOISE, 10, 1},
+    };
+
+    static const struct {
+        int argc;
+        const char* args[2];
+        const char* why;
+    } bad[] = {
+        {2, {"--squelch-analog-default", "-60"}, "not a level"},
+        {1, {"--squelch-analog-default=-33"}, "not a level"},
+        {2, {"--squelch-analog-default", "auto+2"}, "3 to 30"},
+        {1, {"--squelch-analog-default=SECRET"}, "expects auto[+N] or noise[+N] (N from 3 to 30)"},
+        {1, {"--squelch-analog-default"}, "--squelch-analog-default requires a setting: auto[+N] or noise[+N]"},
+        {1, {"--squelch-analog-default=off"}, "not off: leave the option out for no default"},
+        {2, {"--squelch-analog-default", "OFF"}, "not off: leave the option out for no default"},
+        {2, {"--squelch-analog-default", "0"}, "not off: leave the option out for no default"},
+    };
+
+    int test_rc = 0;
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    if (!opts) {
+        return 1;
+    }
+    char output[4096];
+    for (size_t i = 0; i < sizeof good / sizeof good[0]; i++) {
+        int rc = 0;
+        int exit_rc = 0;
+        if (run_squelch_default_args(good[i].argc, good[i].args, opts, &rc, &exit_rc, output, sizeof output) != 0) {
+            free(opts);
+            return 1;
+        }
+        const int ended = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED;
+        if (rc != DSD_PARSE_CONTINUE || opts->squelch_default_mode != good[i].mode
+            || (dsd_squelch_mode_is_dynamic(good[i].mode) && opts->squelch_default_margin_db != good[i].margin)
+            || ended != good[i].ended
+            || dsd_squelch_analog_default_pending(opts) == (good[i].ended || !good[i].margin)) {
+            DSD_FPRINTF(stderr, "squelch default case %zu: rc=%d mode=%d margin=%d state=%d\n", i, rc,
+                        opts->squelch_default_mode, opts->squelch_default_margin_db, opts->squelch_default_state);
+            test_rc = 1;
+        }
+    }
+    for (size_t i = 0; i < sizeof bad / sizeof bad[0]; i++) {
+        int rc = 0;
+        int exit_rc = 0;
+        if (run_squelch_default_args(bad[i].argc, bad[i].args, opts, &rc, &exit_rc, output, sizeof output) != 0) {
+            free(opts);
+            return 1;
+        }
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || !strstr(output, bad[i].why) || strstr(output, "SECRET")
+            || strstr(output, "-33")) {
+            DSD_FPRINTF(stderr, "squelch default refusal %zu: want \"%s\", got rc=%d exit_rc=%d \"%s\"\n", i,
+                        bad[i].why, rc, exit_rc, output);
+            test_rc = 1;
+        }
+    }
+    free(opts);
+    return test_rc;
+}
+
 /* The NFM width is the radio front end's channel filter: on PCM input (the default Pulse source,
  * a file, UDP or TCP audio) it cannot act, so the flag parses and says so. Radio inputs do not
  * warn; I/Q replay has its own case below, in the radio builds where --iq-replay parses. */
@@ -14005,6 +14108,7 @@ main(void) {
     rc |= test_scan_flags_are_in_the_trunking_help_section();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_max_visit_override();
     rc |= test_squelch_option();
+    rc |= test_squelch_analog_default_option();
     rc |= test_nfm_bandwidth_long_option_parses();
     rc |= test_nfm_bandwidth_rejects_invalid_values();
     rc |= test_tone_filter_options_parse();

@@ -3648,6 +3648,10 @@ struct dsd_state {
      * 1 s), so a step refused, or one still in flight, is not retried on every frame
      * (dsd_engine_channel_scan_departure_due()). 0.0 until the first departure. */
     double lcn_avoid_depart_m;
+    /* 1 while the -Y scan's timer for recovering a commit it owes with nothing in flight is armed (issue #899). The
+     * timer itself is the scan's (its extension); this flag is set and cleared with it, so the step decision and the
+     * -Y timing publication look the scan up only while it is armed (dsd_engine_channel_scan_owed_recovery_due()). */
+    uint8_t lcn_owed_recovery_armed;
     /* Scan state + live timing for the Scan Timing row (issue #508). Written by the
      * --trunk-scan coordinator for its parked target, or by the -Y timing tick when trunk
      * scan is off; the two never both write it. Rides the vertex_ks_count..ui_msg range. */
@@ -3676,6 +3680,14 @@ struct dsd_state {
        the readout shows the tracker during a call and what it is for between calls. Written on the decoder thread;
        rides the vertex_ks_count..ui_msg range. */
     uint8_t squelch_edacs_call;
+    /* The decoder's answer to the last tagged DSD_APP_CMD_RTL_SET_SQL_SETTING it handled (issue #899): the request_id
+       (0 for none) and whether the request was applied (1) or refused (0). Applied means it is the configured setting
+       now: dsd_opts' outside a scan scope, the scope's configured setting under one (beneath a row's own squelch too).
+       The state snapshot carries them with that scope (dsd_scan_mode_copy_snapshot()), so a frontend confirms an edit
+       from one publication, whichever scope it edited. Written on the decoder thread; rides the vertex_ks_count..ui_msg
+       range. */
+    uint32_t squelch_request_answered;
+    uint8_t squelch_request_applied;
     /* What the TETRA decoder shows every frontend (dsd_tetra_publication), copied from its private state extension at
        the end of each burst. Rides the vertex_ks_count..ui_msg range. */
     dsd_tetra_publication tetra_pub;

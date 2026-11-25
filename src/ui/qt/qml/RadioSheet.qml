@@ -29,7 +29,21 @@ ModalSheet {
     spacing: 14
     property bool savesToSystem: false
     property string saveError: ""
+    // Issue #899 (B11): the squelch the session's saved system keeps ("" for
+    // none), and whether Clear has taken it out for the next start.
+    property string savedSquelch: ""
+    property bool savedSquelchCleared: false
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
+    // Why a level was not saved to the system (one set outside the app),
+    // shown while a level is the setting.
+    property string squelchSaveError: ""
+    // Why the saved squelch could not be cleared or saved, shown whatever the
+    // setting: the saved one still applies at the next start.
+    property string squelchStoreError: ""
     signal settingRequested(string key, var value)
+    signal clearSavedSquelchRequested()
     readonly property bool sessionRunning: decoderHost.running
     onSessionRunningChanged: {
         if (!sessionRunning) {
@@ -122,11 +136,13 @@ ModalSheet {
     readonly property bool squelchAutoOffered: !rowSquelch || rowWidth
     // The noise squelch opens when the FM discriminator's noise above voice
     // quiets by its margin: an nfm row takes it, and so does the default unless
-    // the session is the AM monitor on its own, which refuses it.
+    // the session is an audio input's AM monitor on its own, which refuses it.
+    // A radio's AM monitor takes it and runs it as auto (issue #899), which its
+    // status line says ("as auto: ..."), so a switch back to NFM runs Noise.
     readonly property bool squelchNoiseOffered: rowSquelch ? rowNfm : metrics.squelchNoiseOffered === true
-    // A noise setting where the noise squelch cannot run -- an am row that
-    // inherits it, the AM monitor on its own -- runs as auto, and the panel
-    // shows and steps it as Auto.
+    // A noise setting where Noise is not offered -- an am row that inherits
+    // it, an audio input's AM monitor -- runs as auto, and the panel shows and
+    // steps it as Auto.
     readonly property bool baseSquelchNoiseAsAuto: rowSquelch
         ? (!rowNfm && metrics.effectiveSquelchNoise === true)
         : (!squelchNoiseOffered && metrics.configuredSquelchNoise === true)
@@ -148,7 +164,8 @@ ModalSheet {
         : (baseSquelchMargin > 0 ? baseSquelchMargin : commands.squelchMarginDefaultDb)
     // Issue #782: what makes a moving squelch reading worth hearing at once
     // (SpeechPacer): the gate opening or closing, or the setting changing.
-    readonly property string squelchStep: [metrics.squelchGateOpen === true, squelchReading, squelchRowOverride].join("|")
+    readonly property string squelchStep: [metrics.squelchGateOpen === true, squelchReading, squelchRowOverride,
+        squelchDefaultInForce].join("|")
     // The threshold in force comes first; with a row override that is the row's,
     // and the default being edited is named below it.
     readonly property string squelchReading: (squelchRowOverride && !rowSquelch)
@@ -159,6 +176,24 @@ ModalSheet {
     // off here. Held while a request is outstanding; it describes the old setting.
     readonly property string squelchAutoStatus: (isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
         && metrics.squelchAutoStatus !== undefined) ? metrics.squelchAutoStatus : ""
+    // Issue #899: the squelch in force is the app's default from Settings
+    // (nothing set one for this session), marked "default" as the terminal's
+    // readout marks it, the shared decision: under "This channel" too, on an
+    // analog row that inherits it. An edit ends it (a row's own squelch
+    // overrides it), so a request outstanding hides it.
+    readonly property bool squelchDefaultInForce: isNaN(pendingSquelch) && isNaN(pendingSquelchMargin)
+        && metrics.squelchAnalogDefault === true
+    // What the reading's status line shows and the reading's speech adds in
+    // brackets: the default marker, then the dynamic squelch's status.
+    readonly property string squelchDetail: squelchDefaultInForce
+        ? (squelchAutoStatus !== "" ? qsTr("default") + "; " + squelchAutoStatus : qsTr("default"))
+        : squelchAutoStatus
+    // Issue #899: a signal search this session runs sets the squelch from its
+    // range at each landing, from searching until it stops or fails.
+    readonly property var searchStatus: typeof signalSearch !== "undefined" && signalSearch && signalSearch.status
+        ? signalSearch.status : ({})
+    readonly property bool searchOwnsSquelch: searchStatus.owned === true && searchStatus.phase >= 1
+        && searchStatus.phase <= 6
 
     // 0 dB is the tuner's automatic gain, not silence — worth saying, because
     // "0" next to a signal that vanished reads as a mistake otherwise.
@@ -482,34 +517,19 @@ ModalSheet {
      *
      * Off sits one step below the floor. The floor itself is the readback's own:
      * pwr_to_dB() clamps what comes back at -120 dB, so a threshold below that
-     * cannot be displayed. Stepping down from the floor therefore switches the
-     * squelch off — which the engine spells 0 — rather than pinning at a value
-     * the button can no longer move, and stepping up from off lands back on the
-     * floor. Above it, -5 dB is the last real threshold, because 0 is off.
+     * cannot be displayed, and a row's own level goes down to it too. A step
+     * down stops on the floor, and the next one switches the squelch off --
+     * which the engine spells 0 -- rather than pinning at a value the button
+     * can no longer move; stepping up from off lands back on the floor. Above
+     * it, -5 dB is the last threshold a step makes, because 0 is off; a level
+     * set above it elsewhere stays put on a step up. A step always makes a
+     * whole dB (issue #899): the app saves only levels its own controls make.
      */
     function stepSquelch(delta) {
         if (!squelchSteppable)
             return;
-        // A row's own squelch is whole dB down to -100, the options cell's range.
-        var floor = rowSquelch ? -100 : -120;
-        var cur = squelchOff ? floor - 5 : squelchDb;
-        var next = cur + delta;
-        if (next < floor) {
-            // A step up from below the floor (a row that follows a default
-            // under -100 dB) lands on it; only a step down reaches off.
-            if (delta > 0) {
-                next = floor;
-            } else {
-                if (squelchOff)
-                    return;
-                next = 0;
-            }
-        } else if (next > -5) {
-            next = -5;
-        }
-        // The reading is a float that has been through dB_to_pwr and back, so
-        // "already there" is a tolerance, not an equality.
-        if (!squelchOff && Math.abs(next - squelchDb) < 0.001)
+        var next = Util.squelchStep(squelchOff, squelchDb, delta, -120);
+        if (isNaN(next))
             return;
         requestSquelchDb(next);
     }
@@ -523,11 +543,15 @@ ModalSheet {
         pendingSquelch = db;
         squelchTtl.restart();
         // A row keeps its margin through a level, for a switch back to Auto.
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchDb": Math.round(db), "squelchMarginDb": margin});
-        else if (commands.setSquelchDb(db))
-            settingRequested("squelch", {mode: "level", db: db, off: db >= 0});
+            return;
+        }
+        // The request's tag: what is saved waits for the decoder's answer to it.
+        var request = commands.setSquelchDb(db);
+        if (request)
+            settingRequested("squelch", {mode: "level", db: db, off: db >= 0, request: request});
     }
 
     /**
@@ -539,15 +563,15 @@ ModalSheet {
         pendingSquelchMode = mode;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(commands.scanRowFieldSquelch, commands.scanRowEditSet,
                 {"squelchMode": mode, "squelchMarginDb": margin});
-        else if (mode === commands.squelchModeNoise) {
-            if (commands.setSquelchNoise(margin))
-                settingRequested("squelch", {mode: "noise", margin: margin});
-        } else if (commands.setSquelchAuto(margin)) {
-            settingRequested("squelch", {mode: "auto", margin: margin});
+            return;
         }
+        var noise = mode === commands.squelchModeNoise;
+        var request = noise ? commands.setSquelchNoise(margin) : commands.setSquelchAuto(margin);
+        if (request)
+            settingRequested("squelch", {mode: noise ? "noise" : "auto", margin: margin, request: request});
     }
 
     /**
@@ -586,19 +610,45 @@ ModalSheet {
         var levelOff = metrics.configuredSquelchLevelOff === true;
         var db = rowSquelch ? metrics.effectiveSquelchDb : metrics.configuredSquelchDb;
         if (rowSquelch) {
-            // A row's own level is whole dB from -100 to -1 (0 is off there),
+            // A row's own level is whole dB from -120 to -1 (0 is off there),
             // so a legacy full-scale default comes back as -1 dB.
-            requestSquelchDb(levelOff ? 0 : Math.min(-1, Math.max(-100, Math.round(db))));
+            requestSquelchDb(levelOff ? 0 : Math.min(-1, Math.max(-120, Math.round(db))));
             return;
         }
         // The default gets its level back exactly as stored: a legacy linear
         // full-scale threshold reads 0 dB, which sent as dB would mean off.
-        // The pending reading says what comes back until the engine's arrives.
+        // The pending reading says what comes back until the engine's arrives;
+        // a refused request leaves the engine's reading at once. What is saved
+        // is the level asked for, once the decoder has answered with it, if
+        // the app's controls could make it.
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        if (commands.restoreSquelchLevel())
-            settingRequested("squelch", {mode: "level", db: db, off: levelOff});
+        var asked = commands.restoreSquelchLevel();
+        if (asked)
+            settingRequested("squelch", Object.assign({mode: "level", restore: true}, asked));
+        else
+            forgetSquelchRequest();
+    }
+
+    /** Drop an outstanding squelch request: the engine's reading is the truth again. */
+    function forgetSquelchRequest() {
+        pendingSquelch = NaN;
+        pendingSquelchMargin = NaN;
+        squelchTtl.stop();
+    }
+
+    /**
+     * Issue #899 (B11): ask for the saved squelch to go. Once it has, the
+     * note that replaces the button is read out, and a keyboard focus the
+     * button held goes to the squelch choice, so it is not lost with it.
+     */
+    function clearSavedSquelch(hadFocus) {
+        clearSavedSquelchRequested();
+        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchStoreErrorText,
+            savedSquelchCleared ? squelchClearedNote.text : squelchStoreError);
+        if (hadFocus && savedSquelchCleared)
+            squelchModeControl.focusSegment();
     }
 
     Timer {
@@ -813,6 +863,7 @@ ModalSheet {
         // quieting, as a radio's squelch): the same whatever the dongle,
         // antenna or gain.
         SegmentedControl {
+            id: squelchModeControl
             objectName: "radioSquelchMode"
             visible: sheet.squelchAutoOffered
             width: parent.width
@@ -847,7 +898,7 @@ ModalSheet {
                     step: sheet.squelchStep
                     read: function () {
                         return sheet.squelchRowOverride ? metrics.squelchReadout
-                            : (sheet.squelchAutoStatus !== "" ? sheet.squelchReading + " (" + sheet.squelchAutoStatus + ")"
+                            : (sheet.squelchDetail !== "" ? sheet.squelchReading + " (" + sheet.squelchDetail + ")"
                                 : sheet.squelchReading);
                     }
                 }
@@ -875,13 +926,14 @@ ModalSheet {
         }
         // The dynamic squelch in force: the floor it opens over ("learning"
         // until it has one), the quieting the noise squelch reads, or why it is
-        // off here (no radio input, a digital channel).
+        // off here (no radio input, a digital channel); first "default" while
+        // that is the app's default from Settings.
         LiveText {
             objectName: "radioSquelchAutoStatus"
             step: sheet.squelchStep
-            visible: sheet.squelchAutoStatus !== ""
+            visible: sheet.squelchDetail !== ""
             width: parent.width
-            text: sheet.squelchAutoStatus
+            text: sheet.squelchDetail
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.family: Theme.mono
@@ -944,6 +996,75 @@ ModalSheet {
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(12)
             }
+        }
+        // Issue #899: what a squelch edit here lasts for, on a session that
+        // saves nothing (Explore, a scan list), or what sets it in a search.
+        ReadableText {
+            objectName: "radioSquelchSessionNote"
+            visible: !sheet.rowScope && (sheet.searchOwnsSquelch || !sheet.savesToSystem)
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.searchOwnsSquelch ? qsTr("Squelch comes from the search range while it searches.")
+                                          : qsTr("Squelch changes here last until you stop listening. Settings sets the default.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
+        }
+        // Issue #899 (B11): the saved system's own squelch out, from the next
+        // start; this session keeps running what it runs. As "This channel"'s
+        // Use default: a content-width button, with when it applies under it.
+        Column {
+            objectName: "radioSquelchClearRow"
+            visible: sheet.savesToSystem && !sheet.rowScope && sheet.savedSquelch.length > 0
+            width: parent.width
+            spacing: 4
+            OutlineButton {
+                id: squelchClearButton
+                objectName: "radioSquelchClearSaved"
+                text: qsTr("Remove saved squelch")
+                accessibleName: qsTr("Remove Saved Squelch From This System")
+                onClicked: sheet.clearSavedSquelch(activeFocus)
+            }
+            ReadableText {
+                width: parent.width
+                wrapMode: Text.WordWrap
+                text: qsTr("Applies from the next start.")
+                color: Theme.textSecondary
+                font.pixelSize: Theme.fontSize(12)
+            }
+        }
+        // The saved squelch could not be cleared or saved: it still applies at
+        // the next start, whatever the setting now.
+        ReadableText {
+            id: squelchStoreErrorText
+            objectName: "radioSquelchStoreError"
+            visible: sheet.savesToSystem && !sheet.rowScope && sheet.squelchStoreError.length > 0
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.squelchStoreError
+            color: Theme.alert
+            font.pixelSize: Theme.fontSize(12)
+        }
+        // A level the app cannot save; shown while that level is the setting.
+        ReadableText {
+            id: squelchSaveErrorText
+            objectName: "radioSquelchSaveError"
+            visible: sheet.savesToSystem && !sheet.rowScope && sheet.squelchSaveError.length > 0
+                && !sheet.squelchDynamic
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: sheet.squelchSaveError
+            color: Theme.alert
+            font.pixelSize: Theme.fontSize(12)
+        }
+        ReadableText {
+            id: squelchClearedNote
+            objectName: "radioSquelchClearedNote"
+            visible: sheet.savesToSystem && !sheet.rowScope && sheet.savedSquelchCleared
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Saved squelch cleared for the next start.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(12)
         }
     }
 
@@ -1110,6 +1231,8 @@ ModalSheet {
                 objectName: "radioAnalogBandwidthValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
+                // "6 kHz (default)" or "12.5 kHz (DSP-limited)" wraps at large text rather than being cut.
+                wrapMode: Text.WordWrap
                 text: sheet.analogWidthReading
                 // Read aloud as the terminal prints it, row note and default included.
                 Accessible.role: !Navigation.allows(analogBandwidthValueText) || !visible ? Accessible.Pane : Accessible.StaticText

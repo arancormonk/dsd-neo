@@ -632,6 +632,9 @@ typedef struct {
        Airspy), so no Fs/4 shift runs. */
     size_t input_ring_capacity_floats;
     int centered_iq;
+    /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), which a session's start sets as a
+       stream open does (issue #899): a retune to another centre drops it, one on the same centre keeps it. */
+    int new_stream_mark;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
@@ -684,6 +687,9 @@ enum {
     /* a manual retune to center_hz at demod input rate value (0: kept), applied, finalized and completed as the
        controller lands one (controller_apply_reconfigure()) */
     RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE = 6,
+    /* the same retune to center_hz carrying a pending PPM correction of value (the rate kept), as the controller lands
+       a retune queued with a PPM change */
+    RTL_STREAM_TEST_CAPTURE_MANUAL_RETUNE_PPM = 7,
 };
 
 /* The input a session's stream reader committed (@p floats past what it had) and its demodulator then took (the next
@@ -1119,6 +1125,9 @@ typedef struct rtl_stream_test_fll_retune_result {
     int reset_retained_fll;
     int restored_cached_fll;
     int distant_frequency_reason;
+    /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), set before the retune: 0 after a
+       retune to another centre drops it, 1 after one on the same centre keeps it (issue #899). */
+    int new_stream_mark_after;
 } rtl_stream_test_fll_retune_result;
 
 int rtl_stream_test_fll_retune_policy(uint32_t previous_center_freq_hz, uint32_t next_center_freq_hz,
@@ -1152,6 +1161,9 @@ typedef struct rtl_stream_test_fll_mixer_retune_result {
     int reset_retained_fll;
     int restored_cached_fll;
     char reason[32]; /* the plan's reason after the reset */
+    /* The stream open's mark for the auto squelch, set before the reset: 0 once a reset of any reason but the open's
+       own (fresh-stream) moved the centre, 1 on the same centre (issue #899). */
+    int new_stream_mark_after;
 } rtl_stream_test_fll_mixer_retune_result;
 
 int rtl_stream_test_fll_mixer_retune(const char* reason, int tetra_chain, float pre_freq, float freq,
@@ -1511,10 +1523,10 @@ typedef struct rtl_stream_test_am_symbol_profile_result {
     int am_on_open;         /* dsd_demod_am_active() on the -fM open */
     int am_after_cqpsk_off; /* ... after a CQPSK-off toggle on that monitor, whose CQPSK is off already */
     /* Under a typed digital row's CQPSK-off symbol profile, consumed at a block boundary. */
-    int row_monitor;      /* dsd_demod_analog_monitor_active() */
-    int row_am;           /* dsd_demod_am_active(): 0, full_demod() reads the row's signal with the discriminator */
-    int row_kind;         /* demod_state::analog_demod */
-    int am_after_restore; /* dsd_demod_am_active() once a failed tune's restore put the monitor's profile back */
+    int row_monitor; /* dsd_demod_analog_monitor_active() */
+    int row_am;      /* dsd_demod_am_active(): 0, full_demod() reads the row's signal with the discriminator */
+    int row_kind;    /* demod_state::analog_demod */
+    int am_after_restore; /* dsd_demod_am_active() once a symbol profile restored after a failed tune applied (4800/4, WIDE) */
     int am_after_width_request; /* ... once an AM width request on that monitor was consumed */
     int width_after_request;    /* demod_state::channel_lpf_width_hz, likewise */
     /* Retunes landed as the controller lands them: a typed digital row's CQPSK-off symbol profile, then the analog
@@ -1894,6 +1906,10 @@ void rtl_stream_test_session_boundary(void);
  *   12   the status the demod thread publishes. */
 int rtl_stream_test_squelch_plumbing(void);
 
+/* The device part of the auto squelch's floor context for input spec @p spec (NULL: none), as a stream open stores it
+ * (issue #899 B12). */
+uint32_t rtl_stream_test_squelch_device_hash(const char* spec);
+
 /* Open @p opts at 48 kHz, leave @p preset_scale as the output scale an I/Q replay finds (0 in a process that never ran
  * a live stream, or what an earlier session set), and apply a replay capture's settings (1.536 Msps, base decimation
  * 32, 48 kHz demod rate) as a replay open does: @p out_scale receives the output scale the replay then runs. */
@@ -2120,6 +2136,139 @@ typedef struct rtl_stream_test_external_landing_filter_result {
  * on C that had no profile to take (D, then C with no profile, C again with no profile, C once more after another leg
  * moved the stand-in peer away with no landing, then D). */
 int rtl_stream_test_external_landing_filter_state(rtl_stream_test_external_landing_filter_result* out);
+
+/* The receiver's closed starts (issue #899): what the receiver runs after each landing, family request and write. */
+typedef struct rtl_stream_test_channel_gate_result {
+    /* An NFM retune marked a new channel, from an open the decoder wrote Off for: */
+    int outstanding_open; /* 1 when the channel left kept its gate (Off) while the retune was outstanding */
+    int landing_closed;   /* 1 when the controller's landing started the new channel closed */
+    int landing_reported; /* 1 when rtl_stream_gate_closed_start() said so */
+    int write_opened;     /* 1 when the decoder's write (noise +10) opened it */
+    int write_mode;
+    int write_margin;
+    int superseded_closed;      /* a marked landing whose profile a live family request superseded: closed */
+    int cleared_kept;           /* a profile cleared before the controller took it: gate unchanged */
+    int refused;                /* 1 when a 200 kHz NFM landing's finalize reported the refusal */
+    int refused_closed;         /* ... which started closed all the same: the tuner moved */
+    int mark_only_closed;       /* the controller's landing of a profile for the mark alone: closed */
+    int mark_only_symbols_kept; /* ... with the symbol rate and TED as it found them */
+    int unmarked_kept;          /* a retune nobody marked: the gate (noise +10) unchanged */
+    int external_closed;        /* an external backend's marked landing: closed */
+    int mark_only_external_closed;
+    int mark_only_family_kept;  /* ... and the family as it found it */
+    int mark_only_request_kept; /* ... and a live analog request queued before it */
+    /* Live family requests, from a digital open the decoder wrote -40 dB on: */
+    int family_switched;            /* 1 when the block boundary switched to the analog family */
+    int family_closed;              /* ... and started closed */
+    int width_kept;                 /* a width change on the same kind: not closed, the gate written (noise +10) kept */
+    int kind_closed;                /* a switch to AM: closed */
+    int digital_switched;           /* a request back to the digital family: switched */
+    int digital_runs_digital;       /* ... running the digital gate (-40 dB), not the analog one (noise +10) */
+    int digital_write_runs_digital; /* a write on the digital family runs its digital gate */
+    int hunt_runs_digital;          /* an unmarked retune landing the digital family from an analog channel: -40 dB */
+    int refused_kept;               /* an analog request refused as it is asked for: not closed, gate kept */
+    int retired_closed;             /* a marked retune that retired a queued analog request: closed */
+    int retired_kept;               /* ... and the symbol-only request after the write keeps the gate written */
+    int open_counts_reset;          /* an open starts the closed-start count and duration over */
+    int open_closed;                /* an analog stream open: closed */
+    int open_opened;                /* ... the decoder's write opens it */
+    int open_counted;               /* ... counted as one closed start */
+    int resolved_open_runs; /* a start the decoder resolved noise +10 for: runs it, no closed start, status says so */
+    int resolved_open_once; /* ... and a start with none resolved starts closed, status says so */
+    /* A typed digital -Y row on an -fA session (its symbol profile, no digital family), landed marked from an analog
+       channel written noise +10 with Off for the digital family: */
+    int typed_landing_off_monitor;  /* 1 when it kept the analog family flag but left the monitor, as by design */
+    int typed_landing_open;         /* ... and did not start closed: the row's samples before its commit pass */
+    int typed_landing_runs_digital; /* ... under the digital gate (Off), not the analog one (noise +10) */
+    int typed_pause_monitor;        /* the scan paused in place there: its FM request put the monitor back */
+    int typed_pause_closed;         /* ... a new analog channel, closed */
+    int typed_pause_reported;       /* ... and reported */
+    /* Where the closed start's samples are counted: */
+    int in_flight_counted;        /* a block that took the closed gate, finished after the opening write: counted */
+    int monitor_unjudged_counted; /* an open monitor block with no dynamic squelch: counted unjudged */
+    int encoder_uncounted;        /* the M17 encoder's monitor block: no landing telemetry */
+    int am_closed_counted;        /* an AM channel's closed start: its blocks before a delayed write counted closed */
+    int am_unjudged_counted;      /* ... and its open blocks under Off counted unjudged */
+    /* The same AM channel with its output resampler on (48 -> 24 kHz), counted in output samples: */
+    int am_resampled_closed_produced;  /* output samples two closed blocks of 48 produced (24 each, not 48) */
+    int am_resampled_closed_counted;   /* 1 when the closed count grew by exactly those */
+    int am_resampled_unjudged_counted; /* 1 when an open block's produced samples, under Off, were counted unjudged */
+    /* The status a produced block publishes: an NFM channel under noise +10, then a marked landing's closed start: */
+    int running_status_active; /* 1 when a block on the open channel published a dynamic squelch running */
+    int closed_block_flagged; /* 1 when the block produced on the closed start was muted, every sample flagged closed */
+    int closed_status_inactive; /* ... and published no dynamic squelch (inactive, not noise, gate open) */
+    /* The public squelch setters, on an NFM channel the decoder wrote noise +10 for: */
+    int public_level_then_write;   /* the level setter's Off runs, and the decoder's noise +10 write after it runs */
+    int public_setting_then_write; /* the same through the whole-setting setter */
+    int public_ends_closed;        /* on a marked landing's closed start, the setter ends it, counted, as a write */
+    /* Digital rows, on the digital family: one with its own -40 dB (the session's Off), then the next: */
+    int digital_row_runs_own;         /* 1 when the decoder's write for the row runs its -40 dB */
+    int digital_landing_runs_session; /* the next row's marked landing runs the session's Off, not the row's -40 dB */
+    int digital_grant_kept;           /* an unmarked retune (a grant) keeps the running -40 dB */
+    int digital_repush_locks;         /* gate locks over 50 symbol requests on the digital family: 0 */
+    int digital_repush_kept;          /* ... which keep the running -40 dB */
+    int digital_poll_running_reads;   /* loads of the squelch gate word over 50 status polls (the telemetry's): 0 */
+    int digital_getter_running_reads; /* ... and over one rtl_stream_get_squelch_running() after them: 1 */
+    /* A direct CQPSK toggle on the NFM monitor written noise +10 (-40 dB for the digital family, Off the session's): */
+    int cqpsk_toggle_off_monitor;        /* 1 when the toggle took the front end off the monitor */
+    int cqpsk_toggle_runs_session;       /* ... and the receiver runs the session's Off from it, not noise +10 */
+    int cqpsk_toggle_write_runs_digital; /* a digital symbol request, then the decoder's write: the digital -40 dB */
+} rtl_stream_test_channel_gate_result;
+
+/* Open the NFM monitor (or the digital family) at 48 kHz and land retunes and family requests, as the controller, an
+ * external backend and the demod thread do, reporting what the receiver runs after each (issue #899). */
+int rtl_stream_test_channel_gate(rtl_stream_test_channel_gate_result* out);
+
+/* A typed digital row's receive profile as it reaches the receiver: by a marked retune landing, or by a live symbol
+   request (@p by_request). */
+typedef struct rtl_stream_test_typed_row_profile {
+    int cqpsk; /* 1 for rf_mod 1 (CQPSK), else 0 */
+    int symbol_rate_hz;
+    int levels;
+    int channel_profile; /* DSD_CH_LPF_PROFILE_* as dsd_rtl_channel_profile_for() gives it */
+    int by_request;
+} rtl_stream_test_typed_row_profile;
+
+/* What the receiver ran for it on an -fA session under noise +10 (Off for the digital family), issue #899. */
+typedef struct rtl_stream_test_typed_row_gate_result {
+    int family_kept;           /* 1 when the analog family flag stayed (no family switch, by design) */
+    int off_monitor;           /* 1 when the front end is off the analog monitor and runs no dynamic squelch */
+    int landing_open;          /* 1 when it did not start closed */
+    int runs_digital;          /* 1 when it runs the digital gate (Off), not the analog one (noise +10) */
+    int published_off_monitor; /* 1 when the published analog profile says no monitor */
+    int refresh_kept;          /* 1 when a demod rate change's analog channel refresh left the row's profile */
+    int pause_monitor;         /* the row paused in place: 1 when its FM request put the monitor back */
+    int pause_closed;          /* ... as a new analog channel, closed and reported */
+} rtl_stream_test_typed_row_gate_result;
+
+/* Open the NFM monitor at 48 kHz, put @p profile in place as a typed digital row's, then pause in place. */
+int rtl_stream_test_typed_row_gate(const rtl_stream_test_typed_row_profile* profile,
+                                   rtl_stream_test_typed_row_gate_result* out);
+
+/* A typed digital row's in-place pause against a stale frame-sync hunt request (issue #899, round 8). */
+typedef struct rtl_stream_test_pause_hunt_result {
+    int row_off_monitor; /* 1 when the typed DMR row's landing left the monitor, as by design */
+    int monitor;         /* 1 when the pause's FM request put the monitor back, the hunt's request landing nothing */
+    int closed;          /* ... as a new analog channel, closed and reported */
+    int analog_gate;     /* ... and the decoder's write then runs the analog gate (noise +10) */
+} rtl_stream_test_pause_hunt_result;
+
+/* Pause the row in place with its FM request and a hunt's symbol request in @p order (0..3, see the hook). */
+int rtl_stream_test_pause_against_hunt(int order, rtl_stream_test_pause_hunt_result* out);
+
+/* The decoder's gate writes against landings on another thread (issue #899, round 8). */
+typedef struct rtl_stream_test_gate_write_race_result {
+    int landings; /* retunes the landing thread landed, alternating analog (marked) and digital */
+    int writes; /* gate writes the decoder's thread made meanwhile: one in each round, met with that round's landing */
+    int final_open; /* 1 when the write after the last (analog) landing opened it under noise +10 */
+} rtl_stream_test_gate_write_race_result;
+
+/* Land @p rounds retunes on one thread, alternating a marked NFM landing and an unmarked landing of the digital family
+ * (each changes the demodulator's family), as the controller does, while this thread writes the gate (noise +10, Off
+ * for the digital family) once per round, the two threads meeting at each round before its write and its landing (the
+ * landing's profile taken before the meeting, the writer's turn first); then one more write. Run under TSan, the writes
+ * must read nothing the landings change outside the gate's lock. */
+int rtl_stream_test_gate_write_during_landings(int rounds, rtl_stream_test_gate_write_race_result* out);
 
 /* An rtl_tcp reader holding half a slice from the channel left (two bytes of four) receives a whole slice from the one
  * landed on, with (@p discard) or without rtl_device_discard_staged_input() between, as an external retune's flush calls

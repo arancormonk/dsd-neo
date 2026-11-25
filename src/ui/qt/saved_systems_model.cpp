@@ -1169,6 +1169,22 @@ SavedSystemsModel::updateRadioSettings(const QString& uid, const QVariantMap& ch
 }
 
 bool
+SavedSystemsModel::clearRadioSetting(const QString& uid, const QString& key) {
+    const int row = rowForUid(uid);
+    const bool control =
+        key == QLatin1String("squelch") || key == QLatin1String("modulation") || key == QLatin1String("decodeFlag");
+    if (row < 0 || !control) {
+        return false;
+    }
+    auto settings = m_rows.at(row).radioSettings;
+    if (!settings.contains(key)) {
+        return true;
+    }
+    settings.remove(key);
+    return update(row, QVariantMap{{QStringLiteral("radioSettings"), settings}});
+}
+
+bool
 SavedSystemsModel::remove(int row) {
     if (row < 0 || row >= m_rows.size()) {
         return false;

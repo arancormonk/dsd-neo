@@ -135,6 +135,7 @@ static const char* const k_skip_exact_next_any[] = {
     "--nfm-bandwidth-hz",
     "--am-bandwidth-hz",
     "--squelch",
+    "--squelch-analog-default",
     "--tone-allow",
     "--slot-allow",
     "--slot-block",
@@ -175,6 +176,12 @@ static const char* const k_skip_exact_next_nonopt[] = {
     "--api-bind",
     "--tetra-net",
     "--tetra-key",
+};
+
+/* Of those, the ones that do without a value: each then reads its default path (bootstrap.c). The others need one. */
+static const char* const k_skip_exact_next_nonopt_optional[] = {
+    "--config",
+    "--validate-config",
 };
 
 static const char* const k_skip_prefix[] = {
@@ -233,6 +240,7 @@ static const char* const k_skip_prefix[] = {
     "--nfm-bandwidth-hz=",
     "--am-bandwidth-hz=",
     "--squelch=",
+    "--squelch-analog-default=",
     "--tone-allow=",
     "--slot-allow=",
     "--slot-block=",
@@ -286,6 +294,14 @@ dsd_cli_long_option_arity(const char* arg) {
         return DSD_CLI_LONG_NEXT;
     }
     return DSD_CLI_LONG_UNKNOWN;
+}
+
+int
+dsd_cli_long_option_value_optional(const char* arg) {
+    return arg != NULL
+           && compact_matches_exact(arg, k_skip_exact_next_nonopt_optional,
+                                    sizeof(k_skip_exact_next_nonopt_optional)
+                                        / sizeof(k_skip_exact_next_nonopt_optional[0]));
 }
 
 /* getopt's option string for the parser (args.c): a letter followed by ':' takes a value. */

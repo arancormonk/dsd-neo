@@ -381,16 +381,25 @@ dsd_squelch_floor_reset(dsd_squelch_floor* t) {
     }
     sqf_restart_windows(t);
     sqf_relearn(t);
+    t->restart_hold = 0;
     t->last_class = DSD_SQUELCH_WINDOW_UNDECIDED;
     t->window_power = 0.0;
     t->windows = 0U;
 }
 
 void
-dsd_squelch_floor_restart_windows(dsd_squelch_floor* t) {
-    if (t) {
-        sqf_restart_windows(t);
+dsd_squelch_floor_stream_restart(dsd_squelch_floor* t) {
+    if (!t) {
+        return;
     }
+    /* The gate and every run of windows belong to the stream before the boundary: a carrier it was open on may be
+       gone, and windows on both sides of it are not one run. The floor belongs to the context, which is the same. */
+    sqf_restart_windows(t);
+    sqf_clear_learning(t);
+    t->agree = 0;
+    t->shift_windows = 0;
+    t->gate_open = 0;
+    t->restart_hold = 1;
 }
 
 void
@@ -456,7 +465,9 @@ dsd_squelch_floor_classify(const dsd_squelch_floor_plan* plan, double n, double 
 /* With a floor, the power gate on the last 20 ms sub-window. */
 static void
 sqf_power_gate(dsd_squelch_floor* t) {
-    if (t->state == DSD_SQUELCH_FLOOR_LEARNING) {
+    /* After a stream restart the kept floor may be under the noise now: power alone opens nothing until a window has
+       said NOISE or CARRIER. */
+    if (t->state == DSD_SQUELCH_FLOOR_LEARNING || t->restart_hold) {
         return;
     }
     const double p = t->sub_power;
@@ -550,6 +561,12 @@ sqf_window_end(dsd_squelch_floor* t) {
     t->last_class = cls;
     t->window_power = p;
     t->windows++;
+    /* The first window after a stream restart that says NOISE or CARRIER ends the hold: from here the gate runs as
+       before. An UNDECIDED one (exact zeros from a muted capture, or a power step inside the window, as a tuner
+       settling or a carrier keying up makes) says nothing about louder idle noise to come, so the hold stays. */
+    if (cls != DSD_SQUELCH_WINDOW_UNDECIDED) {
+        t->restart_hold = 0;
+    }
     if (t->state == DSD_SQUELCH_FLOOR_LEARNING) {
         sqf_learning_window(t, cls, p);
     } else if (cls == DSD_SQUELCH_WINDOW_NOISE) {
@@ -740,6 +757,8 @@ dsd_squelch_floor_change_context(dsd_squelch_floor* t, dsd_squelch_floor_cache* 
         dsd_squelch_floor_cache_store(c, prev, t->floor_power / t->plan.noise_gain);
     }
     sqf_restart_windows(t);
+    /* A restart's hold was for the floor it kept, which is left behind with its context. */
+    t->restart_hold = 0;
     double density = 0.0;
     const int found = (c && next) ? dsd_squelch_floor_cache_find(c, next, &density) : 0;
     if (found != 0 && t->plan.valid && t->plan.noise_gain > 0.0) {
