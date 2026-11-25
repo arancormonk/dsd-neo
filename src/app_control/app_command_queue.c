@@ -11927,7 +11927,9 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_
         return UI_CMD_APPLY_FAILED;
     }
     if (config_refused_over_running_radio(opts, state, c)) {
-        dsd_app_recording_command_resolved(recording_command_id(c), recording_command_outcome(c, UI_CMD_APPLY_FAILED));
+        /* Resolved here, not through recording_command_outcome(): its config answer is the [recording] result this
+           command never reached, which still holds the previous config's. */
+        dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_FAILED);
         return UI_CMD_APPLY_FAILED;
     }
 
