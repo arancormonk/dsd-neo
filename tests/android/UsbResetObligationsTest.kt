@@ -132,7 +132,39 @@ private fun aSerialStaysOneField() {
     check(again.entries.single().serial == "A B C") { "${again.entries}" }
 }
 
+// An RTL-SDR's serial is matched exactly, as the engine opens it: a replacement under the same name and VID:PID whose
+// serial differs only in case is another dongle, and owes nothing.
+private fun aSerialInAnotherCaseIsAnotherDevice() {
+    val owed = UsbResetObligations()
+    owed.record(a(serial = "abc"), owes = true)
+    check(!owed.owes(a(serial = "ABC"))) { "a serial in another case is another dongle" }
+    check(owed.entries.isEmpty()) { "and the entry is dropped" }
+    owed.record(a(serial = "abc"), owes = true)
+    check(owed.owes(a(serial = "abc"))) { "the same serial owes its reset" }
+}
+
+// The broker once kept the last 16 characters of every serial. A record stored then still names its dongle: for a
+// serial of 16 characters or fewer it is the whole serial; for a longer one, it is the end of the serial read now.
+private fun aRecordFromBeforeWholeSerialsStillCounts() {
+    val long = "RTL-SDR-BLOG-V4-0000000000000001"
+    val legacy = "$RTL_A\t$VID\t$PID\t${long.takeLast(16)}\n"
+    val restored = UsbResetObligations()
+    restored.restore(legacy, mapOf(RTL_A to (VID to PID)))
+    check(restored.owes(a(serial = long))) { "a stored last-16 record is the long serial's" }
+    val other = UsbResetObligations()
+    other.restore(legacy, mapOf(RTL_A to (VID to PID)))
+    check(!other.owes(a(serial = "OTHER-PREFIX-000000000000000002"))) { "a long serial with another end is not" }
+    val short = UsbResetObligations()
+    short.restore("$RTL_A\t$VID\t$PID\t00000001\n", mapOf(RTL_A to (VID to PID)))
+    check(short.owes(a(serial = "00000001"))) { "a short serial's record was the whole serial" }
+    val whole = UsbResetObligations()
+    whole.record(a(serial = long), owes = true)
+    check(whole.entries.single().serial == long && whole.owes(a(serial = long))) { "a new record keeps it whole" }
+}
+
 fun main() {
+    aSerialInAnotherCaseIsAnotherDevice()
+    aRecordFromBeforeWholeSerialsStillCounts()
     eachAttachmentKeepsItsOwn()
     aRefusedResetKeepsIt()
     aDetachDropsIt()

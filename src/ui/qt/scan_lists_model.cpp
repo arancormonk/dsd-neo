@@ -68,14 +68,14 @@ normalize(const QVariantMap& input, const QVariantMap& base = {}, const QSet<QSt
     QVariantMap result =
         base.isEmpty()
             ? QVariantMap{{"name", ""},         {"sourceType", "usb"}, {"host", ""},          {"port", 1234},
-                          {"gainDb", -1},       {"ppm", ""},           {"bandwidthKhz", -1},  {"biasTee", -1},
-                          {"voiceOnly", false}, {"skipSilent", false}, {"defaultDwellMs", 0}, {"defaultHoldMs", 0},
-                          {"groupCsvPath", ""}, {"srcCsvPath", ""},    {"lastHeard", 0}}
+                          {"rtlSerial", ""},    {"gainDb", -1},        {"ppm", ""},           {"bandwidthKhz", -1},
+                          {"biasTee", -1},      {"voiceOnly", false},  {"skipSilent", false}, {"defaultDwellMs", 0},
+                          {"defaultHoldMs", 0}, {"groupCsvPath", ""},  {"srcCsvPath", ""},    {"lastHeard", 0}}
             : base;
     const QStringList fields{
-        "airspy",       "name",      "sourceType", "host",       "port",           "gainDb",        "ppm",
-        "bandwidthKhz", "biasTee",   "voiceOnly",  "skipSilent", "defaultDwellMs", "defaultHoldMs", "groupCsvPath",
-        "srcCsvPath",   "lastHeard", "entries",    "isDraft",    "targetSource",   "targetsCsvPath"};
+        "airspy",       "name",         "sourceType", "host",      "port",       "rtlSerial",      "gainDb",
+        "ppm",          "bandwidthKhz", "biasTee",    "voiceOnly", "skipSilent", "defaultDwellMs", "defaultHoldMs",
+        "groupCsvPath", "srcCsvPath",   "lastHeard",  "entries",   "isDraft",    "targetSource",   "targetsCsvPath"};
     for (const auto& field : fields) {
         if (input.contains(field)) {
             result[field] = input.value(field);

@@ -1059,11 +1059,8 @@ class DecoderHost : public QObject {
     refresh() {}
 
     /**
-     * @brief Ask the platform for access to a directly attached SDR.
-     *
-     * May show a permission prompt, so the answer arrives later: watch
-     * @c localDeviceReady and @c localDeviceStatus rather than a return value.
-     * Hosts that do not broker access do nothing.
+     * @brief The USB serial of the device access was granted for, as the
+     * platform reads it; empty when it cannot, or with no device.
      */
     virtual QString
     localDeviceSerial() const {
@@ -1089,6 +1086,15 @@ class DecoderHost : public QObject {
         return {};
     }
 
+    /**
+     * @brief Ask the platform for access to a directly attached SDR of kind
+     * @p source ("usb" or "airspy"), the one with USB serial @p serial when it
+     * is not empty.
+     *
+     * May show a permission prompt, so the answer arrives later: watch
+     * @c localDeviceReady and @c localDeviceStatus rather than a return value.
+     * Hosts that do not broker access do nothing.
+     */
     Q_INVOKABLE virtual void
     requestLocalDeviceAccessForSource(const QString& source, const QString& serial = QString()) {
         (void)source;

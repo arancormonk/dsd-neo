@@ -562,6 +562,8 @@ full_system_map(void) {
     map.insert(QStringLiteral("hangtime"), QStringLiteral("1.5"));
     map.insert(QStringLiteral("bandwidthKhz"), 12);
     map.insert(QStringLiteral("biasTee"), true);
+    // Kept exactly as typed: case, inner and outer spaces (the editors refuse an outer space; the store never trims).
+    map.insert(QStringLiteral("rtlSerial"), QStringLiteral(" AbC 01"));
     map.insert(QStringLiteral("extraArgs"), QStringLiteral("-C chan.csv"));
     map.insert(QStringLiteral("filePath"), QString());
     return map;
@@ -588,6 +590,11 @@ test_saved_systems(void) {
                    && got.value(QStringLiteral("bandwidthKhz")).toInt() == 12
                    && got.value(QStringLiteral("biasTee")).toInt() == 1
                    && got.value(QStringLiteral("extraArgs")).toString() == QStringLiteral("-C chan.csv"));
+        expect("the RTL-SDR serial round-trips exactly",
+               got.value(QStringLiteral("rtlSerial")).toString() == QStringLiteral(" AbC 01")
+                   && model.data(model.index(0), SavedSystemsModel::RtlSerialRole).toString()
+                          == QStringLiteral(" AbC 01")
+                   && model.roleNames().value(SavedSystemsModel::RtlSerialRole) == QByteArrayLiteral("rtlSerial"));
 
         /* Absent keys keep the documented sentinels; junk types collapse to
          * QVariant's conversions, never to uninitialized fields. */
@@ -602,6 +609,9 @@ test_saved_systems(void) {
                    && sparseGot.value(QStringLiteral("bandwidthKhz")).toInt() == -1
                    && sparseGot.value(QStringLiteral("biasTee")).toInt() == -1
                    && sparseGot.value(QStringLiteral("lastHeard")).toLongLong() == 0);
+        expect("an absent RTL-SDR serial reads as none (the first device)",
+               sparseGot.contains(QStringLiteral("rtlSerial"))
+                   && sparseGot.value(QStringLiteral("rtlSerial")).toString().isEmpty());
         /* Absent trunking is OFF, the same reading session_args gives it - it
          * appends -T only for a present true. The store defaulting it ON meant a
          * map that never mentioned trunking was saved as call-following on while
@@ -662,6 +672,9 @@ test_saved_systems(void) {
     expect("legacy '-f1 -mq' migrates to '-mq' on load",
            reloaded.get(2).value(QStringLiteral("decodeFlag")).toString() == QStringLiteral("-mq"));
     expect("explicit bias-tee off survives the reload", reloaded.get(3).value(QStringLiteral("biasTee")).toInt() == 0);
+    expect("the RTL-SDR serial survives partial edits and the reload",
+           reloaded.get(0).value(QStringLiteral("rtlSerial")).toString() == QStringLiteral(" AbC 01")
+               && reloaded.get(1).value(QStringLiteral("rtlSerial")).toString().isEmpty());
 
     reloaded.remove(0);
     reloaded.remove(0);
@@ -3154,6 +3167,23 @@ test_attach_group_list_by_receiver() {
     expect("receiver: a request that captured no host is refused", !model.groupListAttachable(uid, partial));
     expect("receiver: the receiver it ran attaches",
            model.attachGroupList(uid, path, tuning) && model.get(0).value("groupCsvPath") == path);
+
+    /* A USB dongle chosen by serial is its receiver too, its serial matched exactly. */
+    QVariantMap usb = grouped_site("Metro — South", 4);
+    usb.insert("sourceType", "usb");
+    usb.insert("rtlSerial", "abc");
+    expect("receiver: a USB system by serial", model.add(usb));
+    const QString usbUid = model.get(1).value("uid").toString();
+    const QVariantMap usbTuning = captured_tuning(model, 1);
+    expect("receiver: the serial is a captured receiver field",
+           usbTuning.value("rtlSerial") == "abc" && model.groupListAttachable(usbUid, usbTuning));
+    expect("receiver: edited to the serial in another case", model.update(1, {{"rtlSerial", "ABC"}}));
+    expect("receiver: another dongle's serial is refused", !model.groupListAttachable(usbUid, usbTuning));
+    expect("receiver: edited to the first device", model.update(1, {{"rtlSerial", ""}}));
+    expect("receiver: the first device is another receiver", !model.groupListAttachable(usbUid, usbTuning));
+    QVariantMap noSerial = usbTuning;
+    noSerial.remove("rtlSerial");
+    expect("receiver: a request that captured no serial is refused", !model.groupListAttachable(usbUid, noSerial));
     empty_systems(model);
 }
 

@@ -673,8 +673,9 @@ Window {
     /**
      * A copy of @p system on receiver kind @p kind, keeping the settings that
      * kind takes. An Airspy's own settings (its serial among them) only go
-     * with an Airspy; a switch to one drops an RTL's PPM, bias tee and tuner
-     * gain, since an Airspy takes its gains and tee from its own map.
+     * with an Airspy, and an RTL-SDR's serial only with a USB dongle; a switch
+     * to an Airspy drops an RTL's PPM, bias tee and tuner gain, since an
+     * Airspy takes its gains and tee from its own map.
      */
     function onReceiver(system, kind) {
         var moved = Object.assign({}, system);
@@ -688,7 +689,25 @@ Window {
         }
         if (moved.sourceType !== "airspy")
             delete moved.airspy;
+        if (moved.sourceType !== "usb")
+            delete moved.rtlSerial;
         return moved;
+    }
+    /** The USB serial a start of @p system asks for: its Airspy's or its RTL-SDR's, or empty for any device. */
+    function wantedDeviceSerial(system) {
+        if (system.sourceType === "airspy")
+            return String((system.airspy || {}).serial || "");
+        return system.sourceType === "usb" ? String(system.rtlSerial || "") : "";
+    }
+    /**
+     * Whether the connected device's serial @p connected is the @p wanted one
+     * of receiver kind @p kind: an Airspy's without case (its hex serial), an
+     * RTL-SDR's exactly, as the decoder matches it.
+     */
+    function sameDeviceSerial(kind, connected, wanted) {
+        if (kind === "airspy")
+            return String(connected).toUpperCase() === String(wanted).toUpperCase();
+        return String(connected) === String(wanted);
     }
     /** A copy of @p system on the receiver attached now, as every Explore start resolves it (rtl_tcp stays). */
     function onAttachedReceiver(system) {
@@ -1901,8 +1920,8 @@ Window {
             remember: remember
         };
         completionMessage = "";
-        var wantedSerial = sys.sourceType === "airspy" ? String((sys.airspy || {}).serial || "").toUpperCase() : "";
-        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && String(decoderHost.localDeviceSerial).toUpperCase() !== wantedSerial))) {
+        var wantedSerial = mainRoot.wantedDeviceSerial(sys);
+        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && !mainRoot.sameDeviceSerial(sys.sourceType, decoderHost.localDeviceSerial, wantedSerial)))) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
             // and it keeps updating as the permission dialog resolves. When the
@@ -1919,7 +1938,7 @@ Window {
             mainRoot.pendingStartRoam = roam;
             if (roam)
                 siteRoaming.noteWaitingForUsb(roam.roamId);
-            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
+            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, wantedSerial);
             return;
         }
         mainRoot.dismissedFailure = "";

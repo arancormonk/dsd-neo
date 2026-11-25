@@ -399,6 +399,9 @@ object UsbSourceManager {
 
         val appContext = context.applicationContext
         ensureReceiver(appContext)
+        val manager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
+        // Two readable dongles with the serial asked for cannot be told apart: refused, a ready one included.
+        if (refusedTwins(manager, source, serial)) return
 
         if (isReady()) {
             // Rewritten even though nothing changes: a failure written while ready (a refused switch, a stale
@@ -407,13 +410,12 @@ object UsbSourceManager {
             return
         }
 
-        val manager = appContext.getSystemService(Context.USB_SERVICE) as UsbManager
         val candidates = manager.deviceList.values.filter { isKnown(it) && sourceOf(it) == source }
         val device = if (serial.isEmpty()) candidates.firstOrNull() else
             candidates.firstOrNull { manager.hasPermission(it) && matchesSerial(it, serial) } ?:
             candidates.firstOrNull { !manager.hasPermission(it) }
         if (device == null) {
-            setStatus(if (serial.isNotEmpty()) "Requested Airspy serial not found" else if (source == "airspy") "No Airspy attached" else "No RTL-SDR attached", "detached")
+            setStatus(notFoundText(source, serial), "detached")
             return
         }
 
@@ -565,6 +567,8 @@ object UsbSourceManager {
             requestDevice(context, sourceOf(device), serial, hop = true)
             return
         }
+        // A grant can make a second dongle with the serial asked for readable.
+        if (refusedTwins(manager, sourceOf(device), serial)) return
         synchronized(lock) {
             if (connection != null || opening) {
                 Log.i(TAG, "usb: already holding a descriptor; ignoring a duplicate open")
@@ -839,9 +843,18 @@ object UsbSourceManager {
      *   reused (the reporter's "Failed to open rtlsdr device from descriptor"). If the device is gone, permission was
      *   revoked or the open fails, the start fails before configure with that kind, and the broker reads not ready:
      *   Connect or Retry takes the normal request path.
+     *
+     * [serial] is the RTL-SDR serial the start's own arguments name (UsbReceiverKind.rtlSerialOf(), "" for none), so an
+     * "-i rtl:serial=B" among the Advanced options is honoured whatever the saved system asked for. A connection to
+     * another dongle is not the session's: the broker is asked for that serial as Connect asks ([requestDevice]),
+     * which opens it at once when permission holds, or prompts for it and fails the start with the broker's reason.
+     * Two readable dongles with that serial refuse the start. The engine checks the descriptor's serial again.
      */
-    internal fun takeForSession(context: Context, source: String): UsbSessionTake {
+    internal fun takeForSession(context: Context, source: String, serial: String = ""): UsbSessionTake {
         if (source != UsbReceiverKind.RTL && source != UsbReceiverKind.AIRSPY) return UsbSessionTake()
+        if (source == UsbReceiverKind.RTL && serial.isNotEmpty()) {
+            takeBySerial(context, source, serial)?.let { return it }
+        }
         val held = synchronized(lock) {
             if (connection == null || connectedSource != source) {
                 null
@@ -861,6 +874,45 @@ object UsbSourceManager {
             return UsbSessionTake(device = held.name, epoch = held.epoch, connection = held.id)
         }
         return reopen((synchronized(lock) { attachmentContext } ?: context.applicationContext), source, held)
+    }
+
+    /**
+     * The part of [takeForSession] for a start whose arguments name RTL-SDR [serial]: null when the connection is to
+     * that dongle (or now is, opened without a prompt), so the take goes on with it; else the start's failure. The
+     * connection is left as the request leaves it, so Connect or Retry continues from there.
+     */
+    private fun takeBySerial(context: Context, source: String, serial: String): UsbSessionTake? {
+        val app = synchronized(lock) { attachmentContext } ?: context.applicationContext
+        val manager = app.getSystemService(Context.USB_SERVICE) as UsbManager
+        if (refusedTwins(manager, source, serial)) {
+            return UsbSessionTake.failed(
+                UsbSessionTake.USB_OPEN_FAILED,
+                "usb: more than one RTL-SDR carries serial $serial; not opened",
+                message = synchronized(lock) { status },
+            )
+        }
+        if (connectedTo(source, serial)) return null
+        if (DsdNative.nativeSessionUsesLocalReceiver() || DsdNative.nativeIsUsbFdInUse()) {
+            return UsbSessionTake.failed(
+                UsbSessionTake.PREVIOUS_STOPPING,
+                "usb: the receiver is still held by the previous session; RTL-SDR $serial not opened"
+            )
+        }
+        DsdNative.nativeHostDiagnostic("usb: the start names RTL-SDR serial $serial; asking for it")
+        requestDevice(app, source, serial, hop = false)
+        if (connectedTo(source, serial)) return null
+        val (kind, text, pending) = synchronized(lock) { Triple(failureKind, status, requests.pending) }
+        val failure = when {
+            pending || kind == "permission" -> UsbSessionTake.USB_PERMISSION
+            kind == "detached" -> UsbSessionTake.USB_GONE
+            else -> UsbSessionTake.USB_OPEN_FAILED
+        }
+        return UsbSessionTake.failed(failure, "usb: RTL-SDR serial $serial is not connected: $text", message = text)
+    }
+
+    /** Whether the ready connection is to a receiver of kind [source] carrying [serial], compared as the kind's own. */
+    private fun connectedTo(source: String, serial: String): Boolean = synchronized(lock) {
+        connection != null && connectedSource == source && UsbReceiverKind.sameSerial(source, connectedSerial, serial)
     }
 
     /**
@@ -982,12 +1034,39 @@ object UsbSourceManager {
         }
     }
 
+    /** [device]'s serial as its kind is matched ([UsbReceiverKind.serialOf]), or "" without permission to read it. */
     private fun serialOf(device: UsbDevice): String = try {
-        device.serialNumber?.takeLast(16) ?: ""
+        UsbReceiverKind.serialOf(sourceOf(device), device.serialNumber)
     } catch (_: SecurityException) { "" }
 
     private fun matchesSerial(device: UsbDevice, serial: String): Boolean =
-        serialOf(device).equals(serial, ignoreCase = true)
+        UsbReceiverKind.sameSerial(sourceOf(device), serialOf(device), serial)
+
+    /** What a request for [serial] on a receiver of kind [source] says when no such receiver is attached. */
+    private fun notFoundText(source: String, serial: String): String = when {
+        serial.isNotEmpty() && source == UsbReceiverKind.AIRSPY -> "Requested Airspy serial not found"
+        serial.isNotEmpty() -> "Requested RTL-SDR serial not found"
+        source == UsbReceiverKind.AIRSPY -> "No Airspy attached"
+        else -> "No RTL-SDR attached"
+    }
+
+    /**
+     * Refuses a request for the RTL-SDR with [serial] when two or more attached dongles this app may read carry it
+     * (rtl_eeprom writes any serial, and many dongles ship with 00000001): the engine could not tell which one it was
+     * handed. A dongle without permission reads no serial, so it never counts. True when refused.
+     */
+    private fun refusedTwins(manager: UsbManager, source: String, serial: String): Boolean {
+        if (source != UsbReceiverKind.RTL || serial.isEmpty()) return false
+        val twins = manager.deviceList.values.count {
+            isKnown(it) && sourceOf(it) == source && manager.hasPermission(it) && matchesSerial(it, serial)
+        }
+        if (twins < 2) return false
+        setStatus(twinsText(twins, serial), UsbRequestState.REFUSED)
+        return true
+    }
+
+    private fun twinsText(count: Int, serial: String) =
+        "$count RTL-SDRs carry serial $serial; give each its own with rtl_eeprom -s"
 
     private fun sourceOf(device: UsbDevice): String = UsbReceiverKind.sourceOf(device.vendorId, device.productId)
 

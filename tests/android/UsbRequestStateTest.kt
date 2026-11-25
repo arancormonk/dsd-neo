@@ -186,7 +186,41 @@ private fun anAttachmentNamesItsKind() {
     check(UsbAttachmentTracker.take(setOf(airspy, rtl)) == "usb:$RTL_A") { "an RTL-SDR attaches as usb" }
 }
 
+// An RTL-SDR's serial is matched exactly, whole, as the engine opens it: a ready "abc" does not satisfy "ABC", a request
+// switches away from it, and a new serial in another case is a new target whose old prompt is retired. An Airspy's is
+// still matched without case.
+private fun anRtlSerialComparesExactly() {
+    val state = fresh()
+    state.select("usb", "abc")
+    check(state.satisfiedBy("usb", "abc")) { "the same serial satisfies it" }
+    check(!state.satisfiedBy("usb", "ABC")) { "another case is another dongle" }
+    check(!state.satisfiedBy("usb", "")) { "an unreadable serial does not satisfy it" }
+    val long = "RTL-SDR-BLOG-V4-0000000000000001"
+    state.select("usb", long)
+    check(state.satisfiedBy("usb", long) && !state.satisfiedBy("usb", long.takeLast(16))) {
+        "a serial longer than 16 characters is matched whole"
+    }
+    check(UsbRequestState.switchFor("usb", "abc", "usb", "ABC", running = false) == UsbRequestState.Switch.RELEASE) {
+        "a ready abc is released for a request for ABC"
+    }
+    check(UsbRequestState.switchFor("usb", "abc", "usb", "ABC", running = true) == UsbRequestState.Switch.REFUSE) {
+        "and refused while a session runs"
+    }
+    check(UsbRequestState.switchFor("usb", "abc", "usb", "abc", running = true) == UsbRequestState.Switch.KEEP)
+    val generation = state.begin("usb", "abc", RTL_A)
+    state.select("usb", "abc")
+    check(state.pending && state.device == RTL_A) { "the same serial keeps its prompt" }
+    state.select("usb", "ABC")
+    check(!state.pending && state.device == null && state.requestedSerial == "ABC") { "another case retires it" }
+    check(state.onReply(generation, RTL_A, true) == UsbRequestState.Reply.IGNORED)
+    val airspy = fresh()
+    airspy.begin("airspy", SERIAL, AIRSPY_A)
+    airspy.select("airspy", SERIAL.lowercase())
+    check(airspy.pending && airspy.device == AIRSPY_A) { "an Airspy serial in another case is the same target" }
+}
+
 fun main() {
+    anRtlSerialComparesExactly()
     aLateReplyIsIgnored()
     aSerialSearchHopKeepsTheGeneration()
     aDetachWhilePendingRetiresTheRequest()

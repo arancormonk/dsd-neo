@@ -823,6 +823,25 @@ test_receiver_label_for_shared_titles() {
           f.column(SavedSystemCards::SharedTitleRole) == QStringList({QStringLiteral("false")}));
 }
 
+/* A system saved for two dongles chosen by serial is two cards with one title, each naming its dongle by the serial
+   exactly as stored ("USB 00000001", case kept); one with no serial reads "USB". */
+void
+test_receiver_label_names_rtl_serial() {
+    Fixture f;
+    QVariantMap first =
+        site(QStringLiteral("Metro — North"), 100, 1, QStringLiteral("851.0125"), QStringLiteral("North"));
+    first.insert(QStringLiteral("rtlSerial"), QStringLiteral("00000001"));
+    QVariantMap second = first;
+    second.insert(QStringLiteral("rtlSerial"), QStringLiteral("abc"));
+    f.add({first, second,
+           site(QStringLiteral("Metro — North"), 100, 1, QStringLiteral("851.0125"), QStringLiteral("North"))});
+    check("rtl serial: three Metro cards, one per dongle", f.cards->shownCount() == 3);
+    QStringList labels = f.column(SavedSystemCards::ReceiverLabelRole);
+    labels.sort();
+    check("rtl serial: each card names its dongle by serial",
+          labels == QStringList({QStringLiteral("USB"), QStringLiteral("USB 00000001"), QStringLiteral("USB abc")}));
+}
+
 /* Issue #901 r3 S1: titles are compared as Home draws them, a run of line breaks (a newline, U+2028, U+2029, CR LF)
    read as one space. An imported "Fire\nDispatch" and a typed "Fire Dispatch" are drawn alike, so both are shared
    titles; "Fire  Dispatch" (two spaces) and "FireDispatch" are not the same title. */
@@ -1536,6 +1555,7 @@ main(int argc, char** argv) {
     test_sort_signals();
     test_positional_rows();
     test_receiver_label_for_shared_titles();
+    test_receiver_label_names_rtl_serial();
     test_shared_title_compares_the_drawn_title();
     test_shared_titles_rebuild_linearly();
     test_metadata_edit_and_hold();

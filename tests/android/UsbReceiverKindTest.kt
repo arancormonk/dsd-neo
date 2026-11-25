@@ -140,7 +140,69 @@ private fun anIqReplayReplacesTheInput() {
     check(of("-i", "rtl", "--", "--iq-replay", "capture.iq") == "usb") { "nothing after -- is an option" }
 }
 
+// The engine lower-cases a known scheme given in another case at -i (dsd_input_spec_normalize_scheme()), so `RTL:0`
+// opens an RTL-SDR; a bare `RTL`, with no colon, is left as written and opens nothing.
+private fun aSchemeInAnyCaseIsTheReceiver() {
+    fun of(vararg args: String) = UsbReceiverKind.sourceOfArgs(arrayOf(*args))
+    check(of("-i", "RTL:0000001") == "usb" && of("-i", "Rtl:0:851M") == "usb" && of("-iRTL:1") == "usb") {
+        "an RTL-SDR scheme in any case"
+    }
+    check(of("-i", "AIRSPY:26a464dc") == "airspy") { "an Airspy scheme in any case" }
+    check(of("-i", "RTL") == "" && of("-i", "RTLTCP:h:1234") == "" && of("-i", "AIRSPY") == "") {
+        "a bare scheme in another case, and rtl_tcp in any case, are no USB receiver"
+    }
+}
+
+// The RTL-SDR serial a start's final arguments name, read as the engine's device field grammar reads it: a canonical
+// index names none, serial=<sn> always a serial, any other text a serial; one the engine refuses names none.
+private fun theArgumentsNameAnRtlSerial() {
+    fun of(vararg args: String) = UsbReceiverKind.rtlSerialOfArgs(arrayOf(*args))
+    val cases = listOf(
+        arrayOf("-i", "rtl:0:851M") to "",
+        arrayOf("-i", "rtl:12:851M") to "",
+        arrayOf("-i", "rtl") to "",
+        arrayOf("-i", "rtl::851M") to "",
+        arrayOf("-i", "rtl:2147483647") to "",
+        arrayOf("-i", "rtl:2147483648") to "2147483648",
+        arrayOf("-i", "rtl:00000001:851M") to "00000001",
+        arrayOf("-i", "rtl:01") to "01",
+        arrayOf("-i", "rtl:A1B2") to "A1B2",
+        arrayOf("-i", "rtl:serial=1090:851M") to "1090",
+        arrayOf("-i", "RTL:0000001") to "0000001",
+        arrayOf("-i", "rtl:serial=AbC") to "AbC",
+        arrayOf("-i", "rtl:serial=") to "",
+        arrayOf("-i", "rtl: A") to "",
+        arrayOf("-i", "rtl:${"x".repeat(127)}") to "x".repeat(127),
+        arrayOf("-i", "rtl:${"x".repeat(128)}") to "",
+        arrayOf("-i", "rtltcp:h:1234") to "",
+        arrayOf("-i", "airspy:serial=26A464DC") to "",
+        arrayOf("-i", "rtl:serial=A:851M", "--iq-replay", "x.iq") to "",
+        arrayOf("-i", "rtl:0:851M", "-i", "rtl:serial=B:851M") to "B",
+    )
+    for ((args, want) in cases) {
+        val got = of(*args)
+        check(got == want) { "${args.toList()}: expected '$want', got '$got'" }
+    }
+}
+
+// One comparison for the broker: an RTL-SDR's serial exactly and whole, an Airspy's without case and by its last 16.
+private fun serialsCompareAsTheirKind() {
+    val long = "RTL-SDR-BLOG-V4-0000000000000001"
+    check(UsbReceiverKind.serialOf("usb", long) == long) { "an RTL-SDR keeps its whole serial" }
+    check(UsbReceiverKind.serialOf("airspy", "AIRSPY SN:A74068C82F531693") == "A74068C82F531693") {
+        "an Airspy keeps its last 16"
+    }
+    check(UsbReceiverKind.serialOf("usb", null) == "") { "an unreadable serial is empty" }
+    check(UsbReceiverKind.sameSerial("usb", "abc", "abc") && !UsbReceiverKind.sameSerial("usb", "abc", "ABC")) {
+        "an RTL-SDR's serial compares exactly"
+    }
+    check(UsbReceiverKind.sameSerial("airspy", "a74068c82f531693", "A74068C82F531693")) { "an Airspy's without case" }
+}
+
 fun main() {
+    aSchemeInAnyCaseIsTheReceiver()
+    theArgumentsNameAnRtlSerial()
+    serialsCompareAsTheirKind()
     aStartsReceiverComesFromItsInput()
     anotherOptionsOperandIsNoInput()
     anIqReplayReplacesTheInput()

@@ -99,17 +99,21 @@ object DsdNative {
 object UsbSourceManager {
     /** The receiver kind of every take, in order. */
     val takes = CopyOnWriteArrayList<String>()
+    /** The RTL-SDR serial each take was asked for, in order ("" for none). */
+    val takeSerials = CopyOnWriteArrayList<String>()
     /** Sessions whose end the worker reported, so a reset the receiver owes is kept (#782). */
     @Volatile var sessionEnds = 0
     @Volatile internal var answer: (String) -> UsbSessionTake = { UsbSessionTake() }
     fun reset() {
         takes.clear()
+        takeSerials.clear()
         sessionEnds = 0
         answer = { UsbSessionTake() }
     }
     fun noteSessionEnded() { sessionEnds++ }
-    internal fun takeForSession(context: Context, source: String): UsbSessionTake {
+    internal fun takeForSession(context: Context, source: String, serial: String = ""): UsbSessionTake {
         takes += source
+        takeSerials += serial
         return answer(source)
     }
 }
