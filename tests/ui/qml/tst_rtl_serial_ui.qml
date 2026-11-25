@@ -128,6 +128,33 @@ Item {
             compare(savedSystems.get(0).rtlSerial, "", "only a USB dongle saves a serial");
         }
 
+        // Save as system from a found session (the Spectrum's Save passes the
+        // session's own map, no detection): a USB session that named its
+        // dongle by serial, such as Explore here on a Signal search hit, saves
+        // that serial. Another source saves none, and a detection names its own.
+        function test_found_session_keeps_its_rtl_serial_data() {
+            return [
+                {tag: "spectrum usb", sys: {sourceType: "usb", rtlSerial: "AbC 1"}, serial: "AbC 1"},
+                {tag: "spectrum first device", sys: {sourceType: "usb"}, serial: ""},
+                {tag: "spectrum rtltcp", sys: {sourceType: "rtltcp", host: "127.0.0.1", port: 1234, rtlSerial: "AbC 1"}, serial: ""},
+                {tag: "detection overrides", sys: {sourceType: "usb", rtlSerial: "AbC 1"},
+                    detection: {sourceType: "usb", rtlSerial: "00000002"}, serial: "00000002"},
+                {tag: "detection on the first device", sys: {sourceType: "usb", rtlSerial: "AbC 1"},
+                    detection: {sourceType: "usb"}, serial: ""}
+            ];
+        }
+        function test_found_session_keeps_its_rtl_serial(data) {
+            var wizard = openWizard();
+            wizard.openForFound(data.sys, "851.5000", data.detection);
+            compare(wizard.rtlSerialText, data.serial);
+            verify(!wizard.hasUnsavedDraft(), "what the found session names is the draft's start, not an edit");
+            wizard.nameText = "Found";
+            wizard.decodeFlag = "-fA";
+            wizard.commit();
+            compare(savedSystems.count, 1);
+            compare(savedSystems.get(0).rtlSerial, data.serial);
+        }
+
         // A system saved with a serial the editor refuses (an import, a restored
         // backup) opens on the field's reason, not a held Continue.
         function test_wizard_reveals_a_refused_saved_serial() {

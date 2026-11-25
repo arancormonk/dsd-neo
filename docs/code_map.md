@@ -22097,7 +22097,9 @@ Qt Quick frontend (`src/ui/qt`):
   `USB <serial>`; on Android, Main.qml asks for the dongle by that serial and starts only once the connected one
   carries it exactly; a serial that rule refuses asks for no device, and the start is refused with that text. A Signal
   search detection recorded on an `rtl:` spec that names its dongle by serial (`dsd_rtl_device_field_parse()`) hands
-  `SignalSearchModel::systemForHit()`'s system that `rtlSerial`, so Save as system and Explore here keep the dongle. The
+  `SignalSearchModel::systemForHit()`'s system that `rtlSerial`, so Save as system and Explore here keep the dongle
+  (the wizard's `openForFound()` takes a USB session's `rtlSerial`, so the Spectrum's Save after Explore here keeps it
+  too; a detection's own wins). The
   extra options' I/Q stream check (`extra_names_iq_stream()`) reads each `-i` value with its scheme normalized
   (`dsd_input_spec_normalize_scheme()`), as the decoder's `-i` does.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,

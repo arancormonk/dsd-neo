@@ -434,7 +434,11 @@ Item {
         bwText = "";
         airspySettings = ({});
         biasTee = -1;
-        rtlSerialField.text = "";
+        // The dongle the found session ran on, when it named one by serial
+        // (Explore here on a Signal search hit carries the hit's): a system
+        // for the first device could open another dongle. A detection, below,
+        // names its own.
+        rtlSerialField.text = sourceType === "usb" && sys && sys.rtlSerial ? String(sys.rtlSerial) : "";
         extraField.text = "";
         nameField.text = "";
         chanCsvPath = "";
