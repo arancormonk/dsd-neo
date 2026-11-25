@@ -4,6 +4,7 @@
  */
 
 #include <algorithm>
+#include <cstddef>
 #include <utility>
 #include <vector>
 #include "auto_start_attachment.h"
