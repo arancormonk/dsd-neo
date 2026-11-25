@@ -246,8 +246,8 @@ struct dsd_opts {
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
-    /* The rdio-scanner system a conventional analog (NFM) call is exported to, 0..65535 (issue #668); 0 uses
-       rdio_system_id. */
+    /* The rdio-scanner system an analog call (any DSD_SYNC_ANALOG row: NFM, AM, audio input) is exported to, 0..65535
+       (issue #668); 0 uses rdio_system_id. */
     int rdio_analog_system_id;
     /* The rdio-scanner talkgroup of an analog call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
        leaves such calls unexported. A call with a frequency is exported under it in kHz. */

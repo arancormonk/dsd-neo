@@ -431,7 +431,7 @@ Windows console runs:
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
   `--wav-journal` is set
 - A call whose talkgroup or radio policy row has `stream=off` is recorded but not exported (no sidecar, no upload);
-  see `docs/csv-formats.md`. An NFM call has no talkgroup or radio, so no row's `stream` applies to it.
+  see `docs/csv-formats.md`. An analog call has no talkgroup or radio, so no row's `stream` applies to it.
 - `-r <files>` Play saved MBE files
   SDRTrunk JSON exports support P25, DMR, and NXDN enhanced-half-rate voice. NXDN playback accepts clear voice,
   the 15-bit scrambler, DES-OFB, and AES-256-OFB; use `-R`, `-1`, or `-H`, respectively, or a key CSV indexed by
@@ -884,7 +884,7 @@ Limits:
 `--rdio-system-by-frequency` (INI `[recording] rdio_system_by_frequency = true`) files each exported call under the
 rdio-scanner system numbered by the frequency it was heard on, in kHz, rounded down: a call on 154.4375 MHz goes to
 system `154437`, and one on 456.9500 MHz to system `456950`. Two talkgroup 1 calls on those two frequencies then land
-in two systems instead of one talkgroup. It is off by default, and `--no-rdio-system-by-frequency` turns off
+in two systems instead of sharing talkgroup 1 in one system. It is off by default, and `--no-rdio-system-by-frequency` turns off
 a config file's `true` for the run. The sidecar's `system` and the API upload's `system` field always name the same
 number, and the sidecar's `short_name` is `System <kHz>` (`System 154437`), the name rdio-scanner 6 gives a system it
 creates. The call history, the journal, the file name and the app keep the call's own system name.
@@ -925,9 +925,11 @@ Limits:
 - ThinLine Radio can file a number that matches no system ID under the system whose database key is that number, and
   a talkgroup under the subsystem that owns it, so there a kHz number can land in a system you set up for something
   else.
-- Calls on different frequencies are never duplicates of each other, since every server compares the system. Calls on
-  one frequency with one talkgroup that start together can still be dropped as duplicates, under each server's own
-  rule (see the duplicate limit under [Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner)).
+- With API uploads, a ThinLine Radio DirWatch, or an rdio-scanner 8 DirWatch whose `System <kHz>` labels are unique,
+  calls on frequencies in different whole kHz are not duplicates of each other, since each server compares the
+  system. In an rdio-scanner 6 DirWatch folder they still share the folder's system. Calls on one frequency with one
+  talkgroup that start together can still be dropped as duplicates, under each server's own rule (see the duplicate
+  limit under [Analog calls in rdio-scanner](#analog-calls-in-rdio-scanner)).
 
 ## IQ Capture And Replay
 
