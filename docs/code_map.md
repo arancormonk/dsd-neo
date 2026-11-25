@@ -7458,8 +7458,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     on an entry, else its no-scan answer; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or avoid
     (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or removing
     avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by design). The
-    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`,
-    `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
+    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_DEV_SERIAL`, `RTL_SET_PPM`,
+    `PPM_DELTA`, `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
     stream only, since a replay's start may connect a peer) are refused with `ui_cmd_refuse_fixed_tuner_control()`
     (`svc_fixed_tuner_reason()`: "An I/Q replay has no tuner controls: it plays what was recorded." / "An I/Q stream has
     no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search
@@ -8056,15 +8056,25 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   or `Failed: <why>`. On an I/Q replay `svc_rtl_set_bandwidth_locked()` stores the request as EXPLICIT and re-plans
   the replay instead of reopening it (`svc_rtl_replay_replan_locked()`, see IO, "Run-time re-plan"): a bandwidth that
   plans the running chain reopens nothing, and a refused re-plan puts the request back with the replay running. These
-  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
-  config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Any
+  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET, the RTL-SDR device change
+  (`RTL_SET_DEV` by index, `RTL_SET_DEV_SERIAL` by USB serial; `svc_rtl_set_device()`) and a config apply's reopen;
+  a gain or explicit stream restart that fails still leaves no stream. The device change checks the selector and
+  builds the new spec before anything changes (`dsd_rtl_spec_set_device()` on a copy: a serial the rule refuses, or a
+  field the spec does not fit, changes nothing), writes the selector and the spec together (B2: the index alone left
+  the old device in the spec, which a save wrote), and reopens inside one hold of the P25 SM tick guard; a failed
+  start puts the selector and spec that ran back and starts them again through `svc_rtl_restart_recovery_locked()`,
+  as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note.
+  With PCM running it rewrites the spec the RTL-SDR row opens (`dsd_opts::radio_in_dev`, its tuning kept), so the
+  switch back opens the dongle staged. An active `rtltcp` source has no local dongle: `DSD_ERR_NOT_SUPPORTED`, the
+  server not reconnected. The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
+  stays a serial. Tests: `UI_MENU_SERVICES`, `APP_COMMAND_QUEUE`, `API_COMMAND_PAYLOADS`, `API_COMMANDS`. Any
   restart (`svc_rtl_restart_locked()`) of a stream that ran while `--iq-capture` was on turns the capture off before
   its start, whether the start then succeeds or not (issue #743 B16): the stop closed the file with what it recorded,
   and the start would open it for writing again and empty it. It logs a WARN naming the file and, after a start that
   worked, posts the capture-stopped notice (`dsd_app_note_capture_stopped_at_restart()`), so the next drain's toast
   follows the command's own. A start that failed posts nothing: no stream restarted. A rollback reports the stop in its
   toast (`svc_rtl_restart_recovery_locked()` takes the capture the change found on, `capture_before`), and a command
-  with no rollback (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV) ends its "Failed:" toast with "; I/Q capture stopped". On
+  with no rollback (RTL_RESTART, RTL_SET_GAIN) ends its "Failed:" toast with "; I/Q capture stopped". On
   an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`), the gain, device index, bias tee, rtl_tcp
   autotune and auto-PPM services, the PPM commands (RTL_SET_PPM, PPM_DELTA) and the tuner autogain DSP toggle refuse
   with `DSD_ERR_NOT_SUPPORTED` and their "Unsupported" toasts before any option changes or any restart (issue #743 B2:

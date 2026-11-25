@@ -92,6 +92,7 @@
 #include <dsd-neo/runtime/frame_sync_hooks.h>
 #include <dsd-neo/runtime/freq_parse.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rdio_export.h>
 #include <dsd-neo/runtime/receive_policy.h>
@@ -396,6 +397,7 @@ static const int k_ui_cmd_string_ids[] = {
     DSD_APP_CMD_EXPORT_P25_BANDPLAN,
     DSD_APP_CMD_IMPORT_GROUP_LIST_RELOAD,
     DSD_APP_CMD_IMPORT_CHANNEL_MAP_RELOAD,
+    DSD_APP_CMD_RTL_SET_DEV_SERIAL,
 };
 
 /* Setters where only the newest value matters, so a queued one may be overwritten
@@ -1599,7 +1601,7 @@ ui_set_rollback_toast(dsd_state* state, const char* prefix, const char* why, int
     }
 }
 
-/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV): "Failed: " and
+/* A failed command whose restart has no rollback after it (RTL_RESTART, RTL_SET_GAIN): "Failed: " and
    @p what for 4 s, as before; with the note of a capture the restart turned off before its start (issue #743 B16),
    which is the capture the command found on (@p capture_before) and that is off now, for the 5 s a rollback's note
    takes. */
@@ -2177,28 +2179,62 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
     return result;
 }
 
+/* The RTL-SDR a device change selects, as its toasts name it: "serial <sn>" or "index <n>". */
+static void
+ui_rtl_device_what(int index, const char* serial, char* out, size_t out_size) {
+    if (serial && serial[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "serial %s", serial);
+    } else {
+        DSD_SNPRINTF(out, out_size, "index %d", index < 0 ? 0 : index);
+    }
+}
+
+/* RTL_SET_DEV and RTL_SET_DEV_SERIAL: svc_rtl_set_device(), which puts the dongle that ran back when the new one does
+   not start; its toast says so with the note of an I/Q capture that restart turned off. */
+static int
+ui_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* serial) {
+    if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
+        return UI_CMD_APPLY_UNSUPPORTED;
+    }
+    char what[DSD_RTL_SERIAL_MAX + 32];
+    ui_rtl_device_what(index, serial, what, sizeof what);
+    int capture_stopped = 0;
+    const int rc = svc_rtl_set_device(opts, state, index, serial, &capture_stopped);
+    if (rc == 0) {
+        ui_set_toast(state, 3, "Applied: RTL device -> %s", what);
+    } else if (ui_rc_is_not_supported(rc)) {
+        ui_set_toast(state, 3, "Unsupported: this radio source has no RTL-SDR device to select");
+    } else {
+        char why[DSD_RTL_SERIAL_MAX + 64];
+        DSD_SNPRINTF(why, sizeof why, "RTL device -> %s (see log)", what);
+        ui_set_rollback_toast(state, "Failed: ", why, capture_stopped);
+    }
+    return ui_cmd_apply_status_from_service_rc(rc);
+}
+
 static int
 ui_cmd_handle_rtl_set_dev(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     int32_t v = 0;
-    int result = UI_CMD_APPLY_COMPLETED;
-    if (state && ui_cmd_parse_i32_payload(c, &v)) {
-        if (ui_cmd_refuse_fixed_tuner_control(opts, state)) {
-            return UI_CMD_APPLY_UNSUPPORTED;
-        }
-        const int capture_before = opts && opts->iq_capture_requested;
-        int rc = svc_rtl_set_dev_index(opts, state, v);
-        result = ui_cmd_apply_status_from_service_rc(rc);
-        if (rc == 0) {
-            ui_set_toast(state, 3, "Applied: RTL device index -> %d", (int)v);
-        } else if (ui_rc_is_not_supported(rc)) {
-            ui_set_toast(state, 3, "Unsupported: device index is not available for current radio source");
-        } else {
-            char what[48];
-            DSD_SNPRINTF(what, sizeof what, "RTL device index -> %d", (int)v);
-            ui_set_failed_restart_toast(state, opts, capture_before, what);
-        }
+    if (!state || !ui_cmd_parse_i32_payload(c, &v)) {
+        return UI_CMD_APPLY_COMPLETED;
     }
-    return result;
+    return ui_rtl_set_device(opts, state, (int)v, NULL);
+}
+
+/* A serial, whole and as the rule allows (dsd_rtl_serial_is_valid()): one cut short or refused would name another
+   dongle, so it changes nothing. A serial of digits stays a serial: the payload's command says it is one. */
+static int
+ui_cmd_handle_rtl_set_dev_serial(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    if (!state) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    if (!ui_cmd_copy_payload_path(c, serial, sizeof serial) || !dsd_rtl_serial_is_valid(serial)) {
+        ui_set_toast(state, 4, "Refused: not an RTL-SDR serial (up to %d printable characters, no ':' or '\"')",
+                     DSD_RTL_SERIAL_MAX);
+        return UI_CMD_APPLY_INVALID_PAYLOAD;
+    }
+    return ui_rtl_set_device(opts, state, opts->rtl_dev_index, serial);
 }
 
 static int
@@ -2208,6 +2244,7 @@ apply_cmd_io_and_import_rtl_a(dsd_opts* opts, dsd_state* state, const struct dsd
         {DSD_APP_CMD_RTL_ENABLE_INPUT, ui_cmd_handle_rtl_enable_input},
         {DSD_APP_CMD_RTL_RESTART, ui_cmd_handle_rtl_restart},
         {DSD_APP_CMD_RTL_SET_DEV, ui_cmd_handle_rtl_set_dev},
+        {DSD_APP_CMD_RTL_SET_DEV_SERIAL, ui_cmd_handle_rtl_set_dev_serial},
     };
     if (!opts || !c) {
         return 0;

@@ -196,7 +196,9 @@ enum dsd_app_command_id {
     // RTL-SDR controls
     DSD_APP_CMD_RTL_ENABLE_INPUT = 480,
     DSD_APP_CMD_RTL_RESTART = 481,
-    DSD_APP_CMD_RTL_SET_DEV = 482, // payload: int32_t index
+    // payload: int32_t index (a negative one reads as 0). Selects the RTL-SDR by index, dropping a serial selection;
+    // with the RTL-SDR running it restarts on it, and a start that fails puts the dongle that ran back.
+    DSD_APP_CMD_RTL_SET_DEV = 482,
     // payload: uint32_t Hz; selects the CC during single-system P25 trunking. Otherwise a tune the operator asked
     // for: accepted (applied or pending), it pauses a running -Y scan or trunk scan, which keeps its list, cursor and
     // session edits for SCAN_RESUME or `y`; refused or deferred, it changes nothing. A paused scan stays paused.
@@ -258,6 +260,9 @@ enum dsd_app_command_id {
     // Session-wide scan skip-silent (#834): skip a silent conventional scan channel after a quick RF check. Never a
     // scan-row setting; a scan-mode row never captures or restores it.
     DSD_APP_CMD_SCAN_SKIP_SILENT_SET = 513, // payload: int32_t on(0/1)
+    // payload: NUL-terminated USB serial (dsd_rtl_serial_is_valid(), matched exactly). RTL_SET_DEV by serial: a serial of
+    // digits ("1090") stays a serial. One cut short or refused changes nothing.
+    DSD_APP_CMD_RTL_SET_DEV_SERIAL = 514,
     // Configured NFM channel-filter width (issue #525): the full RF passband in Hz, 8000..25000, or 0 for the
     // 16000 default. Refused with a toast, changing nothing, when out of range or when the front end the analog
     // preset runs on cannot filter it at its DSP rate; applied live to a running analog monitor.

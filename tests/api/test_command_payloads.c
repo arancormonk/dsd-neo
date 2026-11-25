@@ -13,6 +13,7 @@
 #include <assert.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/rr_import_apply.h>
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/config.h>
 #include <math.h>
@@ -425,6 +426,44 @@ test_strings(void) {
             "\"0123456789012345678901234567890123456789\"}}");
 }
 
+/* rtl_set_dev selects the RTL-SDR by {value:<index>}, as before, or {serial:"<sn>"}, sent as RTL_SET_DEV_SERIAL: a serial
+   of digits ("1090") stays a serial. Both keys, neither, a negative index, a serial the rule refuses or one past
+   DSD_RTL_SERIAL_MAX are invalid, never cut. */
+static void
+test_rtl_device(void) {
+    int32_t index = -1;
+    assert(ok("{\"cmd\":\"rtl_set_dev\",\"params\":{\"value\":2}}"));
+    assert(g_last_id == DSD_APP_CMD_RTL_SET_DEV && g_last_n == sizeof index);
+    DSD_MEMCPY(&index, g_last, sizeof index);
+    assert(index == 2);
+    assert(ok("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"00000001\"}}"));
+    assert(g_last_id == DSD_APP_CMD_RTL_SET_DEV_SERIAL && g_last_n == 9U
+           && strcmp((const char*)g_last, "00000001") == 0);
+    assert(ok("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"1090\"}}"));
+    assert(g_last_id == DSD_APP_CMD_RTL_SET_DEV_SERIAL && strcmp((const char*)g_last, "1090") == 0);
+    assert(ok("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"SN #1;x=y\"}}"));
+    assert(g_last_id == DSD_APP_CMD_RTL_SET_DEV_SERIAL && strcmp((const char*)g_last, "SN #1;x=y") == 0);
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"value\":1,\"serial\":\"00000001\"}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"value\":-1}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"value\":\"1\"}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":1090}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"\"}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"A:B\"}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\" A\"}}");
+    refused("{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"A\\\"B\"}}");
+    char request[512];
+    char* longest = repeat_char('S', (size_t)DSD_RTL_SERIAL_MAX);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"%s\"}}", longest);
+    assert(ok(request));
+    assert(g_last_id == DSD_APP_CMD_RTL_SET_DEV_SERIAL && g_last_n == (size_t)DSD_RTL_SERIAL_MAX + 1U);
+    free(longest);
+    char* too_long = repeat_char('S', (size_t)DSD_RTL_SERIAL_MAX + 1U);
+    DSD_SNPRINTF(request, sizeof request, "{\"cmd\":\"rtl_set_dev\",\"params\":{\"serial\":\"%s\"}}", too_long);
+    refused(request);
+    free(too_long);
+}
+
 static void
 test_talkgroup_edits(void) {
     refused("{\"cmd\":\"tg_row_set\",\"params\":{\"id_start\":1,\"id_end\":2,\"fields\":1,\"listen\":1}}");
@@ -819,6 +858,7 @@ main(void) {
     test_scalars();
     test_gain_values();
     test_strings();
+    test_rtl_device();
     test_talkgroup_edits();
     test_talkgroup_row_tokens();
     test_keys();
