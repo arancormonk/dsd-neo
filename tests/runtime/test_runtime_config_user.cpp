@@ -2063,8 +2063,11 @@ test_rtl_serial_loads_renders_and_builds_the_spec(void) {
     int rc = 0;
     static dsdneoUserConfig cfg;
     static dsdneoUserConfig again;
-    static dsd_opts opts;
-    static dsd_state state;
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_opts& opts = *opts_storage;
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
 
     static const struct {
         const char* keys;
@@ -2123,8 +2126,11 @@ test_rtl_serial_invalid_refuses_the_input(void) {
     int rc = 0;
     static dsdneoUserConfig cfg;
     static dsdneoUserConfig again;
-    static dsd_opts opts;
-    static dsd_state state;
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_opts& opts = *opts_storage;
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
     const std::string too_long(DSD_RTL_SERIAL_MAX + 1, 'A');
     const std::string values[] = {"\"A:B\"", "\" A\"", "\"A \"", "\"A\"B\"", "\"" + too_long + "\""};
     for (const std::string& value : values) {
@@ -2172,8 +2178,11 @@ test_rtl_serial_invalid_refuses_the_input(void) {
 static int
 test_rtl_serial_snapshot_names_the_running_dongle(void) {
     int rc = 0;
-    static dsd_opts opts;
-    static dsd_state state;
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    dsd_opts& opts = *opts_storage;
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_state& state = *state_storage;
     static dsdneoUserConfig snap;
 
     static const struct {
@@ -2244,6 +2253,10 @@ test_retained_input_merges_the_rtl_selector(void) {
         {1, 6, 1, "C", 0, "C", 6, 0}, /* both: the serial */
         {0, 0, 1, "", 1, "", 6, 1},   /* a refused serial stays refused */
         {0, 0, 0, "", 0, "", 6, 1},   /* and a tuning patch keeps it refused */
+        /* A config a C caller filled in names its selector by value, without the loader's flags. */
+        {0, 2, 0, "", 0, "", 2, 0},   /* index 2 drops the refused serial */
+        {0, 0, 0, "Z", 0, "Z", 2, 0}, /* a serial */
+        {0, 0, 0, "", 0, "Z", 2, 0},  /* and a tuning patch keeps it */
     };
     dsd_user_config_init(&loaded);
     loaded.has_input = 1;

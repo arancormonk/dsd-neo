@@ -5617,8 +5617,10 @@ suite runs under this compiler.
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
       (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
       a sourceless patch keeps the source and endpoint. The RTL-SDR selector merges as one choice by the keys a patch
-      names (`rtl_device_is_set`, `rtl_serial_is_set`; `merge_rtl_selector()`): `rtl_serial` (empty: by the retained
-      index; refused: stays refused) wins, `rtl_device` alone drops the retained serial, neither keeps it. A patch is
+      names (`merge_rtl_selector()`: a key is named when its value is not the default, so a config a C caller filled in
+      names its index, or when its loader flag, `rtl_device_is_set` / `rtl_serial_is_set`, says a default value was
+      named): `rtl_serial` (empty: by the retained index; refused: stays refused) wins, `rtl_device` alone drops the
+      retained serial, neither keeps it. A patch is
       checked first on the `[input]` its merge would leave
       (`dsd_user_config_retained_input_patched()`, `cfg_check_retained_stream_patch()`): one that leaves a raw I/Q
       stream whose keys build no spec, or whose RATE no plan takes, is refused before anything changes, as the next start
