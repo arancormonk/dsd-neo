@@ -26643,9 +26643,13 @@ test_dmr_channel_set_command(void) {
     post_string(DSD_APP_CMD_IMPORT_CHANNEL_MAP, map);
     rc |= expect_int("overlay map import drained", dsd_app_drain_cmds(opts, state), 1);
 
+    dsd_engine_note_run_start(opts, state);
     dsd_app_dmr_channel_set_payload p = dmr_channel_edit(state, 12U, DMR_T3_OVERLAY_SET, 451137500);
     rc |= expect_int("channel set applied", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);
+    /* Issue #903: the channels the receiver runs changed live, as a channel map imported live changes them. */
+    rc |= expect_int("an applied channel edit moves the tuning", dsd_state_tuning_moved(state), 1);
+    dsd_engine_note_run_start(opts, state);
     rc |= expect_true("channel set is the user's, beside the shared row",
                       dmr_t3_chan_effective_hz(state, 12U) == 451137500L
                           && dmr_t3_chan_origin(state, 12U) == DMR_CHAN_ORIGIN_USER
@@ -26672,6 +26676,7 @@ test_dmr_channel_set_command(void) {
     p.session_seq++;
     rc |= expect_int("another session is stale", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_STALE);
+    rc |= expect_int("a refused channel edit keeps the tuning", dsd_state_tuning_moved(state), 0);
     p = dmr_channel_edit(state, 15U, DMR_T3_OVERLAY_HIDE, -1);
     rc |= expect_int("a HIDE's frequency is not read", dmr_channel_edit_result(opts, state, &p, sizeof p),
                      DSD_APP_DMR_CHANNEL_SET_OK);

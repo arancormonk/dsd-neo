@@ -10949,7 +10949,11 @@ apply_cmd_with_retained_result(dsd_opts* opts, dsd_state* state, const struct ds
     }
     if (c->id == DSD_APP_CMD_DMR_CHANNEL_SET) {
         codes->dmr_channel = dsd_app_apply_dmr_channel_set(opts, state, c);
-        return codes->dmr_channel == DSD_APP_DMR_CHANNEL_SET_OK ? UI_CMD_APPLY_COMPLETED : UI_CMD_APPLY_FAILED;
+        if (codes->dmr_channel != DSD_APP_DMR_CHANNEL_SET_OK) {
+            return UI_CMD_APPLY_FAILED;
+        }
+        ui_note_tuning_change(state); // the channels the receiver runs, as a channel map applied live (issue #903)
+        return UI_CMD_APPLY_COMPLETED;
     }
     return UI_CMD_APPLY_UNHANDLED;
 }

@@ -14280,8 +14280,8 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   and kind and DMR single slot after the command, `ui_decode_mode_key()`, against before it), so a config `[mode]` the
   front end refused and rolled back moves nothing; a switch onto the analog monitor the front end has still to take
   waits (`g_analog_entry.commit_tuning`) and moves it only if taken, and an export while it waits reads moved. A
-  RadioReference apply, a channel map imported or cleared live, and a P25 band plan imported live move it as well
-  (`ui_note_tuning_change()`). `run_tuning_gen` is the
+  RadioReference apply, a channel map imported or cleared live, a DMR Tier III channel edit applied live
+  (`DSD_APP_CMD_DMR_CHANNEL_SET`), and a P25 band plan imported live move it as well (`ui_note_tuning_change()`). `run_tuning_gen` is the
   generation the run started with: `dsd_engine_note_run_start()` takes it, and so does
   `dsd_engine_note_run_stream_source()` after the run's first stream start, whose source boundary against an earlier
   run's stream on a reused state is no change of this run's tuning. `dsd_state_tuning_moved()` (the two differ) is
