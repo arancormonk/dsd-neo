@@ -1161,8 +1161,12 @@ test_dmo_activity(void) {
  * with the clause's colour code decodes only under the right one, and keeps the confirmed visit active. */
 static void
 test_relayed_colour_code(void) {
-    static const uint32_t k_mni = ((uint32_t)MCC << 14) | MNC; /* low six bits 0x12 */
-    static const uint32_t k_relay = 0x155u;                    /* low six bits 0x15 */
+    /* Constants, not const objects: a static initializer below reads them, which C allows only of constant
+       expressions (MSVC refuses a const object there). */
+    enum {
+        k_mni = (MCC << 14) | MNC, /* low six bits 0x12 */
+        k_relay = 0x155,           /* low six bits 0x15 */
+    };
 
     static const struct {
         uint32_t comm_type;
