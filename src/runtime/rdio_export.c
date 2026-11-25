@@ -124,14 +124,16 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
 }
 
 /* Once a decoder run (dsd_rdio_session_reset()): a private input left behind, a call not uploaded for want of a system
-   ID. */
+   ID, delete-after-upload ignored beside DirWatch. */
 static atomic_int g_rdio_private_remove_warned = 0;
 static atomic_int g_rdio_no_system_warned = 0;
+static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
 
 void
 dsd_rdio_session_reset(void) {
     atomic_store(&g_rdio_private_remove_warned, 0);
     atomic_store(&g_rdio_no_system_warned, 0);
+    atomic_store(&g_rdio_delete_after_upload_dirwatch_warned, 0);
 }
 
 /* A private input of a job that is over, removed. One that cannot be (on Windows, while a DirWatch still holds the
@@ -184,7 +186,6 @@ static size_t g_rdio_upload_depth = 0;
 static const dsd_rdio_upload_job* g_rdio_upload_in_flight = NULL;
 static int g_rdio_upload_stop_requested = 0;
 static atomic_int g_rdio_upload_state = 0; // 0=uninitialized, 1=initializing, 2=ready, 3=failed, 4=stopping
-static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
 /* #718 D4: the user's Stop abandons the pending uploads instead of draining them. Atomic and lock-free, because the
  * request may come from any thread at any time, including while shutdown is joining the worker or before the worker's
  * mutex exists. The worker loop, the retry loop and the transfer's progress callback poll it. */

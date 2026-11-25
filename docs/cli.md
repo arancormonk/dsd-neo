@@ -392,10 +392,10 @@ Windows console runs:
   talkgroup in rdio-scanner](#digital-calls-with-no-talkgroup-in-rdio-scanner))
   - With `both`, each queued API upload works from its own copies of the call's WAV and JSON, made beside them as
     `<id>.<n>.rdio-upload-audio` and `<id>.<n>.rdio-upload-meta` (a hard link where the drive supports one, else a
-    copy), where `<id>` is a random id drawn once a run and `<n>` a number. The names are at most 45 characters,
-    whatever the recording's own name, so any recording whose WAV and JSON names fit can be uploaded, as long as the
-    JSON's temporary name, `<name>.json.tmp.XXXXXX` (11 characters longer), fits the file system's name limit too: the
-    export writes the JSON under it first. Each run
+    copy), where `<id>` is a random id drawn once a process (an app keeps it across its sessions) and `<n>` a number.
+    The names are at most 45 characters, whatever the recording's own name, so any recording whose WAV and JSON names
+    fit can be uploaded, as long as the JSON's temporary name, `<name>.json.tmp.XXXXXX` (11 characters longer), fits
+    the file system's name limit too: the export writes the JSON under it first. Each run
     removes its own copies when that upload ends, sent or not, and never touches another run's, so another run
     exporting to the same folder keeps its pending uploads. They are made before the JSON appears, so a DirWatch with
     "delete after" on the same folder can take the WAV and JSON as soon as it sees them without costing the API
@@ -434,7 +434,7 @@ Windows console runs:
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while
-  `--wav-journal` is set
+  `--wav-journal` is set. With `--rdio-mode both` it is ignored, with one warning a run (each Android session too).
 - A call whose talkgroup or radio policy row has `stream=off` is recorded but not exported (no sidecar, no upload);
   see `docs/csv-formats.md`. An analog call has no talkgroup or radio, so no row's `stream` applies to it.
 - `-r <files>` Play saved MBE files

@@ -6375,10 +6375,10 @@ suite runs under this compiler.
     `dsd_rdio_validate_api_config()` checks the API key first (missing, it is a failure on every call), then answers
     `DSD_RDIO_UPLOAD_NO_SYSTEM`, before any worker start, job or private input; the sidecar is published as on every
     API export (its own failure still fails the export), nothing is queued, the export returns 0 (no `Rdio export
-    failed` at the WAV close, journal `rdio` false), and one LOG_WARN says so the first time in a run. That latch and
-    the private-input removal one are reset per decoder run by `dsd_rdio_session_reset()`, which
-    `dsd_engine_run_common_setup()` calls beside `dsd_wav_recording_session_reset()`, so the CLI and each Android
-    session start over. A digital row with no talkgroup
+    failed` at the WAV close, journal `rdio` false), and one LOG_WARN says so the first time in a run. That latch, the
+    private-input removal one and the "delete-after-upload ignored beside DirWatch" one are reset per decoder run by
+    `dsd_rdio_session_reset()`, which `dsd_engine_run_common_setup()` calls beside `dsd_wav_recording_session_reset()`,
+    so the CLI and each Android session start over. A digital row with no talkgroup
     is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
     `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
     `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields

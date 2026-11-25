@@ -5253,11 +5253,11 @@ test_both_mode_failed_private_removal_said_once(void) {
 #define RDIO_NO_SYSTEM_WARNING "Rdio API upload skipped: no system ID (set --rdio-system-id)"
 
 /* Call @p leaf (a WAV in @p dir, talkgroup 1201) exported as @p opts say, its export's stderr captured: the export's
-   result, with *@p queued whether its upload was queued and *@p warned how many times it said the call has no system
-   ID; *@p warned is -1 when stderr could not be captured. */
+   result, with *@p queued whether its upload was queued and *@p warned how many times it said @p needle; *@p warned is
+   -1 when stderr could not be captured. */
 static int
-rdio_no_system_export(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, int* queued,
-                      int* warned) {
+rdio_export_saying(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* needle,
+                   int* queued, int* warned) {
     char wav[DSD_TEST_PATH_MAX];
     *queued = -1;
     *warned = -1;
@@ -5275,11 +5275,18 @@ rdio_no_system_export(const dsd_opts* opts, Event_History_I* hist, const char* d
         dsd_test_capture_stderr_end(&cap);
         (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
         *warned = 0;
-        for (const char* p = out; (p = strstr(p, RDIO_NO_SYSTEM_WARNING)) != NULL; p++) {
+        for (const char* p = out; (p = strstr(p, needle)) != NULL; p++) {
             (*warned)++;
         }
     }
     return rc;
+}
+
+/* rdio_export_saying() of the no-system warning. */
+static int
+rdio_no_system_export(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, int* queued,
+                      int* warned) {
+    return rdio_export_saying(opts, hist, dir, leaf, RDIO_NO_SYSTEM_WARNING, queued, warned);
 }
 
 /* One export of call @p leaf: it succeeds, queues an upload when @p want_queued, and says the no-system warning
@@ -5418,6 +5425,48 @@ test_api_no_system_skip_keeps_the_sidecar_rule(void) {
 #endif
 }
 
+// Issue #931: delete-after-upload beside DirWatch (--rdio-mode both) is ignored with one warning a decoder run, not one
+// a process: the second call of a run is silent, and the next run (dsd_rdio_session_reset(), as a second Android
+// session starts) warns again. The uploads go to a closed port and fail; their files are kept.
+static int
+test_both_mode_delete_after_warning_once_a_run(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const k_warning = "Rdio API delete-after-upload ignored when DirWatch export is active";
+    static const char* const k_leaf[2][2] = {{"run1_a.wav", "run1_b.wav"}, {"run2_a.wav", "run2_b.wav"}};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_delete_after_dirwatch")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:1", 100, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    int rc = 0;
+    for (int run = 0; run < 2; run++) {
+        dsd_rdio_session_reset();
+        for (int call = 0; call < 2; call++) {
+            int queued = 0;
+            int warned = 0;
+            const int exported = rdio_export_saying(opts, hist, dir, k_leaf[run][call], k_warning, &queued, &warned);
+            if (exported != 0 || queued != 1 || warned != (call == 0 ? 1 : 0)) {
+                DSD_FPRINTF(stderr, "delete-after beside DirWatch: run %d call %d returned %d, queued %d, warned %d\n",
+                            run + 1, call + 1, exported, queued, warned);
+                rc = 1;
+            }
+        }
+        dsd_rdio_upload_shutdown();
+    }
+    rdio_test_remove_dir_tree(dir);
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 // Issue #888: a shutdown whose join of the upload worker fails (not expected; forced here, after the worker ended)
 // releases the jobs still queued: their private inputs go and their public WAVs are no longer held. The job in flight
 // is the worker's and is not touched. Before, the queued jobs stayed linked and held their files for the rest of the
@@ -5544,6 +5593,7 @@ main(void) {
     rc |= test_both_mode_failed_private_removal_said_once();
     rc |= test_api_no_system_skip_said_once_a_run();
     rc |= test_api_no_system_skip_keeps_the_sidecar_rule();
+    rc |= test_both_mode_delete_after_warning_once_a_run();
     /* Last: it leaves the upload worker failed for good. */
     rc |= test_failed_join_releases_queued_jobs();
     free(g_rdio_case_hist);
