@@ -18663,6 +18663,50 @@ test_nfm_width_edit_keeps_live_acquisition(void) {
     return rc;
 }
 
+/*
+ * A Pulse config loaded while the radio runs is refused before the command changes anything: on a P25 scan row
+ * following a call, the row's scope is never suspended and resumed around the refusal, so the detected Phase 2
+ * polarity, the followed call and its voice channel stay. A refusal found after the suspend put the preset polarity
+ * back on resume, which read as an acquisition change and ended the call.
+ */
+static int
+test_pcm_config_refused_over_a_radio_keeps_the_scan_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)calloc(1, sizeof *cfg);
+    static void* fake_ctx[2];
+    if (!opts || !state || !cfg) {
+        free(opts);
+        free(state);
+        free(cfg);
+        return expect_true("refused config fixture", 0);
+    }
+    init_nfm_session(opts, state, (RtlSdrContext*)fake_ctx);
+    int rc = expect_int("refused config: p25 row entered", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("refused config: p25 row options", dsd_scan_mode_options(opts, state, NULL), 0);
+    opts->inverted_p2 = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = 851012500;
+    cfg->has_input = 1;
+    cfg->input_source = DSDCFG_INPUT_PULSE;
+    rc |= expect_true("refused config: queued", dsd_app_command_apply_config(cfg) > 0);
+    rc |= expect_int("refused config: drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("refused config: says why", strstr(state->ui_msg, "Refused: this config selects") != NULL);
+    rc |= expect_true("refused config: the input is kept", strcmp(opts->audio_in_dev, "rtl:0:851.375M:0:0:24") == 0);
+    rc |= expect_int("refused config: keeps the detected polarity", opts->inverted_p2, 1);
+    rc |= expect_int("refused config: keeps the followed call", opts->trunk_is_tuned, 1);
+    rc |= expect_true("refused config: keeps the voice channel", state->trunk_vc_freq[0] == 851012500);
+    rc |= expect_int("refused config: row still P25", dsd_scan_mode_active(state), DSD_SCAN_MODE_P25);
+    dsd_scan_mode_leave(opts, state);
+    opts->trunk_is_tuned = 0;
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(cfg);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A -Y channel map of a DMR row and an nfm row (row 1), the nfm row with its own width when @p row_width_hz > 0. */
 static void
 load_dmr_and_nfm_rows(dsd_state* state, int row_width_hz) {
@@ -34273,6 +34317,7 @@ cmd_queue_behaviour_cases(void) {
     rc |= test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk();
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_nfm_width_edit_keeps_live_acquisition();
+    rc |= test_pcm_config_refused_over_a_radio_keeps_the_scan_row();
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_refused_row_width_request_puts_the_edit_back();

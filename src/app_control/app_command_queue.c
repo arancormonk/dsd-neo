@@ -10238,7 +10238,9 @@ cfg_pcm_input_label(const dsdneoUserConfig* cfg) {
    or replay): a config apply never switches the input type, so a PCM [input] would leave the options naming an input
    that does not run while the receiver runs on. Such a config is refused before anything changes, the receiver and its
    I/Q capture untouched; Switch source opens the input, or the config applies once the receiver is stopped. Configs
-   for the running receiver, or for another radio input (which reopens it), apply as before. */
+   for the running receiver, or for another radio input (which reopens it), apply as before. The check runs before the
+   command does anything (config_refused_over_running_radio()): a scan scope suspended and resumed around a refusal
+   puts back the row's polarity and ends the call tracking. */
 static int
 cfg_check_input_over_running_radio(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
     const char* label = cfg_pcm_input_label(cfg);
@@ -10252,17 +10254,6 @@ cfg_check_input_over_running_radio(const dsd_opts* opts, dsd_state* state, const
                  "Refused: this config selects %s while the radio runs; use Switch source, or stop the receiver first",
                  label);
     return UI_CMD_APPLY_FAILED;
-}
-
-/* The [input] checks: no PCM input over a running radio (cfg_check_input_over_running_radio()), then a stream's
-   (cfg_check_iq_stream_input()). */
-static int
-cfg_check_input(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
-    const int over_radio_rc = cfg_check_input_over_running_radio(opts, state, cfg);
-    if (over_radio_rc != UI_CMD_APPLY_COMPLETED) {
-        return over_radio_rc;
-    }
-    return cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
 }
 
 /* Check that the config @p cfg applies, before anything changes. A group file it names in place of the session's is
@@ -10279,7 +10270,7 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
         ui_set_toast(state, 5, "Config not applied: rtl_serial is not a serial an RTL-SDR can have (see log)");
         return UI_CMD_APPLY_FAILED;
     }
-    const int stream_rc = cfg_check_input(opts, state, cfg, loaded_file);
+    const int stream_rc = cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
     if (stream_rc != UI_CMD_APPLY_COMPLETED) {
         return stream_rc;
     }
@@ -11900,6 +11891,27 @@ cmd_chain_of(const dsd_opts* opts, const dsd_state* state) {
     return chain;
 }
 
+/* Whether @p c is a config apply refused for its [input] over a running radio (cfg_check_input_over_running_radio()),
+   checked before the command changes anything: before the scan scope's suspend, the guards and the payload's own
+   checks (a short payload is left to the handler's). The payload bytes carry no alignment: the config is read from an
+   aligned copy. */
+static int
+config_refused_over_running_radio(const dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
+    if (!opts || !state || !c || c->id != DSD_APP_CMD_CONFIG_APPLY || c->n < sizeof(dsdneoUserConfig)) {
+        return 0;
+    }
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)malloc(sizeof *cfg);
+    if (!cfg) {
+        ui_set_toast(state, 5, "Config not applied: out of memory");
+        return 1;
+    }
+    DSD_MEMCPY(cfg, c->data, sizeof *cfg);
+    const int refused = cfg_check_input_over_running_radio(opts, state, cfg) != UI_CMD_APPLY_COMPLETED;
+    DSD_SECURE_ZERO(cfg, sizeof *cfg);
+    free(cfg);
+    return refused;
+}
+
 /* @p codes receives what a DSD_APP_CMD_SCAN_LIST_SET (issue #697) or DSD_APP_CMD_DMR_CHANNEL_SET (discussion #900) did,
    for its retained result: SEARCH when Signal search refuses it, the handler's answer once it ran, INVALID for anything
    that stops it before then. */
@@ -11912,6 +11924,10 @@ apply_cmd(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c, ui_
         codes->dmr_channel = DSD_APP_DMR_CHANNEL_SET_SEARCH;
         dsd_app_recording_command_resolved(recording_command_id(c), DSD_APP_RECORDING_COMMAND_REFUSED);
         ui_cmd_answer_refused_squelch_request(state, c);
+        return UI_CMD_APPLY_FAILED;
+    }
+    if (config_refused_over_running_radio(opts, state, c)) {
+        dsd_app_recording_command_resolved(recording_command_id(c), recording_command_outcome(c, UI_CMD_APPLY_FAILED));
         return UI_CMD_APPLY_FAILED;
     }
 

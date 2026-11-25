@@ -8101,14 +8101,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `audio_in_dev` naming an input that does not run; refused, `audio_in_dev` always names the running receiver while a
   radio runs, which every restart, rollback and device change reopens. A radio `[input]` builds a spec, which reopens
   the receiver when it differs from the running one, or builds none (an RTL-SDR source without `rtl_freq`), applying
-  settings only. With no radio running, a config staging a radio spec over PCM applies as before. An input switch to
-  a file whose relative name reads as a radio spec (`rtl:serial=BBBB`) names it `./rtl:serial=BBBB`
-  (`switch_input_name()`), so the radio rows never read a file just opened as a spec staged for them. The spec is the
-  one record of the dongle an input opens: the change writes it where the next open reads the spec (`dsd_app_rtl_device_spec_field()` in
-  `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which must be a local `rtl` spec; with PCM
-  running the one the RTL-SDR row opens, picked by the row's own rule, `dsd_app_radio_row_source_field()`, a spec a
-  config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept; with no RTL-SDR spec remembered it creates
-  `rtl:<dev>` in `radio_in_dev`), and the stream open selects from the spec it opens (IO, below), so the dongle that
+  settings only. With no radio running, a config staging a radio spec over PCM applies as before. The spec is the one
+  record of the dongle an input opens: the change writes it where the next open reads the spec
+  (`dsd_app_rtl_device_spec_field()` in `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which
+  must be a local `rtl` spec; with PCM running the one the RTL-SDR row opens, picked by the row's own rule,
+  `dsd_app_radio_row_source_field()`, a spec a config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept
+  (a documented limit: a PCM file whose name is itself a radio spec, `rtl`, `rtl:...` or `soapy`, reads as that spec
+  there; such a file is opened as `./rtl`); with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`),
+  and the stream open selects from the spec it opens (IO, below), so the dongle that
   opens, the spec and a save always agree. The terminal's Device prompt opens on that spec's device field
   (`dsd_app_rtl_device_prefill()`; a bare `rtl` is `0`), never the device the options last opened. With PCM running
   and the row opening another radio (an rtl_tcp server, a SoapySDR device, a replay or stream) the change is
@@ -8157,7 +8157,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
   no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
-  RTL-SDR `[input]` opens the dongle the config names: the spec it wrote, which the reopen (`svc_rtl_restart_onto_locked()`)
+  RTL-SDR `[input]` opens the dongle the config names: the spec it wrote, which the reopen (`svc_rtl_restart_locked()`)
   opens and selects from. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
