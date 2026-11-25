@@ -13336,8 +13336,10 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
     none when its Voice Call Option says the field carries none, as for an interconnect or speed dial call), as the
     publication and the held call take it. Decided limit (issue #903): the report keeps no per-call memory of
     encryption, so a VCALL whose own cipher the hysteresis has not yet applied is reported clear, whatever the call
-    carried before: the first cipher indication of a call (`test_scan_report_takes_the_calls_own_encryption()`), and
-    on an established encrypted call a VCALL naming another algorithm (AES while DES is still applied) until its
+    carried before: a first cipher indication that contradicts the cipher the hysteresis holds (DES after a DCR call's
+    scrambler, `test_scan_report_takes_the_calls_own_encryption()`; a first encrypted VCALL after
+    `nxdn_cipher_class_reset()` is applied tentatively by `nxdn_cipher_class_step()` and reported encrypted at once),
+    and on an established encrypted call a VCALL naming another algorithm (AES while DES is still applied) until its
     repeat applies it. With encrypted following off, that one VCALL can refresh the conventional scan hold. 011/101
     have no class and lock nothing out. CC Option bit 6 is Intra/Inter and prints "Inter-System".
   - The receiver's frequency (`nxdn_receiver_freq()`): the valid route, else the tuned voice channel, else the
