@@ -691,16 +691,19 @@ calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_cal
     }
 }
 
-/* The frequency a call on traffic channel @p chan is heard on. Not trunking, nothing follows an allocation to another
- * carrier: the receiver stays on the carrier the call is received on, so the call keeps that frequency while its
- * channel names the allocation. */
+/* The frequency call @p c on traffic channel @p chan is published with. Not trunking, nothing follows an allocation to
+ * another carrier and the receiver stays where it is, so the call slot 0 carries keeps the frequency it was first
+ * published with, the decoded carrier it is heard on, while its channel names the allocation; the tuner is not read,
+ * as it can sit a few kHz off the carrier or have no frequency at all (an audio input). */
 static long
-calls_heard_freq(const dsd_opts* opts, const dsd_state* state, const tetra_chan_alloc* chan) {
-    if (opts && opts->trunk_enable == 1) {
-        return chan->freq_hz;
+calls_heard_freq(const dsd_opts* opts, const dsd_state* state, const tetra_state_t* ts, const tetra_call_t* c,
+                 const tetra_chan_alloc* chan) {
+    dsd_call_snapshot call;
+    if ((!opts || opts->trunk_enable != 1) && calls_carried(state, ts, TETRA_PUB_CALL, c->call_id, &call)
+        && call.frequency_hz > 0) {
+        return (long)call.frequency_hz;
     }
-    const long rx_hz = tetra_sm_receiver_freq(opts, state);
-    return rx_hz > 0L && chan->freq_hz > 0L && chan->freq_hz != rx_hz ? rx_hz : chan->freq_hz;
+    return chan->freq_hz;
 }
 
 /* Observe @p c on canonical slot 0, heard on traffic channel @p chan, and its crypto class. */
@@ -715,7 +718,7 @@ calls_publish_call(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const te
     o.policy_target_id = o.ota_target_id;
     o.ota_source_id = calls_source(c);
     o.channel = chan->carrier;
-    o.frequency_hz = calls_heard_freq(opts, state, chan);
+    o.frequency_hz = calls_heard_freq(opts, state, ts, c, chan);
     o.service_options = c->basic_service;
     o.priority = c->priority;
     o.has_service_metadata = (uint8_t)((c->flags & TETRA_CALL_F_SETUP_SEEN) != 0u);

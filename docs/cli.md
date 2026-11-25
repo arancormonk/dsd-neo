@@ -1297,9 +1297,9 @@ Android session whose saved extra arguments carry one refuses to start the same 
   received there, it logs `[TETRA SM] no SYSINFO on main carrier Y Hz after 10 s` once; start on a carrier this receiver
   hears, or leave trunking off. To monitor one traffic carrier on purpose, run without `-T`. Without `-T` one
   timeslot of the carrier is heard at a time, until its speech stops for a second. Without `-T`, a call that a later
-  channel allocation moves to another carrier keeps the frequency it is being heard on in the event history, its
-  per-call recording and the rdio-scanner export, since the receiver stays where it is (its channel number shows the
-  new allocation). With `-T`, a followed call that moves to another carrier mid-recording is filed under the carrier it
+  channel allocation moves to another carrier keeps the frequency of the carrier it was heard on in the event history,
+  its per-call recording and the rdio-scanner export, since the receiver stays where it is (its channel number shows
+  the new allocation). With `-T`, a followed call that moves to another carrier mid-recording is filed under the carrier it
   moved to. TETRA is not a `--trunk-scan` target
   type. Air-encrypted speech and signalling decrypt with `--tetra-key`, an 80-bit network key or a TEA1 reduced key of
   one channel (see Keys & Privacy), so `-T` follows the calls of a security class 2 or 3 cell too.
