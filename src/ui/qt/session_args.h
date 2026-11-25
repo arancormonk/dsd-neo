@@ -17,6 +17,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_SESSION_ARGS_H_
 #define DSD_NEO_SRC_UI_QT_SESSION_ARGS_H_
 
+#include <QByteArray>
 #include <QObject>
 #include <QString>
 #include <QStringList>
@@ -162,6 +163,19 @@ enum class SessionArgsError {
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
 constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::IqStreamExtra;
+
+/**
+ * @brief The --dmr-chan-overrides file a start of @p system passes (discussion #900 F3), or empty for none: a header
+ * and one `lpcn,frequency_hz` row per entry of its dmrChannels (SavedSystemsModel::validDmrChannels(), 0 = hidden),
+ * by channel. Whatever the system decodes: the decoder applies the file only to a session that decodes DMR frames
+ * and runs no trunk scan, and starts any other without it, with a notice.
+ *
+ * session_args_build() passes the file a start wrote under the system's "dmrChanOverridesPath" field last of all, after
+ * the decode flag, the system's and the app's extra options and the live radio settings: the decoder keeps the last
+ * --dmr-chan-overrides, so the saved channels win over one the user typed. SessionArgsBuilder::start() writes it, for a
+ * saved system's start only.
+ */
+QByteArray session_args_dmr_channels_csv(const QVariantMap& system);
 
 /**
  * @brief Why the extra options @p tokens conflict with the app's call recording (issue #708), or None.
@@ -393,9 +407,15 @@ class SessionArgsBuilder : public QObject {
     QStringList buildArgs(const QVariantMap& system, SessionArgsError* error,
                           const QString& recordingFolder = QString(), bool recordingUnavailable = false) const;
     /* start()'s build: with the session's call recording folder when @p host can record it (@p recording set, the
-       folder's session begun). */
+       folder's session begun). @p channelsUid: prepareDmrChannels()' answer for a saved system's start, else empty. */
     QStringList buildForStart(const QVariantMap& system, const DecoderHost* host, const QString& kind,
-                              SessionArgsError* error, bool* recording) const;
+                              SessionArgsError* error, bool* recording, QString* channelsUid) const;
+    /* A saved system's start: @p input with its DMR Tier III channels' file written and named. Writes nothing, and
+       drops a file an earlier start left, when it has none. A file that cannot be written names none: the start goes
+       on without the channels, and a notice (json_store_post_notice()) says so.
+       @return the system's uid when the argv passes its channels or has none to pass, else empty. The start withdraws
+       the notice only once that argv goes to the host. */
+    QString prepareDmrChannels(QVariantMap* input) const;
     /* The recording session buildForStart() began ends when the start did not happen and no session runs. */
     void endUnstartedRecording(bool recording, bool started, const DecoderHost* host) const;
     /* Both start()s: @p expects says whether the expectations are a roam's. */

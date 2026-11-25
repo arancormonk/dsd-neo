@@ -12,7 +12,6 @@
 #include <dsd-neo/core/key_material.h>
 #include <dsd-neo/core/key_presence.h>
 #include <dsd-neo/core/received_identity.h>
-#include <stddef.h>
 #include <stdint.h>
 #include <utility>
 #include "metrics_model.h"
@@ -33,6 +32,7 @@
 #include <dsd-neo/app_control/call_view.h>
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/dmr_ras_view.h>
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/frontend.h>
 #include <dsd-neo/app_control/receive_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
@@ -540,6 +540,18 @@ MetricsModel::fillListeningControlView(View& next, const dsd_opts* opts_snapshot
     next.audio_muted = opts_snapshot->audio_out == 0;
     next.held_tg = static_cast<qulonglong>(snapshot->tg_hold);
     next.enc_lockout_count = dsd_enc_lockout_active_count(snapshot);
+    const dsd_ui_dmr_t3_view* t3 = dsd_app_dmr_t3_view(snapshot);
+    const bool t3_present = t3 != nullptr && t3->present != 0U;
+    /* A carrier that names another system (another DMR trunking system, or another protocol's) has that system's
+       channel map, and a session a live mode change left without DMR reads no Tier III channel: no Tier III Channels
+       route opens there, the saved system's channels file included. */
+    const bool t3_here = t3_present && t3->other_system_here == 0U && t3->dmr_decoding != 0U;
+    next.no_freq_count = t3_here ? static_cast<int>(dsd_app_dmr_t3_view_missing_shown(t3)) : 0;
+    /* The saved system's channels file applied to this session: the engine leaves the path set when it skipped the
+       file (a trunk scan, a session that does not decode DMR), so the path alone says nothing. */
+    const bool saved_channels = t3_here && t3->overrides_applied != 0U;
+    next.dmr_tier3 = t3_here && (t3->tier3 != 0U || saved_channels);
+    next.dmr_user_channels = t3_here && t3->overlay_count > 0U;
     next.persist_tg_lockouts = opts_snapshot->persist_tg_lockouts != 0;
     next.temporary_tg_avoid_count = dsd_tg_policy_session_avoid_count(snapshot, 0, UINT32_MAX);
     next.call_skip_count = dsd_tg_policy_call_skip_count(snapshot, dsd_decode_now_mono_s());

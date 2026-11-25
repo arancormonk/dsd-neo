@@ -5,7 +5,8 @@
 
 /**
  * @file
- * @brief The files the app could not read this run, for Home's notice card (issue #828).
+ * @brief The files the app could not read this run, for Home's notice card (issue #828), and the saved systems' DMR
+ * Tier III channels files a start could not write (discussion #900).
  *
  * One list for the whole process: the Qt JSON stores' and settings files' notices (json_store_notices()) and the
  * Signal search store's files, which SignalSearchModel reports. It is made once, on the GUI thread, and never
@@ -28,6 +29,7 @@
 #include <QVariant> // IWYU pragma: keep -- QVariantList's element; IWYU's answer differs by TU.
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
 
 namespace dsd_qt {
 
@@ -36,14 +38,19 @@ class StoreNotices : public QObject {
     /**
      * Not dismissed, one per file, json_store's in the order it posted them, then the Signal search store's: maps of
      *  - file: the file's own name ("saved_systems.json");
-     *  - store: what Util.storeLabel() names it by: the file name, or "call-history-settings" for call history's
-     *    settings file, whose name follows the application's;
+     *  - store: what Util.storeLabel() names it by: the file name, "call-history-settings" for call history's
+     *    settings file, whose name follows the application's, or "dmr-channels" for a saved system's DMR Tier III
+     *    channels file (dmr_channels/<uid>.csv);
      *  - state: "unreadable" (not moved yet: it is not written over), "kept" (moved aside as `kept`), "unsaved" (a
      *    settings file that could not be kept: this run's changes are not saved; `kept` is set when it was renamed
      *    aside before that failed), "defaults" (as "unsaved", with no folder for a scratch copy: this run uses
-     *    default settings) or "leftInPlace" (the Signal search history of version 1, which is never moved);
+     *    default settings), "leftInPlace" (the Signal search history of version 1, which is never moved) or
+     *    "unwritten" (a saved system's DMR Tier III channels file a start could not write: its starts go without them);
      *  - kept: the name it was kept as, else "";
-     *  - earlierKept: for "unreadable", the name an earlier copy of the same file was kept as this run, else "".
+     *  - earlierKept: for "unreadable", the name an earlier copy of the same file was kept as this run, else "";
+     *  - episode: JsonStoreNotice::episode, never shown. A new failure of a saved system's DMR channels file changes
+     *    the list by it alone, so the card reads it out even when the one before was withdrawn and this one posted
+     *    before the list's thread saw either.
      */
     Q_PROPERTY(QVariantList notices READ notices NOTIFY noticesChanged)
 
@@ -54,8 +61,8 @@ class StoreNotices : public QObject {
     QVariantList notices() const;
 
     /**
-     * @brief Hide the notice for @p fileName as it stands now. A later change to it (a file kept aside after all, or
-     *        unreadable again after that) shows again.
+     * @brief Hide the notice for @p fileName as it stands now. A later change to it (a file kept aside after all,
+     *        unreadable again after that, or a new failure episode of a saved system's DMR channels file) shows again.
      */
     Q_INVOKABLE void dismiss(const QString& fileName);
 
@@ -83,6 +90,7 @@ class StoreNotices : public QObject {
         QString state;
         QString kept;
         QString earlierKept;
+        quint64 episode = 0; // JsonStoreNotice::episode: part of the key and the map, never shown
     };
 
     /** Re-read json_store_notices(). GUI thread. */

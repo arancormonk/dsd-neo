@@ -3,6 +3,7 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/dmr_t3_view.h>
 #include <dsd-neo/app_control/history_tap.h>
 #include <dsd-neo/app_control/notification_status.h>
 #include <dsd-neo/app_control/position_view.h>
@@ -25,6 +26,7 @@
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <stddef.h>
 #include <stdint.h>
+#include "dmr_t3_view_internal.h"
 #include "position_ring.h"
 #include "snapshot_internal.h"
 
@@ -48,6 +50,11 @@ static int g_pub_eh_present = 0;
 /* The position feed as last published (issue #800): fixed storage, filled by the publish hop only, read by any number
    of readers (dsd_app_position_copy_since()). The consumer hop does not copy it. */
 static dsd_app_position_ring g_pub_pos;
+/* The DMR Tier III channel record each snapshot carries (<dsd-neo/app_control/dmr_t3_view.h>, discussion #900), in its
+   DSD_STATE_EXT_APP_DMR_T3_VIEW slot, and what the published one was filled from. */
+static dsd_ui_dmr_t3_view g_pub_dmr_t3;
+static dsd_ui_dmr_t3_view g_consume_dmr_t3;
+static dsd_app_dmr_t3_view_mark g_pub_dmr_t3_mark;
 /* A publication the P25 SM tick guard put off (dsd_app_telemetry_snapshot_pending()). */
 static atomic_int g_pub_pending = 0;
 
@@ -92,11 +99,27 @@ static int g_consume_keys_withheld = 0;
 
 #ifdef DSD_NEO_TEST_HOOKS
 static dsd_app_snapshot_event_history_copy_counts g_eh_copy_counts;
+static dsd_app_snapshot_dmr_t3_copy_counts g_dmr_t3_copy_counts;
+
+static void
+dmr_t3_count_copies(uint64_t* missing, uint64_t* rows, int copied) {
+    *missing += (copied & DSD_APP_DMR_T3_VIEW_COPIED_MISSING) != 0 ? 1U : 0U;
+    *rows += (copied & DSD_APP_DMR_T3_VIEW_COPIED_ROWS) != 0 ? 1U : 0U;
+}
+
 #define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   g_eh_copy_counts.source_to_published[(slot)]++
 #define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot) g_eh_copy_counts.published_to_consumer[(slot)]++
+#define UI_SNAPSHOT_COUNT_DMR_T3_SOURCE_COPY(copied)                                                                   \
+    dmr_t3_count_copies(&g_dmr_t3_copy_counts.source_to_published_missing,                                             \
+                        &g_dmr_t3_copy_counts.source_to_published_rows, (copied))
+#define UI_SNAPSHOT_COUNT_DMR_T3_CONSUMER_COPY(copied)                                                                 \
+    dmr_t3_count_copies(&g_dmr_t3_copy_counts.published_to_consumer_missing,                                           \
+                        &g_dmr_t3_copy_counts.published_to_consumer_rows, (copied))
 #else
-#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)   ((void)(slot))
-#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot) ((void)(slot))
+#define UI_SNAPSHOT_COUNT_SOURCE_COPY(slot)            ((void)(slot))
+#define UI_SNAPSHOT_COUNT_CONSUMER_COPY(slot)          ((void)(slot))
+#define UI_SNAPSHOT_COUNT_DMR_T3_SOURCE_COPY(copied)   ((void)(copied))
+#define UI_SNAPSHOT_COUNT_DMR_T3_CONSUMER_COPY(copied) ((void)(copied))
 #endif
 
 #define UI_SNAPSHOT_FIELD_END(field) (offsetof(dsd_state, field) + sizeof(((dsd_state*)0)->field))
@@ -564,6 +587,25 @@ dsd_app_snapshot_test_get_event_history_copy_counts(dsd_app_snapshot_event_histo
     dsd_mutex_unlock(&g_mu);
 }
 
+void
+dsd_app_snapshot_test_reset_dmr_t3_copy_counts(void) {
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    DSD_MEMSET(&g_dmr_t3_copy_counts, 0, sizeof(g_dmr_t3_copy_counts));
+    dsd_mutex_unlock(&g_mu);
+}
+
+void
+dsd_app_snapshot_test_get_dmr_t3_copy_counts(dsd_app_snapshot_dmr_t3_copy_counts* counts) {
+    if (counts == NULL) {
+        return;
+    }
+    ensure_mu_init();
+    dsd_mutex_lock(&g_mu);
+    *counts = g_dmr_t3_copy_counts;
+    dsd_mutex_unlock(&g_mu);
+}
+
 int
 dsd_app_snapshot_test_consumer_needs_retry(void) {
     ensure_mu_init();
@@ -592,6 +634,8 @@ ui_snapshot_publish(const dsd_state* state) {
     dsd_scan_mode_copy_snapshot(&g_pub, state);
     dsd_user_config_copy_retained_input(&g_pub, state);
     ui_snapshot_copy_trunk_cc_candidates(&g_pub, state, &g_pub_cc_candidates);
+    UI_SNAPSHOT_COUNT_DMR_T3_SOURCE_COPY(dsd_app_dmr_t3_view_publish(&g_pub_dmr_t3, &g_pub_dmr_t3_mark, state));
+    dsd_app_dmr_t3_view_attach(&g_pub, &g_pub_dmr_t3);
     // Clone canonical calls, recent activity, and history under the core transaction lock.
     if (state->event_history_s != NULL) {
         const int force_copy = !g_have || !g_pub_eh_present || ui_snapshot_eh_ring_replaced(state->event_history_s);
@@ -700,6 +744,8 @@ dsd_app_get_latest_snapshot(void) {
         dsd_scan_mode_copy_snapshot(&g_consume, &g_pub);
         dsd_user_config_copy_retained_input(&g_consume, &g_pub);
         ui_snapshot_copy_trunk_cc_candidates(&g_consume, &g_pub, &g_consume_cc_candidates);
+        UI_SNAPSHOT_COUNT_DMR_T3_CONSUMER_COPY(dsd_app_dmr_t3_view_consume(&g_consume_dmr_t3, &g_pub_dmr_t3));
+        dsd_app_dmr_t3_view_attach(&g_consume, &g_consume_dmr_t3);
         (void)dsd_call_state_copy_to_state(&g_consume, &g_pub);
         g_consume_seq = g_pub_seq;
         g_consume_needs_retry = !ui_snapshot_marks_whole(&g_consume_marks);

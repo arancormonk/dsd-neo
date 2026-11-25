@@ -54,6 +54,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/protocol/p25/p25_frequency.h>
@@ -10337,6 +10338,38 @@ test_dmr_ras_carrier_lifetime(void) {
     return rc;
 }
 
+/* The Tier III control-channel evidence (a checked C_ALOHA or C_SYS_Parms on the tuned carrier,
+   dmr_t3_cc_note_evidence()) ends with reception: the no-carrier pass leaves the carrier, the received identity's epoch
+   and the tuning generation as they were, yet the carrier is offered as the control channel again only once a new
+   checked message names it. */
+static int
+test_dmr_t3_cc_evidence_ends_with_reception(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    const int input = opts->audio_in_type;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 451000000U;
+    opts->trunk_is_tuned = 0;
+    dmr_t3_cc_note_evidence(opts, state);
+    opts->audio_in_type = input;
+    int rc = expect_true("t3 cc: the checked message names the carrier", dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    const uint32_t carrier = state->carrier_seq;
+    const uint32_t epoch = state->rx_id.epoch;
+    noCarrier(opts, state);
+    rc |= expect_true("t3 cc: the no-carrier pass stays on the carrier",
+                      state->carrier_seq == carrier && state->rx_id.epoch == epoch);
+    rc |= expect_true("t3 cc: the evidence ends with reception", dmr_t3_cc_confirmed_hz(state) == 0);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    dmr_t3_cc_note_evidence(opts, state);
+    opts->audio_in_type = input;
+    rc |= expect_true("t3 cc: a new checked message names it again", dmr_t3_cc_confirmed_hz(state) == 451000000L);
+    free_test_runtime(opts, state);
+    return rc;
+}
+
 /*
  * NXDN's system type is the carrier's: an operator move (a tune, a source or input change, a scan step) may land on a
  * Type-D repeater, whose frames must not read as a composite control channel's, so the Type-C context and the foreign
@@ -20422,6 +20455,7 @@ main(void) {
     rc |= test_operator_boundary_forgets_the_nxdn_system_type();
     rc |= test_received_identity_lifetime();
     rc |= test_dmr_ras_carrier_lifetime();
+    rc |= test_dmr_t3_cc_evidence_ends_with_reception();
     rc |= test_carrier_boundary_restarts_the_evidence();
     rc |= test_carrier_boundary_closes_mbe_captures();
     rc |= test_receive_boundary_closes_only_rejected_capture();

@@ -32,6 +32,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/fec/block_codes.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 #include <dsd-neo/runtime/colors.h>
@@ -2270,6 +2271,7 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
+    dmr_t3_cc_note_evidence(opts, state);
     dmr_sm_note_cc_activity(opts, state, 0);
 }
 
@@ -2284,6 +2286,11 @@ dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slc
     /* Checked as C_SYS_PARMS is (dmr_slco()): a payload channel of the network whose code it names. */
     dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
+    /* Checked as C_SYS_PARMS is: a Tier III payload channel's. Unless it is a composite control channel (Comp_CC), the
+       carrier is no TSCC, whatever an earlier C_ALOHA or C_SYS_PARMS here said: the site may have moved its TSCC away
+       while the receiver stayed. */
+    dmr_t3_note_tier3(state, 1);
+    dmr_t3_cc_note_payload_channel(state, data->reg);
 }
 
 static int

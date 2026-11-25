@@ -15,10 +15,14 @@ target_sources(
         analog_width_view.c
         app_command_queue.c
         key_commands.c
+        dmr_channel_commands.c
         call_view.c
         config_files.c
         crc_policy_view.c
         dmr_ras_view.c
+        dmr_t3_view.c
+        dmr_t3_view_copy.c
+        dmr_t3_effective.c
         p25_network.c # WP-F2
         p25_metrics.c
         trunk_scan_validate.c

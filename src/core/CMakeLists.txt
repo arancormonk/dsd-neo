@@ -68,6 +68,7 @@ target_sources(
         file/dsd_import.c
         file/p25_bandplan_csv.c
         file/source_alias_csv.c
+        file/dmr_chan_overrides_csv.c
         file/p25_sm_log.c
         gps/dsd_gps.c
         gps/nmea_sentence.c

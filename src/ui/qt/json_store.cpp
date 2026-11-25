@@ -87,7 +87,8 @@ bool
 upsert_notice(QList<JsonStoreNotice>& notices, const JsonStoreNotice& notice) {
     for (JsonStoreNotice& existing : notices) {
         if (existing.fileName == notice.fileName) {
-            if (existing.reason == notice.reason && existing.keptName == notice.keptName) {
+            if (existing.reason == notice.reason && existing.keptName == notice.keptName
+                && existing.episode == notice.episode) {
                 return false;
             }
             existing = notice;
@@ -374,6 +375,22 @@ json_store_post_notice(const JsonStoreNotice& notice) {
     {
         const std::lock_guard<std::mutex> locker(r.lock);
         if (upsert_notice(r.notices, notice)) {
+            sink = r.sink;
+        }
+    }
+    if (sink) {
+        sink();
+    }
+}
+
+void
+json_store_withdraw_notice(const QString& fileName) {
+    Registry& r = registry();
+    std::function<void()> sink;
+    {
+        const std::lock_guard<std::mutex> locker(r.lock);
+        if (r.notices.removeIf([&fileName](const JsonStoreNotice& notice) { return notice.fileName == fileName; })
+            > 0) {
             sink = r.sink;
         }
     }
