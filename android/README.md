@@ -1582,9 +1582,10 @@ attached dongle carries, fails with its own kind (`usb_serial_duplicate`,
 ("2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open.
 Unplug the extra one, or give each its own serial with rtl_eeprom -s on a
 computer."). The engine checks the descriptor's serial again.
-When a saved system names one serial and its Advanced arguments name another,
-the app still asks for the saved one before the start, so give the serial in
-one place only.
+On a USB system, the app waits for the saved USB dongle before the start even
+when the Advanced arguments name another input: another `-i rtl:serial=...`, or
+an `-i rtltcp:...` or `--iq-replay` that needs no dongle at all. Set the source
+in the system's settings, not in its Advanced arguments.
 
 ### Receiver status on Listen
 
