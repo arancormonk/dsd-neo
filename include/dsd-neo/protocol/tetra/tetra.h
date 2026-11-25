@@ -25,8 +25,8 @@ int processTetraSBFrame(dsd_opts* opts, dsd_state* state);
  *   clause 8.5.3): an encrypted direct mode transmission, or a reservation, that no one can tell apart.
  * - TMO: a trunked mode block whose CRC passed: a BSCH (the home cell's or another's), a downlink MAC block, an uplink
  *   SCH/HU or MAC block, or trunked speech.
- * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, or only the
- *   soft decision decoded it and SCH/H went by unread), a presence signal, or a direct mode PDU that sets up no call
+ * - PROFILE: a CRC passed, but on nothing of the above: a DSB of which only SCH/S decoded (its SCH/H failed, whichever
+ *   decision decoded its SCH/S), a presence signal, or a direct mode PDU that sets up no call
  *   (DM-RESERVED and the other reservation, end and request signalling).
  * - NONE: no CRC passed, or the burst was read across a carrier boundary or cut by an input interruption.
  *
@@ -70,7 +70,9 @@ void tetra_forget_carrier(dsd_state* state);
 
 /* Start a scan's visit to a TETRA row cold (issue #890): the engine calls it at every landing of a scan session that
  * holds the TETRA state (dsd_state::tetra_ext_scan_held), a TETRA row after another TETRA row included, and when the
- * session lets the state go. In this order it clears what the last visit's bursts proved, the direct mode call, then
+ * session lets the state go; a Signal search's TETRA visit (issue #748) gets the same at its landing and departure. In
+ * this order it clears what the last visit's bursts proved (a Signal search's evidence among it, src/protocol/tetra/
+ * tetra_search.h), the direct mode call, then
  * the network, each part once (tetra_bsch_forget_network(): the D-MM STATUS, the trunked calls kept with their
  * canonical calls, the short data being rebuilt, its cell with SYSINFO and the TM-SDUs, then MCC, MNC, colour code and
  * scrambling seed, net_known last), the carrier as

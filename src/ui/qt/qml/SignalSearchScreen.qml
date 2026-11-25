@@ -596,7 +596,11 @@ Item {
      * recordings first when it kept any. */
     function detectionActions(h, all) {
         var items = all ? recordingsAction(h) : [];
-        items.push({ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore" });
+        // A detection made on a receiver the app cannot open, or confirmed as
+        // a protocol this build does not decode, is neither explored nor
+        // saved, and says why (issue #748 B18, B6).
+        var refusal = h.handoffRefusal || "";
+        items.push({ text: qsTr("Explore here"), key: "explore", objectName: "searchActionExplore", enabled: !refusal, description: refusal });
         var targets = savedTargets(h);
         for (var i = 0; i < targets.length; ++i) {
             var target = targets[i];
@@ -605,7 +609,7 @@ Item {
         }
         if (!all)
             return items;
-        items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave" });
+        items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave", enabled: !refusal, description: refusal });
         // A permanent avoid is excluded already: avoiding it this session too
         // would do nothing (issue #828).
         // Issue #902 B8: for the session running as the menu opened, which it
@@ -1053,8 +1057,12 @@ Item {
                                 maximumLineCount: actions.labelLines
                                 // Hidden, not removed, while nothing is received.
                                 visible: screen.receiving
+                                // Save as system is off for a receiver the app
+                                // cannot open or a protocol it does not decode;
+                                // More says why (issue #748 B18, B6).
+                                enabled: !(cell.save && screen.hit.handoffRefusal)
                                 text: cell.label
-                                accessibleName: cell.accessibleName || cell.label
+                                accessibleName: enabled ? cell.accessibleName || cell.label : cell.label + ". " + screen.hit.handoffRefusal
                                 onClicked: {
                                     if (cell.more)
                                         screen.openDetectionMenu(screen.hit, false);

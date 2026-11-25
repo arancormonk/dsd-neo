@@ -4946,8 +4946,7 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
     const int interrupt_reason = state->input_interrupt_reason;
     const int input_interrupted = state->input_interrupted;
     const int interrupted = input_interrupted && interrupt_reason != DSD_INTERRUPT_SCAN_IDLE;
-    state->input_interrupted = 0;
-    state->input_interrupt_reason = DSD_INTERRUPT_NONE;
+    dsd_state_consume_input_interrupt(state);
     if (input_interrupted) {
         /* What was being received was cut: the NAC its Phase 1 NIDs established says nothing of what follows. */
         dsd_state_forget_p25p1_carrier_nac(state);
@@ -5279,7 +5278,7 @@ dsd_engine_cleanup(dsd_opts* opts, dsd_state* state) {
     dsd_engine_cleanup_close_net(opts);
     /* The final call snapshots are taken: a session that ended during a Signal search visit gets its own P25 site back
        now, so the band plan export below never writes a visited system's IDEN tables (issue #804). */
-    dsd_engine_signal_search_release_site(state);
+    dsd_engine_signal_search_release_site(opts, state);
     /* The DMR Tier III ledger is the session's again only now: a Signal search visit's site was installed until the
        release above (discussion #900 F1). */
     if (log_session_ledgers) {

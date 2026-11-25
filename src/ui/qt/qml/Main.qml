@@ -2548,11 +2548,18 @@ Window {
             var sys = mainRoot.exploreSystem(sourceType, host, port, frequency);
             sys.signalSearch = true;
             sys.name = qsTr("Signal search");
-            sys.bandwidthKhz = 48;
+            // 72 kHz while an enabled range identifies TETRA, else 48 kHz;
+            // the app's default bandwidth never applies (issue #748).
+            sys.bandwidthKhz = searchModel.searchBandwidthKhz();
             mainRoot.startWithMap(sys, -1, false);
             mainRoot.spectrumOpen = false;
         }
         onExploreDetection: function (hit) {
+            // Issue #748 B18, B6: no other receiver stands in for one the app
+            // cannot open, nor another decoder for a protocol it does not
+            // decode; the screen offers neither action for it.
+            if (hit.handoffRefusal)
+                return;
             mainRoot.leaveSearchFor({
                 kind: "explore",
                 system: mainRoot.exploreHereSystem(hit, mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz)),
@@ -2568,6 +2575,8 @@ Window {
         onSaveDetection: function (hit) {
             var source = mainRoot.sessionSystem || mainRoot.exploreSystem(sourceType, host, port, hit.freqMHz);
             var found = searchModel.systemForHit(hit, source);
+            if (found.handoffRefusal)
+                return;
             wizard.openForFound(found, hit.freqMHz, found);
             mainRoot.wizardOpen = true;
         }

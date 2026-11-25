@@ -10218,17 +10218,15 @@ stream_open_update_output_rates(void) {
     }
 }
 
-/* The derived-SPS lines of the rate-chain log for an output rate of @p out_hz: the info line in @p info and the
-   atypical-rate warning in @p warn, each empty when there is none. A CQPSK stream (@p cqpsk) gets no 48 kHz advice:
-   its symbols bypass the resampler, so it could not help, and rtl_demod_warn_symbol_timing() already said whether
-   CQPSK can time symbols at this rate. A TETRA stream reports TETRA's samples per symbol (18 ksym/s) and no advice
-   either (dsd_tetra_dsp_rate_advice() says what a rate TETRA cannot run at needs). Other streams are judged against
-   the ~48 kHz rate the digital decoders assume. */
+/* The derived-SPS line of the rate-chain log for an output rate of @p out_hz into @p info, empty when there is none. A
+   TETRA stream reports TETRA's samples per symbol (18 ksym/s), every other stream the P25 and NXDN48 ones. It is
+   information only: whether the decoder can time symbols at the rate is rtl_demod_warn_symbol_timing()'s to say (a
+   fractional number of samples per symbol after digital_resample), and dsd_tetra_dsp_rate_advice()'s for a rate TETRA
+   cannot run at. The symbol timing scales to any whole number of samples per symbol, so a rate away from 48 kHz is no
+   reason to warn. */
 static void
-stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size, char* warn,
-                              size_t warn_size) {
+stream_open_compose_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
     info[0] = '\0';
-    warn[0] = '\0';
     if (out_hz == 0U) {
         return;
     }
@@ -10243,23 +10241,21 @@ stream_open_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, c
     int sps_nxdn48 = (int)((out_hz + 1200) / 2400);
     DSD_SNPRINTF(info, info_size, "Derived SPS (@%u Hz): P25P1%s%d, P25P2%s%d, NXDN48%s%d.\n", out_hz, approx,
                  sps_p25p1, approx, sps_p25p2, approx, sps_nxdn48);
-    if (cqpsk) {
-        return;
-    }
-    if ((sps_p25p1 < 8 || sps_p25p1 > 12) || (sps_p25p2 < 6 || sps_p25p2 > 10)
-        || (sps_nxdn48 < 16 || sps_nxdn48 > 24)) {
-        DSD_SNPRINTF(warn, warn_size,
-                     "WARNING: Output rate %u Hz implies atypical SPS; digital decoders assume ~48k. Consider "
-                     "enabling resampler to 48000 Hz.\n",
-                     out_hz);
+}
+
+/* Logs the derived-SPS line for @p out_hz (stream_open_compose_sps_line()), and writes it to @p info. */
+static void
+stream_open_log_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
+    stream_open_compose_sps_line(out_hz, frame_tetra, info, info_size);
+    if (info[0] != '\0') {
+        LOG_INFO("%s", info);
     }
 }
 
 #if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
 extern "C" void
-rtl_stream_test_compose_sps_lines(unsigned int out_hz, int frame_tetra, int cqpsk, char* info, size_t info_size,
-                                  char* warn, size_t warn_size) {
-    stream_open_compose_sps_lines(out_hz, frame_tetra, cqpsk, info, info_size, warn, warn_size);
+rtl_stream_test_log_sps_line(unsigned int out_hz, int frame_tetra, char* info, size_t info_size) {
+    stream_open_log_sps_line(out_hz, frame_tetra, info, info_size);
 }
 #endif
 
@@ -10305,15 +10301,7 @@ stream_open_log_rate_chain_summary(int frame_tetra) {
                  capture_text, base_decim, step_text, post, demod_hz, out_hz);
     }
     char sps_text[160];
-    char sps_warn[192];
-    stream_open_compose_sps_lines(out_hz, frame_tetra, demod.cqpsk_enable, sps_text, sizeof sps_text, sps_warn,
-                                  sizeof sps_warn);
-    if (sps_text[0] != '\0') {
-        LOG_INFO("%s", sps_text);
-    }
-    if (sps_warn[0] != '\0') {
-        LOG_WARN("%s", sps_warn);
-    }
+    stream_open_log_sps_line(out_hz, frame_tetra, sps_text, sizeof sps_text);
 }
 
 static int

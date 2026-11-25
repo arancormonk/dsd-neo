@@ -208,7 +208,7 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
 
 /* The samples after this point do not follow the ones before it: the block being filled and the samples a level block
  * was collecting are let go, so the first level after the gap measures the new samples only, and the resampler starts
- * over from silence, as the demod's filters do at the gap. */
+ * over at the gap, as the demod's filters do (from the first sample after it, so a carrier is no step from silence). */
 static void
 net_iq_restart_input(struct rtl_net_iq* n) {
     n->fill = 0U;

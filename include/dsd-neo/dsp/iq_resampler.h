@@ -108,6 +108,7 @@ typedef struct dsd_iq_resampler {
     double passband_hz; /**< Pe, at the input */
     double stopband_hz; /**< S, at the input */
     size_t max_in;      /**< Complex inputs filtered per pass; longer calls are cut into passes. */
+    int primed;         /**< 0 after configure or clear: the next input fills the history first. */
     int phase;          /**< The next output's offset in the L-times-upsampled stream, from the newest input. */
     float* bank;        /**< L phases of taps_per_phase taps, each phase in reverse so it lines up with the history. */
     float* work;        /**< Interleaved I/Q: taps_per_phase - 1 inputs of history, then up to max_in new ones. */
@@ -188,8 +189,24 @@ size_t dsd_iq_resampler_max_out(const dsd_iq_resampler* r, size_t in_complex);
 int dsd_iq_resampler_process(dsd_iq_resampler* r, const float* in, size_t in_complex, float* out,
                              size_t out_cap_complex);
 
-/** Start over from silence: zero the history and the phase. A cleared resampler matches a freshly configured one. */
+/**
+ * @brief Start over: the phase goes to 0 and the next input fills the history, as after a configure.
+ *
+ * The first call after a configure or a clear treats the stream as having held its first input before it, so a stream
+ * that starts (or resumes) on a carrier is no step from silence into the filter, whose ringing the FM discriminator
+ * would turn into a click. A stream that starts in silence sees the zero history it always did. The delay and the
+ * outputs' count and positions do not change. A cleared resampler matches a freshly configured one.
+ */
 void dsd_iq_resampler_clear(dsd_iq_resampler* r);
+
+/**
+ * @brief Start over from silence: the phase goes to 0 and the history holds zeros for the next input too.
+ *
+ * The filter's zero-state response, for code that measures the step as a linear system (its impulse responses, or a
+ * noise calibration that must not change with the stream's first sample); streams use dsd_iq_resampler_clear(). The
+ * next dsd_iq_resampler_clear() or configure goes back to filling the history from the next input.
+ */
+void dsd_iq_resampler_clear_silent(dsd_iq_resampler* r);
 
 /** How far L/M is from out_hz/in_hz: ((L / M) / (out_hz / in_hz) - 1) x 1e6. 0 unconfigured, and 0 after
     configure_ratio(), whose L/M is the ratio asked for. */

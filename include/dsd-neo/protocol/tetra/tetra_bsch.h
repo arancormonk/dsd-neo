@@ -35,6 +35,26 @@ extern "C" {
 #define TETRA_TDMA_SB_PARSE_SYMBOL 249u
 #define TETRA_TDMA_NDB_SYNC_SYMBOL 133u
 
+/* The fields of a SYNC PDU (table 21.76, D-MLE-SYNC table 18.17) a reader of the BSCH may act on. */
+typedef struct {
+    uint8_t system_code; /* 0xxx V+D (EN 300 392-2 table 21.76), 100y reserved, 101y and 11zz direct mode */
+    uint8_t colour;      /* 6-bit colour code */
+    uint8_t tn;          /* timeslot number 1..4 */
+    uint8_t fn;          /* frame number as sent: 1..18, else reserved */
+    uint8_t mn;          /* multiframe number as sent: 1..60, else reserved */
+    uint8_t
+        sharing_mode; /* 00 continuous transmission, 01 carrier sharing, 10 MCCH sharing, 11 traffic carrier sharing */
+    uint16_t mcc;
+    uint16_t mnc;
+} tetra_bsch_sync;
+
+/* Read the SYNC PDU of a CRC-checked BSCH (`len` >= 60 type-1 bits) into @p p, without acting on it. Returns 1 when
+ * the PDU fits. */
+int tetra_bsch_read_sync(const uint8_t* bits, int len, tetra_bsch_sync* p);
+
+/* 1 when TN, FN and MN are in their ranges (1..4, 1..18, 1..60); the rest are reserved values. */
+int tetra_bsch_tdma_numbers_ok(uint8_t tn, uint8_t fn, uint8_t mn);
+
 /* What tetra_bsch_parse() made of a SYNC PDU. */
 enum {
     TETRA_BSCH_UNREAD = 0,  /* too short, or no TETRA state: nothing taken */
@@ -67,8 +87,9 @@ void tetra_bsch_forget_network(dsd_opts* opts, dsd_state* state);
 /* A SYSINFO of the cell being received names its main carrier, @p main_carrier_hz (0 when it names none), and, when
  * @p la_present, its location area @p la (EN 300 392-2 clause 21.4.4.1, D-MLE-SYSINFO clause 18.4.2.2). Cells of a
  * network may share a colour code, which a BSCH alone tells them apart by: a main carrier or a location area other
- * than the cell's known one is another cell all the same, and what a BSCH of another cell forgets goes here, before the
- * SYSINFO is taken. Never creates TETRA state. */
+ * than the cell's known one (the main carrier its SYSINFO named last, whether or not one naming none came since) is
+ * another cell all the same, and what a BSCH of another cell forgets goes here, before the SYSINFO is taken. Never
+ * creates TETRA state. */
 void tetra_bsch_sysinfo_cell(dsd_opts* opts, dsd_state* state, long main_carrier_hz, int la_present, uint16_t la);
 
 /* Run the TDMA clock (EN 300 392-2 clauses 7.3 and 7.4) to the slot that started at symbol count `slot_start`: TN,

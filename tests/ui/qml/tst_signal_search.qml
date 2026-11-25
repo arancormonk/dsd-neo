@@ -531,6 +531,168 @@ Item {
             compare(findChild(editor, "searchStepDenominator").text, "1");
             compare(preset.currentIndex, 2);
         }
+        // Issue #748: TETRA is the eleventh choice, stored as 10. Picking it
+        // fills in a 25 kHz channel and a four-second probe; both stay
+        // editable, and a range opened again keeps the values it was saved
+        // with. Another choice changes neither.
+        function test_range_editor_offers_tetra_with_presets() {
+            var ranges = model.ranges;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            var digital = findChild(editor, "searchRangeDigital");
+            var width = findChild(editor, "searchRangeBandwidth");
+            var probe = findChild(editor, "searchRangeProbe");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            compare(digital.count, 11);
+            compare(digital.textAt(9), "M17");
+            compare(digital.textAt(10), "TETRA");
+            compare(width.text, "16000");
+            compare(probe.text, "3");
+            digital.currentIndex = 10;
+            digital.activated(10);
+            compare(width.text, "25000");
+            compare(probe.text, "4");
+            compare(editor.formValue().digital, 10);
+            width.text = "20000";
+            probe.text = "6";
+            findChild(editor, "searchRangeSave").activate();
+            tryCompare(editor, "visible", false);
+            compare(model.ranges[0].digital, 10);
+            compare(String(model.ranges[0].bandwidth), "20000");
+            compare(String(model.ranges[0].probe), "6");
+            editor.openFor(0, model.ranges[0]);
+            waitForRendering(editor);
+            compare(digital.currentIndex, 10);
+            compare(width.text, "20000", "an opened TETRA range keeps its own width");
+            compare(probe.text, "6", "and its own probe");
+            digital.currentIndex = 3;
+            digital.activated(3);
+            compare(width.text, "20000", "another choice leaves the width alone");
+            compare(probe.text, "6");
+            editor.visible = false;
+            model.ranges = ranges;
+        }
+        // The hint under the choice says what a TETRA range changes, and wraps
+        // whole inside the sheet at the narrowest phone and the largest text.
+        function test_range_editor_tetra_hint_wraps_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411}, {tag: "360 dp, largest text", scale: 1.6, width: 360}];
+        }
+        function test_range_editor_tetra_hint_wraps(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var hint = findChild(editor, "searchDigitalHint");
+            scrollTo(editor, hint);
+            verify(hint.text.indexOf("Auto does not include TETRA.") >= 0);
+            verify(hint.text.indexOf("72 kHz instead of 48 kHz") >= 0);
+            verify(hint.text.indexOf("The default bandwidth in Settings does not apply to Signal search.") >= 0);
+            verify(hint.lineCount > 2, "the hint wraps");
+            verify(!hint.truncated);
+            verify(hint.contentWidth <= hint.width + 0.5, "no line runs past the hint");
+            verify(hint.height >= hint.contentHeight - 0.5, "no line is clipped");
+            var panel = hint.parent;
+            verify(hint.mapToItem(panel, 0, 0).x + hint.width <= panel.width + 0.5, "the hint stays inside the sheet");
+            compare(hint.Accessible.name, hint.text);
+            editor.visible = false;
+        }
+        // Issue #748: the editor's pairs of fields (Start and End, the step's
+        // numerator and denominator, the probe and the longest visit) sit side
+        // by side while half the form shows each field's whole value, and one
+        // per row once it would not. At the narrowest phone with the largest
+        // text, Start and End had scrolled their leading digits out of sight
+        // ("0.000000"); a placeholder is shown whole too.
+        function test_range_editor_pairs_show_whole_values_data() {
+            return [{tag: "desktop", scale: 1.0, width: 1024, stacked: false},
+                {tag: "411 dp, default text", scale: 1.0, width: 411, stacked: false},
+                {tag: "360 dp, default text", scale: 1.0, width: 360, stacked: false},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, stacked: true}];
+        }
+        function test_range_editor_pairs_show_whole_values(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var start = findChild(editor, "searchRangeStart");
+            var end = findChild(editor, "searchRangeEnd");
+            var visit = findChild(editor, "searchRangeVisit");
+            var pairs = [[start, end],
+                [findChild(editor, "searchStepNumerator"), findChild(editor, "searchStepDenominator")],
+                [findChild(editor, "searchRangeProbe"), visit]];
+            var form = start.parent.parent;
+            function check(what) {
+                for (var pair of pairs) {
+                    for (var field of pair) {
+                        var at = field.mapToItem(form, 0, 0);
+                        verify(at.x >= -0.5 && at.x + field.width <= form.width + 0.5, field.label + " stays inside the form" + what);
+                        verify(field.input.contentWidth + field.input.cursorRectangle.width <= field.input.width + 0.5,
+                            field.label + " shows \"" + field.text + "\" whole" + what);
+                    }
+                    var side = Math.abs(pair[0].mapToItem(form, 0, 0).y - pair[1].mapToItem(form, 0, 0).y) < 0.5;
+                    if (side)
+                        verify(pair[1].mapToItem(form, 0, 0).x >= pair[0].mapToItem(form, 0, 0).x + pair[0].width, "side by side, apart");
+                    else
+                        verify(pair[1].mapToItem(form, 0, 0).y >= pair[0].mapToItem(form, 0, 0).y + pair[0].height, "one per row, apart");
+                }
+            }
+            check("");
+            compare(Math.abs(start.mapToItem(form, 0, 0).y - end.mapToItem(form, 0, 0).y) >= 0.5, data.stacked, "Start and End stacked");
+            if (!data.stacked) {
+                for (var pair of pairs)
+                    compare(pair[0].width, pair[1].width, "two equal halves");
+                compare(start.width, (form.width - 12) / 2, "the halves of the form, as before");
+            }
+            // A four-digit frequency, as a wide-band receiver takes, and the
+            // longest visit's placeholder.
+            start.text = "1240.000000";
+            end.text = "1300.000000";
+            visit.text = "";
+            waitForRendering(editor);
+            check(" (four digits)");
+            var placeholder = null;
+            for (var child of visit.children) {
+                if (child.text === visit.placeholderText && child.visible)
+                    placeholder = child;
+            }
+            verify(placeholder !== null, "the visit shows its placeholder");
+            verify(!placeholder.truncated, "\"" + visit.placeholderText + "\" shown whole");
+            editor.visible = false;
+        }
+        // Issue #748: the editor's check boxes take the form's width and wrap
+        // their label inside it. At the narrowest phone with the largest text,
+        // "Also require a minimum RF level" had run past the sheet and been cut
+        // at "minimum"; the Airspy one the same.
+        function test_range_editor_check_boxes_wrap_data() {
+            return [{tag: "411 dp, default text", scale: 1.0, width: 411, source: "usb", name: "searchRangeMinimumSwitch", lines: 1},
+                {tag: "360 dp, largest text", scale: 1.6, width: 360, source: "usb", name: "searchRangeMinimumSwitch", lines: 2},
+                {tag: "Airspy, 411 dp, default text", scale: 1.0, width: 411, source: "airspy", name: "searchRangeAirspyOverride", lines: 1},
+                {tag: "Airspy, 360 dp, largest text", scale: 1.6, width: 360, source: "airspy", name: "searchRangeAirspyOverride", lines: 2}];
+        }
+        function test_range_editor_check_boxes_wrap(data) {
+            root.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            loader.item.sessionActive = false;
+            loader.item.sourceType = data.source;
+            var editor = findChild(loader.item, "signalSearchRangeEditor");
+            editor.openFor(0, model.defaultRange());
+            waitForRendering(editor);
+            var box = findChild(editor, data.name);
+            verify(box.visible);
+            scrollTo(editor, box);
+            var form = box.parent;
+            var label = box.contentItem;
+            verify(box.mapToItem(form, 0, 0).x + box.width <= form.width + 0.5, "the check box stays inside the form");
+            verify(label.contentWidth + label.leftPadding + label.rightPadding <= label.width + 0.5, "no line runs past the label");
+            verify(label.height >= label.contentHeight + label.topPadding + label.bottomPadding - 0.5, "no line is cut off");
+            verify(box.height >= label.y + label.height - 0.5, "the box holds every line");
+            compare(label.lineCount, data.lines);
+            editor.visible = false;
+        }
         function test_controls_are_tagged_and_save_is_a_snapshot() {
             findChild(loader.item, "searchSkip").clicked();
             compare(model.actions.join(","), "4,17,42");
@@ -1460,6 +1622,51 @@ Item {
             menuItem("searchActionExplore").activate();
             compare(explored.signalArguments[1][0].frequency, 462575000);
             model.history = [];
+        }
+        // Issue #748 B18 and B6: a detection made on a receiver the app cannot
+        // open, or confirmed as a protocol this build does not decode (its
+        // model row carries the reason), is neither explored nor saved: both
+        // actions are disabled and say why, from its history row and from the
+        // Now panel, whose Save as system is disabled too.
+        function test_unopenable_receiver_disables_explore_and_save_data() {
+            return [{tag: "SoapySDR receiver", reason: "Found on a SoapySDR receiver, which this app cannot open", refused: {inputSpec: "soapy:driver=rtlsdr"}},
+                {tag: "unknown protocol", reason: "This version cannot decode Tetrapol", refused: {inputSpec: "rtl:0:462.575M", confirmed: true, protocol: "Tetrapol"}}];
+        }
+        function test_unopenable_receiver_disables_explore_and_save(data) {
+            var screen = loader.item;
+            var reason = data.reason;
+            model.history = [historyHit(Object.assign({handoffRefusal: reason}, data.refused))];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            compare(menuTexts(), ["Explore here (disabled)", "Save as system (disabled)", "Avoid this session", "Avoid permanently", "Recordings (disabled)"]);
+            var menu = findChild(screen, "searchDetectionMenu");
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            compare(findChild(menu, "actionMenuDescription1").text, reason);
+            verify(!menuItem("searchActionExplore").enabled);
+            verify(!menuItem("searchActionSave").enabled);
+            menuItem("searchActionExplore").activate();
+            menuItem("searchActionSave").activate();
+            compare(explored.count, 0);
+            compare(saved.count, 0);
+            menu.cancel();
+            // A receiver the app opens offers both.
+            model.history = [historyHit({inputSpec: "rtl:0:462.575M", handoffRefusal: ""})];
+            wait(0);
+            findChild(screen, "searchHistoryActions").activate();
+            verify(menuItem("searchActionExplore").enabled && menuItem("searchActionSave").enabled);
+            menu.cancel();
+            model.history = [];
+
+            var hit = model.status.hit;
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, hit, data.refused, {handoffRefusal: reason})});
+            var save = findChild(screen, "searchSave");
+            verify(save.visible && !save.enabled);
+            findChild(screen, "searchMore").clicked();
+            compare(menuTexts(), ["Explore here (disabled)"]);
+            compare(findChild(menu, "actionMenuDescription0").text, reason);
+            menu.cancel();
+            model.status = Object.assign({}, model.status, {hit: hit});
+            verify(save.enabled);
         }
         // The Now panel's More leaves for the current detection: Explore here
         // and the saved systems it matched; the rest are its own buttons.

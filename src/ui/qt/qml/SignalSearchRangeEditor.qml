@@ -87,6 +87,40 @@ ModalSheet {
             visible = false;
     }
     dismissHandler: requestClose
+
+    // Two fields side by side while half the form shows each one's whole
+    // value, else one per row (issue #748): a frequency at the largest text on
+    // a phone had scrolled its leading digits out of sight. `widest` is the
+    // longest value the pair's fields take (they share one font); what is
+    // typed counts too. Each field sets its width to `cell`.
+    component FieldPair: Grid {
+        id: pair
+        property string widest: ""
+        // From the form's width, never the fields': the choice does not feed
+        // back on itself.
+        readonly property real half: (width - columnSpacing) / 2
+        readonly property bool stacked: {
+            for (var i = 0; i < children.length; ++i) {
+                var input = children[i].input;
+                // The cursor's pixel or two too: reading its rectangle here,
+                // which moves with the field's width, would close the loop.
+                var need = Math.max(widestMetrics.advanceWidth, input.contentWidth) + 2;
+                if (need > half - input.anchors.leftMargin - input.anchors.rightMargin)
+                    return true;
+            }
+            return false;
+        }
+        readonly property real cell: stacked ? width : half
+        width: parent.width
+        columns: stacked ? 1 : 2
+        columnSpacing: 12
+        rowSpacing: Theme.gap
+        TextMetrics {
+            id: widestMetrics
+            font: pair.children.length > 0 ? pair.children[0].input.font : Qt.font({})
+            text: pair.widest
+        }
+    }
     DiscardDialog {
         id: discard
         parent: sheet
@@ -98,11 +132,12 @@ ModalSheet {
 
         Text { text: sheet.accessibleName; color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(20); font.weight: Font.Bold }
         PlexTextField { id: nameField; objectName: "searchRangeName"; width: parent.width; label: qsTr("Range name") }
-        Row {
-            width: parent.width
-            spacing: 12
-            PlexTextField { id: startField; width: (parent.width - 12) / 2; label: qsTr("Start · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
-            PlexTextField { id: endField; width: (parent.width - 12) / 2; label: qsTr("End · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+        FieldPair {
+            id: rangePair
+            // Four digits of MHz, as a wide-band receiver takes, to the Hz.
+            widest: "0000.000000"
+            PlexTextField { id: startField; objectName: "searchRangeStart"; width: rangePair.cell; label: qsTr("Start · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
+            PlexTextField { id: endField; objectName: "searchRangeEnd"; width: rangePair.cell; label: qsTr("End · MHz"); mono: true; inputMethodHints: Qt.ImhFormattedNumbersOnly }
         }
         ReadableText { text: qsTr("Channel step"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
         PlexComboBox {
@@ -120,11 +155,11 @@ ModalSheet {
                 }
             }
         }
-        Row {
-            width: parent.width
-            spacing: 12
-            PlexTextField { id: stepNumerator; objectName: "searchStepNumerator"; width: (parent.width - 12) / 2; label: qsTr("Step numerator · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
-            PlexTextField { id: stepDenominator; objectName: "searchStepDenominator"; width: (parent.width - 12) / 2; label: qsTr("Step denominator"); inputMethodHints: Qt.ImhDigitsOnly }
+        FieldPair {
+            id: stepPair
+            widest: "000000"
+            PlexTextField { id: stepNumerator; objectName: "searchStepNumerator"; width: stepPair.cell; label: qsTr("Step numerator · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
+            PlexTextField { id: stepDenominator; objectName: "searchStepDenominator"; width: stepPair.cell; label: qsTr("Step denominator"); inputMethodHints: Qt.ImhDigitsOnly }
         }
         PlexComboBox {
             id: modulation
@@ -138,32 +173,46 @@ ModalSheet {
                 squelch.currentIndex = currentIndex === 1 ? 1 : 2;
             }
         }
-        PlexTextField { id: bandwidthField; width: parent.width; label: qsTr("Channel bandwidth · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
+        PlexTextField { id: bandwidthField; objectName: "searchRangeBandwidth"; width: parent.width; label: qsTr("Channel bandwidth · Hz"); inputMethodHints: Qt.ImhDigitsOnly }
         ReadableText { text: qsTr("Digital identification"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(15) }
         PlexComboBox {
             id: digital
+            objectName: "searchRangeDigital"
             width: parent.width
             enabled: modulation.currentIndex === 0
             Accessible.name: qsTr("Digital identification profile")
-            model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17"]
+            // The index is the range's stored value: TETRA is 10 (issue #748).
+            model: [qsTr("Analog only"), "Auto", "P25", "DMR", "NXDN96", "NXDN48", "dPMR", "D-STAR", "YSF", "M17", "TETRA"]
+            // Picking TETRA fills in a 25 kHz channel and a four-second probe,
+            // long enough to read a cell's identity; both stay editable, and an
+            // opened range keeps its own values.
+            onActivated: function (index) {
+                if (index === 10) {
+                    bandwidthField.text = "25000";
+                    probeField.text = "4";
+                }
+            }
         }
         ReadableText {
+            objectName: "searchDigitalHint"
             width: parent.width
-            text: qsTr("With Auto, a three-second probe has time to identify P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. ProVoice needs about five seconds, D-STAR about seven.")
+            text: qsTr("With Auto, a three-second probe has time to identify P25 Phase 1 and 2, DMR, NXDN, dPMR, YSF and M17. ProVoice needs about five seconds, D-STAR about seven. Auto does not include TETRA. With a TETRA range turned on, the search runs at 72 kHz instead of 48 kHz. The default bandwidth in Settings does not apply to Signal search.")
             wrapMode: Text.Wrap
             color: Theme.textSecondary
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(13)
         }
-        Row {
-            width: parent.width
-            spacing: 12
-            PlexTextField { id: probeField; width: (parent.width - 12) / 2; label: qsTr("Probe · seconds (2–10)"); inputMethodHints: Qt.ImhDigitsOnly }
-            PlexTextField { id: visitField; width: (parent.width - 12) / 2; label: qsTr("Max visit · seconds"); placeholderText: qsTr("0 disables"); inputMethodHints: Qt.ImhDigitsOnly }
+        FieldPair {
+            id: timingPair
+            // The visit's placeholder, shown while it is empty, is wider than
+            // any number either field takes.
+            widest: visitField.placeholderText
+            PlexTextField { id: probeField; objectName: "searchRangeProbe"; width: timingPair.cell; label: qsTr("Probe · seconds (2–10)"); inputMethodHints: Qt.ImhDigitsOnly }
+            PlexTextField { id: visitField; objectName: "searchRangeVisit"; width: timingPair.cell; label: qsTr("Max visit · seconds"); placeholderText: qsTr("0 disables"); inputMethodHints: Qt.ImhDigitsOnly }
         }
         ReadableText { heading: true; text: qsTr("RF detection"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexTextField { id: sensitivityField; width: parent.width; label: qsTr("Above local noise · dB (3–30)"); inputMethodHints: Qt.ImhDigitsOnly }
-        PlexCheckBox { id: minimumSwitch; text: qsTr("Also require a minimum RF level") }
+        PlexCheckBox { id: minimumSwitch; objectName: "searchRangeMinimumSwitch"; width: parent.width; text: qsTr("Also require a minimum RF level") }
         PlexTextField { id: minimumField; width: parent.width; visible: minimumSwitch.checked; label: qsTr("Minimum RF level · dBFS"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
         ReadableText { heading: true; text: qsTr("Listening squelch"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: squelch; objectName: "searchRangeSquelch"; width: parent.width; Accessible.name: qsTr("Listening squelch mode"); model: [qsTr("Level"), qsTr("Auto"), qsTr("Noise (NFM)")] }
@@ -172,7 +221,7 @@ ModalSheet {
         ReadableText { heading: true; text: qsTr("Receiver gain"); color: Theme.textPrimary; font.family: Theme.sans; font.pixelSize: Theme.fontSize(17); font.weight: Font.DemiBold }
         PlexComboBox { id: gainMode; width: parent.width; visible: sheet.sourceType !== "airspy"; Accessible.name: qsTr("Receiver gain mode"); model: [qsTr("Session setting"), qsTr("Hardware auto"), qsTr("Manual")] }
         PlexTextField { id: gainField; width: parent.width; visible: sheet.sourceType !== "airspy" && gainMode.currentIndex === 2; label: qsTr("Gain · dB"); inputMethodHints: Qt.ImhFormattedNumbersOnly }
-        PlexCheckBox { id: airspyOverride; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
+        PlexCheckBox { id: airspyOverride; objectName: "searchRangeAirspyOverride"; width: parent.width; visible: sheet.sourceType === "airspy"; text: qsTr("Use Airspy gain settings for this range") }
         AirspyControls {
             id: airspyGain
             width: parent.width

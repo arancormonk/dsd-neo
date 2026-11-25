@@ -9,8 +9,9 @@
 #include <stddef.h>
 #include <string.h>
 
-/* Every sync type of a protocol the search identifies by its calls maps to the family name a hit's protocol starts
-   with; every other sync type, TETRA's included, maps to none. */
+/* Every sync type of a protocol the search identifies maps to the family name a hit's protocol starts with: TETRA's
+   bursts name "TETRA" (issue #748; direct mode shares the trunked-mode sync words, so no sync type names "TETRA DMO");
+   every other sync type maps to none. */
 static void
 test_sync_protocol_names(void) {
     static const struct {
@@ -56,14 +57,24 @@ test_sync_protocol_names(void) {
         {DSD_SYNC_DSTAR_VOICE_NEG, "D-STAR"},
         {DSD_SYNC_DSTAR_HD_POS, "D-STAR"},
         {DSD_SYNC_DSTAR_HD_NEG, "D-STAR"},
+        {DSD_SYNC_TETRA_NDB_POS, "TETRA"},
+        {DSD_SYNC_TETRA_NDB_NEG, "TETRA"},
+        {DSD_SYNC_TETRA_SB_POS, "TETRA"},
+        {DSD_SYNC_TETRA_SB_NEG, "TETRA"},
     };
 
     static const int unnamed[] = {
-        DSD_SYNC_PROVOICE_POS,     DSD_SYNC_PROVOICE_NEG,    DSD_SYNC_EDACS_POS,
-        DSD_SYNC_EDACS_NEG,        DSD_SYNC_X2TDMA_DATA_POS, DSD_SYNC_X2TDMA_VOICE_NEG,
-        DSD_SYNC_X2TDMA_VOICE_POS, DSD_SYNC_X2TDMA_DATA_NEG, DSD_SYNC_TETRA_NDB_POS,
-        DSD_SYNC_TETRA_NDB_NEG,    DSD_SYNC_TETRA_SB_POS,    DSD_SYNC_TETRA_SB_NEG,
-        DSD_SYNC_ANALOG,           DSD_SYNC_DIGITAL,         DSD_SYNC_NONE,
+        DSD_SYNC_PROVOICE_POS,
+        DSD_SYNC_PROVOICE_NEG,
+        DSD_SYNC_EDACS_POS,
+        DSD_SYNC_EDACS_NEG,
+        DSD_SYNC_X2TDMA_DATA_POS,
+        DSD_SYNC_X2TDMA_VOICE_NEG,
+        DSD_SYNC_X2TDMA_VOICE_POS,
+        DSD_SYNC_X2TDMA_DATA_NEG,
+        DSD_SYNC_ANALOG,
+        DSD_SYNC_DIGITAL,
+        DSD_SYNC_NONE,
     };
     for (size_t i = 0; i < sizeof(named) / sizeof(named[0]); ++i) {
         const char* name = dsd_engine_signal_search_sync_protocol(named[i].synctype);
@@ -94,14 +105,37 @@ test_family_matches(void) {
     assert(!dsd_engine_signal_search_family_matches("NXDN48", DSD_SYNC_P25P2_POS));
     assert(!dsd_engine_signal_search_family_matches("", DSD_SYNC_P25P1_POS));
     assert(!dsd_engine_signal_search_family_matches(NULL, DSD_SYNC_P25P1_POS));
-    assert(!dsd_engine_signal_search_family_matches("TETRA", DSD_SYNC_TETRA_SB_POS));
     assert(!dsd_engine_signal_search_family_matches("P25", DSD_SYNC_ANALOG));
     assert(!dsd_engine_signal_search_family_matches("P25", DSD_SYNC_NONE));
+}
+
+/* Issue #748: a TETRA burst is of a trunked TETRA hit's family only. "TETRA DMO" is another identification, never a
+   prefix match of "TETRA", so a direct mode hit takes no trunked-mode access code; neither is any other family's. */
+static void
+test_tetra_family_apart(void) {
+    static const int tetra[] = {DSD_SYNC_TETRA_NDB_POS, DSD_SYNC_TETRA_NDB_NEG, DSD_SYNC_TETRA_SB_POS,
+                                DSD_SYNC_TETRA_SB_NEG};
+    for (size_t i = 0; i < sizeof(tetra) / sizeof(tetra[0]); ++i) {
+        assert(dsd_engine_signal_search_family_matches("TETRA", tetra[i]));
+        assert(!dsd_engine_signal_search_family_matches("TETRA DMO", tetra[i]));
+        assert(!dsd_engine_signal_search_family_matches("TETRAX", tetra[i]));
+        assert(!dsd_engine_signal_search_family_matches("P25", tetra[i]));
+    }
+    assert(!dsd_engine_signal_search_family_matches("TETRA", DSD_SYNC_DMR_BS_DATA_POS));
+    assert(!dsd_engine_signal_search_family_matches("TETRA DMO", DSD_SYNC_DMR_BS_DATA_POS));
+    assert(dsd_engine_signal_search_protocol_is_tetra("TETRA"));
+    assert(dsd_engine_signal_search_protocol_is_tetra("TETRA DMO"));
+    assert(!dsd_engine_signal_search_protocol_is_tetra("TETRAX"));
+    assert(!dsd_engine_signal_search_protocol_is_tetra("TETRA DM"));
+    assert(!dsd_engine_signal_search_protocol_is_tetra("P25"));
+    assert(!dsd_engine_signal_search_protocol_is_tetra(""));
+    assert(!dsd_engine_signal_search_protocol_is_tetra(NULL));
 }
 
 int
 main(void) {
     test_sync_protocol_names();
     test_family_matches();
+    test_tetra_family_apart();
     return 0;
 }

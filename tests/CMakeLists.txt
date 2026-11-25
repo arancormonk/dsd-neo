@@ -8171,6 +8171,24 @@ add_test(
     COMMAND dsd-neo_test_runtime_signal_search_avoids
 )
 
+# The Signal search TETRA range value, site note, withdrawal and site text within the hit's field (issue #748).
+add_executable(
+    dsd-neo_test_runtime_signal_search_tetra
+    runtime/test_runtime_signal_search_tetra.c
+)
+target_include_directories(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_signal_search_tetra
+    PRIVATE dsd-neo_runtime dsd-neo_platform
+)
+add_test(
+    NAME RUNTIME_SIGNAL_SEARCH_TETRA
+    COMMAND dsd-neo_test_runtime_signal_search_tetra
+)
+
 add_executable(
     dsd-neo_test_runtime_udp_audio_hooks
     runtime/test_runtime_udp_audio_hooks.c
@@ -18154,6 +18172,13 @@ foreach(_dsd_tetra_test IN LISTS _dsd_tetra_test_sources)
         PROPERTIES LABELS "protocol;tetra"
     )
 endforeach()
+# The main carrier a SYSINFO names, or forgets, is read back through the TETRA view every frontend shows.
+target_sources(
+    dsd-neo_test_tetra_mac_state
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/src/app_control/tetra_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
+)
 # The unit activity rows are also read back through the app-control view every frontend shows, as names reach users.
 target_sources(
     dsd-neo_test_tetra_tetra_unit_activity
@@ -18190,6 +18215,27 @@ set_tests_properties(
     PROTOCOL_TETRA_FOREIGN_CELL
     PROPERTIES LABELS "protocol;tetra"
 )
+
+# What a Signal search visit's own TETRA bursts prove (issue #748): gate A, gate D, the site note, its withdrawal and the
+# visit's activity, through the burst entry with real bursts read from a symbol file and the search hooks stood in for.
+add_executable(dsd-neo_test_tetra_search protocol/tetra/test_search.c)
+target_include_directories(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        ${PROJECT_SOURCE_DIR}/include
+        ${PROJECT_SOURCE_DIR}/src/protocol/tetra
+)
+target_link_libraries(
+    dsd-neo_test_tetra_search
+    PRIVATE
+        dsd-neo_proto_tetra
+        dsd-neo_core
+        dsd-neo_fec
+        dsd-neo_test_support
+        ${LIBS}
+)
+add_test(NAME TETRA_SEARCH COMMAND dsd-neo_test_tetra_search)
+set_tests_properties(TETRA_SEARCH PROPERTIES LABELS "protocol;tetra")
 
 # tetra_calls_followed_route() is a DSD_NEO_TEST_HOOKS accessor: the call records test builds its own tetra_calls.c with
 # the hooks on, ahead of the library's.
@@ -22311,6 +22357,28 @@ if(DSD_HAS_RADIO)
                     PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 240
                 )
             endif()
+            # Signal search identifies TETRA end to end (issue #748): dsd-neo_test_signal_search_rig runs the search
+            # the app starts (app-control queue, observer and history store) at the 72 kHz DSP bandwidth on the same
+            # paced rtl_tcp scene, with the real-air TETRA call and marginal control channel fixtures, a synthetic
+            # two-carrier cell, the tetra_dmo_call_synth_72k direct mode call and band-limited noise, after an analog
+            # and an Auto visit, then DMO calls whose bursts step through phases against the span measurements and the
+            # landing, and presence signal trains heard and ended at the landing. It checks each detection's protocol,
+            # access code and site line, the history read back from the journal, and the 2.1 s quiet time after a
+            # confirmed TETRA carrier stops. Two runs, about 2 to 3 minutes in real time (a DMO call can take many
+            # passes to meet its phase; the run stops at 180 s). numpy, so CTest reports it skipped where the tests'
+            # Python has none.
+            add_test(
+                NAME ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                COMMAND
+                    ${Python3_EXECUTABLE}
+                    ${CMAKE_CURRENT_SOURCE_DIR}/signal_search_tetra_rig_check.py
+                    $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+                    ${_DSD_NEO_IQ_FIXTURE_DIR}
+            )
+            set_tests_properties(
+                ENGINE_SIGNAL_SEARCH_TETRA_RIG
+                PROPERTIES LABELS "scan-rig" SKIP_RETURN_CODE 77 TIMEOUT 420
+            )
         endif()
     endif()
 
@@ -28437,6 +28505,19 @@ if(Python3_Interpreter_FOUND)
             ENVIRONMENT
                 "DSD_NEO_TEST_DMR_SYNTH_GEN=$<TARGET_FILE:dsd-neo_test_dmr_synth_gen>"
     )
+    # The TETRA search rig's transmitters loop their content seamlessly across a
+    # scene block (tests/signal_search_tetra_rig_check.py, issue #748). numpy, as above.
+    add_test(
+        NAME TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        COMMAND
+            ${Python3_EXECUTABLE}
+            ${PROJECT_SOURCE_DIR}/tests/tools/test_signal_search_tetra_rig_loop.py
+        WORKING_DIRECTORY ${PROJECT_SOURCE_DIR}
+    )
+    set_tests_properties(
+        TOOLS_SIGNAL_SEARCH_TETRA_RIG_LOOP
+        PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+    )
     # The report's per-repeat pairing of the analog columns (issue #518), on canned
     # summaries. Stdlib only, so it runs wherever Python does.
     add_test(
@@ -29488,6 +29569,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The DMR channel provenance a visit must leave alone (discussion #900).
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -29495,10 +29578,19 @@ if(DSD_HAS_RADIO)
         ${PROJECT_SOURCE_DIR}/src/core/util/p25_patch_state.c
         ${PROJECT_SOURCE_DIR}/src/core/util/receive.c
         ${PROJECT_SOURCE_DIR}/src/core/util/access_code.c
+        # Frame syncs noted as the decoders note them, which move the reception generation a call record keeps.
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity.c
+        ${PROJECT_SOURCE_DIR}/src/core/util/received_identity_site.c
+        # The start command's handler and the observer it installs, publishing to a stubbed store (issue #748 B11).
+        ${PROJECT_SOURCE_DIR}/src/app_control/actions/actions_signal_search.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/access_code_view.c
     )
     target_compile_definitions(
         dsd-neo_test_engine_signal_search
-        PRIVATE USE_RADIO dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
+        PRIVATE
+            USE_RADIO
+            DSD_NEO_TEST_HOOKS
+            dsd_realtime_mono_ms=test_dsd_realtime_mono_ms
     )
     target_link_libraries(
         dsd-neo_test_engine_signal_search
@@ -29514,6 +29606,8 @@ if(DSD_HAS_RADIO)
         engine/test_engine_signal_search_scene.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search.c
         ${PROJECT_SOURCE_DIR}/src/engine/signal_search_protocol.c
+        # The TETRA row checks and the TETRA state's hold across landings (issue #748).
+        ${PROJECT_SOURCE_DIR}/src/engine/scan_tetra.c
         ${PROJECT_SOURCE_DIR}/src/engine/p25_site_snapshot.c
         # The DMR channel provenance the session keeps across visits (discussion #900).
         ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -29543,6 +29637,44 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_signal_search_bench
         PRIVATE dsd-neo_engine dsd-neo_feature_radio ${LIBS}
     )
+    # The Signal search the app starts (app-control queue, observer and history store) on the decoder a command line
+    # configures, for the paced rtl_tcp rig ENGINE_SIGNAL_SEARCH_TETRA_RIG.
+    add_executable(dsd-neo_test_signal_search_rig engine/signal_search_rig.cpp)
+    target_link_libraries(
+        dsd-neo_test_signal_search_rig
+        PRIVATE dsd-neo_app_control dsd-neo_engine dsd-neo_feature_radio ${LIBS}
+    )
+    # The rig refuses a pass count or a time limit that is not a positive whole number in range (negative, past
+    # uint64, zero, or seconds past a day, whose milliseconds once wrapped the deadline) before it opens anything.
+    foreach(
+        _rig_limit
+        "SECONDS_NEGATIVE:SECONDS=-1"
+        "SECONDS_OVERFLOW:SECONDS=18446744073709551616"
+        "SECONDS_PAST_A_DAY:SECONDS=86401"
+        "SECONDS_ZERO:SECONDS=0"
+        "PASSES_NEGATIVE:PASSES=-1"
+        "PASSES_OVERFLOW:PASSES=18446744073709551616"
+    )
+        string(REGEX REPLACE ":.*" "" _rig_limit_id "${_rig_limit}")
+        string(REGEX REPLACE "^[^:]*:" "" _rig_limit_env "${_rig_limit}")
+        string(REGEX REPLACE "=.*" "" _rig_limit_name "${_rig_limit_env}")
+        add_test(
+            NAME ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            COMMAND
+                ${CMAKE_COMMAND} -E env
+                DSD_SEARCH_RIG_RANGES=r,450000000,450100000,12500,16000,0,3000,0
+                DSD_SEARCH_RIG_${_rig_limit_env}
+                $<TARGET_FILE:dsd-neo_test_signal_search_rig>
+        )
+        set_tests_properties(
+            ENGINE_SIGNAL_SEARCH_RIG_LIMIT_${_rig_limit_id}
+            PROPERTIES
+                PASS_REGULAR_EXPRESSION
+                    "RIG ERROR: bad DSD_SEARCH_RIG_${_rig_limit_name} "
+                FAIL_REGULAR_EXPRESSION "are required|did not open"
+                TIMEOUT 30
+        )
+    endforeach()
 endif()
 if(DSD_ENABLE_QT_UI)
     add_executable(

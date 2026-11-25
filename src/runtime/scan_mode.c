@@ -1011,6 +1011,21 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
     return 0;
 }
 
+/* A scope's storage held for a later dsd_scan_mode_begin_reserved(): the scope itself, first, so the scope and its
+   reserve are one allocation that free() releases either way. */
+struct dsd_scan_scope_reserve {
+    scan_scope scope;
+};
+
+/* Open @p scope (zeroed storage) with the configured baseline @p opts and @p state hold now. */
+static void
+scan_scope_open(const dsd_opts* opts, dsd_state* state, scan_scope* scope) {
+    dsd_scan_settings_capture(opts, state, &scope->configured);
+    scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
+    scope->timed_cqpsk = -1; /* no row timed yet */
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, scope, free);
+}
+
 int
 dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
@@ -1023,11 +1038,30 @@ dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state) {
     if (!scope) {
         return -1;
     }
-    dsd_scan_settings_capture(opts, state, &scope->configured);
-    scope->configured_mode = dsd_infer_decode_mode_preset_exact(opts);
-    scope->timed_cqpsk = -1; /* no row timed yet */
-    (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, scope, free);
+    scan_scope_open(opts, state, scope);
     return 0;
+}
+
+dsd_scan_scope_reserve*
+dsd_scan_mode_reserve(void) {
+    return (dsd_scan_scope_reserve*)calloc(1, sizeof(dsd_scan_scope_reserve));
+}
+
+void
+dsd_scan_mode_begin_reserved(const dsd_opts* opts, dsd_state* state, dsd_scan_scope_reserve* reserve) {
+    if (!reserve) {
+        return;
+    }
+    if (!opts || !state || scan_scope_get(state)) {
+        free(reserve);
+        return;
+    }
+    scan_scope_open(opts, state, &reserve->scope);
+}
+
+void
+dsd_scan_mode_reserve_free(dsd_scan_scope_reserve* reserve) {
+    free(reserve);
 }
 
 int

@@ -192,6 +192,17 @@ int dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, 
                           dsd_scan_settings* out);
 /** Reserve scope storage before staging a tune or building trunk-target snapshots. */
 int dsd_scan_mode_begin(const dsd_opts* opts, dsd_state* state);
+/** A scan scope's storage, had before a caller begins changing anything, so that the dsd_scan_mode_begin_reserved()
+ * it makes once its changes are under way cannot fail (a Signal search start, issue #748 B13). */
+typedef struct dsd_scan_scope_reserve dsd_scan_scope_reserve;
+/** Storage for one scope; NULL when it cannot be had. */
+dsd_scan_scope_reserve* dsd_scan_mode_reserve(void);
+/** dsd_scan_mode_begin() with the scope's storage taken from @p reserve rather than allocated: the configured baseline
+ * is captured from @p opts and @p state now, unless a scope is already open, which is kept as dsd_scan_mode_begin()
+ * keeps it. Takes @p reserve either way (releasing it when the open scope needs none). */
+void dsd_scan_mode_begin_reserved(const dsd_opts* opts, dsd_state* state, dsd_scan_scope_reserve* reserve);
+/** Release @p reserve unused; NULL is a no-op. */
+void dsd_scan_mode_reserve_free(dsd_scan_scope_reserve* reserve);
 /** Configured preset for mode selectors; active combined P25 remains a separate scan class. */
 dsdneoUserDecodeMode dsd_scan_mode_configured_preset(const dsd_opts* opts, const dsd_state* state);
 /** Configured preset for persistence; UNSET preserves custom decoder combinations. */

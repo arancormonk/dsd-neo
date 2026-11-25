@@ -3320,13 +3320,23 @@ Advanced (env)
 - `digital_resample = "auto|on|off"` controls resampling of the digital FSK stream to the resampler target rate.
   `auto` engages only when the device picked its own rate, which is what devices with a coarse rate grid
   (RX-888/SDDC, Airspy, SDRplay) do, and the rate yields a non-integer samples-per-symbol. `on` resamples whenever the
-  target rate can produce an integer samples-per-symbol; `off` always keeps the raw demod rate. The key is not
+  target rate can produce an integer samples-per-symbol; `off` always keeps the raw demod rate. So on an RTL-SDR or
+  rtl_tcp at the 72 kHz DSP bandwidth (a TETRA Signal search runs every range at 72 kHz), `auto` and `off` both decode
+  FSK at 72 kHz, while `on` resamples it to 48 kHz. Every FSK mode decodes at 72 kHz, with two measured costs. DMR
+  makes more errors: on the off-air `dmr_voice` fixture (a control channel, five timing phases) 54 error lines at
+  72 kHz against 35 with `on`, and 30 at a native 48 kHz. The 2400 sym/s symbol timing (NXDN48, dPMR), tuned for the
+  best result on real NXDN48 recordings away from 48 kHz, reads fewer checked dPMR control halves on a synthetic test
+  signal: 225 of 300 at 72 kHz against 290 at 48 kHz. Replays rendered at 60 kHz, a rate no RTL-SDR bandwidth setting
+  gives, show the same: DMR 51 error lines (30 with `on`), dPMR 219 of 300. The key is not
   Soapy-specific: it governs the whole rtl-family demod chain (RTL USB, RTL-TCP, SoapySDR, native Airspy, and IQ
   replay). A device that forces its
   own rate now runs at the DSP bandwidth, as an RTL-SDR does, so `auto` looks at that bandwidth: an Airspy at 24 kHz
   gives 4800 sym/s a whole 5 samples per symbol and is no longer resampled to 48 kHz, while at 12 kHz (2.5 samples)
   it still is. A mode change that moves the symbol rate (ProVoice's 9600 sym/s at 24 kHz) makes the same decision
-  again.
+  again. The rate-chain log's `Derived SPS` line is information only. The one FSK timing warning is for a decoder
+  that gets a fractional number of samples per symbol after this decision (`WARNING: The decoder gets 72000 Hz, 7.500
+  samples per symbol for 9600 sym/s; ...`); a rate away from 48 kHz with a whole number is no reason to warn, and the
+  old `Output rate ... implies atypical SPS` warning is gone.
 - RX-888 family radios use the SDDC Soapy module and the `sddc` profile; see `docs/soapysdr.md` for the antenna,
   ADC clock, and throughput requirements.
 - A HackRF runs at 10 MS/s (the `hackrf` profile's preferred rate; near the top of the tuning range it may run a lower

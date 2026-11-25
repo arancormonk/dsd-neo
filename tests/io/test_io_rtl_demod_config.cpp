@@ -2541,9 +2541,20 @@ expect_tetra_rate_warning(void) {
     return rc;
 }
 
-/* The rate-chain log's derived-SPS lines: a TETRA stream at 72 kHz reports TETRA's 4 samples per symbol and no advice
-   to enable a 48 kHz resampler, nor does any CQPSK stream (its symbols bypass the resampler, so it would not help, and
-   the symbol timing warning says what CQPSK runs at); a P25 FSK stream at 72 kHz still gets that warning. */
+static int
+expect_warning_text(const char* label, const std::string& got, const char* want) {
+    if (got != want) {
+        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
+        return 1;
+    }
+    return 0;
+}
+
+/* The rate-chain log's derived-SPS line: a TETRA stream at 72 kHz reports TETRA's 4 samples per symbol, every other
+   stream the P25 and NXDN48 ones. It is information only. It used to warn that any FSK rate away from about 48 kHz
+   "implies atypical SPS" and advise a 48 kHz resampler, at 72 kHz for every digital session, although the symbol
+   timing runs at any whole number of samples per symbol there. The warning that matters, a fractional number of
+   samples per symbol after digital_resample, is rtl_demod_warn_symbol_timing()'s (expect_symbol_timing_warnings()). */
 static int
 expect_rate_chain_true(const char* label, bool cond) {
     return expect_int_eq(label, cond ? 1 : 0, 1);
@@ -2553,38 +2564,27 @@ static int
 expect_rate_chain_sps_lines(void) {
     int rc = 0;
     char info[256];
-    char warn[256];
-    rtl_stream_test_compose_sps_lines(72000U, 1, 1, info, sizeof info, warn, sizeof warn);
+    (void)take_warnings();
+    rtl_stream_test_log_sps_line(72000U, 1, info, sizeof info);
     rc |= expect_rate_chain_true("TETRA at 72 kHz reports its sps",
                                  strstr(info, "Derived SPS (@72000 Hz): TETRA") != NULL && strstr(info, "4.") != NULL
                                      && strstr(info, "P25") == NULL);
-    rc |= expect_rate_chain_true("TETRA at 72 kHz gets no resampler advice",
-                                 warn[0] == '\0' && strstr(info, "Consider enabling resampler") == NULL);
-    rtl_stream_test_compose_sps_lines(72000U, 0, 0, info, sizeof info, warn, sizeof warn);
-    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the derived-SPS line",
-                                 strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
-    rc |= expect_rate_chain_true("P25 at 72 kHz keeps the resampler warning",
-                                 strstr(warn, "Consider enabling resampler") != NULL);
-    rtl_stream_test_compose_sps_lines(0U, 1, 1, info, sizeof info, warn, sizeof warn);
-    rc |= expect_rate_chain_true("no output rate, no lines", info[0] == '\0' && warn[0] == '\0');
-    /* P25 on CQPSK at 72 kHz, where it runs, and at a forced 78.125 kHz, where it cannot time symbols: neither gets the
-       resampler advice. */
-    rtl_stream_test_compose_sps_lines(72000U, 0, 1, info, sizeof info, warn, sizeof warn);
-    rc |= expect_rate_chain_true("P25 CQPSK at 72 kHz keeps the derived-SPS line",
-                                 strstr(info, "Derived SPS (@72000 Hz): P25P1") != NULL);
-    rc |= expect_rate_chain_true("P25 CQPSK at 72 kHz gets no resampler advice", warn[0] == '\0');
-    rtl_stream_test_compose_sps_lines(78125U, 0, 1, info, sizeof info, warn, sizeof warn);
-    rc |= expect_rate_chain_true("P25 CQPSK at 78.125 kHz gets no resampler advice", warn[0] == '\0');
-    return rc;
-}
-
-static int
-expect_warning_text(const char* label, const std::string& got, const char* want) {
-    if (got != want) {
-        DSD_FPRINTF(stderr, "%s: got \"%s\" want \"%s\"\n", label, got.c_str(), want);
-        return 1;
+    rc |= expect_warning_text("TETRA at 72 kHz warns about nothing", take_warnings(), "");
+    static const unsigned int kRates[] = {72000U, 96000U, 60000U, 36000U, 24000U, 62500U, 78125U};
+    for (unsigned int hz : kRates) {
+        char label[96];
+        DSD_SNPRINTF(label, sizeof label, "an FSK stream at %u Hz keeps the derived-SPS line", hz);
+        char want[48];
+        DSD_SNPRINTF(want, sizeof want, "Derived SPS (@%u Hz): P25P1", hz);
+        rtl_stream_test_log_sps_line(hz, 0, info, sizeof info);
+        rc |= expect_rate_chain_true(label, strstr(info, want) != NULL);
+        DSD_SNPRINTF(label, sizeof label, "an FSK stream at %u Hz gets no atypical-rate warning", hz);
+        rc |= expect_warning_text(label, take_warnings(), "");
     }
-    return 0;
+    rtl_stream_test_log_sps_line(0U, 1, info, sizeof info);
+    rc |= expect_rate_chain_true("no output rate, no line", info[0] == '\0');
+    rc |= expect_warning_text("no output rate, no warning", take_warnings(), "");
+    return rc;
 }
 
 /* One symbol timing case: the stream's output kind (CQPSK when cqpsk), symbol rate and landed complex rate, and the
@@ -2676,6 +2676,15 @@ expect_symbol_timing_warnings(void) {
          "WARNING: The decoder gets 62500 Hz, 13.021 samples per symbol for 4800 sym/s; symbol timing works best with "
          "a whole number; use a DSP bandwidth of 24, 48 or 72 kHz.\n"},
         {"FSK at 48 kHz", 0, fsk, 4800, 48000, automode, 0, ""},
+        /* A chosen 72 kHz is a whole number of samples per symbol for the 4800 and 2400 sym/s profiles: no warning,
+           whether digital_resample hands the decoder 48 kHz or leaves it at 72. ProVoice's 9600 sym/s is 7.5 there,
+           and still warns. */
+        {"FSK 4800 sym/s at a chosen 72 kHz", 0, fsk, 4800, 72000, automode, 0, ""},
+        {"FSK 2400 sym/s at a chosen 72 kHz", 0, fsk, 2400, 72000, automode, 0, ""},
+        {"FSK 2400 sym/s at a chosen 72 kHz, resampler off", 0, fsk, 2400, 72000, off, 0, ""},
+        {"FSK 9600 sym/s at a chosen 72 kHz", 0, fsk, 9600, 72000, automode, 0,
+         "WARNING: The decoder gets 72000 Hz, 7.500 samples per symbol for 9600 sym/s; symbol timing works best with "
+         "a whole number; use a DSP bandwidth of 48 kHz.\n"},
         {"analog monitor at 16 kHz", 0, am, 4800, 16000, automode, 0, ""},
     };
     int rc = 0;

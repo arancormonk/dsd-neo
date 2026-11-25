@@ -1113,7 +1113,7 @@ never hold one.
 | `dstar-conventional` | an RF header, a slow-data header or a D-PRS record whose CRC passed | the resynchronization words, however many in a row |
 | `dpmr-conventional` | a Communications_Start header whose CRC-8 passed; a voice frame whose two CCH halves passed their CRC-7 as a pair (frames 0/1 or 2/3) | a frame with a failed or unpaired half |
 | `m17-conventional` | a link setup frame whose CRC passed, one rebuilt whole from the six LICH chunks, a packet whose CRC passed, two clean LICHs in a row | a BERT test frame, an LSF that `-F` decodes despite a failed CRC |
-| `tetra-dmo-conventional` | a DSB whose SCH/S and SCH/H passed carrying DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED; direct mode speech whose CRC passed and that re-encodes cleanly; short data whose FCS did not fail; an encrypted DM-2-C DSB | trunked (TMO) traffic, a DSB only the soft decision decoded, DM-RESERVED, a DM-SETUP PRES or gateway set-up before its call's DM-CONNECT ACK or DM-OCCUPIED |
+| `tetra-dmo-conventional` | a DSB whose SCH/S and SCH/H passed carrying DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED; direct mode speech whose CRC passed and that re-encodes cleanly; short data whose FCS did not fail; an encrypted DM-2-C DSB | trunked (TMO) traffic, a DSB whose SCH/H failed, DM-RESERVED, a DM-SETUP PRES or gateway set-up before its call's DM-CONNECT ACK or DM-OCCUPIED |
 
 - **D-STAR hold limit.** A D-STAR radio repeats its header in the slow data, but it may send text or position data
   instead for a while. If that lasts longer than the target's activity hold, the hold can run out in the middle of a
