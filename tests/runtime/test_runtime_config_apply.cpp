@@ -1368,7 +1368,7 @@ start_radio_with_capture(dsd_opts* opts, dsd_state* state, const char* spec) {
  */
 
 /* What a refused PCM [input] would have set is as it was: the input and its name, the receiver's selector and tuning,
-   and the squelch the config carried. */
+   the squelch the config carried, and the sample rate a file input stages. */
 static int
 opts_kept_input(const dsd_opts* opts, const dsd_opts* before) {
     return opts->audio_in_type == before->audio_in_type && strcmp(opts->audio_in_dev, before->audio_in_dev) == 0
@@ -1377,7 +1377,8 @@ opts_kept_input(const dsd_opts* opts, const dsd_opts* before) {
            && opts->rtlsdr_center_freq == before->rtlsdr_center_freq && opts->rtl_gain_value == before->rtl_gain_value
            && opts->rtl_squelch_mode == before->rtl_squelch_mode
            && fabs(opts->rtl_squelch_level - before->rtl_squelch_level) < 1e-12
-           && strcmp(opts->pa_input_idx, before->pa_input_idx) == 0 && opts->rtltcp_enabled == before->rtltcp_enabled;
+           && strcmp(opts->pa_input_idx, before->pa_input_idx) == 0 && opts->rtltcp_enabled == before->rtltcp_enabled
+           && opts->staged_file_sample_rate == before->staged_file_sample_rate;
 }
 
 static int
