@@ -4016,7 +4016,14 @@ ctest --preset dev-debug -L qml --output-on-failure
 ```
 
 Each carries its own headless environment (offscreen platform, software renderer)
-in the CTest registration, so it needs no window server and no GPU.
+in the CTest registration, so it needs no window server and no GPU. Off Windows that
+environment also sets `TZ=America/Los_Angeles`, a zone west of UTC with daylight saving,
+so the date cases can assert literal local dates (issue #902). The zone is set before
+the process starts, never by the running suite (see "Environment variables in tests"):
+a case calls `testContext.localTimeZoneIs("America/Los_Angeles")`, which checks the
+native and JavaScript offsets at the dates the fixtures use, and skips what needs the
+zone when it is false (a run started by hand without `TZ`, or Windows, whose C runtime
+reads no IANA name in `TZ`).
 
 `UI_QT_DISPLAY_SCALE` (the Android display-size follow) uses Qt's private
 `Qt6::GuiPrivate` module, whose Linux package needs the XKB development files

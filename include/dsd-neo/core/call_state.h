@@ -304,17 +304,13 @@ typedef struct {
     /**
      * Checked media (issue #890): the first and the latest frame of this logical transmission that its decoder output
      * as speech, successfully and unconcealed (dsd_call_state_note_checked_media()), monotonic seconds, or 0; and the
-     * scan observation origin those frames were read under (dsd_scan_observation_origin: the scan visit and the carrier
+     * scan observation origin those frames were read under (checked_media_origin: the scan visit and the carrier
      * count). A frame of another origin starts the span again. The media clocks above take every frame the call plays;
      * only these are scan credit (dsd_scan_voice_probe()).
      */
     double checked_media_started_m;
     double checked_media_updated_m;
-    uint64_t checked_media_visit;
-    uint32_t checked_media_carrier_seq;
-    /** 1 when the checked media span is TETRA direct mode speech (dsd_call_state_note_checked_media_tetra(), issue
-     * #890): a TETRA DMO scan row takes no other TETRA media. A frame of the other mode starts the span again. */
-    uint8_t checked_media_tetra_direct;
+    dsd_scan_observation_origin checked_media_origin;
     /** The reception generation when this epoch began (dsd_state_reception_generation()). */
     uint64_t rx_gen;
     dsd_call_phase phase;
@@ -342,6 +338,9 @@ typedef struct {
     uint8_t algid;
     uint8_t audio_permitted;
     uint8_t media_active;
+    /** 1 when the checked media span is TETRA direct mode speech (dsd_call_state_note_checked_media_tetra(), issue
+     * #890): a TETRA DMO scan row takes no other TETRA media. A frame of the other mode starts the span again. */
+    uint8_t checked_media_tetra_direct;
     uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     uint8_t crc_invalid; /**< Sticky DSD_CRC_* bits (crc_provenance.h) for this transmission; zero is not verified. */
     /**
