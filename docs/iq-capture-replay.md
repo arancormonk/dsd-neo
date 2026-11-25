@@ -95,7 +95,12 @@ The writer records:
   (64/125) is not the step from nominal_rate_hz/base_decimation (2500000/32) to dsp_rate_hz (48000), which is
   384/625`. Metadata written before them has none: a replay then derives the nominal rate from the sample rate and the
   DSP bandwidth (see [Rate Chain And Resampling](#rate-chain-and-resampling); `--iq-info` says `derived`).
-- source identity (`source_backend`, `source_args`).
+- source identity (`source_backend`, `source_args`). A local RTL-SDR (`rtl_usb`) is `index=N`, or
+  `index=N,serial=<sn>` with the dongle's USB serial as read back from the dongle itself, whether the input chose it
+  by serial (`-i rtl:<sn>`) or by index (then only where stall recovery identified it, which needs libusb). The
+  serial is left out when it cannot be named in an `rtl:` spec. An Airspy is `serial=<16 hex digits>`, rtl_tcp
+  `host:port`, SoapySDR its device arguments. `--iq-info` prints them as `Source backend: rtl_usb (index=1,
+  serial=00000002)`.
 - finalized byte/counter fields (`data_bytes`, `capture_drops`, `capture_drop_blocks`, `input_ring_drops`).
 - `size_limit_reached`: `true` when the capture ended because `--iq-capture-max-mb` was reached rather than being cut
   short. Reaching the limit is not data loss and is not counted in `capture_drops`, so this is what distinguishes a

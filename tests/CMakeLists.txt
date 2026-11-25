@@ -1888,6 +1888,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rtl_device_select
+  HEADERS_PUBLIC_IO_RTL_DEVICE_SELECT
+  dsd-neo/io/rtl_device_select.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rtl_device_select_cxx
+  HEADERS_PUBLIC_IO_RTL_DEVICE_SELECT_CXX
+  dsd-neo/io/rtl_device_select.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_iq_types
   HEADERS_PUBLIC_IO_IQ_TYPES
   dsd-neo/io/iq_types.h
@@ -21472,6 +21484,37 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
+
+    # Choosing an RTL-SDR by USB serial: the lookup and listing over a fake
+    # enumeration, and the open that checks the handle (and an Android
+    # descriptor's dongle) reports the serial before anything configures it.
+    add_executable(
+        dsd-neo_test_io_rtl_device_select
+        io/test_io_rtl_device_select.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_DEVICE_SELECT
+        COMMAND dsd-neo_test_io_rtl_device_select
+    )
 
     # #782: which Android descriptor the engine holds, through the open, a
     # replacement in the slot and the close; and the "reset first" request.

@@ -3,12 +3,14 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/posix_compat.h>
 #include <errno.h>
 #include <inttypes.h>
+#include <limits.h>
 #include <stdio.h>
 #include <string.h>
 #include "dsd-neo/core/safe_api.h"
@@ -379,6 +381,95 @@ test_metadata_round_trip_capture_open_close(void) {
     }
     dsd_iq_replay_config_clear(&replay_cfg);
 
+    return rc;
+}
+
+/* An RTL-SDR capture's source_args name the dongle by index and by the serial verified on its handle: the longest
+   serial an input can name (DSD_RTL_SERIAL_MAX printable characters, JSON's escapes and the field's separators among
+   them) beside the widest index, through a real sidecar and the replay reader, and as the info line prints it. */
+static int
+test_metadata_rtl_serial_source_args_round_trip(void) {
+    int rc = 0;
+    char dir[256];
+    static const char* const files[] = {"rtl.iq", "rtl.iq.json", NULL};
+    if (mk_temp_dir(dir, sizeof(dir), files) != 0) {
+        DSD_FPRINTF(stderr, "failed to create temp dir\n");
+        return 1;
+    }
+    char data_path[512];
+    char metadata_path[512];
+    path_join(data_path, sizeof(data_path), dir, "rtl.iq");
+    path_join(metadata_path, sizeof(metadata_path), dir, "rtl.iq.json");
+
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    static const char kChars[] = "A\\,#;=/ 0'}{x";
+    for (int i = 0; i < DSD_RTL_SERIAL_MAX; i++) {
+        serial[i] = kChars[(size_t)i % (sizeof kChars - 1U)];
+    }
+    serial[DSD_RTL_SERIAL_MAX - 1] = 'Z';
+    serial[DSD_RTL_SERIAL_MAX] = '\0';
+    char args[256];
+    const int n = DSD_SNPRINTF(args, sizeof args, "index=%d,serial=%s", INT_MAX, serial);
+    rc |= expect_true("the longest serial fits source_args", n > 0 && (size_t)n < sizeof args);
+
+    dsd_iq_capture_config cfg;
+    DSD_MEMSET(&cfg, 0, sizeof(cfg));
+    DSD_SNPRINTF(cfg.data_path, sizeof(cfg.data_path), "%s", data_path);
+    DSD_SNPRINTF(cfg.metadata_path, sizeof(cfg.metadata_path), "%s", metadata_path);
+    cfg.format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(cfg.capture_stage, sizeof(cfg.capture_stage), "%s", "post_mute_pre_widen");
+    cfg.sample_rate_hz = 1536000;
+    cfg.center_frequency_hz = 851375000ULL;
+    cfg.capture_center_frequency_hz = 851375000ULL;
+    cfg.rtl_dsp_bw_khz = 48;
+    cfg.base_decimation = 32;
+    cfg.post_downsample = 1;
+    cfg.demod_rate_hz = 48000;
+    cfg.muted_bytes_excluded = 1;
+    DSD_SNPRINTF(cfg.source_backend, sizeof(cfg.source_backend), "%s", "rtl_usb");
+    DSD_SNPRINTF(cfg.source_args, sizeof(cfg.source_args), "%s", args);
+
+    dsd_iq_capture_writer* writer = NULL;
+    char err[256];
+    rc |= expect_int("rtl capture open", dsd_iq_capture_open(&cfg, &writer, err, sizeof(err)), DSD_IQ_OK);
+    if (!writer) {
+        return 1;
+    }
+    uint8_t bytes[4] = {0x10, 0x20, 0x30, 0x40};
+    rc |= expect_int("rtl capture submit", dsd_iq_capture_submit(writer, bytes, sizeof(bytes)), DSD_IQ_OK);
+    dsd_iq_capture_final_stats stats;
+    DSD_MEMSET(&stats, 0, sizeof(stats));
+    dsd_iq_capture_close(writer, &stats);
+
+    dsd_iq_replay_config replay_cfg;
+    DSD_MEMSET(&replay_cfg, 0, sizeof(replay_cfg));
+    const int prc = dsd_iq_replay_read_metadata(metadata_path, &replay_cfg, err, sizeof(err));
+    rc |= expect_int("rtl replay read metadata", prc, DSD_IQ_OK);
+    if (prc == DSD_IQ_OK) {
+        rc |= expect_true("source_args round trip", strcmp(replay_cfg.source_args, args) == 0);
+        FILE* out = tmpfile();
+        FILE* warn = tmpfile();
+        if (out && warn) {
+            rc |= expect_int("rtl info print", dsd_iq_info_print(&replay_cfg, metadata_path, 4, out, warn), DSD_IQ_OK);
+            fflush(out);
+            fseek(out, 0, SEEK_SET);
+            char out_buf[8192];
+            const size_t out_n = fread(out_buf, 1, sizeof(out_buf) - 1, out);
+            out_buf[out_n] = '\0';
+            char line[320];
+            DSD_SNPRINTF(line, sizeof line, "Source backend:      rtl_usb (%s)\n", args);
+            rc |= expect_true("info prints the dongle", strstr(out_buf, line) != NULL);
+        } else {
+            rc |= 1;
+        }
+        if (out) {
+            fclose(out);
+        }
+        if (warn) {
+            fclose(warn);
+        }
+    }
+    dsd_iq_replay_config_clear(&replay_cfg);
     return rc;
 }
 
@@ -2511,6 +2602,7 @@ main(void) {
     rc |= test_committed_fixture_capture_times_parse();
     rc |= test_committed_analog_fixture_sidecars_open();
     rc |= test_metadata_round_trip_capture_open_close();
+    rc |= test_metadata_rtl_serial_source_args_round_trip();
     rc |= test_metadata_v2_events_round_trip();
     rc |= test_metadata_reuse_after_explicit_clear();
     rc |= test_metadata_output_is_write_only_on_first_success();

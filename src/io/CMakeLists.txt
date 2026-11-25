@@ -73,6 +73,7 @@ if(DSD_HAS_RADIO)
             radio/airspy_source.cpp
             radio/rtl_auto_ppm.cpp
             radio/rtl_device.cpp
+            radio/rtl_device_select.cpp
             radio/rtl_demod_config.cpp
             radio/rtl_finite.cpp
             radio/rtl_metrics.cpp

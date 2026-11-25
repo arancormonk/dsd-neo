@@ -94,6 +94,10 @@ RtlSdrOrchestrator::start(const struct rtl_stream_start_gate* start_gate) {
     if (caller_opts_ && dsd_opts_audio_in_dev_is_airspy_spec(opts_->audio_in_dev)) {
         caller_opts_->airspy_info = opts_->airspy_info;
     }
+    /* A dongle chosen by serial is looked up at every open: the index it was found at this time. */
+    if (caller_opts_ && opts_->rtl_dev_serial[0] != '\0' && dsd_opts_audio_in_dev_is_rtl_spec(opts_->audio_in_dev)) {
+        caller_opts_->rtl_dev_index = opts_->rtl_dev_index;
+    }
     started_ = true;
     return 0;
 }

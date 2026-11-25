@@ -7,7 +7,8 @@
  * The device part of the auto squelch's floor context (issue #899 B12). In an rtl, rtltcp or Airspy spec the start
  * frequency, the squelch field and the volume set no noise, so a start that changes only those finds the floors learned
  * before; every other field (device index, endpoint, serial, gain, PPM, DSP bandwidth, bias) keeps them apart as
- * before, and any other spec (SoapySDR, an I/Q replay path, a sound device) counts whole, as it always has.
+ * before, and any other spec (SoapySDR, an I/Q replay path, a sound device) counts whole, as it always has. An rtl
+ * spec's serial counts in one form however it is spelled.
  */
 
 #include <stdint.h>
@@ -80,6 +81,21 @@ main(void) {
     rc |= expect(0, tcp, "rtltcp:127.0.0.1:1234:851.375M:30:5:48:0:2");
     rc |= expect(0, tcp, "rtltcp:127.0.0.1:1234:851.375M:30:0:24:0:2");
     rc |= expect(0, rtl, "rtltcp:0:851.375M:30:0:48:0:2");
+    /* A dongle named by serial: one key however the spec spells the serial (rtl:<sn> or rtl:serial=<sn>), another
+       serial another key, and not the key of the index it may be found at. An index is keyed as written, as before,
+       so floors learned under it stay. */
+    const char* sn = "rtl:serial=00000001:851.375M:30:0:48:0:2";
+    rc |= expect(1, sn, "rtl:00000001:851.375M:30:0:48:0:2");
+    rc |= expect(1, sn, "rtl:00000001:162.475M:30:0:48:noise+10:3");
+    rc |= expect(1, "rtl:serial=00000001", "rtl:00000001");
+    rc |= expect(1, "rtl:serial=A1B2:851M:30:0:48:0:2:bias=1", "rtl:A1B2:160M:30:0:48:0:2:bias=1");
+    rc |= expect(0, sn, "rtl:00000002:851.375M:30:0:48:0:2");
+    rc |= expect(0, sn, "rtl:serial=00000002:851.375M:30:0:48:0:2");
+    rc |= expect(0, sn, "rtl:1:851.375M:30:0:48:0:2");
+    rc |= expect(0, sn, "rtl:00000001:851.375M:40:0:48:0:2");
+    rc |= expect(0, "rtl:serial=1090", "rtl:1090");
+    rc |= expect_whole("rtl:serial=00000001");
+    rc |= expect_whole("rtl:1090");
     /* The bare forms, which name only the kind (and an rtltcp endpoint), are keyed as written. */
     rc |= expect_whole("rtl");
     rc |= expect_whole("rtltcp");
