@@ -325,6 +325,55 @@ test_no_devices_and_failed_enumeration(void) {
     assert(rtl_device_list(nullptr, 0, &total) == -1 && total == 0);
 }
 
+/* ---- --rtl-list lines ---- */
+
+rtl_device_entry
+entry_with(int index, const char* serial) {
+    rtl_device_entry e{};
+    e.index = index;
+    e.strings_read = 1;
+    e.readable = serial[0] != '\0';
+    put(e.manufacturer, "Realtek");
+    put(e.product, "RTL2838UHIDIR");
+    put(e.serial, serial);
+    return e;
+}
+
+void
+expect_line(const rtl_device_entry& e, int shared, const char* want) {
+    char line[1024];
+    rtl_device_list_line(&e, shared, line, sizeof line);
+    if (strcmp(line, want) != 0) {
+        DSD_FPRINTF(stderr, "line \"%s\", want \"%s\"\n", line, want);
+    }
+    assert(strcmp(line, want) == 0);
+}
+
+void
+test_list_lines(void) {
+    /* A serial made of letters, digits, '.', '_' and '-': the -i argument to paste, in the form that reads back as it. */
+    expect_line(entry_with(0, "00000001"), 0, "RTL-SDR 0: Realtek, RTL2838UHIDIR, SN: 00000001  (-i rtl:00000001)");
+    expect_line(entry_with(1, "1090"), 0, "RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: 1090  (-i rtl:serial=1090)");
+    expect_line(entry_with(2, "North_2.v-1"), 0,
+                "RTL-SDR 2: Realtek, RTL2838UHIDIR, SN: North_2.v-1  (-i rtl:North_2.v-1)");
+    /* Anything else would split or expand in cmd or sh: a quoted literal, a note, and nothing to paste. */
+    expect_line(entry_with(3, "1 East"), 0,
+                "RTL-SDR 3: Realtek, RTL2838UHIDIR, SN: \"1 East\"  [spaces or shell characters: quote the whole -i "
+                "argument]");
+    expect_line(entry_with(4, "A&B|$(x)"), 0,
+                "RTL-SDR 4: Realtek, RTL2838UHIDIR, SN: \"A&B|$(x)\"  [spaces or shell characters: quote the whole -i "
+                "argument]");
+    expect_line(entry_with(5, "A:B"), 0,
+                "RTL-SDR 5: Realtek, RTL2838UHIDIR, SN: \"A:B\"  [this serial cannot be given in -i rtl:]");
+    expect_line(entry_with(6, "00000001"), 1,
+                "RTL-SDR 6: Realtek, RTL2838UHIDIR, SN: 00000001  [duplicate serial: cannot be chosen by serial]");
+    rtl_device_entry none = entry_with(7, "");
+    expect_line(none, 0, "RTL-SDR 7: Realtek, RTL2838UHIDIR, SN: (none)");
+    rtl_device_entry unread{};
+    unread.index = 8;
+    expect_line(unread, 0, "RTL-SDR 8: " RTL_DEVICE_UNREADABLE_TEXT);
+}
+
 /* ---- Opening by serial ---- */
 
 const int k_gains[] = {-10, 15, 40, 65, 90, 115, 140, 165, 190, 215, 240, 290, 340, 420};
@@ -618,6 +667,7 @@ main(void) {
     test_reorder_between_finds();
     test_duplicate_beyond_capacity();
     test_no_devices_and_failed_enumeration();
+    test_list_lines();
     test_open_verified_serial();
     test_open_mismatch_then_retry();
     test_open_mismatch_twice_fails();

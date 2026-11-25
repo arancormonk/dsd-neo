@@ -86,6 +86,17 @@ rtl_device_find_result rtl_device_find_serial(const char* serial, struct rtl_dev
  */
 void rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_t out_size);
 
+/**
+ * @brief One `dsd-neo --rtl-list` line for @p entry, without its newline.
+ *
+ * `RTL-SDR N: Manufacturer, Product, SN: serial` and, for a readable device whose serial is unique among the readable
+ * ones (@p shared 0) and made only of letters, digits, `.`, `_` and `-`, the `-i` argument that names it
+ * (`(-i rtl:00000001)`, `(-i rtl:serial=1090)` for one that reads as an index), safe to paste into any shell. A serial
+ * with other characters is shown as a quoted literal with a note to quote the whole `-i` argument, and no argument to
+ * paste; a shared serial, or one a spec cannot hold, is marked so.
+ */
+void rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out, size_t out_size);
+
 #ifdef __cplusplus
 }
 #endif

@@ -3432,9 +3432,11 @@ dongle:
   (`00000001` never opens index 1). It is 1 to 127 printable ASCII characters with no `:` or `"` and no space at
   either end; a dongle whose serial is anything else is still listed by `--rtl-list`, and can be chosen by index or
   given a serial `rtl_eeprom -s` can write.
-- `dsd-neo --rtl-list` prints each dongle's index, manufacturer, product and serial, and the `-i` field that names it
-  (`RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: 00000002  (-i rtl:00000002)`). It exits 0, also when no dongle is found,
-  and 1 when the build has no RTL-SDR support or the enumeration failed.
+- `dsd-neo --rtl-list` prints each dongle's index, manufacturer, product and serial, and the `-i` argument that
+  names it (`RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: 00000002  (-i rtl:00000002)`), safe to paste into any shell. It
+  offers that argument only for a serial of letters, digits, `.`, `_` and `-`; any other serial is shown quoted
+  (`SN: "1 East"`) with a note to quote the whole `-i` argument (`-i "rtl:1 East:851.375M"`). It exits 0, also when
+  no dongle is found, and 1 when the build has no RTL-SDR support or the enumeration failed.
 - The serial is looked up at every start, so the dongle is found wherever it is enumerated; the startup lines say
   which (`Selected Device #2 with Serial Number: 00000002`, `RTL #2 (SN 00000002): Freq=...`). After it opens, its
   serial is read back from the device itself; one that reports another (the dongles changed in that instant) is closed

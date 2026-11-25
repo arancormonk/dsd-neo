@@ -12,6 +12,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/rtl_device_select.h>
 #include <dsd-neo/platform/platform.h>
+#include <dsd-neo/runtime/input_spec.h>
 
 #include <atomic>
 #include <climits>
@@ -215,6 +216,66 @@ rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_
     }
     DSD_SNPRINTF(out, out_size, "%s, %s, SN: %s", entry->manufacturer, entry->product,
                  entry->readable ? entry->serial : "(none)");
+}
+
+namespace {
+
+/* Whether every character of @p serial is a letter, a digit, '.', '_' or '-': a word no shell splits or expands. */
+bool
+serial_is_shell_safe(const char* serial) {
+    for (const char* c = serial; *c != '\0'; c++) {
+        const bool alnum = (*c >= 'A' && *c <= 'Z') || (*c >= 'a' && *c <= 'z') || (*c >= '0' && *c <= '9');
+        if (!alnum && *c != '.' && *c != '_' && *c != '-') {
+            return false;
+        }
+    }
+    return serial[0] != '\0';
+}
+
+/* The -i device field that names @p serial: the serial itself when it reads back as that serial (00000001),
+   serial=<sn> when it would read as an index (1090). */
+void
+spec_field(const char* serial, char* out, size_t out_size) {
+    char parsed[RTL_DEVICE_STRING_SIZE];
+    if (dsd_rtl_device_field_parse(serial, NULL, parsed, sizeof parsed) == DSD_RTL_DEV_SERIAL
+        && strcmp(parsed, serial) == 0) {
+        DSD_SNPRINTF(out, out_size, "%s", serial);
+    } else {
+        DSD_SNPRINTF(out, out_size, "serial=%s", serial);
+    }
+}
+
+} // namespace
+
+extern "C" void
+rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out, size_t out_size) {
+    if (out == nullptr || out_size == 0U || entry == nullptr) {
+        return;
+    }
+    if (!entry->readable) {
+        char text[3 * RTL_DEVICE_STRING_SIZE + 16];
+        rtl_device_entry_describe(entry, text, sizeof text);
+        DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s", entry->index, text);
+        return;
+    }
+    const bool safe = serial_is_shell_safe(entry->serial);
+    const char* quote = safe ? "" : "\"";
+    const char* note = "";
+    char field[RTL_DEVICE_STRING_SIZE + 16];
+    field[0] = '\0';
+    if (shared) {
+        note = "  [duplicate serial: cannot be chosen by serial]";
+    } else if (!dsd_rtl_serial_is_valid(entry->serial)) {
+        note = "  [this serial cannot be given in -i rtl:]";
+    } else if (!safe) {
+        note = "  [spaces or shell characters: quote the whole -i argument]";
+    } else {
+        char dev[RTL_DEVICE_STRING_SIZE + 8];
+        spec_field(entry->serial, dev, sizeof dev);
+        DSD_SNPRINTF(field, sizeof field, "  (-i rtl:%s)", dev);
+    }
+    DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s, %s, SN: %s%s%s%s%s", entry->index, entry->manufacturer, entry->product,
+                 quote, entry->serial, quote, note, field);
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS

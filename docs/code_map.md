@@ -11700,7 +11700,9 @@ Key public headers:
     reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
   - RTL-SDR selection by USB serial (`<dsd-neo/io/rtl_device_select.h>`, `radio/rtl_device_select.cpp`, compiled
     into `dsd-neo_io_radio` whatever `DSD_HAVE_LIBUSB` says; without `USE_RTLSDR` every call fails): the one listing
-    and lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`) and the open share. `rtl_device_list()`
+    and lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`, lines from `rtl_device_list_line()`: the
+    `-i` argument to paste only for a serial of `[A-Za-z0-9._-]`, any other quoted with a note) and the open share.
+    `rtl_device_list()`
     zeroes every entry before its read and checks the result, so an unreadable device never shows another's strings
     (the startup listing once did); a read that fails, or succeeds with no string at all (a driver can return 0 with
     empty buffers), is `strings_read` 0, and only an entry with a serial is `readable`.

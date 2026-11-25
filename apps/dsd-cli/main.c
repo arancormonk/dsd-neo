@@ -28,7 +28,6 @@
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_device_select.h>
-#include <dsd-neo/runtime/input_spec.h>
 #include <string.h>
 #endif
 #include <inttypes.h>
@@ -40,20 +39,6 @@
 #include "frontend.h"
 
 #ifdef USE_RADIO
-/* The -i device field that names @p e by its serial, into @p out ("" when its serial cannot be named in a spec). */
-static void
-rtl_list_spec_field(const struct rtl_device_entry* e, char* out, size_t out_size) {
-    out[0] = '\0';
-    char serial[RTL_DEVICE_STRING_SIZE];
-    /* The plain serial when it reads back as that serial (00000001); serial=<sn> when it would read as an index. */
-    if (dsd_rtl_device_field_parse(e->serial, NULL, serial, sizeof serial) == DSD_RTL_DEV_SERIAL
-        && strcmp(serial, e->serial) == 0) {
-        DSD_SNPRINTF(out, out_size, "%s", e->serial);
-    } else if (dsd_rtl_serial_is_valid(e->serial)) {
-        DSD_SNPRINTF(out, out_size, "serial=%s", e->serial);
-    }
-}
-
 /* Readable devices that carry @p e's serial. */
 static int
 rtl_list_serial_count(const struct rtl_device_entry* list, int count, const struct rtl_device_entry* e) {
@@ -64,28 +49,14 @@ rtl_list_serial_count(const struct rtl_device_entry* list, int count, const stru
     return n;
 }
 
-/* One --rtl-list line: index, strings, and how a spec names it, or why it cannot be chosen by serial. Returns 1 when
-   its serial is shared with another readable device. */
+/* One --rtl-list line (rtl_device_list_line()). Returns 1 when its serial is shared with another readable device. */
 static int
 rtl_list_print_entry(const struct rtl_device_entry* list, int count, const struct rtl_device_entry* e) {
-    char text[3 * RTL_DEVICE_STRING_SIZE + 16];
-    rtl_device_entry_describe(e, text, sizeof text);
-    if (!e->readable) {
-        DSD_FPRINTF(stdout, "RTL-SDR %d: %s\n", e->index, text);
-        return 0;
-    }
-    if (rtl_list_serial_count(list, count, e) > 1) {
-        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  [duplicate serial: cannot be chosen by serial]\n", e->index, text);
-        return 1;
-    }
-    char field[RTL_DEVICE_STRING_SIZE + 8];
-    rtl_list_spec_field(e, field, sizeof field);
-    if (field[0] == '\0') {
-        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  [this serial cannot be given in -i rtl:]\n", e->index, text);
-    } else {
-        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  (-i rtl:%s)\n", e->index, text, field);
-    }
-    return 0;
+    const int shared = e->readable && rtl_list_serial_count(list, count, e) > 1;
+    char line[3 * RTL_DEVICE_STRING_SIZE + 128];
+    rtl_device_list_line(e, shared, line, sizeof line);
+    DSD_FPRINTF(stdout, "%s\n", line);
+    return shared;
 }
 
 /* --rtl-list: every RTL-SDR librtlsdr enumerates. 0 (an empty list too), or 1 without RTL-SDR support or when the
