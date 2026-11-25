@@ -1126,6 +1126,107 @@ test_config_staged_on_pcm_opens_the_rtl_device_it_names(void) {
     return rc;
 }
 
+/*
+ * PCM runs; a config stages RTL-SDR serial A; a device change selects B; the switch back opens B on the spec naming B,
+ * and a save reloaded opens B too. The change used to rewrite radio_in_dev, which the switch passes over for the spec
+ * the config staged in audio_in_dev: B opened under a spec naming A, and the next start opened A.
+ */
+static int
+test_config_staged_then_device_change_opens_and_saves_it(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:3:460125000");
+    g_wrap_missing_serial[0] = '\0';
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    DSD_SNPRINTF(cfg.rtl_serial, sizeof cfg.rtl_serial, "%s", "AAAA");
+    cfg.rtl_serial_is_set = 1;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB", 5U);
+    (void)dsd_app_drain_cmds(opts, state);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_rtl_selected("the switch back opens B on a spec naming B", opts, state, 0, "BBBB");
+
+    dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    test_runtime reloaded;
+    if (alloc_test_runtime(&reloaded) != 0) {
+        free_test_runtime(&runtime);
+        return 1;
+    }
+    dsd_apply_user_config_to_opts(&saved, reloaded.opts, reloaded.state);
+    rc |= expect_true("the save reloaded opens B", dsd_rtl_input_spec_apply(reloaded.opts) == 1
+                                                       && strcmp(reloaded.opts->rtl_dev_serial, "BBBB") == 0);
+    free_test_runtime(&reloaded);
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * A config handed over whole (dsd_app_command_apply_config(), Qt's path) never passed the loader, so a clear
+ * rtl_serial_invalid proves nothing: a serial the rule refuses, or one with no terminator, refuses the config before
+ * anything changes, the stream and its I/Q capture untouched.
+ */
+static int
+test_config_whole_with_a_bad_serial_is_refused(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtlsdr_center_freq = 851375000U;
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "AAAA");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24:0:2");
+    g_wrap_missing_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    opts->iq_capture_requested = 1;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", "cap.iq");
+
+    int rc = 0;
+    for (int unterminated = 0; unterminated <= 1; unterminated++) {
+        dsdneoUserConfig cfg;
+        DSD_MEMSET(&cfg, 0, sizeof cfg);
+        cfg.has_input = 1;
+        cfg.input_source = DSDCFG_INPUT_RTL;
+        DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "460125000");
+        if (unterminated) {
+            DSD_MEMSET(cfg.rtl_serial, 'S', sizeof cfg.rtl_serial);
+        } else {
+            DSD_SNPRINTF(cfg.rtl_serial, sizeof cfg.rtl_serial, "%s", "A:B");
+        }
+        cfg.rtl_serial_is_set = 1;
+        g_wrap_opened_serial[0] = '\0';
+        rc |= expect_true("a whole config with a bad serial is queued",
+                          dsd_app_command_apply_config(&cfg) == DSD_APP_COMMAND_SUBMIT_QUEUED);
+        (void)dsd_app_drain_cmds(opts, state);
+        rc |= expect_true("a bad serial refuses the config",
+                          strstr(state->ui_msg, "Config not applied: rtl_serial") != NULL);
+        rc |= expect_true("a bad serial leaves the stream and capture",
+                          g_wrap_opened_serial[0] == '\0' && state->rtl_ctx != NULL && opts->iq_capture_requested == 1
+                              && strcmp(opts->rtl_dev_serial, "AAAA") == 0
+                              && strcmp(opts->audio_in_dev, "rtl:serial=AAAA:851375000:22:0:24:0:2") == 0
+                              && opts->rtlsdr_center_freq == 851375000U);
+    }
+    opts->iq_capture_requested = 0;
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /* An active P25 call on slot 0, as the carrier on air carries it. */
 static void
 observe_active_call(dsd_state* state) {
@@ -4083,6 +4184,8 @@ main(void) {
     rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();
     rc |= test_config_reopen_opens_the_rtl_device_it_names();
     rc |= test_config_staged_on_pcm_opens_the_rtl_device_it_names();
+    rc |= test_config_staged_then_device_change_opens_and_saves_it();
+    rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();
     rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();

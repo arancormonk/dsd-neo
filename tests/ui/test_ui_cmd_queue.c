@@ -32011,6 +32011,23 @@ test_rtl_device_commands(void) {
                       g_config_rtl_creates == creates + 2 && state.rtl_ctx != NULL
                           && strcmp(g_config_rtl_create_serial, "1090") == 0);
     rc |= expect_saved_rtl_device("a save after the rollback writes 1090", &opts, &state, 1, "1090");
+
+    /* The longest serial: the failure toast shows it cut, so the note of the I/Q capture its rollback stopped stays. */
+    char longest[DSD_RTL_SERIAL_MAX + 1];
+    DSD_MEMSET(longest, 'L', DSD_RTL_SERIAL_MAX);
+    longest[DSD_RTL_SERIAL_MAX] = '\0';
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_fail_starts = 1;
+    rc |= expect_int("longest serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, longest),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("longest serial drained", dsd_app_drain_cmds(&opts, &state), 1);
+    const char* note = "; I/Q capture stopped";
+    const size_t len = strlen(state.ui_msg);
+    rc |= expect_true("longest serial: the capture note survives",
+                      len > strlen(note) && strcmp(state.ui_msg + len - strlen(note), note) == 0);
+    rc |= expect_contains("longest serial: shown cut", state.ui_msg, "Failed: RTL device -> serial LLLL");
+    rc |= expect_contains("longest serial: marked cut", state.ui_msg, "... (see log)");
     end_running_radio(&state);
 
     init_running_radio(&opts, &state, "rtltcp:127.0.0.1:1234:851375000");
