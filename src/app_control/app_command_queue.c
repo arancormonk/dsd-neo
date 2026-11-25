@@ -4753,6 +4753,18 @@ apply_cfg_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg) {
     opts->rtl_dev_serial[0] = '\0';
 }
 
+/* An RTL-SDR [input] applied while PCM runs stages its spec for the switch back to the radio (the RTL-SDR row opens
+   it), and the dongle that switch opens is the one the options select: the config's, as the spec names it, not the one
+   the session last opened. */
+static void
+apply_cfg_stage_rtl_selector(dsd_opts* opts, const dsdneoUserConfig* cfg, const char* old_audio_in_dev) {
+    if (cfg->has_input && cfg->input_source == DSDCFG_INPUT_RTL && opts->audio_in_type != AUDIO_IN_RTL
+        && dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)
+        && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
+        apply_cfg_rtl_selector(opts, cfg);
+    }
+}
+
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
    found) reopens the device with the config's tuning, or opens it when no stream ran. Returns what
    ui_cfg_settle_reopen() makes of the stream's start: -1 when it failed, or ran but refused the scan row on air (the
@@ -4764,6 +4776,7 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
+        apply_cfg_stage_rtl_selector(opts, cfg, old_audio_in_dev);
         apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }

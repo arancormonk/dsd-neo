@@ -1078,6 +1078,54 @@ test_config_reopen_opens_the_rtl_device_it_names(void) {
     return rc;
 }
 
+/*
+ * An RTL-SDR [input] applied while PCM runs stages its spec for the switch back to the radio: that switch opens the
+ * dongle the config names, by serial or by index, not the one the session last opened (whose selector the apply used
+ * to leave in place, so the spec named serial B while index 3 opened).
+ */
+static int
+test_config_staged_on_pcm_opens_the_rtl_device_it_names(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    opts->rtl_dev_index = 3;
+    g_wrap_missing_serial[0] = '\0';
+    g_wrap_opened_index = -1;
+    g_wrap_opened_serial[0] = '\0';
+
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    DSD_SNPRINTF(cfg.rtl_serial, sizeof cfg.rtl_serial, "%s", "BBBB");
+    cfg.rtl_serial_is_set = 1;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    int rc = expect_true("the staged config selects serial B",
+                         strcmp(opts->rtl_dev_serial, "BBBB") == 0 && opts->audio_in_type == AUDIO_IN_PULSE);
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_rtl_selected("the switch back opens serial B", opts, state, 3, "BBBB");
+
+    /* Back on PCM, a config naming index 2 alone drops the serial. */
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    cfg.rtl_serial[0] = '\0';
+    cfg.rtl_device = 2;
+    cfg.rtl_device_is_set = 1;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the staged config selects index 2", opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index == 2);
+    free_test_runtime(&runtime);
+    return rc;
+}
+
 /* An active P25 call on slot 0, as the carrier on air carries it. */
 static void
 observe_active_call(dsd_state* state) {
@@ -4034,6 +4082,7 @@ main(void) {
     rc |= test_config_reapply_under_row_squelch_keeps_the_row();
     rc |= test_config_reopen_on_another_frequency_forgets_the_carrier_codes();
     rc |= test_config_reopen_opens_the_rtl_device_it_names();
+    rc |= test_config_staged_on_pcm_opens_the_rtl_device_it_names();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();
     rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();

@@ -8112,7 +8112,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
   no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
   RTL-SDR `[input]` opens the dongle the config names (`apply_cfg_rtl_selector()`: its `rtl_serial`, or its
-  `rtl_device` with the serial cleared), not the running input's selector. A config apply whose reopen of
+  `rtl_device` with the serial cleared), not the running input's selector; one applied while PCM runs stages that
+  selector with the spec it writes (`apply_cfg_stage_rtl_selector()`), so the switch back opens the dongle the config
+  names. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
