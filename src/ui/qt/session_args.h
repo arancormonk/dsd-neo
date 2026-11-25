@@ -131,7 +131,7 @@ constexpr int SessionArgsScanHoldDefaultMs = 1200;
  *
  * The session runs one receiver and one set of scan options, @p primary's, so every setting a list puts into its argv
  * has to come out the same for both once the app-wide defaults in @p prefs fill what a list leaves unset and side files
- * are resolved to absolute paths: radio source (source type and device: Airspy serial, host and port), gain, PPM
+ * are resolved to absolute paths: radio source (source type and device: Airspy or RTL-SDR serial, host and port), gain, PPM
  * correction, DSP bandwidth (as the radio runs it, session_args_scan_list_bandwidth_khz(): App default is 72 kHz when
  * @p tetraTargets, a TETRA DMO target in the session), bias tee, every other Airspy setting, voice only, skip silent
  * channels (issue #834), default dwell and hold (0 runs the engine's default), fallback talkgroups and source aliases.
@@ -182,12 +182,23 @@ enum class SessionArgsError {
     /* Issue #899 (B17): an extra-options field with a "--" the decoder reads as the end of its options, or one that
        ends with an option still waiting for its value (session_args_extra_incomplete()). Either would turn what the
        app appends after it, a saved squelch among them, into something else. */
-    ExtraIncomplete
+    ExtraIncomplete,
+    /* An RTL-SDR system (sourceType "usb") whose rtlSerial no `rtl:serial=` spec can carry
+       (session_args_rtl_serial_valid()): a map the editor never checked (an import, a restored backup) would otherwise
+       open another dongle, or split the spec at a ':' into fields it never meant. */
+    RtlSerial
 };
 
 /* The last SessionArgsError value. A value added after it takes its place here, and session_args_error_text() then
  * needs its text: a static_assert there holds the text table to this value. */
-constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::ExtraIncomplete;
+constexpr SessionArgsError SessionArgsErrorLast = SessionArgsError::RtlSerial;
+
+/**
+ * @brief Whether @p serial can name an RTL-SDR in an `rtl:serial=` spec: dsd_rtl_serial_is_valid() (1 to 127 printable
+ *        ASCII characters, no ':' or '"', no space at either end), and no NUL, which that C check would read as the
+ *        end of the serial. The editors' check (Util.rtlSerialValid() in qml/Util.js) is the same rule.
+ */
+bool session_args_rtl_serial_valid(const QString& serial);
 
 /**
  * @brief Whether one extra-options field @p tokens would change what follows it in the argv (issue #899, B17).

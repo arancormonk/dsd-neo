@@ -43,6 +43,7 @@
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 
@@ -298,7 +299,10 @@ append_input_args(QStringList& args, const QVariantMap& system, const QString& s
             }
         }
     } else if (sourceType == QLatin1String("usb")) {
-        QString spec = QStringLiteral("rtl:0") + tail;
+        // A serial goes in the explicit form, so one such as "1090" is never read as an index; the build refused one
+        // no spec can carry (SessionArgsError::RtlSerial) before this.
+        const QString serial = system.value(QStringLiteral("rtlSerial")).toString();
+        QString spec = (serial.isEmpty() ? QStringLiteral("rtl:0") : QStringLiteral("rtl:serial=") + serial) + tail;
         if (bias) {
             spec += QLatin1String(":bias");
         }
@@ -755,7 +759,8 @@ session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqM
         return {};
     }
     QVariantMap tuner;
-    for (const auto& field : {"sourceType", "host", "port", "gainDb", "ppm", "bandwidthKhz", "biasTee", "airspy"}) {
+    for (const auto& field :
+         {"sourceType", "host", "port", "rtlSerial", "gainDb", "ppm", "bandwidthKhz", "biasTee", "airspy"}) {
         if (list.contains(field)) {
             tuner[field] = list.value(field);
         }
@@ -819,6 +824,15 @@ session_args_freq_hz(const QString& freqMhz) {
 bool
 session_args_freq_valid(const QString& freqMhz) {
     return session_args_freq_hz(freqMhz) != 0U;
+}
+
+bool
+session_args_rtl_serial_valid(const QString& serial) {
+    if (serial.contains(QChar(u'\0'))) {
+        return false;
+    }
+    const QByteArray bytes = serial.toUtf8();
+    return dsd_rtl_serial_is_valid(bytes.constData()) != 0;
 }
 
 /* The -i spec type a radio source's session opens, which the engine's rate policy classifies; nullptr for a source
@@ -1018,6 +1032,8 @@ constexpr SessionArgsErrorText k_error_texts[] = {
     {SessionArgsError::ExtraIncomplete,
      "The extra decoder arguments contain \"--\" or end with an option that needs a value. Remove the \"--\", or give "
      "the option its value."},
+    {SessionArgsError::RtlSerial, "Enter an RTL-SDR serial of up to 127 printable ASCII characters, with no : or \" "
+                                  "and no space at either end."},
 };
 
 constexpr std::size_t k_error_text_count = sizeof k_error_texts / sizeof k_error_texts[0];
@@ -1299,6 +1315,14 @@ session_args_tetra_rate_error(const QString& sourceType, int bandwidthKhz) {
                                                                 : session_args_error_text(SessionArgsError::TetraRate);
 }
 
+/* Whether @p system opens a USB dongle (@p sourceType "usb") by a serial no `rtl:serial=` spec can carry; none (the
+   first device) is always carried. */
+static bool
+rtl_serial_refused(const QVariantMap& system, const QString& sourceType) {
+    const QString serial = system.value(QStringLiteral("rtlSerial")).toString();
+    return sourceType == QLatin1String("usb") && !serial.isEmpty() && !session_args_rtl_serial_valid(serial);
+}
+
 /* What the source allows. A radio source needs a frequency it can tune. Issue #524: -fM demodulates AM from the radio's
    I/Q, and the engine refuses it on audio that arrives already demodulated; the wizard keeps the pair from being saved,
    and a system saved before that fails here with a reason rather than at engine startup. The same holds for an AM
@@ -1326,6 +1350,9 @@ session_args_source_error(const QVariantMap& system, const QString& sourceType, 
             sourceType == QLatin1String("file") && dsd_opts_audio_in_dev_is_symbol_capture(path.constData());
         return decode_flag_names(decodeFlag, QStringLiteral("-fT")) && !symbols ? SessionArgsError::TetraNeedsIq
                                                                                 : SessionArgsError::None;
+    }
+    if (rtl_serial_refused(system, sourceType)) {
+        return SessionArgsError::RtlSerial;
     }
     if (!session_args_freq_valid(freqMhz)) {
         return SessionArgsError::Frequency;

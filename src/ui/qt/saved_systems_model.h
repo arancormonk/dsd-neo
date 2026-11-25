@@ -85,6 +85,7 @@ class SavedSystemsModel : public QAbstractListModel {
         PlaceRole,              // RadioReference place, validPlace()'s form; empty = none
         KeyConfiguredRole,      // a direct key, a key file or a decryption profile: whether one is set, never which
         RememberTalkgroupsRole, // issue #903: learn the talkgroups heard on it; true unless turned off
+        RtlSerialRole,          // the RTL-SDR's USB serial as typed; empty selects the first device
     };
 
     /**
@@ -271,7 +272,7 @@ class SavedSystemsModel : public QAbstractListModel {
     /** @brief The field names whose change in update() clears a row's RadioReference provenance. */
     Q_INVOKABLE QStringList tuningProvenanceFields() const;
     /** @brief The fields a Save talkgroup list request captures for groupListAttachable() (issue #903): the
-     *  tuningProvenanceFields() and the receiver's (sourceType, host, port, filePath, airspy). */
+     *  tuningProvenanceFields() and the receiver's (sourceType, host, port, filePath, airspy, rtlSerial). */
     Q_INVOKABLE QStringList groupListTuningFields() const;
     /** @brief One system as a field map, for the wizard's edit path and argv building. */
     Q_INVOKABLE QVariantMap get(int row) const;
@@ -442,6 +443,9 @@ class SavedSystemsModel : public QAbstractListModel {
          * explicit off must survive a global on: it is the operator saying this
          * dongle or antenna must not be fed the tee's 4.5 V. */
         int biasTee = -1;
+        /* The RTL-SDR (sourceType "usb") the row opens, by USB serial, kept exactly as typed (no trim, no case
+           change: the decoder matches it exactly); empty opens the first device (`rtl:0`). */
+        QString rtlSerial;
         QString extraArgs;
         QString filePath;
         QString decryptionProfileUid;

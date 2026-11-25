@@ -21962,8 +21962,16 @@ Qt Quick frontend (`src/ui/qt`):
   `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
   follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`, by
   `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
-  then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
-  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
+  then an Airspy's serial without case, a USB dongle's `rtlSerial` exactly when it names one (plain `usb` otherwise, the
+  key every group and pin saved before the field has), an rtl_tcp or TCP host without case or blanks and its port, a UDP
+  port or a file path; `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is
+  two groups.
+  `rtlSerial` (a saved system's and a scan list's flat field, like `gainDb`) names the USB dongle by serial, kept exactly
+  as typed: `session_args_build()` opens it as `rtl:serial=<sn>` (always the explicit form; none is `rtl:0`) and refuses
+  a serial no spec can carry (`session_args_rtl_serial_valid()`, the decoder's `dsd_rtl_serial_is_valid()`:
+  `SessionArgsError::RtlSerial`), since an imported or restored map never passed the editors' check
+  (`Util.rtlSerialValid()`, the same rule). The card's receiver label is `USB <serial>`; on Android, Main.qml asks for
+  the dongle by that serial and starts only once the connected one carries it exactly.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
   `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
   `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
@@ -25924,7 +25932,8 @@ Several lists in one session (issue #697):
   differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
   `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different skip-silent setting`
   (issue #834), `Different default dwell`, `Different default hold`, `Different fallback talkgroups`, `Different source
-  aliases`; empty when it can join). The radio source is the source type and device (Airspy serial, rtl_tcp/TCP host
+  aliases`; empty when it can join). The radio source is the source type and device (Airspy serial, RTL-SDR serial
+  exactly, rtl_tcp/TCP host
   and port, UDP port, file path); bandwidth is compared as the radio runs it and only on RTL and Airspy sources; gain,
   PPM and bias tee only on RTL sources (a setting the source's argv leaves out, `append_input_args()`, is no setting);
   Airspy values are read with the engine's aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's

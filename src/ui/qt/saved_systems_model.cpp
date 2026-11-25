@@ -364,7 +364,7 @@ constexpr const char* kTuningProvenanceKeys[] = {"freqMhz",    "decodeFlag", "ch
 
 /** The fields that name the receiver a row runs (receiver_identity()): a talkgroup list saved from a session attaches
  *  only while they are what the session started with, as the tuning fields are (issue #903). */
-constexpr const char* kReceiverKeys[] = {"sourceType", "host", "port", "filePath", "airspy"};
+constexpr const char* kReceiverKeys[] = {"sourceType", "host", "port", "filePath", "airspy", "rtlSerial"};
 
 /** Whether @p system changes a field that decides what the row's imported site is. */
 bool
@@ -495,6 +495,7 @@ QVariant
 SavedSystemsModel::identityRoleValue(const Row& row, int role) {
     switch (role) {
         case AirspyRole: return row.airspy;
+        case RtlSerialRole: return row.rtlSerial;
         case UidRole: return row.uid;
         case NameRole: return row.name;
         case SourceTypeRole: return row.sourceType;
@@ -602,6 +603,7 @@ SavedSystemsModel::roleNames() const {
     roles.insert(PlaceRole, QByteArrayLiteral("place"));
     roles.insert(KeyConfiguredRole, QByteArrayLiteral("keyConfigured"));
     roles.insert(RememberTalkgroupsRole, QByteArrayLiteral("rememberTalkgroups"));
+    roles.insert(RtlSerialRole, QByteArrayLiteral("rtlSerial"));
     return roles;
 }
 
@@ -746,6 +748,7 @@ SavedSystemsModel::rowFromMap(const QVariantMap& map, const Row& base) {
     if (map.contains(QStringLiteral("biasTee"))) {
         row.biasTee = bias_tee_from_stored(map.value(QStringLiteral("biasTee")));
     }
+    map_take_string(map, QStringLiteral("rtlSerial"), &row.rtlSerial);
     map_take_string(map, QStringLiteral("extraArgs"), &row.extraArgs);
     map_take_string(map, QStringLiteral("filePath"), &row.filePath);
     map_take_string(map, QStringLiteral("decryptionProfileUid"), &row.decryptionProfileUid);
@@ -1029,6 +1032,7 @@ SavedSystemsModel::mapFromRow(const Row& row) const {
     map.insert(QStringLiteral("hangtime"), row.hangtime);
     map.insert(QStringLiteral("bandwidthKhz"), row.bandwidthKhz);
     map.insert(QStringLiteral("biasTee"), row.biasTee);
+    map.insert(QStringLiteral("rtlSerial"), row.rtlSerial);
     map.insert(QStringLiteral("extraArgs"), row.extraArgs);
     map.insert(QStringLiteral("filePath"), row.filePath);
     map.insert(QStringLiteral("lastHeard"), row.lastHeard);
@@ -1294,9 +1298,9 @@ SavedSystemsModel::groupKey(int row) const {
     if (!site_grouped(at.rrSid, at.rrSiteId)) {
         return QString();
     }
-    return site_group_key(at.rrSid,
-                          receiver_identity(at.sourceType, at.host, at.port,
-                                            at.airspy.value(QStringLiteral("serial")).toString(), at.filePath));
+    return site_group_key(at.rrSid, receiver_identity(at.sourceType, at.host, at.port,
+                                                      at.airspy.value(QStringLiteral("serial")).toString(),
+                                                      at.rtlSerial, at.filePath));
 }
 
 QVariantList
