@@ -5652,7 +5652,10 @@ suite runs under this compiler.
       `ENGINE_CLEANUP_AUDIO`, `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
-    error. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
+    error. No credential is printed (issue #931): the `--rdio-api-url` notice says only that a URL is configured (a URL
+    can carry `user:password@`), and `--print-config` renders its snapshot without `rdio_api_key`, `rdio_api_url` and
+    the RadioReference `app_key` (`bootstrap_print_config_drop_secrets()`), with or without `--show-keys`, which is for
+    radio keys only; a save to the private config file keeps them. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
     (`--dmr-chan-overrides`, `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`), so every pass over the raw argv --
     bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an
     option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. `--profile`'s name is any text

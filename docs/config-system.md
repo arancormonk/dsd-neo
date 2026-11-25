@@ -1116,7 +1116,7 @@ the reason and the mode question is asked again.
 | Flag | Description |
 |------|-------------|
 | `--config [PATH]` | Enable config loading; optionally specify path (uses default if omitted) |
-| `--print-config` | Print effective config (as INI) and exit |
+| `--print-config` | Print effective config (as INI) and exit; `rdio_api_key`, `rdio_api_url` and `[radioreference] app_key` are left out (a saved config keeps them) |
 
 ### Template and Validation
 

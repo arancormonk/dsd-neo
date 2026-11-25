@@ -13134,8 +13134,19 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
 /* --print-config of a bootstrap of @p ini plus the @p nargs arguments @p args (as bootstrap_with_ini() takes them):
    what it printed, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it and the bootstrap
    exited 0. */
+static int print_config_with_ini_err(const char* ini, const char* const* args, int nargs, char* out, size_t out_size,
+                                     char* err, size_t err_size);
+
 static int
 print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size) {
+    char err[4096];
+    return print_config_with_ini_err(ini, args, nargs, out, out_size, err, sizeof err);
+}
+
+/* print_config_with_ini(), also handing back what the bootstrap printed on stderr in @p err. */
+static int
+print_config_with_ini_err(const char* ini, const char* const* args, int nargs, char* out, size_t out_size, char* err,
+                          size_t err_size) {
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_print_config");
     if (fd < 0) {
@@ -13159,8 +13170,7 @@ print_config_with_ini(const char* ini, const char* const* args, int nargs, char*
     initOpts(opts);
     initState(state);
     int exit_rc = -1;
-    char err[4096];
-    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, sizeof err, opts, state);
+    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, err_size, opts, state);
     (void)fflush(stdout);
     (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
     dsd_close(saved);
@@ -13174,6 +13184,104 @@ print_config_with_ini(const char* ini, const char* const* args, int nargs, char*
         return -1;
     }
     return read_rc;
+}
+
+/* Issue #931 (B6/B9): no credential reaches stdout or stderr. The rdio API URL notice says only that one is
+   configured (a URL can carry user:password@), and --print-config leaves out rdio_api_key, rdio_api_url and the
+   RadioReference app_key, whichever side of the other options it stands and with or without --show-keys, which
+   reveals radio keys only. A save of the same session, to its private file, keeps all three and loads them back. */
+static int
+test_print_config_leaves_out_credentials(void) {
+    static const char ini[] = "[recording]\n"
+                              "rdio_mode = \"api\"\n"
+                              "rdio_api_url = \"https://ini-user:ini-pw@ini.invalid/api\"\n"
+                              "rdio_api_key = \"INI-RDIO-KEY\"\n"
+                              "\n"
+                              "[radioreference]\n"
+                              "username = \"rruser\"\n"
+                              "app_key = \"RR-APP-KEY\"\n";
+    static const char k_url[] = "https://cli-user:cli-pw@cli.invalid/api";
+    static const char k_key[] = "CLI-RDIO-KEY";
+    static const char* const k_secrets[] = {"ini-pw", "ini.invalid", "INI-RDIO-KEY", "RR-APP-KEY",
+                                            "cli-pw", "cli.invalid", "CLI-RDIO-KEY"};
+
+    static const struct {
+        const char* args[7];
+        int nargs;
+        int cli_url;
+    } cases[] = {
+        {{"--config", "{ini}", "--rdio-api-url", k_url, "--rdio-api-key", k_key, "--print-config"}, 7, 1},
+        {{"--print-config", "--rdio-api-url", k_url, "--rdio-api-key", k_key, "--config", "{ini}"}, 7, 1},
+        {{"--show-keys", "--config", "{ini}", "--rdio-api-url", k_url, "--print-config"}, 6, 1},
+        {{"--print-config", "--rdio-api-key", k_key, "--config", "{ini}", "--show-keys"}, 6, 0},
+        {{"--config", "{ini}", "--print-config"}, 3, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static char printed[65536];
+        static char err[16384];
+        if (print_config_with_ini_err(ini, cases[i].args, cases[i].nargs, printed, sizeof printed, err, sizeof err)
+            != 0) {
+            rc = 1;
+            continue;
+        }
+        if (strstr(printed, "rdio_mode = \"api\"\n") == NULL || strstr(printed, "username = \"rruser\"\n") == NULL
+            || strstr(printed, "rdio_api_url") != NULL || strstr(printed, "rdio_api_key") != NULL
+            || strstr(printed, "app_key") != NULL) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config keys:\n%s\n", i, printed);
+            rc = 1;
+        }
+        for (size_t k = 0; k < sizeof k_secrets / sizeof k_secrets[0]; k++) {
+            if (strstr(printed, k_secrets[k]) != NULL || strstr(err, k_secrets[k]) != NULL) {
+                DSD_FPRINTF(stderr, "case %zu: \"%s\" was printed\nstdout:\n%s\nstderr:\n%s\n", i, k_secrets[k],
+                            printed, err);
+                rc = 1;
+            }
+        }
+        if (cases[i].cli_url && strstr(err, "NOTICE: Rdio API URL configured\n") == NULL) {
+            DSD_FPRINTF(stderr, "case %zu: no URL notice:\n%s\n", i, err);
+            rc = 1;
+        }
+    }
+
+    /* The run's own save, to a private file, keeps the three and reloads them. */
+    const char* const run_args[] = {"--config", "{ini}", "--rdio-api-url", k_url, "--rdio-api-key", k_key};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+    dsdneoUserConfig* loaded = (dsdneoUserConfig*)calloc(1, sizeof(*loaded));
+    char save_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(save_path, sizeof save_path, "runtime_cli_secret_save");
+    if (!opts || !state || !snap || !loaded || fd < 0) {
+        free(opts);
+        free(state);
+        free(snap);
+        free(loaded);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    initOpts(opts);
+    initState(state);
+    int exit_rc = -1;
+    char err[4096];
+    const int boot = bootstrap_with_ini(ini, run_args, 6, &exit_rc, err, sizeof err, opts, state);
+    dsd_snapshot_opts_to_user_config(opts, state, snap);
+    if (boot != DSD_BOOTSTRAP_CONTINUE || dsd_user_config_save_atomic(save_path, snap) != 0
+        || dsd_user_config_load(save_path, loaded) != 0 || strcmp(loaded->rdio_api_url, k_url) != 0
+        || strcmp(loaded->rdio_api_key, k_key) != 0 || strcmp(loaded->rr_app_key, "RR-APP-KEY") != 0) {
+        DSD_FPRINTF(stderr, "a save did not keep the credentials: boot=%d url=%d key=%d app_key=%d\n%s\n", boot,
+                    strcmp(loaded->rdio_api_url, k_url) == 0, strcmp(loaded->rdio_api_key, k_key) == 0,
+                    strcmp(loaded->rr_app_key, "RR-APP-KEY") == 0, err);
+        rc = 1;
+    }
+    (void)remove(save_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    free(snap);
+    free(loaded);
+    return rc;
 }
 
 /* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
@@ -14546,6 +14654,7 @@ main(void) {
     rc |= test_wide_values_clamp_before_narrowing();
     rc |= test_rdio_system_id_range();
     rc |= test_enum_options_checked_per_occurrence();
+    rc |= test_print_config_leaves_out_credentials();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

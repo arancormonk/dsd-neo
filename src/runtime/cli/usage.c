@@ -26,7 +26,8 @@ dsd_cli_usage_section_intro(void) {
     printf("      --profile <name>       Load a named profile section (profile.<name>)\n");
     printf("      --list-profiles        List available profiles in the config and exit\n");
     printf("      --interactive-setup    Run interactive bootstrap wizard\n");
-    printf("      --print-config         Print the effective config (as INI) and exit\n");
+    printf("      --print-config         Print the effective config (as INI) and exit, leaving out the secrets\n");
+    printf("                             (rdio_api_key, rdio_api_url, the RadioReference app_key)\n");
     printf("      --dump-config-template Print a commented config template and exit\n");
     printf("      --validate-config [PATH] Validate a config file and exit\n");
     printf("      --strict-config        Treat --validate-config warnings as errors\n");
@@ -414,7 +415,7 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
-    printf("                   Default output remains redacted.\n");
+    printf("                   Default output remains redacted. API keys and the rdio API URL are never shown.\n");
     printf("\n");
     printf("      --dmr-debug-burst     Dump each synced DMR burst payload to stderr as hex\n");
     printf("                            ('Debug Demod +Sync' lines; RC bursts dump all 12 bytes incl. sync).\n");

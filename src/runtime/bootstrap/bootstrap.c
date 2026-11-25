@@ -488,6 +488,16 @@ bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv,
     }
 }
 
+/* --print-config's copy leaves out what can be a credential (issue #931): the rdio-scanner API key and URL (a URL can
+   carry user:password@) and the RadioReference app key, with or without --show-keys, which reveals radio keys only. A
+   save renders the full config to a private file (config_write_temp_file()). */
+static void
+bootstrap_print_config_drop_secrets(dsdneoUserConfig* eff) {
+    DSD_SECURE_ZERO(eff->rdio_api_key, sizeof eff->rdio_api_key);
+    DSD_SECURE_ZERO(eff->rdio_api_url, sizeof eff->rdio_api_url);
+    DSD_SECURE_ZERO(eff->rr_app_key, sizeof eff->rr_app_key);
+}
+
 static int
 bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, const dsd_state* state,
                               int* out_exit_rc) {
@@ -508,6 +518,7 @@ bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, co
     }
     dsdneoUserConfig eff;
     dsd_snapshot_opts_to_user_config(opts, state, &eff);
+    bootstrap_print_config_drop_secrets(&eff);
     dsd_user_config_render_ini(&eff, stdout);
     bootstrap_set_exit_rc(out_exit_rc, 0);
     return DSD_BOOTSTRAP_EXIT;

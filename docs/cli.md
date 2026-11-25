@@ -61,9 +61,11 @@ for a serial that is a plain number), and asks again, saying what to enter, when
 - `--no-config` is still accepted, but it does nothing, since a config loads only when asked for. dsd-neo says so:
   `NOTICE: --no-config has no effect: a config loads only with --config, a single .ini file argument, or
   DSD_NEO_CONFIG.` To start without a config, leave out `--config` and any `.ini` argument, and unset `DSD_NEO_CONFIG`.
-- `--print-config` prints the effective config as INI after all env/CLI overrides. An `rtl:`/`rtltcp:` input spec's
-  tuning (frequency, gain, PPM, DSP bandwidth, squelch, volume) is read into the `rtl_*` keys first, as the engine reads
-  it when the input opens.
+- `--print-config` prints the effective config as INI after all env/CLI overrides, without the secrets it holds:
+  `rdio_api_key`, `rdio_api_url` (a URL can carry a user name and password) and the `[radioreference] app_key` are left
+  out, with or without `--show-keys`, which reveals radio keys only. A saved config file keeps them. An
+  `rtl:`/`rtltcp:` input spec's tuning (frequency, gain, PPM, DSP bandwidth, squelch, volume) is read into the `rtl_*`
+  keys first, as the engine reads it when the input opens.
 - In Soapy mode, shorthand `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` is normalized first, so output shows
   `soapy_args` plus shared `rtl_*` tuning keys.
 - When config is enabled, the final settings are autosaved on exit. Explicit `--profile NAME` runs disable autosave for
@@ -433,8 +435,9 @@ Windows console runs:
   `--no-rdio-system-by-frequency` turns it off (the default); the last one given wins, over the config file too. INI:
   `[recording] rdio_system_by_frequency`. See [One rdio-scanner system per
   frequency](#one-rdio-scanner-system-per-frequency).
-- `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`)
-- `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`
+- `--rdio-api-url <url>` Set rdio-scanner API base URL (default `http://127.0.0.1:3000`). The URL is never printed, since
+  it can carry a user name and password: the log says `NOTICE: Rdio API URL configured`.
+- `--rdio-api-key <key>` Set API key for `/api/trunk-recorder-call-upload`. The key is never printed.
 - `--rdio-upload-timeout-ms <ms>` API timeout per call (default 5000 ms)
 - `--rdio-upload-retries <n>` API upload attempts per call (default 1)
 - `--rdio-api-delete-after-upload` Delete the per-call WAV after a successful API-only upload; files are kept while

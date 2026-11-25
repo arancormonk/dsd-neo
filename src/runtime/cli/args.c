@@ -2993,7 +2993,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
     if (rdio_api_url_cli) {                                                                                            \
         DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", rdio_api_url_cli);                           \
         opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';                                                      \
-        LOG_INFO("NOTICE: Rdio API URL: %s\n", opts->rdio_api_url);                                                    \
+        LOG_INFO("NOTICE: Rdio API URL configured\n"); /* a URL can carry credentials: never printed (issue #931) */   \
     }                                                                                                                  \
     if (rdio_api_key_cli) {                                                                                            \
         DSD_SNPRINTF(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", rdio_api_key_cli);                           \
