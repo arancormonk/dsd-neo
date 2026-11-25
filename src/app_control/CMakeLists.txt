@@ -34,6 +34,7 @@ target_sources(
         next_start_check.c
         notification_status.c
         radio_source_view.c
+        rtl_device_view.c
         rigctl_connect.c
         rigctl_passband.c
         rr_apply_verdict.c

@@ -1749,21 +1749,36 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
     rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
 
-    /* Device... opens a string prompt on the device the input names: an index, or a serial in the explicit serial=<sn>
-       form, so a serial of digits submitted again stays a serial; room for the longest serial with its prefix. */
+    /* Device... opens a string prompt on the device the spec the next RTL-SDR open reads names, never the device the
+       options last opened: an index, or a serial in the explicit serial=<sn> form, so a serial of digits submitted
+       again stays a serial; room for the longest serial with its prefix. */
+    const int saved_type = opts.audio_in_type;
     reset_capture();
-    opts.rtl_dev_index = 3;
-    opts.rtl_dev_serial[0] = '\0';
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:3:851.375M");
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "CACHED");
     rtl_set_dev(&ctx);
     rc |= expect_str("rtl device prompt title", g_prompt.title, "Device (index or serial)");
-    rc |= expect_str("rtl device prompt shows the index", g_prompt.prefill, "3");
+    rc |= expect_str("rtl device prompt shows the spec's index", g_prompt.prefill, "3");
     rc |= expect_int("rtl device prompt cap", (int)g_prompt.cap, DSD_RTL_SERIAL_MAX + 9);
     rc |= expect_int("rtl device prompt callback", g_prompt.str_cb == cb_rtl_dev_text, 1);
     rc |= expect_int("rtl device prompt user", g_prompt.user == (void*)&ctx, 1);
-    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "1090");
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:serial=1090:851.375M");
     reset_capture();
     rtl_set_dev(&ctx);
     rc |= expect_str("rtl device prompt shows a serial explicitly", g_prompt.prefill, "serial=1090");
+    /* Serial A ran, then an Airspy, then PCM: the RTL-SDR row would open a bare rtl (the Airspy spec is passed over),
+       index 0, so the prompt shows 0, not the cached serial A, and Enter confirms what would open. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "airspy");
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "A");
+    reset_capture();
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt on a bare rtl shows 0", g_prompt.prefill, "0");
+    opts.audio_in_type = saved_type;
+    opts.audio_in_dev[0] = '\0';
+    opts.radio_in_dev[0] = '\0';
     opts.rtl_dev_serial[0] = '\0';
     opts.rtl_dev_index = 0;
     reset_capture();

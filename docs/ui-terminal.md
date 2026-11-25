@@ -383,8 +383,13 @@ frame is waited for, as before.
 ### RTL-SDR device
 
 Input > RTL-SDR > `Device...` chooses the local RTL-SDR the input opens. Its prompt, `Device (index or serial)`, opens
-on the device the input names: its index (`0`), or its USB serial in the explicit form (`serial=00000001`). It reads
-the answer the way `-i rtl:<dev>:...` reads its device field:
+on the device the RTL-SDR spec that would open names: its index (`0`; `0` too for a bare `rtl`), or its USB serial in
+the explicit form (`serial=00000001`), never a device an earlier input opened, so Enter confirms what would open. It reads
+the answer the way `-i rtl:<dev>:...` reads its device field: A config whose
+`[input]` names another input while the radio runs stages that input for the next start; until you switch to it (or
+apply the config again), `Device...`, `Restart stream` and a gain or bandwidth edit answer
+`Refused: another input (pulse) is staged; switch to it, or apply the config again` and leave the running receiver
+alone.
 
 - A plain number with no leading zero (`0`, `1`, `12`) is an index. Indexes follow USB enumeration and can change
   between boots.

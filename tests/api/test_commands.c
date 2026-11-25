@@ -336,23 +336,23 @@ check_rr_apply_tetra_accepted(const char* what, const char* audio_in_dev) {
 #ifdef USE_RADIO
 /* rtl_set_dev {serial} reaches the decoder as RTL_SET_DEV_SERIAL, which the queue admits as a string command: a serial
    of digits stays a serial, and {value} selects by index again, dropping it. With PCM running, nothing reopens: the
-   selector waits for the next RTL-SDR start. */
+   spec the next RTL-SDR start opens names it. */
 static void
 check_rtl_set_dev_serial(void) {
     dsd_opts* opts = NULL;
     dsd_state* state = NULL;
     api_session_start(&opts, &state, AUDIO_IN_PULSE, "pulse", 48);
     api_execute_and_drain(opts, state, "rtl_set_dev", "{\"serial\":\"1090\"}");
-    if (strcmp(opts->rtl_dev_serial, "1090") != 0 || strcmp(state->ui_msg, "Applied: RTL device -> serial 1090") != 0) {
-        DSD_FPRINTF(stderr, "rtl_set_dev serial 1090: serial \"%s\", status message \"%s\"\n", opts->rtl_dev_serial,
+    if (strcmp(opts->radio_in_dev, "rtl:serial=1090") != 0
+        || strcmp(state->ui_msg, "Applied: RTL device -> serial 1090") != 0) {
+        DSD_FPRINTF(stderr, "rtl_set_dev serial 1090: spec \"%s\", status message \"%s\"\n", opts->radio_in_dev,
                     state->ui_msg);
         assert(0);
     }
     api_execute_and_drain(opts, state, "rtl_set_dev", "{\"value\":1}");
-    if (opts->rtl_dev_serial[0] != '\0' || opts->rtl_dev_index != 1
-        || strcmp(state->ui_msg, "Applied: RTL device -> index 1") != 0) {
-        DSD_FPRINTF(stderr, "rtl_set_dev value 1: serial \"%s\" index %d, status message \"%s\"\n",
-                    opts->rtl_dev_serial, opts->rtl_dev_index, state->ui_msg);
+    if (strcmp(opts->radio_in_dev, "rtl:1") != 0 || strcmp(state->ui_msg, "Applied: RTL device -> index 1") != 0) {
+        DSD_FPRINTF(stderr, "rtl_set_dev value 1: spec \"%s\", status message \"%s\"\n", opts->radio_in_dev,
+                    state->ui_msg);
         assert(0);
     }
     api_session_stop(opts, state);

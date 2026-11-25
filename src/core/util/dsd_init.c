@@ -93,6 +93,7 @@ init_opts_display_and_audio_defaults(dsd_opts* opts) {
     opts->scoperate = 15;
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
     opts->radio_in_dev[0] = 0;
+    opts->radio_running_dev[0] = 0;
     DSD_SNPRINTF(opts->audio_out_dev, sizeof opts->audio_out_dev, "%s", "pulse");
     opts->audio_in_fd = -1;
     opts->audio_out_fd = -1;

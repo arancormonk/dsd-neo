@@ -591,6 +591,11 @@ struct dsd_opts {
     /* The radio input spec a switch to a PCM input replaced in audio_in_dev, so Input > Switch source > RTL-SDR goes back
        to that backend (runtime only, never saved; issue #634). */
     char radio_in_dev[2048];
+    /* The spec of the radio stream running now while audio_in_dev names another input staged for the next start (a
+       config's [input] applied over the running stream, which keeps running), "" when the input in force is the one
+       that runs: every start that works clears it. A restart of the running receiver is refused while the two differ,
+       and a rollback reopens this one (runtime only, never saved). */
+    char radio_running_dev[2048];
     char iq_capture_path[2048];
     char iq_replay_path[2048];
     char mbe_out_path[2048]; //1024

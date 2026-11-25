@@ -52,6 +52,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
@@ -845,11 +846,21 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_rtl_create_captures += g_rtl_create_capture == 1;
     if (opts) {
         g_rtl_create_squelch_default = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
-        if (g_rtl_missing_serial[0] != '\0' && strcmp(opts->rtl_dev_serial, g_rtl_missing_serial) == 0) {
+        /* The dongle the open selects is the one its spec names (handed back to the options); a serial the test made
+           missing opens nothing. */
+        int index = 0;
+        char serial[DSD_RTL_SERIAL_MAX + 1];
+        serial[0] = '\0';
+        const dsd_rtl_dev_kind kind = dsd_rtl_spec_device(opts->audio_in_dev, &index, serial, sizeof serial);
+        if (kind == DSD_RTL_DEV_SERIAL && g_rtl_missing_serial[0] != '\0'
+            && strcmp(serial, g_rtl_missing_serial) == 0) {
             if (out_ctx) {
                 *out_ctx = NULL;
             }
             return -1;
+        }
+        if (g_rtl_create_result == 0) {
+            (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
         }
         g_rtl_opened_index = opts->rtl_dev_index;
         DSD_SNPRINTF(g_rtl_opened_serial, sizeof g_rtl_opened_serial, "%s", opts->rtl_dev_serial);
@@ -2345,13 +2356,14 @@ test_rtl_set_device_selects_and_rolls_back(void) {
     DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
     state->rtl_ctx = NULL;
     rc |= expect_int("staged on PCM", svc_rtl_set_device(opts, state, 0, "BBBB", NULL), 0);
-    rc |= expect_rtl_device("staged serial", opts, opts->radio_in_dev, 0, "BBBB", "rtl:serial=BBBB:851375000:22:0:24");
+    /* Staged, the spec alone names the dongle: the options keep the one that last opened until a start opens it. */
+    rc |= expect_str("staged serial", opts->radio_in_dev, "rtl:serial=BBBB:851375000:22:0:24");
     rc |= expect_int("staged starts nothing", g_rtl_create_calls == 0 && opts->rtl_needs_restart == 1, 1);
     char dest[sizeof opts->radio_in_dev];
     dsd_app_radio_row_destination(opts, dest, sizeof dest);
     rc |= expect_str("the switch back opens the staged serial", dest, "rtl:serial=BBBB:851375000:22:0:24");
     rc |= expect_int("staged index", svc_rtl_set_device(opts, state, 2, NULL, NULL), 0);
-    rc |= expect_rtl_device("staged index", opts, opts->radio_in_dev, 2, "", "rtl:2:851375000:22:0:24");
+    rc |= expect_str("staged index", opts->radio_in_dev, "rtl:2:851375000:22:0:24");
     rc |= expect_str("PCM input untouched", opts->audio_in_dev, "pulse");
 
     /* A config applied on PCM staged its RTL-SDR spec in audio_in_dev, which the switch back opens before radio_in_dev
@@ -2359,8 +2371,7 @@ test_rtl_set_device_selects_and_rolls_back(void) {
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
     DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=CCCC:460125000:22:0:24");
     rc |= expect_int("staged over a config's spec", svc_rtl_set_device(opts, state, 0, "BBBB", NULL), 0);
-    rc |= expect_rtl_device("the config's spec names B", opts, opts->audio_in_dev, 2, "BBBB",
-                            "rtl:serial=BBBB:851375000:22:0:24");
+    rc |= expect_str("the config's spec names B", opts->audio_in_dev, "rtl:serial=BBBB:851375000:22:0:24");
     rc |=
         expect_str("the spec the switch passes over is left", opts->radio_in_dev, "rtl:serial=CCCC:460125000:22:0:24");
     dsd_app_radio_row_destination(opts, dest, sizeof dest);
