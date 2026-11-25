@@ -1586,6 +1586,14 @@ ui_mark_operator_tuned(dsd_state* state) {
     ui_rxid_guard_leave(taken);
 }
 
+/* The spec of the radio that runs: the one recorded under a staged input (@p running_dev, dsd_opts::radio_running_dev),
+   else the input in force (@p audio_in_dev). Whether a config's [input] reopens the radio, or applies to it live, is
+   decided against the receiver that runs, never against a name merely staged for the next start. Every build: the config's reopen check reads it. */
+static const char*
+cfg_running_radio_dev(const char* audio_in_dev, const char* running_dev) {
+    return running_dev[0] != '\0' ? running_dev : audio_in_dev;
+}
+
 #ifdef USE_RADIO
 
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
@@ -1612,14 +1620,6 @@ ui_set_failed_restart_toast(dsd_state* state, const dsd_opts* opts, int capture_
         return;
     }
     ui_set_toast(state, 4, "Failed: %s", what);
-}
-
-/* The spec of the radio that runs: the one recorded under a staged input (@p running_dev, dsd_opts::radio_running_dev),
-   else the input in force (@p audio_in_dev). Whether a config's [input] reopens the radio, or applies to it live, is
-   decided against the receiver that runs, never against a name merely staged for the next start. */
-static const char*
-cfg_running_radio_dev(const char* audio_in_dev, const char* running_dev) {
-    return running_dev[0] != '\0' ? running_dev : audio_in_dev;
 }
 
 /* The receive input a stream start reads, as a change that rewrites it finds it (issue #578): the device string and
