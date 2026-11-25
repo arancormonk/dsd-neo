@@ -1488,47 +1488,6 @@ test_running_radio_config_still_applies(void) {
     return rc;
 }
 
-/*
- * A file whose name reads as a radio spec (here `rtl`, the bare RTL-SDR spec) is named by its relative path once the
- * input switch opens it: the RTL-SDR row reads a radio spec in audio_in_dev as one staged for it, so the switch back
- * opened index 0 in place of the dongle that ran (serial A).
- */
-static int
-test_file_named_like_a_radio_spec_stays_a_file(void) {
-    test_runtime runtime;
-    if (alloc_test_runtime(&runtime) != 0) {
-        return 1;
-    }
-    dsd_opts* opts = runtime.opts;
-    dsd_state* state = runtime.state;
-    static const char* const kRtl = "rtl:serial=AAAA:851375000:22:0:24:0:2";
-    int rc = expect_true("the RTL-SDR runs", start_radio_with_capture(opts, state, kRtl) == 0);
-    opts->iq_capture_requested = 0;
-    dsd_test_temp_cwd cwd;
-    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cfg_spec_named_file") != 0) {
-        free_test_runtime(&runtime);
-        return 1;
-    }
-    static const unsigned char k_raw[32] = {0};
-    rc |= write_test_file("rtl", k_raw, sizeof k_raw);
-    dsd_app_command_submit(DSD_APP_CMD_INPUT_WAV_SET, "rtl", sizeof "rtl");
-    (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the switch opens the file by its relative path", opts->audio_in_type == AUDIO_IN_WAV
-                                                                            && strcmp(opts->audio_in_dev, "./rtl") == 0
-                                                                            && strcmp(opts->radio_in_dev, kRtl) == 0);
-    g_wrap_opened_serial[0] = '\0';
-    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
-    (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the RTL-SDR row opens serial A again", opts->audio_in_type == AUDIO_IN_RTL
-                                                                  && strcmp(g_wrap_opened_serial, "AAAA") == 0
-                                                                  && strcmp(opts->audio_in_dev, kRtl) == 0);
-    closeAudioInDevice(opts);
-    (void)remove("rtl");
-    rc |= expect_int_eq("spec-named file temp directory removed", dsd_test_temp_cwd_leave(&cwd), 0);
-    free_test_runtime(&runtime);
-    return rc;
-}
-
 /* An active P25 call on slot 0, as the carrier on air carries it. */
 static void
 observe_active_call(dsd_state* state) {
@@ -4494,7 +4453,6 @@ main(void) {
     rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_pcm_config_over_a_running_radio_is_refused();
     rc |= test_running_radio_config_still_applies();
-    rc |= test_file_named_like_a_radio_spec_stays_a_file();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();
     rc |= test_stream_restart_on_another_source_is_a_carrier_boundary();

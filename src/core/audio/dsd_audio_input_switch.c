@@ -367,11 +367,7 @@ switch_input_name(const dsd_opts* opts, const dsd_audio_input_request* req, cons
                 DSD_SNPRINTF(name, name_size, "%s", "pulse");
             }
             break;
-        default:
-            /* A file whose name reads as a radio spec (`rtl:serial=BBBB`, `airspy`) is named by its relative path, so
-               the input name stays a file: the radio rows read a radio spec there as one staged for them. */
-            DSD_SNPRINTF(name, name_size, "%s%s", dsd_opts_audio_in_dev_is_radio_spec(path) ? "./" : "", path);
-            break;
+        default: DSD_SNPRINTF(name, name_size, "%s", path); break;
     }
 }
 
