@@ -13,6 +13,7 @@
 #include <dsd-neo/core/enc_lockout.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/key_presence.h>
+#include <dsd-neo/core/nxdn_channel_access.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
@@ -1715,6 +1716,54 @@ test_scch_undefined_content_confirms_nothing(void) {
         }
         rc |= expect_int(c->tag, nxdn_confirm_is_confirmed(state), (int)c->valid);
         free_fixture(opts, state);
+    }
+    return rc;
+}
+
+/*
+ * An SCCH handed over with no frame decoding (nxdn_deperm_scch_soft(), dsd_state::nxdn_frame_channel NONE) leaves the
+ * carrier's Type-D layout evidence (dsd_nxdn_type_d_layout_fresh()) only as the frame does (nxdn_decode_frame_channels(),
+ * issue #903): of defined content, on a confirmed transmission. A reserved-prefix SCCH that passes its CRC-7 leaves none,
+ * before the transmission is confirmed or after; one of defined content leaves it once the transmission is confirmed,
+ * and not before.
+ */
+static int
+test_standalone_scch_layout_evidence_is_gated(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    uint8_t payload[25];
+    uint8_t bits[60];
+    uint8_t reliab[60];
+    int rc = 0;
+    DSD_MEMSET(reliab, 255, sizeof(reliab));
+    const scch_content_case* reserved = &k_scch_content_cases[0];
+    const scch_content_case* valid = &k_scch_content_cases[1];
+    for (int confirmed = 0; confirmed < 2; confirmed++) {
+        for (int defined = 0; defined < 2; defined++) {
+            if (alloc_fixture(&opts, &state) != 0) {
+                return 1;
+            }
+            state->synctype = DSD_SYNC_NXDN_POS;
+            nxdn_confirm_reset(state);
+            if (confirmed) {
+                make_scch_content_case(payload, valid);
+                make_scch_soft_bits(bits, payload, 0);
+                for (uint32_t frame = 0U; frame < 3U; frame++) {
+                    nxdn_confirm_note_frame_start(state, 1000U + (frame * 192U), frame == 0U ? 1 : 0, 0);
+                    nxdn_confirm_begin_frame(state);
+                    (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+                    nxdn_confirm_end_frame(opts, state);
+                }
+                rc |= expect_int("standalone-scch-confirmed", nxdn_confirm_is_confirmed(state), 1);
+                state->nxdn_location_category[0] = '\0'; // what the confirming SCCHs left is not this case's
+            }
+            make_scch_content_case(payload, defined ? valid : reserved);
+            make_scch_soft_bits(bits, payload, 0);
+            (void)nxdn_deperm_scch_soft(opts, state, bits, reliab, 1U);
+            rc |= expect_int(defined ? "standalone-scch-defined-layout" : "standalone-scch-reserved-prefix-no-layout",
+                             dsd_nxdn_type_d_layout_fresh(state), confirmed && defined);
+            free_fixture(opts, state);
+        }
     }
     return rc;
 }
@@ -3467,6 +3516,7 @@ main(void) {
     rc |= test_facch3_udch2_split_block_storage_and_crc_gate();
     rc |= test_scch_crc_gates_scrambler_reload();
     rc |= test_scch_undefined_content_confirms_nothing();
+    rc |= test_standalone_scch_layout_evidence_is_gated();
     rc |= test_nxdn_history_mi_only_from_received_iv();
     rc |= test_sacch_superframe_position_stays_with_the_frame();
     rc |= test_nxdn_keeps_the_shared_register();

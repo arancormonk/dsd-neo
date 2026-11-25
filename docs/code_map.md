@@ -13198,8 +13198,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   reading, a CCH_INFO in it notwithstanding: a CCH_INFO or SITE_INFO on a frame read as Type-D is printed only
   (`nxdn_frame_speaks_for_type_c_site()`: no Type-C note, channel access parameters, site latch, control channel,
   return frequency or control-channel anchor). The frame's "Type-D" category, the carrier's layout evidence, is noted at the frame's end only from its
-  own SCCH of defined content on a confirmed transmission (`dsd_nxdn_note_type_d_layout()`); nothing of the frame is
-  rolled back.
+  own SCCH of defined content on a confirmed transmission (`dsd_nxdn_note_type_d_layout()`); an SCCH handed over with
+  no frame decoding (`nxdn_deperm_scch_soft()`, `nxdn_scch_prepare_type_d()`) notes it under the same rule
+  (`test_standalone_scch_layout_evidence_is_gated()`); nothing of the frame is rolled back.
   Noting Type-C drops the IDAS System ID and Site Code (state and received identity) a composite SRV_INFO read as
   Type-D left, and the "Type-D" category an SCCH misread on such a frame left (the VCALL and IV parsers read it as the
   IDAS layout). The context is the carrier's: an operator move (`dsd_engine_carrier_boundary()`, never

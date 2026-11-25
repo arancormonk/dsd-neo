@@ -3988,8 +3988,10 @@ test_type_d_scch_reserved_prefix_names_no_unit(void) {
 
 /*
  * A message with the reserved prefix changes nothing past its own frame (NXDN TS 1-E Table 9.1-1): not the area the
- * received identity and the terminal keep, not the control channel sync clock, and it expires no recent activity. The
- * frame still reads as Type-D, the layout its FACCH1 needs.
+ * received identity and the terminal keep, not the control channel sync clock, and it expires no recent activity. Nor
+ * does it leave the carrier's Type-D layout evidence (nxdn_scch_prepare_type_d(), issue #903): a frame reads its own
+ * layout from its classification (dsd_state::nxdn_frame_type_d), never from content TS 1-E does not define. The control
+ * with prefix 3 leaves it.
  */
 static int
 test_type_d_scch_reserved_prefix_keeps_no_state(void) {
@@ -4024,7 +4026,7 @@ test_type_d_scch_reserved_prefix_keeps_no_state(void) {
     write_scch_identity(message, 0U, 6U, 31U, 1234U, 0U);
     message[2] = 1U;
     NXDN_decode_scch(opts, state, message, 1U);
-    rc |= expect_string("scch-prefix31-layout", state->nxdn_location_category, "Type-D");
+    rc |= expect_string("scch-prefix31-no-layout", state->nxdn_location_category, "");
     rc |= expect_int("scch-prefix31-area-kept", (int)state->nxdn_last_ran, 0);
     rc |= expect_int("scch-prefix31-rxid-area", state->rx_id.nxdn_idas_area, 0);
     rc |= expect_int("scch-prefix31-cc-sync", (int)state->last_cc_sync_time, 5);
@@ -4040,6 +4042,7 @@ test_type_d_scch_reserved_prefix_keeps_no_state(void) {
     rc |= expect_int("scch-prefix3-area", (int)state->nxdn_last_ran, 1);
     rc |= expect_int("scch-prefix3-rxid-area", state->rx_id.nxdn_idas_area, 1);
     rc |= expect_int("scch-prefix3-activity-expired", recent_activity_entries(state), 1);
+    rc |= expect_string("scch-prefix3-layout", state->nxdn_location_category, "Type-D");
 
     dsd_decode_clock_use_test(start_ns);
     type_d_scch_free(opts, state);
