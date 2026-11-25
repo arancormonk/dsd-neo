@@ -517,6 +517,9 @@ bootstrap_print_config_drop_secrets(dsdneoUserConfig* eff) {
     DSD_SECURE_ZERO(eff->rdio_api_key, sizeof eff->rdio_api_key);
     DSD_SECURE_ZERO(eff->rdio_api_url, sizeof eff->rdio_api_url);
     DSD_SECURE_ZERO(eff->rr_app_key, sizeof eff->rr_app_key);
+    if (eff->rr_username[0] == '\0') {
+        eff->has_radioreference = 0; /* no empty [radioreference] header saying a key exists */
+    }
 }
 
 static int

@@ -13303,6 +13303,19 @@ test_print_config_leaves_out_credentials(void) {
         }
     }
 
+    /* A [radioreference] holding only the app key prints no section at all: an empty header would say a key is set. */
+    {
+        static const char key_only_ini[] = "[radioreference]\napp_key = \"RR-ONLY-KEY\"\n";
+        const char* const key_only_args[] = {"--config", "{ini}", "--print-config"};
+        static char key_only_printed[65536];
+        if (print_config_with_ini(key_only_ini, key_only_args, 3, key_only_printed, sizeof key_only_printed) != 0
+            || strstr(key_only_printed, "[radioreference]") != NULL
+            || strstr(key_only_printed, "RR-ONLY-KEY") != NULL) {
+            DSD_FPRINTF(stderr, "--print-config with only an RR app key:\n%s\n", key_only_printed);
+            rc = 1;
+        }
+    }
+
     /* The run's own save, to a private file, keeps the three and reloads them. */
     const char* const run_args[] = {"--config", "{ini}", "--rdio-api-url", k_url, "--rdio-api-key", k_key};
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -13349,6 +13362,7 @@ typedef struct {
     int system_id;
     int sample_rate;
     char key[256];
+    char url[1024];
     char err[4096];
 } boot_values_run;
 
@@ -13368,6 +13382,7 @@ boot_values(const char* ini, const char* const* args, int nargs, boot_values_run
     run->system_id = opts->rdio_system_id;
     run->sample_rate = opts->wav_sample_rate;
     DSD_SNPRINTF(run->key, sizeof run->key, "%s", opts->rdio_api_key);
+    DSD_SNPRINTF(run->url, sizeof run->url, "%s", opts->rdio_api_url);
     close_parse_outputs(opts);
     freeState(state);
     free(opts);
@@ -13412,14 +13427,81 @@ test_bootstrap_steps_over_option_values(void) {
         if (boot_values(ini, cases[i].args, cases[i].nargs, &run) != 0) {
             return 1;
         }
+        const int url_ok = strcmp(cases[i].args[0], "--rdio-api-url") != 0 || strcmp(run.url, "--print-config") == 0;
         if (run.boot != cases[i].want_boot || run.system_id != cases[i].want_system
-            || strcmp(run.key, cases[i].want_key) != 0) {
+            || strcmp(run.key, cases[i].want_key) != 0 || !url_ok) {
             DSD_FPRINTF(stderr,
-                        "%s: bootstrap rc=%d exit=%d system=%d key=\"%s\" (want rc %d system %d key \"%s\")\n%s\n",
-                        cases[i].what, run.boot, run.exit_rc, run.system_id, run.key, cases[i].want_boot,
-                        cases[i].want_system, cases[i].want_key, run.err);
+                        "%s: bootstrap rc=%d exit=%d system=%d key=\"%s\" url=\"%s\" (want rc %d system %d)\n%s\n",
+                        cases[i].what, run.boot, run.exit_rc, run.system_id, run.key, run.url, cases[i].want_boot,
+                        cases[i].want_system, run.err);
             rc = 1;
         }
+    }
+
+    /* A bare --config, followed by another option, takes no value and loads the config DSD_NEO_CONFIG names; the
+       option after it is still read as one ("--rdio-api-key k", "-s 96000"). */
+    {
+        char env_ini[1024] = "";
+        if (test_create_temp_ini_with_contents(ini, env_ini, sizeof env_ini) != 0) {
+            return 1;
+        }
+
+        static const struct {
+            const char* args[4];
+            int argc;
+            const char* want_key;
+            int want_rate;
+        } bare[] = {
+            {{"dsd-neo", "--config", "--rdio-api-key", "k"}, 4, "k", 48000},
+            {{"dsd-neo", "--config", "-s", "96000"}, 4, "", 96000},
+        };
+
+        for (size_t i = 0; i < sizeof bare / sizeof bare[0]; i++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                (void)remove(env_ini);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            (void)dsd_test_setenv("DSD_NEO_CONFIG", env_ini, 1);
+            (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+            char storage[4][64];
+            char* argv[5] = {NULL};
+            for (int a = 0; a < bare[i].argc; a++) {
+                DSD_SNPRINTF(storage[a], sizeof storage[a], "%s", bare[i].args[a]);
+                argv[a] = storage[a];
+            }
+            int argc_effective = 0;
+            int exit_rc = -1;
+            char err[4096] = "";
+            dsd_test_capture_stderr cap;
+            int boot = -101;
+            if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse_bare_config") == 0) {
+                boot = dsd_runtime_bootstrap(bare[i].argc, argv, opts, state, &argc_effective, &exit_rc);
+                if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, err, sizeof err) != 0) {
+                    boot = -102;
+                }
+                (void)remove(cap.path);
+            }
+            (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+            if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_system_id != 77
+                || strcmp(opts->rdio_api_key, bare[i].want_key) != 0 || opts->wav_sample_rate != bare[i].want_rate
+                || strstr(err, "Loaded user config from") == NULL) {
+                DSD_FPRINTF(stderr, "bare --config %s %s: rc=%d system=%d key=\"%s\" rate=%d\n%s\n", bare[i].args[2],
+                            bare[i].args[3], boot, opts->rdio_system_id, opts->rdio_api_key, opts->wav_sample_rate,
+                            err);
+                rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+        (void)remove(env_ini);
     }
 
     /* A key "--" is a value: the --print-config after it is the option, and the run prints. */

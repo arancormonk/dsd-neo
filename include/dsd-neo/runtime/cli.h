@@ -74,10 +74,14 @@ int dsd_cli_option_takes_free_value(const char* arg);
 
 /** @brief How the parser reads a long option's value (dsd_cli_long_option_arity()). */
 typedef enum {
-    DSD_CLI_LONG_UNKNOWN = 0,         /**< not a long option the parser knows */
-    DSD_CLI_LONG_ALONE = 1,           /**< takes no separate value: a switch, or its "--name=value" form */
-    DSD_CLI_LONG_NEXT = 2,            /**< takes the next argument, whatever it is */
-    DSD_CLI_LONG_NEXT_NON_OPTION = 3, /**< takes the next argument unless that starts with '-' */
+    DSD_CLI_LONG_UNKNOWN = 0, /**< not a long option the parser knows */
+    DSD_CLI_LONG_ALONE = 1,   /**< takes no separate value: a switch, or its "--name=value" form */
+    DSD_CLI_LONG_NEXT = 2,    /**< takes the next argument, whatever it is */
+    /** takes the next argument unless that starts with '-'. Only --config and --validate-config parse that way; the
+        others of this kind (--api, --api-bind, --rtl-udp-control, --rtl-udp-control-bind, --lrrp-extra-port,
+        --dmr-udp-comp-port, --tetra-net, --tetra-key) are read by the parser with the next argument whatever it is
+        and validate it, so a value starting with '-' fails the parse (exit code 1) */
+    DSD_CLI_LONG_NEXT_NON_OPTION = 3,
 } dsd_cli_long_arity;
 
 /**
