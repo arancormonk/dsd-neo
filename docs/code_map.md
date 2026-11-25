@@ -6300,7 +6300,8 @@ suite runs under this compiler.
     it just read, as the engine's pre-open check does: `interactive_am_refused()` in
     `src/runtime/bootstrap/interactive.c`, whose RTL-SDR question, `prompt_rtl_device()`, reads an index or a USB
     serial with `dsd_rtl_device_field_parse()`, writes it as the spec's device field, and asks again on an answer
-    that names neither); once an input is
+    that names neither; every answer is one whole line, the rest of a line too long for the reader dropped by
+    `read_answer_line()`, so its tail is never read as the next answer); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
     (`dsd_opts_input_is_radio()`): an input switch names the input it opens (`tcp:<host>:<port>` and the like, issue
     #634), but a replay session switched to Pulse keeps its replay request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.

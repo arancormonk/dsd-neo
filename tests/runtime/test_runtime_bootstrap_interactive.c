@@ -323,6 +323,23 @@ test_tetra_entry_selects_tetra(void) {
     return rc;
 }
 
+/* Run the wizard on @p script with heap options and state, and check the input spec it wrote. */
+static int
+run_rtl_device_script(const char* tag, const char* script, const char* want_spec) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    int rc = 1;
+    if (opts && state) {
+        reset_harness();
+        rc = with_stdin_text(script, dsd_bootstrap_interactive, opts, state);
+        rc |= expect_str(tag, opts->audio_in_dev, want_spec);
+        rc |= expect_int(tag, g_last_decode_mode, DSDCFG_MODE_DMR);
+    }
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* The RTL-SDR question takes an index or a USB serial, read as `-i rtl:<dev>` reads it: a serial goes into the spec in
  * the explicit serial=<sn> form (so one of digits stays a serial), Enter is index 0, and an answer that names neither
  * (a ':' in it, a space at either end) says what to enter and asks again, never opening index 0 in its place. */
@@ -341,17 +358,24 @@ test_rtl_device_takes_an_index_or_a_serial(void) {
 
     int rc = 0;
     for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
-        static dsd_opts opts;
-        static dsd_state state;
-        reset_harness();
-        DSD_MEMSET(&opts, 0, sizeof opts);
-        DSD_MEMSET(&state, 0, sizeof state);
         char script[256];
         DSD_SNPRINTF(script, sizeof script, "2\n851.375M\n%s22\n0\n48\n0\n1\n4\nn\nn\nn\n", k_cases[i].answers);
-        rc |= with_stdin_text(script, dsd_bootstrap_interactive, &opts, &state);
-        rc |= expect_str(k_cases[i].answers, opts.audio_in_dev, k_cases[i].spec);
-        rc |= expect_int(k_cases[i].answers, g_last_decode_mode, DSDCFG_MODE_DMR);
+        rc |= run_rtl_device_script(k_cases[i].answers, script, k_cases[i].spec);
     }
+    /* A pasted line longer than the wizard reads at once is one answer, refused whole: its tail (`1`) is dropped with
+       it, never read as the next answer, and the question is asked again. */
+    static const char k_head[] = "2\n851.375M\n";
+    static const char k_tail[] = "1\n2\n22\n0\n48\n0\n1\n4\nn\nn\nn\n";
+    const size_t long_len = 1023U;
+    char* script = (char*)calloc(1U, sizeof k_head + long_len + sizeof k_tail);
+    if (!script) {
+        return 1;
+    }
+    DSD_MEMCPY(script, k_head, sizeof k_head - 1U);
+    DSD_MEMSET(script + sizeof k_head - 1U, 'X', long_len);
+    DSD_MEMCPY(script + sizeof k_head - 1U + long_len, k_tail, sizeof k_tail);
+    rc |= run_rtl_device_script("overlong device answer", script, "rtl:2:851.375M:22:0:48:0:1");
+    free(script);
     return rc;
 }
 

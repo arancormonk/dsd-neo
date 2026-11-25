@@ -50,11 +50,27 @@ trim_newline(char* s) {
     }
 }
 
+/* One answer: the line read into @p buf (at most @p size - 1 bytes, its newline dropped), NULL at end of input. Whatever
+   is left of a line longer than @p buf is read and dropped, so the next question never takes the rest of this answer
+   as its own (a pasted line of 1023 X's then `1` was refused, then read again as index 1). */
+static char*
+read_answer_line(char* buf, int size) {
+    if (!fgets(buf, size, stdin)) {
+        return NULL;
+    }
+    if (!strchr(buf, '\n')) {
+        int ch = 0;
+        while ((ch = getchar()) != EOF && ch != '\n') {}
+    }
+    trim_newline(buf);
+    return buf;
+}
+
 static int
 prompt_yes_no(const char* q, int def_yes) {
     char buf[32];
     DSD_FPRINTF(stderr, "%s [%c/%c]: ", q, def_yes ? 'Y' : 'y', def_yes ? 'n' : 'N');
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         return def_yes;
     }
     trim_newline(buf);
@@ -74,7 +90,7 @@ static int
 prompt_int(const char* q, int def_val, int min_val, int max_val) {
     char buf[64];
     DSD_FPRINTF(stderr, "%s [%d]: ", q, def_val);
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         return def_val;
     }
     trim_newline(buf);
@@ -102,7 +118,7 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
         return;
     }
     DSD_FPRINTF(stderr, "%s [%s]: ", q, (def_val && *def_val) ? def_val : "");
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         if (def_val) {
             DSD_SNPRINTF(out, out_sz, "%s", def_val);
         } else {
