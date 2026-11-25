@@ -1577,6 +1577,9 @@ and never counts. A start takes the dongle its final arguments name
 the saved serial: a connection to another dongle is switched for it at once
 while permission holds, or the start fails with the broker's reason and a
 permission prompt for it. The engine checks the descriptor's serial again.
+When a saved system names one serial and its Advanced arguments name another,
+the app still asks for the saved one before the start, so give the serial in
+one place only.
 
 ### Receiver status on Listen
 

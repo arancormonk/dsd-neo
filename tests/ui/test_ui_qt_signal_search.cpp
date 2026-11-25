@@ -3234,6 +3234,47 @@ main(int argc, char** argv) {
     assert(!rtlSystem.contains(QStringLiteral("airspy")));
     rtl[QStringLiteral("biasTee")] = false;
     assert(model.systemForHit(rtl, {}).value(QStringLiteral("biasTee")).toInt() == 0);
+    // A detection recorded on a dongle chosen by serial saves as a system for that dongle, by the decoder's device field
+    // grammar: serial=<sn> or any text that is no canonical index is a serial; an index, no device field or a field
+    // the grammar refuses names none. The rtl_tcp receiver above names none either.
+    assert(!rtlSystem.contains(QStringLiteral("rtlSerial")));
+
+    const struct {
+        const char* spec;
+        const char* serial; // nullptr: the field stays unset
+    } recorded[] = {
+        {"rtl:serial=B:463.55M:0:0:48", "B"},
+        {"rtl:00000001:463.55M", "00000001"},
+        {"rtl:serial=1090", "1090"},
+        {"rtl:AbC 1:463.55M", "AbC 1"},
+        {"rtl:0:463.55M:0:0:48", nullptr},
+        {"rtl:12", nullptr},
+        {"rtl", nullptr},
+        {"rtl::463.55M", nullptr},
+        {"rtl:serial=:463.55M", nullptr},
+    };
+
+    for (const auto& c : recorded) {
+        auto usb = frozen;
+        usb[QStringLiteral("inputSpec")] = QString::fromLatin1(c.spec);
+        const auto usbSystem = model.systemForHit(usb, {{QStringLiteral("rtlSerial"), QStringLiteral("stale")}});
+        if (usbSystem.value(QStringLiteral("sourceType")) != QStringLiteral("usb")
+            || (c.serial ? usbSystem.value(QStringLiteral("rtlSerial")).toString() != QLatin1String(c.serial)
+                         : usbSystem.contains(QStringLiteral("rtlSerial")))) {
+            std::fprintf(stderr, "systemForHit(spec \"%s\"): rtlSerial '%s'\n", c.spec,
+                         qPrintable(usbSystem.value(QStringLiteral("rtlSerial")).toString()));
+            assert(false);
+        }
+    }
+    {
+        auto usb = frozen;
+        usb[QStringLiteral("inputSpec")] = QStringLiteral("rtl:serial=B:463.55M:0:0:48");
+        dsd_qt::SessionArgsError serialError = dsd_qt::SessionArgsError::None;
+        const QStringList serialArgs = dsd_qt::session_args_build(model.systemForHit(usb, {}), {}, &serialError);
+        assert(serialError == dsd_qt::SessionArgsError::None
+               && serialArgs.value(serialArgs.indexOf(QStringLiteral("-i")) + 1)
+                      .startsWith(QStringLiteral("rtl:serial=B:")));
+    }
     // The detection's tuner gain becomes the whole-dB gain override a saved session starts with: the -i spec's gain
     // field, where 0 is the tuner's AGC and a manual gain is 1 to 49 dB. AGC stays AGC, and a manual gain stays manual
     // at the nearest whole dB in that range, never truncated: a manual 0 or 0.9 dB must not become AGC.
