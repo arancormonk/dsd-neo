@@ -1301,12 +1301,12 @@ nxdn_dcall_watchdog(dsd_opts* opts, dsd_state* state, const char* event_text) {
     const uint32_t source = (uint32_t)state->dmr_lrrp_source[0];
     const uint32_t target = (uint32_t)state->dmr_lrrp_target[0];
     dsd_call_observation observation = dsd_call_observation_data(state->lastsynctype, 0U, source, target);
-    if (state->nxdn_data_type_d != 0U) {
+    uint8_t source_prefix = 0U;
+    uint8_t target_prefix = 0U;
+    if (nxdn_data_call_prefixes(state, &source_prefix, &target_prefix)) {
         /* A Type-D header's IDs are the 11-bit ones; the row names them under their prefixes (issue #903). */
-        nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), state->nxdn_data_source_prefix,
-                           (uint16_t)source);
-        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), state->nxdn_data_target_prefix,
-                           (uint16_t)target);
+        nxdn_typed_id_text(observation.source_text, sizeof(observation.source_text), source_prefix, (uint16_t)source);
+        nxdn_typed_id_text(observation.target_text, sizeof(observation.target_text), target_prefix, (uint16_t)target);
     }
     /* The line -J and the terminal history keep: a party by its text where it has one, else its number. */
     char src_buf[16];

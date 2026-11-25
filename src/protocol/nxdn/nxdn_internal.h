@@ -50,8 +50,11 @@ int nxdn_data_call_header_bound(const dsd_state* state);
 /* Drop the header and its binding (a failed channel CRC, a rejected header): no payload assembles under it. */
 void nxdn_data_call_drop_header(dsd_state* state);
 /* Keep a data call header's Type-D Home Repeater / Prefixes (@p type_d 0: a Type-C or conventional header, none) for the
- * data call's row (dsd_state::nxdn_data_type_d); dropping the header forgets them. */
+ * data call's row, in the NXDN module's own state extension; dropping the header forgets them. */
 void nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix);
+/* 1 when the bound data call header is a Type-D one, its prefixes in @p source_prefix and @p target_prefix (either may
+ * be NULL); 0 for a Type-C or conventional header, or none. */
+int nxdn_data_call_prefixes(const dsd_state* state, uint8_t* source_prefix, uint8_t* target_prefix);
 void nxdn_prepare_sacch_payload_seed(dsd_state* state, int part_of_frame);
 
 /* Whether the canonical call on slot 0 is an NXDN call: the only one an NXDN message may end or give crypto. Another

@@ -3336,12 +3336,14 @@ suite runs under this compiler.
   monitor's audio chains, and 11 `DSD_STATE_EXT_DSP_ANALOG_SINK`, the analog sinks' converters to the sink rate;
   app-control owns 16 and 18, from the ui range: 16 is `DSD_STATE_EXT_APP_SCAN_ENTRY`, the frequency entry whose go-to
   still waits on its tune (issue #644), and 18 `DSD_STATE_EXT_APP_DMR_T3_VIEW`, set only on the UI snapshots, to the DMR
-  Tier III channel record they carry (discussion #900, below); protocols own 24-31, among them 30,
+  Tier III channel record they carry (discussion #900, below); the NXDN module owns 19, also from the ui range since the
+  protocol range is full: `DSD_STATE_EXT_PROTO_NXDN_DATA_CALL`, the bound data call header's Type-D prefixes (issue
+  #903, `src/protocol/nxdn/nxdn_data_call.c`); protocols own 24-31, among them 30,
   `DSD_STATE_EXT_PROTO_DSTAR_SLOW_DATA`, the D-STAR slow-data assemblies (`src/protocol/dstar/dstar_sd_state.h`), and
   31, `DSD_STATE_EXT_PROTO_M17_GNSS`, the M17 decoder state no frontend reads (`src/protocol/m17/m17_state_ext.h`
   `m17_state_ext`: the GNSS META repeat state; since issue #890 also the ended network streams, the streams admission
   opened, and the 1600 bit/s arbitrary data and the text META being assembled), both slots issue #800's.
-  `CORE_STATE_EXT` pins these ten. Slot 25, `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension
+  `CORE_STATE_EXT` pins these eleven. Slot 25, `DSD_STATE_EXT_PROTO_DMR_RC`, is the DMR module's one extension
   (`src/protocol/dmr/dmr_t3_channels_internal.h`): the RC notice dedupe and the Tier III channel record (discussion
   #900): the channel provenance, the missing-channel ledger, the user's channels, the Tier III identity and the control
   channel evidence.
@@ -13102,8 +13104,9 @@ Call frequency and access-code provenance (issue #575). A call's canonical `freq
   `tgt_str`/`src_str` and the per-call WAV name, `TGT_03-0005_SRC_03-0100`), on the SCCH busy message's recent-activity
   row, on the NXDN event line (`watchdog_event_current_build_event_nxdn()`, so `-J` and the terminal history) and the
   live terminal TGT/SRC line (`ui_render_nxdn_tgt_src_line()`), and on the data call's row and its notice line
-  (`nxdn_dcall_watchdog()`, from the header's prefixes `dsd_state::nxdn_data_type_d`/`_source_prefix`/`_target_prefix`,
-  `nxdn_data_call_note_prefixes()`). Because call identity compares known text, group 5 under prefixes 3 and 7 are two
+  (`nxdn_dcall_watchdog()`, from the header's prefixes, which `nxdn_data_call_note_prefixes()` keeps with the bound
+  header in the NXDN module's own state extension, `DSD_STATE_EXT_PROTO_NXDN_DATA_CALL`, slot 19, and
+  `nxdn_data_call_prefixes()` reads). Because call identity compares known text, group 5 under prefixes 3 and 7 are two
   calls with one policy row. The text only spells the numeric target, so it is no name of its own
   (`dsd_call_target_text_is_name()`): the Monitor headline (`call_view.c`), the Qt history row
   (`call_history_model.cpp`) and the rdio-scanner tag (`rdio_export.c`) name such a call by its list entry, else its

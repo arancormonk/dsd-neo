@@ -2805,7 +2805,7 @@ add_executable(
 )
 target_include_directories(
     dsd-neo_test_nxdn_element_bounds
-    PRIVATE ${PROJECT_SOURCE_DIR}/include
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/protocol/nxdn
 )
 target_link_libraries(
     dsd-neo_test_nxdn_element_bounds

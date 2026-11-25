@@ -17,9 +17,11 @@
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <stddef.h>
 #include <stdint.h>
+#include <stdlib.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "nxdn_internal.h"
@@ -82,12 +84,59 @@ nxdn_data_call_drop_header(dsd_state* state) {
     nxdn_data_call_note_prefixes(state, 0U, 0U, 0U);
 }
 
+/* The bound data call header's Type-D Home Repeater / Prefixes, in the NXDN module's own state extension
+   (DSD_STATE_EXT_PROTO_NXDN_DATA_CALL): its IDs in dmr_lrrp_source[0] and dmr_lrrp_target[0] stay 11-bit, the policy
+   namespace, and the data call's row names them "pp-iiii" (issue #903). type_d is 0 for a Type-C or conventional
+   header, whose IDs are 16-bit. */
+typedef struct {
+    uint8_t type_d;
+    uint8_t source_prefix;
+    uint8_t target_prefix;
+} nxdn_data_call_ext;
+
+_Static_assert((int)DSD_STATE_EXT_PROTO_NXDN_DATA_CALL < (int)DSD_STATE_EXT_MAX,
+               "the NXDN data call extension is inside the table");
+
+static nxdn_data_call_ext*
+nxdn_data_call_ext_get(const dsd_state* state) {
+    return DSD_STATE_EXT_GET_AS(nxdn_data_call_ext, (dsd_state*)state, DSD_STATE_EXT_PROTO_NXDN_DATA_CALL);
+}
+
 void
 nxdn_data_call_note_prefixes(dsd_state* state, uint8_t type_d, uint8_t source_prefix, uint8_t target_prefix) {
     if (state == NULL) {
         return;
     }
-    state->nxdn_data_type_d = type_d != 0U ? 1U : 0U;
-    state->nxdn_data_source_prefix = type_d != 0U ? (uint8_t)(source_prefix & 0x1FU) : 0U;
-    state->nxdn_data_target_prefix = type_d != 0U ? (uint8_t)(target_prefix & 0x1FU) : 0U;
+    nxdn_data_call_ext* ext = nxdn_data_call_ext_get(state);
+    if (ext == NULL) {
+        if (type_d == 0U) {
+            return; // nothing to forget
+        }
+        ext = (nxdn_data_call_ext*)calloc(1U, sizeof(*ext));
+        if (ext == NULL) {
+            return; // the row then names the 11-bit IDs without their prefixes
+        }
+        if (dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_NXDN_DATA_CALL, ext, free) != 0) {
+            free(ext);
+            return;
+        }
+    }
+    ext->type_d = type_d != 0U ? 1U : 0U;
+    ext->source_prefix = type_d != 0U ? (uint8_t)(source_prefix & 0x1FU) : 0U;
+    ext->target_prefix = type_d != 0U ? (uint8_t)(target_prefix & 0x1FU) : 0U;
+}
+
+int
+nxdn_data_call_prefixes(const dsd_state* state, uint8_t* source_prefix, uint8_t* target_prefix) {
+    const nxdn_data_call_ext* ext = state != NULL ? nxdn_data_call_ext_get(state) : NULL;
+    if (ext == NULL || ext->type_d == 0U) {
+        return 0;
+    }
+    if (source_prefix != NULL) {
+        *source_prefix = ext->source_prefix;
+    }
+    if (target_prefix != NULL) {
+        *target_prefix = ext->target_prefix;
+    }
+    return 1;
 }

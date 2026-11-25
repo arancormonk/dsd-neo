@@ -32,6 +32,7 @@
 #include "dsd-neo/core/position.h"
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#include "nxdn_internal.h"
 #include "test_support.h"
 
 #if defined(__GNUC__) && !defined(__cplusplus)
@@ -2443,7 +2444,7 @@ test_type_d_split_needs_positive_evidence(void) {
         DSD_SNPRINTF(label, sizeof label, "layout-%s-data-target", cases[i].tag);
         rc |= expect_int(label, (int)state->dmr_lrrp_target[0], split ? 5 : 0x3805);
         DSD_SNPRINTF(label, sizeof label, "layout-%s-data-prefix", cases[i].tag);
-        rc |= expect_int(label, state->nxdn_data_type_d, split ? 1 : 0);
+        rc |= expect_int(label, nxdn_data_call_prefixes(state, NULL, NULL), split ? 1 : 0);
     }
     dsd_state_ext_free_all(state);
     free(state);

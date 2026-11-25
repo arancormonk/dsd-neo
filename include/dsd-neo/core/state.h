@@ -2132,12 +2132,6 @@ struct dsd_state {
     dsd_position_origin nxdn_data_origin;
     uint64_t nxdn_data_header_ms;
     uint32_t nxdn_data_carrier_seq;
-    /* The bound header's Type-D Home Repeater / Prefixes (nxdn_data_call_note_prefixes()): its IDs in
-     * dmr_lrrp_source[0] and dmr_lrrp_target[0] stay 11-bit, the policy namespace, and the data call's row names them
-     * "pp-iiii" (issue #903). nxdn_data_type_d is 0 for a Type-C or conventional header, whose IDs are 16-bit. */
-    uint8_t nxdn_data_type_d;
-    uint8_t nxdn_data_source_prefix;
-    uint8_t nxdn_data_target_prefix;
     unsigned int nxdn_cipher_type;
     unsigned int nxdn_key;
 
