@@ -177,7 +177,20 @@ dsd_scan_mode dsd_scan_mode_row(const dsd_state* state);
  * dsd_scan_mode_resume() puts back when the row compares unchanged. NULL unless the scope is suspended. Decoder thread
  * only. */
 const dsd_scan_settings* dsd_scan_mode_suspended_effective(const dsd_state* state);
-/** Capture/restore effective fields for a staged tune; no pointers or audio sink fields are changed. */
+/** The squelch gate of the channel the scan scope on @p state has on air (issue #899), resolved now
+ * (dsd_squelch_channel_gate()): the row's own squelch option, else the session's configured squelch with the analog
+ * default where the row runs the analog monitor on a radio input and the session owns the default. A typed row runs its
+ * class (nfm, am) and an inherited row the configured decoder, the one the options hold while a command holds the scope
+ * suspended, as that command left it. With no scope, the session's channel from @p opts. Nothing is recorded: every
+ * stream open, push and resume resolves it again. Decoder thread only. */
+dsd_squelch_setting dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state);
+/** The gate the receiver runs off the analog monitor (issue #899): a digital row's own squelch option, else the
+ * session's configured squelch; never the analog default, and never an analog row's own option, which belongs to that
+ * row and not to a digital landing after it. */
+dsd_squelch_setting dsd_scan_mode_digital_squelch(const dsd_opts* opts, const dsd_state* state);
+/** Capture the configured squelch (never an analog default in its place) with the rest of the settings, and restore
+ * them, for a staged tune; no pointers or audio sink fields are changed. A step that must put the squelch the receiver
+ * runs back too saves it apart (dsd_squelch_standing_capture()). */
 void dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan_settings* out);
 void dsd_scan_settings_restore(const dsd_scan_settings* saved, dsd_opts* opts, dsd_state* state);
 /** Compare the acquisition-relevant settings (decoder set, modulation, inversion, slot policy, analog
@@ -289,7 +302,8 @@ int dsd_scan_mode_rigctl_request_is_session(const dsd_opts* opts, const dsd_stat
  * the scan scope attached to @p state; the pointer is const only because that scope lives in the
  * state's extension slot, as with dsd_scan_mode_target_modulation(). Call it only on the decoder
  * thread with the live state, never with a frontend snapshot (dsd_app_get_latest_snapshot()): it
- * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. */
+ * would edit the snapshot's scope copy while frontends read it, and the live scope would not change. An edit is an
+ * explicit squelch: the analog default ends for the session (dsd_squelch_analog_default_end(), issue #899). */
 int dsd_scan_mode_set_configured_squelch(dsd_opts* opts, const dsd_state* state, double level);
 /** dsd_scan_mode_set_configured_squelch() for a whole setting (a LEVEL threshold or an AUTO margin, runtime/squelch.h):
  * the same contract. */

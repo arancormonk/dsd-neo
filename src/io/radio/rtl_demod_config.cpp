@@ -542,6 +542,7 @@ demod_apply_channel_lpf_defaults(struct demod_state* demod, const dsd_opts* opts
         demod->channel_lpf_profile = rtl_demod_cqpsk_channel_profile(demod->symbol_rate_hz);
     }
     demod->analog_family = 0;
+    demod->symbol_profile_on_analog = 0;
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
     demod->analog_width_request_hz = 0;
@@ -630,6 +631,8 @@ rtl_demod_init_for_mode(struct demod_state* demod, struct output_state* output, 
     /* Written on every open as well: an uplink session keeps the receive path TETRA ran on before its chain, with the
        TETRA channel filter (dsd_demod_tetra_channel_runs()). */
     demod->tetra_uplink = (opts->tetra_uplink != 0) ? 1 : 0;
+    /* A new stream: a floor the auto squelch takes from its cache on the first block is held as a kept one is. */
+    demod->squelch_new_stream = 1;
     demod_apply_output_kind(demod, opts);
 }
 
@@ -1170,6 +1173,8 @@ rtl_demod_apply_analog_channel(struct demod_state* demod, int kind, int explicit
     const int width_hz = dsd_analog_width_effective_hz(analog_kind, requested_hz);
 
     demod->analog_family = 1;
+    /* The analog channel is the monitor's: no digital decode's symbol profile runs any more. */
+    demod->symbol_profile_on_analog = 0;
     demod->analog_demod = analog_kind;
     demod->analog_width_request_hz = requested_hz;
     demod->analog_width_setting_hz = explicit_width_hz > 0 ? explicit_width_hz : 0;
@@ -1536,6 +1541,7 @@ rtl_demod_enter_digital_family(struct demod_state* demod, struct output_state* o
         return;
     }
     demod->analog_family = 0;
+    demod->symbol_profile_on_analog = 0;
     demod->analog_demod = DSD_ANALOG_DEMOD_FM;
     demod->channel_lpf_width_hz = 0;
     demod->analog_width_request_hz = 0;

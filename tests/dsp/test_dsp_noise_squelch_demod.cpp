@@ -401,6 +401,62 @@ context_restarts_the_noise_squelch(void) {
     return rc;
 }
 
+/* A scan alternating NFM widths (issue #899 D3): each width's plan is designed once (2 s of calibration noise each),
+   then taken from the kept plans, the same plan bit for bit; four widths stay kept, and a fifth takes the place of the
+   one run longest ago. A width with no band above voice keeps nothing. */
+int
+alternating_widths_design_each_plan_once(void) {
+    const int rate = 48000;
+    demod_state* s = new_monitor(0, rate, 1, 12500);
+    if (!s) {
+        return fail("alloc");
+    }
+    int rc = 0;
+    const std::vector<float> noise = make_signal(rate, 0.1, 0.0, 0.0, 0, 0xD3ULL);
+    std::vector<dsd_noise_squelch_plan> first(5);
+    const int widths[5] = {12500, 25000, 16000, 20000, 11250};
+    /* Visit the width, run a block, and say how many plans were designed by then. */
+    auto visit = [&](int width) {
+        s->channel_lpf_width_hz = width;
+        s->squelch_context.freq_hz = 162475000 + (int64_t)width;
+        (void)run_block(s, noise.data(), 1000);
+        return s->noise_plan_designs;
+    };
+    for (int round = 0; round < 3; round++) {
+        for (int i = 0; i < 4; i++) {
+            const uint64_t designs = visit(widths[i]);
+            if (!s->noise_squelch.plan.valid || s->noise_plan.width_hz != widths[i]) {
+                rc |= fail("no noise squelch plan for the width");
+            }
+            if (round == 0) {
+                first[(size_t)i] = s->noise_squelch.plan;
+            } else if (!dsd_noise_squelch_plan_equal(&first[(size_t)i], &s->noise_squelch.plan)) {
+                rc |= fail("a kept plan is not the one designed");
+            }
+            if (designs != (uint64_t)(round == 0 ? i + 1 : 4)) {
+                DSD_FPRINTF(stderr, "noise squelch demod: %llu plans designed by round %d, width %d\n",
+                            (unsigned long long)designs, round, widths[i]);
+                rc |= 1;
+            }
+        }
+    }
+    /* A fifth width puts out the one run longest ago (12.5 kHz); the other three stay. */
+    rc |= visit(widths[4]) == 5U ? 0 : fail("a fifth width was not designed");
+    rc |= visit(widths[3]) == 5U ? 0 : fail("a width run lately was designed again");
+    rc |= visit(widths[0]) == 6U ? 0 : fail("the width run longest ago was still kept");
+    /* 8 kHz has no band: the tracker runs the setting, and no plan is kept for it (nothing is put out: 16 kHz, kept
+       with 11.25, 20 and 12.5 kHz, is taken again). */
+    const uint64_t before = s->noise_plan_designs;
+    (void)visit(8000);
+    (void)visit(widths[2]);
+    (void)visit(8000);
+    if (s->noise_squelch.plan.valid || s->noise_plan_designs != before + 2U) {
+        rc |= fail("a width with no band kept a plan, or a kept one was put out for it");
+    }
+    free_monitor(s);
+    return rc;
+}
+
 /* An I/Q replay that decimates after the demodulator: the noise squelch runs at the channel rate and its flags reach
    the decimated output, open over the carrier and closed over the noise. */
 int
@@ -482,6 +538,7 @@ main(void) {
     rc |= noise_falls_back_to_auto();
     rc |= unfiltered_low_rate_runs_as_auto();
     rc |= context_restarts_the_noise_squelch();
+    rc |= alternating_widths_design_each_plan_once();
     rc |= post_decimation_carries_noise_flags();
     rc |= flags_do_not_depend_on_block_cuts();
     if (rc == 0) {

@@ -119,8 +119,8 @@ scan_row_edit_squelch_valid(unsigned int mode, const dsd_scan_row_edit_value* va
         }
         return 1;
     }
-    if (value->squelch_db < -100 || value->squelch_db > 0) {
-        return scan_row_edit_reason(err, err_size, "squelch takes whole dB from -100 to 0 (0 = off)");
+    if (value->squelch_db < DSD_SCAN_ROW_SQUELCH_DB_MIN || value->squelch_db > 0) {
+        return scan_row_edit_reason(err, err_size, "squelch takes whole dB from -120 to 0 (0 = off)");
     }
     return 1;
 }

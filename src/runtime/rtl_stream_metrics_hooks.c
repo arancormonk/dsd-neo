@@ -140,6 +140,27 @@ dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(const dsd_squelch_settin
 }
 
 int
+dsd_rtl_stream_metrics_hook_write_squelch_gate(const dsd_squelch_setting* gate, const dsd_squelch_setting* digital,
+                                               const dsd_squelch_setting* session) {
+    if (!gate || !g_rtl_stream_metrics_hooks.write_squelch_gate) {
+        return -1;
+    }
+    g_rtl_stream_metrics_hooks.write_squelch_gate(gate, digital, session);
+    return 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_gate_closed_start(void) {
+    return g_rtl_stream_metrics_hooks.gate_closed_start ? g_rtl_stream_metrics_hooks.gate_closed_start() : 0;
+}
+
+int
+dsd_rtl_stream_metrics_hook_receive_requests_pending(void) {
+    return g_rtl_stream_metrics_hooks.receive_requests_pending ? g_rtl_stream_metrics_hooks.receive_requests_pending()
+                                                               : 0;
+}
+
+int
 dsd_rtl_stream_metrics_hook_apply_analog_profile(int family, int kind, int width_hz) {
     if (g_rtl_stream_metrics_hooks.apply_analog_profile) {
         return g_rtl_stream_metrics_hooks.apply_analog_profile(family, kind, width_hz);

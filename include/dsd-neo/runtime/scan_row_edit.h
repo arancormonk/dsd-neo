@@ -51,7 +51,7 @@ typedef enum {
 
 /** The values a set field runs. Each is meaningful only while its field is set. */
 typedef struct {
-    /** Whole dB from -100 to 0 in the rtl_sql convention; 0 = off. A level squelch's. */
+    /** Whole dB from DSD_SCAN_ROW_SQUELCH_DB_MIN (-120) to 0 in the rtl_sql convention; 0 = off. A level squelch's. */
     int squelch_db;
     /** The squelch's mode (dsd_squelch_mode): LEVEL (squelch_db) or AUTO, a margin of squelch_margin_db (3..30) over the
      * floor the demodulator learns, which an nfm or am row alone takes (issue #518 follow-up). */
@@ -123,7 +123,7 @@ uint32_t dsd_scan_row_edit_new_session(void);
 uint32_t dsd_scan_row_edit_fields(unsigned int mode, int gain_editable);
 
 /**
- * @brief Whether @p value is valid for @p field on a row of class @p mode: squelch in -100..0, a width in the range of
+ * @brief Whether @p value is valid for @p field on a row of class @p mode: squelch in -120..0, a width in the range of
  * the class's demodulator, a tone mode of the three with the list it needs (allow and block need one), a gain in
  * 0..DSD_SCAN_ROW_EDIT_GAIN_MAX_DB. Returns 1 when valid, else 0 with a short reason in @p err (when not NULL), never
  * echoing the value's text.

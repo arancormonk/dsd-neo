@@ -35,6 +35,16 @@ struct ScanListTargets {
     }
 };
 
+/**
+ * @brief The target CSV for @p list's entries over saved @p systems.
+ *
+ * Issue #899 (B13): each row's squelch is one its row type takes, so a saved setting never refuses the list. A saved
+ * system's own squelch goes to its row as the row runs it: noise on an AM row as auto with the same margin (as the
+ * engine runs it there), a dynamic one on a digital row as off (there it ran as off on its own, and a session level
+ * from the extra options must not gate the row either), a level in whole dB, -120..-1, rounded with a warning when it
+ * is not a whole dB. A row with no squelch of its own carries none: it inherits the session's, and on an analog row the
+ * decoder runs the app's default there (--squelch-analog-default) while nothing sets a squelch.
+ */
 ScanListTargets scan_list_targets(const QVariantMap& list, const QVariantList& systems);
 QString scan_list_settings_error(const QVariantMap& list);
 /** Issue #526: the analog demodulator (dsd_analog_demod) a scan entry runs -- a frequency entry's nfm or am protocol,

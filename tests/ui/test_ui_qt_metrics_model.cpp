@@ -26,6 +26,7 @@
 #include <cmath>
 #include <cstring>
 #include <dsd-neo/core/receive_types.h>
+#include <memory>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -3194,6 +3195,94 @@ test_block_label_patched_call() {
     dsd_state_ext_free_all(&state);
 }
 
+/* Issue #899: the decoder publishes its answer to a tagged squelch request -- the tag and whether it applied it -- in
+ * the state snapshot, the same publication as the scan scope's configured squelch. So a deferred state publication
+ * shows no answer yet (never a new answer beside the scope's old setting), a refusal shows as one, and under a scan
+ * row's own squelch an edit of the default beneath it is answered as applied as soon as it is published. */
+static void
+publish_squelch_state(dsd_state* published, const dsd_state* state) {
+    dsd_scan_mode_copy_snapshot(published, state);
+    published->squelch_request_answered = state->squelch_request_answered;
+    published->squelch_request_applied = state->squelch_request_applied;
+}
+
+static void
+test_squelch_answer_from_the_state_publication() {
+    /* Heap-held for the case's duration (each dsd_state is about 2 MiB). */
+    const auto opts_storage = std::make_unique<dsd_opts>();
+    const auto state_storage = std::make_unique<dsd_state>();
+    const auto published_storage = std::make_unique<dsd_state>(); // what the frontend reads: the last publication
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    dsd_state& published = *published_storage;
+    initOpts(&opts);
+    initState(&state);
+    initState(&published);
+    opts.audio_in_type = AUDIO_IN_RTL;
+    opts.analog_only = 1;
+    opts.rtl_squelch_mode = DSD_SQUELCH_MODE_NOISE;
+    opts.rtl_squelch_margin_db = 10;
+    dsd_qt::MetricsModel model;
+    expect("an NFM scan scope",
+           dsd_scan_mode_begin(&opts, &state) == 0 && dsd_scan_mode_enter(&opts, &state, DSD_SCAN_MODE_NFM) == 0);
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    expect("the scope's configured noise +10, nothing answered",
+           model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 10
+               && model.configuredSquelchRequestAnswered() == 0 && !model.configuredSquelchRequestApplied());
+
+    /* The decoder takes a tagged edit to noise +14 and publishes its options; the state's publication is put off. */
+    const dsd_squelch_setting edit = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 14);
+    expect("the edit lands", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &edit) == 1);
+    state.squelch_request_answered = 7U;
+    state.squelch_request_applied = 1U;
+    model.refresh(&opts, &published);
+    expect("a deferred state publication shows no answer yet", model.configuredSquelchRequestAnswered() == 0);
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    expect("published: answered, applied, with the setting from after it",
+           model.configuredSquelchRequestAnswered() == 7 && model.configuredSquelchRequestApplied()
+               && model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 14);
+    /* A refused request changes nothing, and says so. */
+    state.squelch_request_answered = 8U;
+    state.squelch_request_applied = 0U;
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    expect("a refusal shows as one",
+           model.configuredSquelchRequestAnswered() == 8 && !model.configuredSquelchRequestApplied());
+
+    /* Under a row's own squelch the options hold the row's: the default edit beneath it is answered as applied in the
+       same publication as the scope's setting it stored, with no wait for the row to end. */
+    dsd_scan_option_values row{};
+    row.present = DSD_SCAN_OPT_SQUELCH;
+    row.squelch_db = -60;
+    expect("a row with its own squelch", dsd_scan_mode_options(&opts, &state, &row) == 0);
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    const dsd_squelch_setting beneath = dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 16);
+    expect("the edit goes beneath the row", dsd_scan_mode_set_configured_squelch_setting(&opts, &state, &beneath) == 0);
+    state.squelch_request_answered = 9U;
+    state.squelch_request_applied = 1U;
+    model.refresh(&opts, &published);
+    expect("under the row, a deferred publication shows the older answer",
+           model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 8
+               && model.configuredSquelchMarginDb() == 14);
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    expect("published under the row: answered as applied, with the scope's setting",
+           model.squelchRowOverride() && model.configuredSquelchRequestAnswered() == 9
+               && model.configuredSquelchRequestApplied() && model.configuredSquelchNoise()
+               && model.configuredSquelchMarginDb() == 16);
+    dsd_scan_mode_leave(&opts, &state);
+    publish_squelch_state(&published, &state);
+    model.refresh(&opts, &published);
+    expect("the row gone, the answer stands", !model.squelchRowOverride()
+                                                  && model.configuredSquelchRequestAnswered() == 9
+                                                  && model.configuredSquelchRequestApplied());
+    freeState(&published);
+    freeState(&state);
+}
+
 /* Discussion #900 F3: the Monitor's NO FREQ count is the ledger's (the channels past its details included), and the
    Channels entry opens on a verified Tier III identity or a session the saved system's Tier III channels applied to
    (overrides_applied, not the path the engine may have skipped); a RAS-only identity is display only. The entry also
@@ -3318,6 +3407,7 @@ main(int argc, char** argv) {
     test_receive_filter_status();
     test_tone_filter();
     test_tone_filter_editor_setting();
+    test_squelch_answer_from_the_state_publication();
     test_direct_key_presence();
     test_decryption_metadata();
     test_block_label_radio_blocked();
@@ -3548,12 +3638,76 @@ main(int argc, char** argv) {
     model.refresh(&opts, &state);
     expect("leaving the row clears the badge", !model.squelchRowOverride());
     expect("leaving the row restores the default", std::fabs(model.effectiveSquelchDb() - (-80.0)) < 1e-6);
+    /* Issue #899: the analog default in force reads as the configured setting, marked; out of force, as before. */
+    expect("no analog default here", !model.squelchAnalogDefault());
+    {
+        const int analog_only = opts.analog_only;
+        opts.analog_only = 1;
+        expect("an analog default is given", dsd_squelch_analog_default_parse(&opts, "noise+12", nullptr, 0U) == 0);
+        expect("and comes in on the monitor", dsd_squelch_analog_default_sync(&opts, &state) == 1);
+        model.refresh(&opts, &state);
+        expect("the panel marks the analog default", model.squelchAnalogDefault());
+        expect("as the configured noise", model.configuredSquelchNoise() && model.configuredSquelchMarginDb() == 12);
+        expect("the readout says so", model.squelchReadout().startsWith(QStringLiteral("noise +12 dB (default")));
+        opts.analog_only = analog_only;
+        expect("and goes out off the monitor", dsd_squelch_analog_default_sync(&opts, &state) == 1);
+        model.refresh(&opts, &state);
+        expect("unmarked again, the session's own level shown",
+               !model.squelchAnalogDefault() && std::fabs(model.configuredSquelchDb() - (-80.0)) < 1e-6);
+        opts.squelch_default_mode = DSD_SQUELCH_MODE_LEVEL;
+    }
     opts.rtl_squelch_margin_db = 7;
     model.refresh(&opts, &state);
     expect("a level is not auto",
            !model.configuredSquelchAuto() && !model.effectiveSquelchAuto() && model.squelchAutoStatus().isEmpty());
     expect("a level keeps the margin Auto starts from again", model.configuredSquelchMarginDb() == 7);
     expect("the level beneath is a threshold", !model.configuredSquelchLevelOff());
+    /* Issue #899 (B15): the app saves only a level its own controls make, Off or a whole dB from -120 to -1, read from
+     * the configured power, not from the -120 dB display floor. */
+    expect("-80 dB is a whole dB", model.configuredSquelchLevelWhole() && model.configuredSquelchLevelWholeDb() == -80);
+    const double whole_level = opts.rtl_squelch_level;
+
+    struct {
+        double level;
+        bool whole;
+        int db;
+    } const whole_cases[] = {{dsd_squelch_level_from_sql(-65.5), false, 0},
+                             {dsd_squelch_level_from_sql(-120.0), true, -120},
+                             {dsd_squelch_level_from_sql(-130.0), false, 0},
+                             {dsd_squelch_level_from_sql(-1.0), true, -1},
+                             {1.0, false, 0},
+                             {0.0, true, 0}};
+
+    for (const auto& c : whole_cases) {
+        opts.rtl_squelch_level = c.level;
+        model.refresh(&opts, &state);
+        expect("the whole-dB reading",
+               model.configuredSquelchLevelWhole() == c.whole && model.configuredSquelchLevelWholeDb() == c.db);
+    }
+    opts.rtl_squelch_level = whole_level;
+    model.refresh(&opts, &state);
+    /* Issue #899: the decoder's answer to a tagged squelch request, which tells a snapshot taken after it. */
+    expect("no request answered yet", model.configuredSquelchRequestAnswered() == 0);
+    {
+        int answered = 0;
+        const QMetaObject::Connection counting =
+            QObject::connect(&model, &dsd_qt::MetricsModel::controlChanged, [&answered] { ++answered; });
+        state.squelch_request_answered = 41U;
+        state.squelch_request_applied = 1U;
+        model.refresh(&opts, &state);
+        QObject::disconnect(counting);
+        expect("the answer is shown, and signalled alone", model.configuredSquelchRequestAnswered() == 41
+                                                               && model.configuredSquelchRequestApplied()
+                                                               && answered == 1);
+        opts.audio_in_type = AUDIO_IN_SYMBOL_BIN;
+        model.refresh(&opts, &state);
+        expect("whatever the input",
+               model.configuredSquelchRequestAnswered() == 41 && model.configuredSquelchRequestApplied());
+        opts.audio_in_type = AUDIO_IN_RTL;
+        state.squelch_request_answered = 0U;
+        state.squelch_request_applied = 0U;
+        model.refresh(&opts, &state);
+    }
 
     /* The auto squelch (issue #518 follow-up): whether each setting is AUTO, its margin and what the one in force
      * shows come from the same view, and the level beneath it stays what dB goes back to. */
@@ -3607,9 +3761,16 @@ main(int argc, char** argv) {
     state.squelch_noise_active = 0;
     state.squelch_noise_measured = 0;
     model.refresh(&opts, &state);
-    expect("the AM monitor offers no Noise", !model.squelchNoiseOffered());
+    /* Issue #899 D4: a radio input's AM monitor takes Noise and runs it as auto; audio input's refuses it. */
+    expect("the radio AM monitor offers Noise", model.squelchNoiseOffered());
     expect("a noise setting on AM runs as auto",
            model.squelchAutoStatus() == QStringLiteral("as auto: floor -79.0 dB"));
+    expect("and stays noise", model.configuredSquelchNoise() && !model.configuredSquelchAuto());
+    opts.audio_in_type = AUDIO_IN_WAV;
+    model.refresh(&opts, &state);
+    expect("the PCM AM monitor offers no Noise", !model.squelchNoiseOffered());
+    opts.audio_in_type = AUDIO_IN_RTL;
+    model.refresh(&opts, &state);
     opts.analog_demod = DSD_ANALOG_DEMOD_FM;
     state.squelch_noise_quieting_cdb = 0;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;

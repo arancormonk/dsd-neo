@@ -71,16 +71,20 @@ dsd-neo -i airspy:serial=0123456789ABCDEF:851.375M -ft --frontend terminal
 ```
 
 Input syntax is `airspy[:serial=<16 hexadecimal digits>][:frequency[:bw[:sql[:vol]]]]`.
-The optional trailing fields are DSP bandwidth in kHz, squelch in dB (0 disables,
-`auto[+N]` for the [auto squelch](cli.md#auto-squelch---squelch-auto), or `noise[+N]` for the
+The optional trailing fields are DSP bandwidth in kHz, squelch in the `--squelch` grammar (a
+negative level in dB, `0`/`off` to disable, a positive linear power, `auto[+N]` for the
+[auto squelch](cli.md#auto-squelch---squelch-auto), or `noise[+N]` for the
 [noise squelch](cli.md#noise-squelch---squelch-noise)),
 and monitor volume (0–3); gain uses the separate native controls. Bandwidth must
 be one of 4, 6, 8, 12, 16, 24, 48 or 72 kHz, the same list as an RTL-SDR; other
 values warn (`Airspy bandwidth 96 kHz is unsupported; using 48 kHz.`) and fall
 back to 48. See [DSP bandwidth and rates](#dsp-bandwidth-and-rates) for how an
 Airspy reaches it.
-Numeric volume values are clamped to 0–3. Invalid squelch or volume text warns
-and keeps the previous/default value; invalid frequencies still prevent startup.
+Numeric volume values are clamped to 0–3. Invalid volume text warns and keeps
+the previous/default value. A squelch field `--squelch` would refuse stops the
+start, naming the field (`Invalid squelch field "auto+31" in the airspy: input:
+...`), as invalid frequencies do; an empty squelch field leaves the squelch as it
+was.
 An explicit serial must match exactly. Without one, the first enumerated device
 is selected and its serial is logged. Frequencies use the usual Hz/K/M/G syntax;
 the native tuning range is 24–1700 MHz.

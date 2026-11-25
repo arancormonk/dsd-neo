@@ -404,11 +404,16 @@ enum dsd_app_command_id {
 };
 
 /* DSD_APP_CMD_RTL_SET_SQL_SETTING: mode is dsd_squelch_mode (core/power.h); level the LEVEL threshold in mean-power
-   units (0 = off), margin_db the AUTO margin or the NOISE quieting in whole dB (3..30). */
+   units (0 = off), margin_db the AUTO margin or the NOISE quieting in whole dB (3..30). request_id, when nonzero, is
+   the sender's tag for this request: once the decoder has handled it, or refused it unhandled while Signal search runs,
+   dsd_state's squelch_request_answered holds it and squelch_request_applied says whether it was applied (1) or refused
+   (0), so a state snapshot that shows the tag was taken after the request and tells its outcome (issue #899). 0 tags
+   nothing and leaves both fields as they were. */
 typedef struct {
     int32_t mode;
     int32_t margin_db;
     double level;
+    uint32_t request_id;
 } dsd_app_squelch_setting_payload;
 
 /* A single edit is merged into decoder-owned settings, avoiding stale snapshot writes. */
@@ -676,7 +681,7 @@ typedef struct {
 /** DSD_APP_CMD_SCAN_ROW_EDIT ("this channel", issue #518). The row as the frontends saw it: @c scanner, @c session and
  * @c row are dsd_state::scan_row_scanner, scan_row_session and scan_row_index, and @c target_id a --trunk-scan target's
  * id (trunk_scan_active_id; "" for a -Y row). @c field is one DSD_SCAN_ROW_FIELD_* and @c action a
- * dsd_scan_row_edit_action (runtime/scan_row_edit.h); for SET the field's value: @c squelch_db (whole dB, -100..0,
+ * dsd_scan_row_edit_action (runtime/scan_row_edit.h); for SET the field's value: @c squelch_db (whole dB, -120..0,
  * 0 = off), @c width_hz, @c tone_mode with @c tone_list as typed (checked by dsd_tone_filter_check()), or @c gain_db
  * (whole dB, 0 = AGC). @c mode is the row's dsd_scan_mode as the editor saw it, for the notice only (the engine checks the
  * edit against the row's own). */

@@ -198,8 +198,10 @@ outside `all`; build them in a Release-like tree with tests on (`perf-bench`, or
 - `dsd-neo_bench_rtl_consumer` (not on Windows): the decoder's `getSymbol()` reads through the production live reader
   of a running rtl_tcp stream, fed by an in-process rtl_tcp server on loopback paced to the rate the stream asks for.
   `--path cqpsk` reads through the symbol cache on the CQPSK symbol output, `fsk` through the symbol cache on the FSK
-  discriminator output, `monitor` through the one-sample reader on the analog monitor output. It reports the reading
-  thread's CPU time per symbol and the whole process's (server, TCP reader, demod and reader).
+  discriminator output, `monitor` through the one-sample reader on the analog monitor output (an analog stream opens
+  muted until a decoder sets its squelch, issue #899, so the benchmark writes the squelch its options hold before the
+  warmup). It reports the reading thread's CPU time per symbol and the whole process's (server, TCP reader, demod and
+  reader).
 
 Run the paced forms under `perf stat -e task-clock` and compare medians of several runs, alternating the two builds;
 the unpaced forms report their own per-call times.

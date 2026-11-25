@@ -4,6 +4,7 @@
  */
 
 #include "app_prefs.h"
+#include "app_squelch_default.h"
 
 #include <QAnyStringView>
 #include <QChar>
@@ -140,6 +141,9 @@ enum Key {
     kMapTileAttribution,
     kMapViewport,
     kMapAgeFilter,
+    // Issue #899: the squelch analog channels run while nothing sets one (off, auto+N, noise+N). Portable with the other tuner
+    // defaults; a backup without it restores the default, as an install that never chose one reads it.
+    kRadioSquelch,
     // Issue #901: compact view. Device-local: how this device's screen is arranged, like kMonitorDetailsExpanded.
     kCompactView,
     kKeyCount
@@ -203,6 +207,7 @@ constexpr AppPrefs::KeySpec kKeyTable[] = {
     {"map/tileAttribution", false},
     {"map/viewport", false},
     {"map/ageFilter", false},
+    {"radio/squelch", true},
     {"ui/compactView", false},
 };
 static_assert(sizeof(kKeyTable) / sizeof(kKeyTable[0]) == kKeyCount, "key table and Key enum must stay in step");
@@ -231,6 +236,13 @@ as_scalar(const QVariant& stored) {
  */
 
 constexpr double kDefaultHangtimeSec = 2.0;
+
+/** @brief The squelch @p raw holds when it is one app_squelch_default_valid() takes, else the default. */
+QString
+sane_squelch(const QVariant& raw) {
+    const QString setting = raw.metaType().id() == QMetaType::QString ? raw.toString() : QString();
+    return app_squelch_default_valid(setting) ? setting : QString::fromLatin1(kAppSquelchDefault);
+}
 
 /*
  * Issue #786: GPS roaming's distances, stored in km. Each unit offers its own choices; a value offered in either unit
@@ -991,6 +1003,26 @@ AppPrefs::setBiasTee(bool on) {
     }
     m_settings.setValue(key_name(kBiasTee), on);
     Q_EMIT biasTeeChanged();
+}
+
+QString
+AppPrefs::squelch() const {
+    return sane_squelch(m_settings.value(key_name(kRadioSquelch)));
+}
+
+void
+AppPrefs::setSquelch(const QString& setting) {
+    if (!app_squelch_default_valid(setting)) {
+        return;
+    }
+    // Compared with the raw stored value (absent reads as the default), so a write over a value that only reads as
+    // the same setting still lands and repairs it.
+    const QVariant stored = m_settings.value(key_name(kRadioSquelch), QString::fromLatin1(kAppSquelchDefault));
+    if (stored.metaType().id() == QMetaType::QString && stored.toString() == setting) {
+        return;
+    }
+    m_settings.setValue(key_name(kRadioSquelch), setting);
+    Q_EMIT squelchChanged();
 }
 
 QString

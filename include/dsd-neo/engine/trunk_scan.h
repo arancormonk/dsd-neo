@@ -482,6 +482,9 @@ int dsd_engine_trunk_scan_list_set(dsd_opts* opts, dsd_state* state, uint32_t se
  * two coordinator fields and the decode clock, never the target list, since it runs every frame. 0 while paused.
  */
 int dsd_engine_trunk_scan_departure_due(const dsd_opts* opts, const dsd_state* state);
+/** Whether the active target's retune is still outstanding (issue #899): the decoder writes no squelch gate until it
+ * lands or fails. 0 with no trunk scan. Decoder thread. */
+int dsd_engine_trunk_scan_retune_pending(const dsd_state* state);
 void* dsd_engine_trunk_scan_active_p25_ctx(void);
 void* dsd_engine_trunk_scan_active_dmr_ctx(void);
 /**

@@ -3,6 +3,7 @@
 
 import QtQuick
 import QtTest
+import "../../../src/ui/qt/qml" as Ui
 
 // Issue #524: the Radio sheet's AM decode chip. On a radio input it selects the
 // AM preset (-fM) and reads back as selected once the engine reports that mode.
@@ -22,6 +23,7 @@ import QtTest
 // So does AM's default where the engine reports that the DSP rate cannot filter
 // it (amBandwidthOffered).
 Item {
+    id: root
     width: 420
     height: 900
 
@@ -134,6 +136,21 @@ Item {
             compare(testContext.lastAmBandwidthHz(), 5000, "a second step goes on from the first");
             compare(testContext.amBandwidthCalls(), 3);
             verify(!findChild(sheet, "radioAnalogBandwidthDown").enabled, "5 kHz is the narrowest AM width");
+        }
+
+        // Issue #899 review: at a phone's width and large text the width reading wraps rather than being cut
+        // ("6 kHz (default" at 360 px and text 1.6).
+        function test_width_reading_wraps_at_large_text() {
+            var saved = Ui.Theme.fontScale;
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            onAm(6000, 0);
+            var value = findChild(sheet, "radioAnalogBandwidthValue");
+            tryCompare(value, "text", "6 kHz (default)");
+            waitForRendering(value);
+            verify(value.contentWidth <= value.width + 0.5, "contentWidth " + value.contentWidth + " > " + value.width);
+            Ui.Theme.fontScale = saved;
+            root.width = 420;
         }
 
         function test_am_width_refused_request_expires_back_to_the_reading() {

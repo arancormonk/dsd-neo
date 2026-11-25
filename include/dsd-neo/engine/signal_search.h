@@ -62,6 +62,9 @@ int dsd_engine_signal_search_target(const dsd_state* state, const dsd_signal_sea
 void dsd_engine_signal_search_notice(dsd_state* state, uint64_t session_id, const char* message);
 int dsd_engine_signal_search_tick(dsd_opts* opts, dsd_state* state);
 int dsd_engine_signal_search_active(const dsd_state* state);
+/** Whether a visit's or the restore's tune is still outstanding (issue #899), one the receiver deferred and the search
+ * retries included: the decoder writes no squelch gate until its landing is observed. */
+int dsd_engine_signal_search_tune_pending(const dsd_state* state);
 int dsd_engine_signal_search_should_yield(const dsd_opts* opts, dsd_state* state);
 /** Runtime frame-sync signal_search_probe hook (issue #804): 1 while a visit to a range with Auto identification is
  * probing (no protocol evidence yet, the probe time running, the detection not ended); 0 for a typed or analog range,

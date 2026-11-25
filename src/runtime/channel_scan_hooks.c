@@ -3,6 +3,8 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>
@@ -12,6 +14,7 @@
    reads it: under a lock, as the control pump is (control_pump.c). */
 static dsd_channel_scan_pause_fn g_channel_scan_pause_fn = NULL;
 static dsd_channel_walk_settle_fn g_channel_walk_settle_fn = NULL;
+static dsd_receiver_gate_settle_fn g_receiver_gate_settle_fn = NULL;
 static dsd_mutex_t g_channel_scan_hooks_mu;
 static atomic_int g_channel_scan_hooks_mu_state = 0; // 0=uninit, 1=initing, 2=init, -1=failed
 
@@ -71,4 +74,27 @@ dsd_channel_walk_settle_hook_get(void) {
     const dsd_channel_walk_settle_fn fn = g_channel_walk_settle_fn;
     dsd_mutex_unlock(&g_channel_scan_hooks_mu);
     return fn;
+}
+
+void
+dsd_receiver_gate_settle_hook_set(dsd_receiver_gate_settle_fn fn) {
+    if (!ensure_channel_scan_hooks_mu_init() || dsd_mutex_lock(&g_channel_scan_hooks_mu) != 0) {
+        return;
+    }
+    g_receiver_gate_settle_fn = fn;
+    dsd_mutex_unlock(&g_channel_scan_hooks_mu);
+}
+
+int
+dsd_receiver_gate_settle_hook_run(const dsd_opts* opts, const dsd_state* state) {
+    if (!ensure_channel_scan_hooks_mu_init() || dsd_mutex_lock(&g_channel_scan_hooks_mu) != 0) {
+        return 0;
+    }
+    const dsd_receiver_gate_settle_fn fn = g_receiver_gate_settle_fn;
+    dsd_mutex_unlock(&g_channel_scan_hooks_mu);
+    if (!fn) {
+        return 0;
+    }
+    fn(opts, state);
+    return 1;
 }

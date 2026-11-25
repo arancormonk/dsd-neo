@@ -13,6 +13,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/runtime/analog_channel.h>
+#include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
@@ -194,9 +195,8 @@ dsd_scan_settings_capture(const dsd_opts* opts, const dsd_state* state, dsd_scan
         return;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    out->rtl_squelch_level = opts->rtl_squelch_level;
-    out->rtl_squelch_mode = opts->rtl_squelch_mode;
-    out->rtl_squelch_margin_db = opts->rtl_squelch_margin_db;
+    /* The configured squelch, not the analog default an analog channel runs in its place (issue #899). */
+    dsd_squelch_configured_fields(opts, &out->rtl_squelch_level, &out->rtl_squelch_mode, &out->rtl_squelch_margin_db);
     out->analog_tone_set = opts->analog_tone_set;
     out->receive = opts->receive;
     out->analog_tone_filter = opts->analog_tone_filter;
@@ -266,6 +266,7 @@ scan_settings_restore_row_opts(const dsd_scan_settings* saved, dsd_opts* opts) {
     opts->rtl_squelch_level = saved->rtl_squelch_level;
     opts->rtl_squelch_mode = saved->rtl_squelch_mode;
     opts->rtl_squelch_margin_db = saved->rtl_squelch_margin_db;
+    dsd_squelch_analog_default_note_written(opts);
     opts->analog_tone_set = saved->analog_tone_set;
     opts->receive = saved->receive;
     opts->analog_tone_filter = saved->analog_tone_filter;
@@ -950,13 +951,17 @@ scan_squelch_changed(const dsd_squelch_setting* before, const dsd_opts* opts) {
 }
 
 /* Hand the RTL demodulator the squelch now in force. Only the scope's entry points call this:
- * prepare and scan_scope_apply() also run on temporary scopes and never reach the hardware. */
+ * prepare and scan_scope_apply() also run on temporary scopes and never reach the hardware. The engine's settle
+ * (dsd_receiver_gate_settle_hook_run(), issue #899) writes the gate only while none of the decoder's own tune or family
+ * requests is outstanding, so a row's edit or commit never lands on a channel the receiver has not reached; a runtime
+ * with no engine installed hands the fields over as they are. */
 static void
-scan_squelch_push(const dsd_opts* opts) {
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
-        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&setting);
+scan_squelch_push(const dsd_opts* opts, const dsd_state* state) {
+    if (opts->audio_in_type != AUDIO_IN_RTL || dsd_receiver_gate_settle_hook_run(opts, state)) {
+        return;
     }
+    const dsd_squelch_setting setting = dsd_squelch_setting_of_opts(opts);
+    (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&setting);
 }
 
 /* Push the level now in force when it differs from what the demod holds: `held` (dsd_opts before
@@ -965,14 +970,14 @@ scan_squelch_push(const dsd_opts* opts) {
  * does not push; resume does), so after an entry point that found the scope suspended the demod
  * level is unknown and the push is unconditional. */
 static void
-scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, dsd_squelch_setting held) {
+scan_squelch_settle(scan_scope* scope, const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting held) {
     const scan_squelch_pending pending = scope->squelch_pending;
     scope->squelch_pending = SCAN_SQUELCH_SETTLED;
     if (pending == SCAN_SQUELCH_ENTERED) {
         held = scope->squelch_entered_from;
     }
     if (pending == SCAN_SQUELCH_UNKNOWN || scan_squelch_changed(&held, opts)) {
-        scan_squelch_push(opts);
+        scan_squelch_push(opts, state);
     }
 }
 
@@ -1006,7 +1011,9 @@ dsd_scan_mode_options(dsd_opts* opts, dsd_state* state, const dsd_scan_option_va
         scan_settings_restore_widths(&scope->configured, opts);
         state->M = scope->configured.force_key;
         scan_options_apply(opts, state, &scope->options);
-        scan_squelch_settle(scope, opts, squelch_before);
+        /* An analog row with no squelch of its own runs the analog default (issue #899), in the same push. */
+        (void)dsd_squelch_analog_default_sync(opts, state);
+        scan_squelch_settle(scope, opts, state, squelch_before);
     }
     return 0;
 }
@@ -1118,10 +1125,17 @@ dsd_scan_mode_leave(dsd_opts* opts, dsd_state* state) {
     const dsd_squelch_setting squelch_before = dsd_squelch_setting_of_opts(opts);
     if (scope->suspended) {
         scope->squelch_pending = SCAN_SQUELCH_UNKNOWN;
+        /* The options hold the configuration the suspending command left (its squelch edits included), which the
+           session resolves its gate from once the scope is gone, not the copy taken before it ran (issue #899). */
+        dsd_scan_settings_capture(opts, state, &scope->configured);
     } else {
         dsd_scan_settings_restore(&scope->configured, opts, state);
     }
-    scan_squelch_settle(scope, opts, squelch_before);
+    /* The session after the scan: no row, so the analog default goes by the decoder left on air (issue #899). */
+    DSD_MEMSET(&scope->options, 0, sizeof(scope->options));
+    scope->suspended = 0;
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    scan_squelch_settle(scope, opts, state, squelch_before);
     (void)dsd_state_ext_set(state, DSD_STATE_EXT_RUNTIME_SCAN_MODE, NULL, NULL);
 }
 
@@ -1135,6 +1149,35 @@ dsd_scan_mode_suspend(dsd_opts* opts, dsd_state* state) {
     dsd_scan_settings_restore(&scope->configured, opts, state);
     scope->suspended = 1;
     return 1;
+}
+
+/* Whether the row on air under @p scope is analog. The options hold the row's decoder, or while a command holds the
+   scope suspended the configured one, which an inherited row runs (as the command left it) and a typed row runs its own
+   class over. */
+static int
+scan_row_on_air_analog(const dsd_opts* opts, const scan_scope* scope) {
+    if (scope->suspended && scope->mode != DSD_SCAN_MODE_INHERIT) {
+        return dsd_scan_mode_is_analog(scope->mode) && opts && opts->m17encoder != 1;
+    }
+    return dsd_opts_is_analog_family(opts);
+}
+
+dsd_squelch_setting
+dsd_scan_mode_channel_squelch(const dsd_opts* opts, const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    if (!scope) {
+        return dsd_squelch_channel_gate(opts, state, NULL, dsd_opts_is_analog_family(opts));
+    }
+    return dsd_squelch_channel_gate(opts, state, &scope->options, scan_row_on_air_analog(opts, scope));
+}
+
+dsd_squelch_setting
+dsd_scan_mode_digital_squelch(const dsd_opts* opts, const dsd_state* state) {
+    const scan_scope* scope = scan_scope_get(state);
+    /* A digital row's own squelch is its gate; an analog row's own belongs to that row, never to the digital landing
+       after it, which runs the session's (issue #899). */
+    const dsd_scan_option_values* row = scope && !scan_row_on_air_analog(opts, scope) ? &scope->options : NULL;
+    return dsd_squelch_channel_gate(opts, state, row, 0);
 }
 
 int
@@ -1213,9 +1256,12 @@ dsd_scan_mode_resume(dsd_opts* opts, dsd_state* state) {
     }
     /* Unconditional: the command that ran while suspended may have pushed the configured
      * default straight to the demod (CONFIG_APPLY does), so a comparison with the pre-suspend
-     * value would leave the row's threshold behind. */
+     * value would leave the row's threshold behind. The engine's settle writes it only for the channel the decoder
+     * committed, which a -Y row whose retune has landed and waits for its commit is not (issue #899); without one, the
+     * row on air's. */
     scope->squelch_pending = SCAN_SQUELCH_SETTLED;
-    scan_squelch_push(opts);
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    scan_squelch_push(opts, state);
     if (!dsd_receive_policy_equal(&receive_before, &opts->receive)) {
         dsd_frame_sync_hook_receive_policy_boundary(opts, state, dsd_receive_policy_filters_enabled(&receive_before));
     }
@@ -1329,6 +1375,9 @@ dsd_scan_mode_set_configured_squelch_setting(dsd_opts* opts, const dsd_state* st
     if (!opts || !setting) {
         return -1;
     }
+    /* An edit of the configured squelch, from any frontend: the analog default stays out for the session (issue
+       #899), and its base is back in the fields before the edit lands. */
+    dsd_squelch_analog_default_end(opts);
     scan_scope* scope = state ? scan_scope_get(state) : NULL;
     /* Suspended or absent, dsd_opts holds the configured values and resume recaptures them. */
     if (scope && !scope->suspended) {
@@ -1545,8 +1594,12 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
         live->timed_digital_family = 0;
         live->timed_cqpsk = -1; /* until the staged row's timing records its own choice */
     }
+    /* Put back exactly as they were, the squelch the receiver runs included: a capture holds the configured squelch,
+       and the analog default an analog row on air runs is not that (issue #899). */
     dsd_scan_settings effective;
     dsd_scan_settings_capture(opts, state, &effective);
+    dsd_squelch_standing effective_squelch;
+    dsd_squelch_standing_capture(opts, &effective_squelch);
     scan_scope temporary;
     DSD_MEMSET(&temporary, 0, sizeof(temporary));
     dsd_scan_mode_configured(opts, state, &temporary.configured);
@@ -1560,6 +1613,7 @@ dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, cons
         scan_scope_apply(opts, state, &temporary, SCAN_ROW_STAGED);
         dsd_scan_settings_capture(opts, state, out);
         dsd_scan_settings_restore(&effective, opts, state);
+        dsd_squelch_standing_restore(opts, &effective_squelch);
     }
     return 0;
 }

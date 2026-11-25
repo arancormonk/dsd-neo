@@ -19,6 +19,7 @@
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/runtime/signal_search.h>
 #include <dsd-neo/runtime/signal_search_avoids.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <dsd-neo/runtime/telemetry.h>
 #include <dsd-neo/runtime/tetra_rate.h>
 #include <stdint.h>
@@ -205,6 +207,14 @@ int
 dsd_engine_signal_search_active(const dsd_state* state) {
     const search_coord* c = search_get(state);
     return c && c->status.phase != DSD_SEARCH_STOPPED;
+}
+
+int
+dsd_engine_signal_search_tune_pending(const dsd_state* state) {
+    const search_coord* c = state ? search_get(state) : NULL;
+    /* A tune the receiver deferred holds no ticket, but the TUNING phase retries it (search_wait_tune()) until its
+       landing is observed: the range's squelch is not the channel's being left. */
+    return c && (c->ticket != 0U || c->status.phase == DSD_SEARCH_TUNING);
 }
 
 static int
@@ -600,12 +610,19 @@ search_queue_tune(search_coord* c, dsd_opts* opts, dsd_state* state, uint32_t ta
     dsd_signal_search_visit_clear();
     dsd_frame_sync_reset_acquisition(opts, state, 1);
     c->reception_ended = 0;
+    /* The range's settings stand from here; its squelch gate is written once its tune lands, a new channel that starts
+       closed on an analog range (issue #899). */
+    dsd_engine_receiver_gate_hold(1);
     if (search_prepare_profile(c, opts, state, target, analog)) {
+        dsd_engine_receiver_gate_hold(0);
         search_error(c, "The receiver cannot apply this range's receive profile");
         return -1;
     }
+    rtl_stream_prepare_retune_new_channel_for_target(target, 1);
     int rc = rtl_stream_tune_async(target, c->status.session_id, &c->ticket);
+    dsd_engine_receiver_gate_hold(0);
     if (rc < 0) {
+        rtl_stream_prepare_retune_new_channel_for_target(target, 0);
         search_error(c, "The receiver refused the tune");
         return -1;
     }
@@ -655,8 +672,12 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
     if (c->restored) {
         return;
     }
+    /* The session's squelch gate is written once its family request, and a Stop's restore tune, have landed (issue
+       #899): nothing the session resolves to reaches the range's channel. */
+    dsd_engine_receiver_gate_hold(1);
     dsd_scan_mode_leave(opts, state);
     dsd_scan_settings_restore(&c->saved, opts, state);
+    (void)dsd_squelch_analog_default_sync(opts, state);
     rtl_stream_enforce_tuner_autogain(c->saved_autogain);
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
         (void)rtl_stream_airspy_controls(&c->saved_airspy);
@@ -668,6 +689,7 @@ search_restore(search_coord* c, dsd_opts* opts, dsd_state* state) {
         analog
             ? (opts->analog_demod == DSD_ANALOG_DEMOD_AM ? opts->analog_am_bandwidth_hz : opts->analog_nfm_bandwidth_hz)
             : 0);
+    dsd_engine_receiver_gate_hold(0);
     c->restored = 1;
 }
 
@@ -1896,6 +1918,8 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
        ends at the boundary, so nothing received on the restored frequency joins it, and the reception is over, so an
        input lost or a failed restore before this tune lands ends nothing again. */
     search_close_reception(c, opts, state);
+    /* The session comes back on a new channel the restore tune lands (issue #899). */
+    dsd_engine_receiver_gate_hold(1);
     search_restore(c, opts, state);
     /* The profile the restored decoder runs, with the session's TED override, which the visits' retunes replaced, kept
        as one (issue #748 B16). */
@@ -1914,7 +1938,12 @@ search_restore_tune(search_coord* c, dsd_opts* opts, dsd_state* state) {
                                                      analog ? opts->analog_demod : DSD_ANALOG_DEMOD_FM,
                                                      analog ? dsd_opts_analog_width_hz(opts) : 0, 0};
     (void)rtl_stream_prepare_retune_analog_profile_for_target(c->saved_frequency, &family);
+    rtl_stream_prepare_retune_new_channel_for_target(c->saved_frequency, 1);
     int rc = rtl_stream_tune_async(c->saved_frequency, c->status.session_id, &c->ticket);
+    if (rc != RTL_STREAM_TUNE_OK) {
+        rtl_stream_prepare_retune_new_channel_for_target(c->saved_frequency, 0);
+    }
+    dsd_engine_receiver_gate_hold(0);
     if (rc < 0) {
         search_error(c, "Unable to restore the previous frequency");
     } else if (rc == RTL_STREAM_TUNE_OK) {
@@ -2250,6 +2279,10 @@ search_end_reception(search_coord* c, dsd_opts* opts, dsd_state* state) {
 
 static int
 search_input_lost(search_coord* c, dsd_opts* opts, dsd_state* state) {
+    /* A tune in flight went with the stream: nothing will poll it, and the decoder's gate must not wait on it (issue
+       #899), nor a Stop after the radio comes back. */
+    c->ticket = 0;
+    c->restore_queued = 0;
     if (c->stopping) {
         /* No restore tune can run, but the decoder session goes on: the visit's reception ends here, under its tag,
            which then clears, so nothing the session receives after the Stop is the search's (issue #809). */
@@ -2350,6 +2383,10 @@ dsd_engine_signal_search_shutdown(dsd_opts* opts, dsd_state* state) {
 #else
     (void)opts;
 #endif
+    /* A stopped search polls no tune: one it still held (a decoder session ending under a visit) is no longer its, and
+       the decoder's gate does not wait on it (dsd_engine_signal_search_tune_pending(), issue #899). */
+    c->ticket = 0;
+    c->restore_queued = 0;
     c->status.phase = DSD_SEARCH_STOPPED;
     search_publish(c, 0);
 }

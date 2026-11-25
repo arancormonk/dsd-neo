@@ -2,6 +2,7 @@
 // Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
 
 import QtQuick
+import "Util.js" as Util
 
 // The squelch on audio input (#628), opened from the monitor's Squelch row: a
 // level in dB on the input's audio, or the noise squelch, which learns the
@@ -14,12 +15,33 @@ import QtQuick
 // a request sent and not yet answered stands in for the reading until the
 // engine's arrives or requestTtlMs passes, so taps inside one 250 ms poll each
 // step from the last request rather than from the same stale reading.
+//
+// Issue #899 (B7): a default-scope change on a saved system's session is saved
+// to it as the Radio sheet's is (settingRequested, through Main's Radio
+// settings persistence); "This channel" edits stay with the session.
 ModalSheet {
     id: sheet
     objectName: "squelchSheet"
     accessibleName: qsTr("Squelch")
 
     property var bridge: commands
+    property bool savesToSystem: false
+    property string saveError: ""
+    // Issue #899 (B11): the saved system's own squelch ("" for none), and
+    // whether Clear has taken it out for the next start.
+    property string savedSquelch: ""
+    property bool savedSquelchCleared: false
+    // Why a level was not saved (one set outside the app), shown only while a
+    // level is the setting; saveError is any other save failure.
+    property string squelchSaveError: ""
+    // Why the saved squelch could not be cleared or saved, shown whatever the
+    // setting: the saved one still applies at the next start.
+    property string squelchStoreError: ""
+    // Navigation.announce()'s record of what was read out.
+    property string announced: ""
+    property int announcements: 0
+    signal settingRequested(string key, var value)
+    signal clearSavedSquelchRequested()
     readonly property bool sessionRunning: decoderHost.running
     onSessionRunningChanged: {
         if (!sessionRunning) {
@@ -138,30 +160,16 @@ ModalSheet {
     }
 
     /**
-     * Nudge the level, 5 dB a step. Off sits one step below the floor, as on
-     * the Radio sheet: stepping down from the floor switches the squelch off
-     * (0), and stepping up from off lands back on the floor. -5 dB is the last
-     * real threshold, because 0 is off.
+     * Nudge the level, 5 dB a step, as the Radio sheet does (Util.squelchStep):
+     * a whole dB, never against the step, down to the -120 dB floor and then
+     * off (0); up from off is the floor, and -5 dB is the last threshold a step
+     * up makes, because 0 is off.
      */
     function stepSquelch(delta) {
         if (!squelchSteppable || squelchHeld)
             return;
-        // A row's own squelch is whole dB down to -100, the options cell's range.
-        var floor = rowSquelch ? -100 : -120;
-        var cur = squelchOff ? floor - 5 : squelchDb;
-        var next = cur + delta;
-        if (next < floor) {
-            if (delta > 0) {
-                next = floor;
-            } else {
-                if (squelchOff)
-                    return;
-                next = 0;
-            }
-        } else if (next > -5) {
-            next = -5;
-        }
-        if (!squelchOff && Math.abs(next - squelchDb) < 0.001)
+        var next = Util.squelchStep(squelchOff, squelchDb, delta, -120);
+        if (isNaN(next))
             return;
         requestSquelchDb(next);
     }
@@ -172,20 +180,27 @@ ModalSheet {
         pendingSquelch = db;
         squelchTtl.restart();
         // A row keeps its margin through a level, for a switch back to Noise.
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchDb": Math.round(db), "squelchMarginDb": margin});
-        else
-            sheet.bridge.setSquelchDb(db);
+            return;
+        }
+        // The request's tag: what is saved waits for the decoder's answer to it.
+        var request = sheet.bridge.setSquelchDb(db);
+        if (request)
+            settingRequested("squelch", {mode: "level", db: db, off: db >= 0, request: request});
     }
     /** Ask for the noise squelch with @p margin dB of quieting, on the row or the default. */
     function requestSquelchNoise(margin) {
         pendingSquelch = NaN;
         pendingSquelchMargin = margin;
         squelchTtl.restart();
-        if (rowSquelch)
+        if (rowSquelch) {
             rowEdit(sheet.bridge.scanRowEditSet, {"squelchMode": sheet.bridge.squelchModeNoise, "squelchMarginDb": margin});
-        else
-            sheet.bridge.setSquelchNoise(margin);
+            return;
+        }
+        var request = sheet.bridge.setSquelchNoise(margin);
+        if (request)
+            settingRequested("squelch", {mode: "noise", margin: margin, request: request});
     }
     /** Nudge the noise squelch's margin, 1 dB a step within the range the engine takes. */
     function stepSquelchMargin(delta) {
@@ -213,15 +228,37 @@ ModalSheet {
         var levelOff = metrics.configuredSquelchLevelOff === true;
         var db = rowSquelch ? metrics.effectiveSquelchDb : metrics.configuredSquelchDb;
         if (rowSquelch) {
-            // A row's own level is whole dB from -100 to -1 (0 is off there).
-            requestSquelchDb(levelOff ? 0 : Math.min(-1, Math.max(-100, Math.round(db))));
+            // A row's own level is whole dB from -120 to -1 (0 is off there).
+            requestSquelchDb(levelOff ? 0 : Math.min(-1, Math.max(-120, Math.round(db))));
             return;
         }
-        // The default gets its level back exactly as stored.
+        // The default gets its level back exactly as stored. A refused request
+        // leaves the engine's reading at once and saves nothing; what is saved
+        // is the level asked for, once the decoder has answered with it, if
+        // the app's controls could make it.
         pendingSquelchMargin = NaN;
         pendingSquelch = levelOff ? 0 : Math.min(db, -0.001);
         squelchTtl.restart();
-        sheet.bridge.restoreSquelchLevel();
+        var asked = sheet.bridge.restoreSquelchLevel();
+        if (asked)
+            settingRequested("squelch", Object.assign({mode: "level", restore: true}, asked));
+        else
+            forgetRequests();
+    }
+    /**
+     * Issue #899 (B11): ask for the saved squelch to go. Once it has, the
+     * note that replaces the button is read out, and a keyboard focus the
+     * button held goes to the squelch choice (or the buttons, with no choice).
+     */
+    function clearSavedSquelch(hadFocus) {
+        clearSavedSquelchRequested();
+        Navigation.announce(sheet, savedSquelchCleared ? squelchClearedNote : squelchSaveNote,
+            savedSquelchCleared ? squelchClearedNote.text : squelchSaveNote.text);
+        if (!hadFocus || !savedSquelchCleared)
+            return;
+        // A held setting selects no segment: the first enabled one takes it.
+        if (!squelchModeControl.visible || !squelchModeControl.focusSegment())
+            squelchDownButton.forceActiveFocus();
     }
 
     Timer {
@@ -271,6 +308,7 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
     }
     SegmentedControl {
+        id: squelchModeControl
         objectName: "squelchMode"
         visible: sheet.squelchNoiseOffered || sheet.squelchHeld
         width: parent.width
@@ -315,6 +353,7 @@ ModalSheet {
         }
         // In Noise the buttons step the margin, 1 dB at a time.
         OutlineButton {
+            id: squelchDownButton
             objectName: "squelchDown"
             width: 48
             text: "−"
@@ -375,6 +414,55 @@ ModalSheet {
             sheet.squelchSettingText(sheet.squelchAuto, sheet.squelchNoise, sheet.squelchMargin, sheet.squelchOff,
                 sheet.squelchDb))
         textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        color: Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
+    }
+    // Issue #899 (B7, B15): where a default-scope change goes, or why it did not.
+    ReadableText {
+        id: squelchSaveNote
+        objectName: "squelchSaveNote"
+        // A saved squelch that could not be cleared or saved whatever the
+        // setting; the unsaved-level reason only while a level is the setting.
+        readonly property string problem: sheet.squelchStoreError.length > 0 ? sheet.squelchStoreError
+            : ((sheet.squelchSaveError.length > 0 && !sheet.squelchNoise && !sheet.squelchAuto)
+                ? sheet.squelchSaveError : sheet.saveError)
+        width: parent.width
+        visible: !sheet.rowSquelch && (sheet.savesToSystem || problem.length > 0)
+        text: problem.length > 0 ? problem : qsTr("Squelch changes here are saved to this system.")
+        wrapMode: Text.Wrap
+        color: problem.length > 0 ? Theme.alert : Theme.textSecondary
+        font.pixelSize: Theme.fontSize(13)
+    }
+    // Issue #899 (B11): the saved system's own squelch out, from the next
+    // start. An audio input takes no app default, so the button names what it
+    // does; when it applies is under it, as on the Radio sheet.
+    Column {
+        objectName: "squelchClearRow"
+        visible: sheet.savesToSystem && !sheet.rowSquelch && sheet.savedSquelch.length > 0
+        width: parent.width
+        spacing: 4
+        OutlineButton {
+            id: squelchClearButton
+            objectName: "squelchClearSaved"
+            text: qsTr("Remove saved squelch")
+            accessibleName: qsTr("Remove Saved Squelch From This System")
+            onClicked: sheet.clearSavedSquelch(activeFocus)
+        }
+        ReadableText {
+            width: parent.width
+            wrapMode: Text.WordWrap
+            text: qsTr("Applies from the next start.")
+            color: Theme.textSecondary
+            font.pixelSize: Theme.fontSize(13)
+        }
+    }
+    ReadableText {
+        id: squelchClearedNote
+        objectName: "squelchClearedNote"
+        width: parent.width
+        visible: sheet.savesToSystem && !sheet.rowSquelch && sheet.savedSquelchCleared
+        text: qsTr("Saved squelch cleared for the next start.")
         wrapMode: Text.Wrap
         color: Theme.textSecondary
         font.pixelSize: Theme.fontSize(13)

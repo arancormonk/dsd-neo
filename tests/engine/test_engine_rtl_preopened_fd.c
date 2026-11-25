@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -65,8 +66,9 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-__wrap_rtl_stream_start(RtlSdrContext* ctx) {
+__wrap_rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     return 0;
 }
 

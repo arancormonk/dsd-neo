@@ -2070,6 +2070,29 @@ svc_apply_scan_autogain(const dsd_opts* opts, const dsd_state* state) {
     rtl_stream_enforce_tuner_autogain(opts->rtl_gain_value > 0 ? 0 : configured);
 }
 
+/* Create and start the stream on the squelch the options hold, the analog default where it belongs (issue #899): on
+   the gate the decoder resolves for this start when nothing holds it, else on the analog family closed until the
+   decoder writes its gate, and off the monitor under the session's own squelch, resolved here on the decoder thread
+   (never a scan row's, which the options may hold). 0, or -1 with no stream. */
+static int
+svc_rtl_open_on_the_channel_squelch_locked(dsd_opts* opts, dsd_state* state) {
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    rtl_stream_start_gate start_gate;
+    DSD_MEMSET(&start_gate, 0, sizeof start_gate);
+    start_gate.resolved =
+        dsd_engine_receiver_gate_resolve_start(opts, state, &start_gate.gate, &start_gate.digital, &start_gate.session);
+    int rc = rtl_stream_create(opts, &state->rtl_ctx) < 0 ? -1 : 0;
+    if (rc == 0 && rtl_stream_start_gated(state->rtl_ctx, &start_gate) < 0) {
+        rtl_stream_destroy(state->rtl_ctx);
+        state->rtl_ctx = NULL;
+        rc = -1;
+    }
+    if (rc == 0) {
+        dsd_engine_receiver_gate_due();
+    }
+    return rc;
+}
+
 /* If the radio pipeline is the active input, create and start the stream so changes take effect as soon as the user
    confirms the setting; nothing to start otherwise. Returns 0 then, or when the stream started. */
 static int
@@ -2080,12 +2103,7 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
     /* The stream stopped before this start may have sealed its I/Q capture at a rate change (issue #806 X9), with the
        notice not drained yet: taken now, the capture stays off and its file is not opened again. */
     dsd_app_take_capture_stopped(opts, state);
-    if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
-        return -1;
-    }
-    if (rtl_stream_start(state->rtl_ctx) < 0) {
-        rtl_stream_destroy(state->rtl_ctx);
-        state->rtl_ctx = NULL;
+    if (svc_rtl_open_on_the_channel_squelch_locked(opts, state) < 0) {
         return -1;
     }
     opts->rtl_started = 1;
@@ -2306,9 +2324,15 @@ svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
     }
     dsd_scan_settings configured;
     dsd_scan_settings_capture(opts, state, &configured);
+    /* The squelch apart: the captures hold the configured one, which the restore of the profile that ran writes over
+       the standing the change left (a config's squelch keys that ended the analog default, issue #899). */
+    dsd_squelch_standing configured_squelch;
+    dsd_squelch_standing_capture(opts, &configured_squelch);
     dsd_scan_settings_restore(ran, opts, state);
+    dsd_squelch_standing_restore(opts, &configured_squelch);
     const int rc = svc_rtl_start_locked(opts, state);
     dsd_scan_settings_restore(&configured, opts, state);
+    dsd_squelch_standing_restore(opts, &configured_squelch);
     return rc;
 }
 
@@ -2368,9 +2392,13 @@ static void
 svc_airspy_restore_tuning(dsd_opts* opts, const svc_airspy_tuning* tuning) {
     opts->rtlsdr_center_freq = tuning->frequency;
     dsd_opts_set_rtl_dsp_bw(opts, tuning->bandwidth, tuning->bandwidth_source);
-    opts->rtl_squelch_level = tuning->squelch;
-    opts->rtl_squelch_mode = tuning->squelch_mode;
-    opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
+    if (tuning->has_squelch_standing) {
+        dsd_squelch_standing_restore(opts, &tuning->squelch_standing);
+    } else {
+        opts->rtl_squelch_level = tuning->squelch;
+        opts->rtl_squelch_mode = tuning->squelch_mode;
+        opts->rtl_squelch_margin_db = tuning->squelch_margin_db;
+    }
     opts->rtl_volume_multiplier = tuning->volume;
 }
 
@@ -2459,8 +2487,12 @@ svc_airspy_apply_live(dsd_opts* opts, dsd_state* state, const dsd_airspy_config*
             return rc;
         }
     }
+    /* What the channel runs, the analog default where it belongs (issue #899), not the bare value an apply wrote; under
+       a suspended scan scope the row's (svc_rtl_push_channel_squelch()), on the channel a native retune puts on air
+       once it lands, or the one on air. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
     if (svc_airspy_squelch_changed(previous_tuning, opts)) {
-        svc_rtl_push_squelch(opts);
+        svc_rtl_push_channel_squelch(opts, state);
     }
     return 0;
 }
@@ -2509,9 +2541,17 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     if (!opts) {
         return -1;
     }
-    const svc_airspy_tuning tuning = {opts->rtlsdr_center_freq,    opts->rtl_dsp_bw_khz,   opts->rtl_squelch_level,
-                                      opts->rtl_volume_multiplier, opts->rtl_squelch_mode, opts->rtl_squelch_margin_db,
-                                      opts->rtl_dsp_bw_source};
+    svc_airspy_tuning tuning;
+    DSD_MEMSET(&tuning, 0, sizeof tuning);
+    tuning.frequency = opts->rtlsdr_center_freq;
+    tuning.bandwidth = opts->rtl_dsp_bw_khz;
+    tuning.bandwidth_source = opts->rtl_dsp_bw_source;
+    tuning.volume = opts->rtl_volume_multiplier;
+    tuning.squelch = opts->rtl_squelch_level;
+    tuning.squelch_mode = opts->rtl_squelch_mode;
+    tuning.squelch_margin_db = opts->rtl_squelch_margin_db;
+    tuning.has_squelch_standing = 1;
+    dsd_squelch_standing_capture(opts, &tuning.squelch_standing);
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
@@ -2832,6 +2872,23 @@ svc_rtl_set_auto_ppm(dsd_opts* opts, const dsd_state* state, int on) {
 #endif
 
 /* The frequency entry's tune, on every build: a radio-off build tunes a rigctl peer with it (issue #671). */
+/* An RTL-family tune is a new channel (issue #899, @p mark 1): its landing on the analog family starts closed until the
+   decoder writes its gate. Once the tune returned (@p mark 0), a profile it never took is marked no more. Nothing with
+   a rigctl peer tuning in its place or no radio stream. */
+static void
+svc_rtl_mark_tune_new_channel(const dsd_opts* opts, const dsd_state* state, uint32_t hz, int mark) {
+#ifdef USE_RADIO
+    if (opts->use_rigctl != 1 && opts->audio_in_type == AUDIO_IN_RTL && state && state->rtl_ctx) {
+        rtl_stream_prepare_retune_new_channel_for_target(hz, mark);
+    }
+#else
+    (void)opts;
+    (void)state;
+    (void)hz;
+    (void)mark;
+#endif
+}
+
 /* A tune the user asked for, through the centralized io/control tuning API for both RTL and rigctl. One that reached
    the tuner replaces any manual tune still pending, and an RTL tune that timed out is followed to its completion, a
    late failure putting the cached frequency back (issue #671). */
@@ -2845,7 +2902,9 @@ svc_io_control_tune(dsd_opts* opts, dsd_state* state, uint32_t hz, uint64_t* out
        answers, and is on the old frequency while it answers a passband request before that. */
     dsd_input_cut mark;
     DSD_MEMSET(&mark, 0, sizeof mark);
+    svc_rtl_mark_tune_new_channel(opts, state, hz, 1);
     const int rc = io_control_set_freq_tagged(opts, state, hz, out_pending_id, &mark);
+    svc_rtl_mark_tune_new_channel(opts, state, hz, 0);
     /* With rigctl in use io_control tunes the peer alone (no RTL leg), and 0 is its RPRT 0. */
     if (rc == 0 && opts->use_rigctl == 1) {
         dsd_engine_note_rigctl_retune(opts, state, sent_before_hz, (long int)hz, &mark);
@@ -3080,10 +3139,10 @@ svc_rtl_set_sql_db(dsd_opts* opts, const dsd_state* state, double dB) {
     /* The operator edits the configured default. A scan row or target that overrides the
      * squelch (--squelch-db) keeps its own threshold, in dsd_opts and in the demod, until the
      * scanner leaves it. */
-    if (dsd_scan_mode_set_configured_squelch(opts, state, level) == 1) {
-        /* Sync the demod state for channel-based squelching: a level, in place of an auto squelch too. */
-        svc_rtl_push_squelch(opts);
-    }
+    (void)dsd_scan_mode_set_configured_squelch(opts, state, level);
+    /* The receiver hears it on the channel the decoder committed, resolved for that channel (issue #899), whether or not
+       the row on air keeps its own threshold. */
+    svc_rtl_push_channel_squelch(opts, state);
     return 0;
 }
 
@@ -3099,7 +3158,10 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
     if (!dsd_squelch_setting_level_finite(setting)) {
         return -1;
     }
-    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)) {
+    /* On the AM monitor of a radio input the noise setting runs as auto with the same N, as at startup (issue #899
+       D4); on AM audio nothing can stand in for it. */
+    if (setting->mode == DSD_SQUELCH_MODE_NOISE && dsd_squelch_noise_has_no_fm(opts, state)
+        && dsd_squelch_input_kind(opts) == DSD_SQUELCH_INPUT_AUDIO) {
         return SVC_SQL_NOISE_NEEDS_FM;
     }
     /* The auto squelch learns a floor from the channel power DSD-neo's own receiver measures; audio input has none, so
@@ -3110,25 +3172,16 @@ svc_rtl_set_sql_setting(dsd_opts* opts, const dsd_state* state, const dsd_squelc
     const dsd_squelch_setting stored = dsd_squelch_mode_is_dynamic(setting->mode)
                                            ? dsd_squelch_setting_dynamic(setting->mode, setting->margin_db)
                                            : dsd_squelch_setting_of_level(setting->level);
-    if (dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored) == 1) {
-        svc_rtl_push_squelch(opts);
-    }
+    (void)dsd_scan_mode_set_configured_squelch_setting(opts, state, &stored);
+    svc_rtl_push_channel_squelch(opts, state);
     return 0;
 }
 
 void
-svc_rtl_push_squelch(const dsd_opts* opts) {
-#ifdef USE_RADIO
-    if (!opts) {
+svc_rtl_push_channel_squelch(dsd_opts* opts, const dsd_state* state) {
+    if (!opts || opts->audio_in_type != AUDIO_IN_RTL) {
         return;
     }
-    if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
-        const dsd_squelch_setting squelch = dsd_squelch_setting_of_opts(opts);
-        rtl_stream_set_channel_squelch_setting(&squelch);
-        return;
-    }
-    rtl_stream_set_channel_squelch((float)opts->rtl_squelch_level);
-#else
-    (void)opts;
-#endif
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    dsd_engine_receiver_gate_settle(opts, state, 1);
 }

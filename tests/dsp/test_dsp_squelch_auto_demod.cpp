@@ -359,6 +359,278 @@ context_moves_the_floor(void) {
     return rc;
 }
 
+/* @p iq through full_demod() in blocks of @p block pairs: the samples flagged open, and in @p first the index of the
+   first of them among the outputs (-1: none). */
+long
+count_opens(demod_state* s, const std::vector<float>& iq, int block, long* first) {
+    long opens = 0;
+    long outputs = 0;
+    *first = -1;
+    const int total = (int)(iq.size() / 2U);
+    for (int at = 0; at < total; at += block) {
+        const int pairs = total - at < block ? total - at : block;
+        const Block b = run_block(s, &iq[(size_t)at * 2U], pairs);
+        for (size_t k = 0; k < b.flags.size(); k++, outputs++) {
+            if (!(b.flags[k] & DSD_SQUELCH_FLAG_CLOSED)) {
+                *first = *first < 0 ? outputs : *first;
+                opens++;
+            }
+        }
+    }
+    return opens;
+}
+
+/* @p iq with its power scaled by @p db. */
+std::vector<float>
+scaled(std::vector<float> iq, double db) {
+    const float k = (float)pow(10.0, db / 20.0);
+    for (float& v : iq) {
+        v *= k;
+    }
+    return iq;
+}
+
+/* A stream restart at the same context (issue #899 B9: Stop during a carrier and Start on an idle channel, a
+   same-frequency restart, an rtl_tcp reconnect) goes through dsd_demod_reset_filter_state(): the new stream's first
+   outputs are not flagged open from the gate the old one left, and idle noise louder than the kept floor opens
+   nothing. */
+int
+stream_restart_closes_the_gate(void) {
+    const int rate = 24000;
+    int rc = 0;
+    long first = -1;
+    const std::vector<float> idle = make_signal(rate, 0.2, 0.0, 0.0, 0, 0x899B01ULL);
+    for (int scenario = 0; scenario < 2; scenario++) {
+        /* A known floor; then a carrier (the gate open at Stop) or not (closed); the restart into idle noise as loud
+           as before, or 13 dB louder. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        const std::vector<float> before = make_signal(rate, 1.0, scenario == 0 ? 0.5 : 0.0, 0.0, 0, 0x899B02ULL);
+        (void)count_opens(s, before, 1000, &first);
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN || s->squelch_floor.gate_open != (scenario == 0)) {
+            rc |= fail("no floor, or the gate not as the stream left it, before the restart");
+        }
+        dsd_demod_reset_filter_state(s);
+        const long opens = count_opens(s, scenario == 0 ? idle : scaled(idle, 13.0), 1000, &first);
+        if (opens != 0) {
+            DSD_FPRINTF(stderr, "squelch auto demod: %ld samples open on %s idle noise after a stream restart\n", opens,
+                        scenario == 0 ? "the same" : "louder");
+            rc |= 1;
+        }
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+            rc |= fail("a stream restart lost the floor");
+        }
+        free_monitor(s);
+    }
+    {
+        /* LEARNING, open on a carrier window, then the restart into idle noise. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        const std::vector<float> carrier = make_signal(rate, 0.0, 0.3, 0.0, 0, 0x899B03ULL);
+        (void)count_opens(s, carrier, 1000, &first);
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_LEARNING || !s->squelch_floor.gate_open) {
+            rc |= fail("not learning and open on the carrier before the restart");
+        }
+        dsd_demod_reset_filter_state(s);
+        const long opens = count_opens(s, idle, 1000, &first);
+        if (opens != 0) {
+            DSD_FPRINTF(stderr, "squelch auto demod: %ld samples open on idle noise after a restart while learning\n",
+                        opens);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
+/* After a stream restart through dsd_demod_reset_filter_state() (issue #899 B9), learning windows from before it do
+   not make a floor with one after it, and a carrier right after it opens within one window more than mid-stream. */
+int
+stream_restart_starts_the_evidence_over(void) {
+    const int rate = 24000;
+    int rc = 0;
+    long first = -1;
+    {
+        /* Four NOISE windows, the restart, one louder NOISE window: no floor. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        const std::vector<float> noise = make_signal(rate, 0.5, 0.0, 0.0, 0, 0x899B04ULL);
+        const std::vector<float> louder = scaled(make_signal(rate, 0.5, 0.0, 0.0, 0, 0x899B05ULL), 5.5);
+        for (int at = 0; s->squelch_floor.windows < 4U && at + 48 <= (int)(noise.size() / 2U); at += 48) {
+            (void)run_block(s, &noise[(size_t)at * 2U], 48);
+        }
+        int noise_windows = 0;
+        for (int i = 0; i < s->squelch_floor.learn_count; i++) {
+            noise_windows += s->squelch_floor.learn_class[i] == DSD_SQUELCH_WINDOW_NOISE;
+        }
+        if (s->squelch_floor.windows != 4U || noise_windows != 4) {
+            rc |= fail("not four NOISE windows before the restart");
+        }
+        dsd_demod_reset_filter_state(s);
+        for (int at = 0; s->squelch_floor.windows < 5U && at + 48 <= (int)(louder.size() / 2U); at += 48) {
+            (void)run_block(s, &louder[(size_t)at * 2U], 48);
+        }
+        if (s->squelch_floor.windows != 5U || s->squelch_floor.last_class != DSD_SQUELCH_WINDOW_NOISE) {
+            rc |= fail("no NOISE window after the restart");
+        }
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_LEARNING) {
+            DSD_FPRINTF(stderr, "squelch auto demod: windows on both sides of a restart made a floor of %.6f\n",
+                        s->squelch_floor.floor_power);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    {
+        /* A known floor, the restart, a carrier from its first sample: open within one window more than a stream
+           with no restart (20 ms), 60 ms in all, and open from then on. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        (void)count_opens(s, make_signal(rate, 1.0, 0.0, 0.0, 0, 0x899B06ULL), 1000, &first);
+        dsd_demod_reset_filter_state(s);
+        const std::vector<float> carrier = make_signal(rate, 0.0, 0.5, 0.0, 0, 0x899B07ULL);
+        const long opens = count_opens(s, carrier, 1000, &first);
+        const long outputs = (long)s->squelch_floor.samples;
+        if (first < 0 || first > (60L * rate) / 1000L || opens != outputs - first) {
+            DSD_FPRINTF(stderr, "squelch auto demod: a carrier after a restart opened at output %ld, %ld open\n", first,
+                        opens);
+            rc |= 1;
+        } else {
+            printf("DSP_SQUELCH_AUTO_DEMOD: a carrier right after a stream restart opens after %.1f ms\n",
+                   (double)first * 1000.0 / (double)rate);
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
+/* The restart hold and the floor cache (issue #899): a new stream onto a channel whose floor comes from the cache
+   (learn A, visit B, Stop, Start on A: the IO layer marks the open, squelch_new_stream, and resets the filters) holds
+   like one onto a floor it kept, so idle noise louder than A's floor opens nothing; a restart on A, then a retune to B
+   before a window classified, leaves A's hold behind, and B's cached floor opens on a carrier at its first sub-window;
+   and a move to a cached floor with no gap holds nothing. The open's mark waits for the tracker: a level block on the
+   reopened channel before Auto comes in leaves it for Auto's first context, and a retune to another channel before
+   that (dsd_demod_squelch_note_retune(), as the IO layer calls it) drops it, so B's cached floor gates at once. */
+int
+stream_restart_hold_follows_the_context(void) {
+    const int rate = 24000;
+    const int64_t freq_a = 162475000;
+    const int64_t freq_b = 172475000;
+    int rc = 0;
+    long first = -1;
+    const std::vector<float> noise = make_signal(rate, 1.0, 0.0, 0.0, 0, 0x899B10ULL);
+    const std::vector<float> idle = make_signal(rate, 0.2, 0.0, 0.0, 0, 0x899B11ULL);
+    {
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+            rc |= fail("no floor on the second channel");
+        }
+        s->squelch_context.freq_hz = freq_a;
+        s->squelch_new_stream = 1;
+        dsd_demod_reset_filter_state(s);
+        const long opens = count_opens(s, scaled(idle, 13.0), 1000, &first);
+        if (opens != 0) {
+            DSD_FPRINTF(stderr,
+                        "squelch auto demod: %ld samples open on louder noise after a new stream on a cached floor\n",
+                        opens);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    for (int retune = 0; retune < 2; retune++) {
+        /* Learn A and B, Stop on B, reopen (on A, or with a retune to come, on B) under the level squelch (one block),
+           then Auto: with no retune between, A's cached floor holds; reopened on B and retuned to A before Auto, A's
+           cached floor gates a carrier at once. */
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->squelch_context.freq_hz = freq_a;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = retune ? freq_b : freq_a;
+        s->squelch_new_stream = 1;
+        dsd_demod_reset_filter_state(s);
+        s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        (void)run_block(s, idle.data(), 1000);
+        if (!s->squelch_new_stream) {
+            rc |= fail("a level block before the tracker took the open's mark");
+        }
+        s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+        if (retune) {
+            dsd_demod_squelch_note_retune(s);
+            s->squelch_context.freq_hz = freq_a;
+            dsd_demod_reset_filter_state(s);
+            const std::vector<float> carrier = make_signal(rate, 0.0, 0.3, 0.0, 0, 0x899B13ULL);
+            (void)count_opens(s, carrier, 1000, &first);
+            if (first < 0 || first > (30L * rate) / 1000L) {
+                DSD_FPRINTF(stderr,
+                            "squelch auto demod: a carrier on a cached floor after a reopen and a retune opened at "
+                            "%ld\n",
+                            first);
+                rc |= 1;
+            }
+        } else {
+            const long opens = count_opens(s, scaled(idle, 13.0), 1000, &first);
+            if (opens != 0) {
+                DSD_FPRINTF(stderr,
+                            "squelch auto demod: %ld samples open on louder noise after a reopen, a level block and "
+                            "Auto on a cached floor\n",
+                            opens);
+                rc |= 1;
+            }
+        }
+        if (s->squelch_new_stream) {
+            rc |= fail("the tracker's first context left the open's mark");
+        }
+        free_monitor(s);
+    }
+    {
+        demod_state* s = new_monitor(0, rate, 1, 12500);
+        if (!s) {
+            return fail("alloc");
+        }
+        s->squelch_context.freq_hz = freq_b;
+        (void)count_opens(s, noise, 1000, &first);
+        s->squelch_context.freq_hz = freq_a;
+        (void)count_opens(s, noise, 1000, &first);
+        if (s->squelch_floor.restart_hold || s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN) {
+            rc |= fail("a move to a cached floor with no gap held the gate, or found no floor");
+        }
+        dsd_demod_reset_filter_state(s);
+        (void)run_block(s, noise.data(), 300);
+        if (!s->squelch_floor.restart_hold) {
+            rc |= fail("no hold after the restart");
+        }
+        s->squelch_context.freq_hz = freq_b;
+        dsd_demod_reset_filter_state(s);
+        const std::vector<float> carrier = make_signal(rate, 0.0, 0.3, 0.0, 0, 0x899B12ULL);
+        (void)count_opens(s, carrier, 1000, &first);
+        if (first < 0 || first > (30L * rate) / 1000L) {
+            DSD_FPRINTF(stderr,
+                        "squelch auto demod: a carrier on a cached floor after a restart and a retune opened at %ld\n",
+                        first);
+            rc |= 1;
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
 /* The per-channel floors age with the stream in every mode: under the level squelch and off the analog monitor (a
    digital channel) the cache's clock runs on, so a floor cached before is stale when its channel comes back. */
 int
@@ -1123,6 +1395,9 @@ main(void) {
     rc |= fm_flags_follow_the_tracker();
     rc |= plan_follows_the_channel();
     rc |= context_moves_the_floor();
+    rc |= stream_restart_closes_the_gate();
+    rc |= stream_restart_starts_the_evidence_over();
+    rc |= stream_restart_hold_follows_the_context();
     rc |= cache_ages_in_every_mode();
     rc |= idle_floor_goes_stale();
     rc |= am_detector_follows_the_flags();

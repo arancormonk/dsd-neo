@@ -43,6 +43,8 @@ struct StubState {
        kFlagsMark), which shows the read reached the caller's own buffers without keeping their addresses. */
     int last_voice_given;
     int last_flags_given;
+    /* The squelch gate the last open was given (issue #899), and whether it was resolved: -1 for none (NULL). */
+    int last_open_gate_resolved;
 };
 
 static StubState g_stub;
@@ -94,7 +96,8 @@ expect_ptr_ne(const char* label, const void* got, const void* not_want) {
 } // namespace
 
 extern "C" int
-dsd_rtl_stream_open(dsd_opts* opts) {
+dsd_rtl_stream_open(dsd_opts* opts, const rtl_stream_start_gate* start_gate) {
+    g_stub.last_open_gate_resolved = start_gate ? start_gate->resolved : -1;
     g_stub.open_calls++;
     g_stub.last_open_opts = opts;
     if (dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
@@ -220,6 +223,31 @@ test_start_stop_and_destructor_lifecycle(void) {
         rc |= expect_int_eq("start succeeds before destructor", stream.start(), 0);
     }
     rc |= expect_int_eq("destructor stops active stream", g_stub.soft_stop_calls, 1);
+    return rc;
+}
+
+/* Issue #899, round 10: the squelch gate the decoder resolved for a start is that start's argument alone. A start of a
+   context already started opens nothing and takes no gate; the next start after a stop opens on its own (none: the
+   options'), never on one an earlier start was given. */
+static int
+test_start_gate_is_the_start_argument(void) {
+    reset_stubs();
+    std::unique_ptr<dsd_opts> opts = make_opts();
+    rtl_stream_start_gate resolved = {};
+    resolved.resolved = 1;
+    int rc = 0;
+    {
+        RtlSdrOrchestrator stream(*opts);
+        rc |= expect_int_eq("a start opens on the gate it is given", stream.start(&resolved), 0);
+        rc |= expect_int_eq("the open takes that gate", g_stub.last_open_gate_resolved, 1);
+        g_stub.last_open_gate_resolved = -2;
+        rc |= expect_int_eq("a start of a started context succeeds", stream.start(&resolved), 0);
+        rc |= expect_int_eq("and opens nothing", g_stub.open_calls, 1);
+        rc |= expect_int_eq("nor takes the gate", g_stub.last_open_gate_resolved, -2);
+        rc |= expect_int_eq("stop", stream.stop(), 0);
+        rc |= expect_int_eq("the next start, no gate given", stream.start(), 0);
+        rc |= expect_int_eq("opens on none, not an earlier start's", g_stub.last_open_gate_resolved, -1);
+    }
     return rc;
 }
 
@@ -349,6 +377,7 @@ main(void) {
     rc |= test_airspy_start_publishes_actual_rate();
     rc |= test_constructor_snapshots_and_registers_opts();
     rc |= test_start_stop_and_destructor_lifecycle();
+    rc |= test_start_gate_is_the_start_argument();
     rc |= test_start_failure_and_prestart_errors();
     rc |= test_tune_and_read_error_propagation();
     rc |= test_read_carries_yield_and_no_stream();

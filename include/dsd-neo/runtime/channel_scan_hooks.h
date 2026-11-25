@@ -6,7 +6,8 @@
 /**
  * @file
  * @brief What app-control does for the engine around a channel list: the pause of a -Y scan the engine pauses again on
- * its own (issue #671), and the late settling of a Next or Previous walk off any scan (issue #644).
+ * its own (issue #671), and the late settling of a Next or Previous walk off any scan (issue #644). And what the engine
+ * does for the scan scope's resume: the receiver's squelch gate (issue #899).
  *
  * A resume whose row never lands leaves the scan paused: the engine runs the pause again over what the attempt began.
  * That pause asks the front end back onto the configured receive profile, as an interactive pause does, and the
@@ -55,6 +56,20 @@ void dsd_channel_walk_settle_hook_set(dsd_channel_walk_settle_fn fn);
 
 /** The walk's late settling installed, or NULL. Thread-safe; the engine reads it on the decoder thread. */
 dsd_channel_walk_settle_fn dsd_channel_walk_settle_hook_get(void);
+
+/**
+ * Hand a radio receiver the squelch gate of the channel the scan scope, or the session, has on air, once none of the
+ * decoder's own tune or family requests is outstanding (issue #899). The engine installs it
+ * (dsd_engine_receiver_gate_settle()) for the scan scope's entry points, which with none installed (tests) push the
+ * gate of the row on air themselves.
+ */
+typedef void (*dsd_receiver_gate_settle_fn)(const dsd_opts* opts, const dsd_state* state);
+
+/** Install the receiver's gate settle (NULL: none). Thread-safe. */
+void dsd_receiver_gate_settle_hook_set(dsd_receiver_gate_settle_fn fn);
+
+/** Run the receiver's gate settle installed: 1 when one ran, 0 when none is installed. Decoder thread. */
+int dsd_receiver_gate_settle_hook_run(const dsd_opts* opts, const dsd_state* state);
 
 #ifdef __cplusplus
 }

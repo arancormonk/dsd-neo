@@ -1006,6 +1006,8 @@ test_round_trip(FakeHost& host, const QString& document, const Captured& before)
         expect("a confirmed restore can be cancelled until it applies",
                model.restoreCancellable() && results.cancellableChanges == 1);
     }
+    // Issue #899: a squelch default chosen on this device before the restore, which the backup does not carry.
+    dsd_qt::AppPrefs().setSquelch(QStringLiteral("auto+20"));
     // The next start.
     const ApplyResult applied = dsd_qt::backup::apply_pending_restore({});
     expect("the restore applies at the next start", applied.outcome == ApplyOutcome::Applied);
@@ -1025,6 +1027,8 @@ test_round_trip(FakeHost& host, const QString& document, const Captured& before)
     expect("settings are identical", after.prefs == before.prefs);
     expect("a restored out-of-range gain keeps its stored value and reads as 49 dB",
            after.prefs.value("tuner/gainDb").toString() == "60" && dsd_qt::AppPrefs().gainDb() == 49);
+    expect("a backup with no squelch default (an older one) restores Noise +10 over the device's choice",
+           !after.prefs.contains("radio/squelch") && dsd_qt::AppPrefs().squelch() == QStringLiteral("noise+10"));
     dsd_app_signal_search_store_close();
 
     // The outcome card, from the apply in this process and from the result file at a later start.

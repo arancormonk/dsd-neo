@@ -2,6 +2,7 @@
 /* Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com> */
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
@@ -9,7 +10,9 @@
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/trunk_scan.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <stddef.h>
 #include <stdint.h>
 #include "channel_scan_stubs.h"
@@ -150,6 +153,67 @@ int
 dsd_engine_channel_scan_waiting(const dsd_state* state) {
     (void)state;
     return 0;
+}
+
+/* No receiver closed start is modelled here (issue #899): a settle after a change hands the gate of the channel on air
+   over through the stream hooks, a level as a threshold and a dynamic setting whole. UI_MENU_SERVICES counts those
+   pushes; the engine's own rules are exercised by ENGINE_CHANNEL_SCAN, APP_COMMAND_QUEUE and IO_RTL_RETUNE_PREPARE. */
+static int g_gates_due;
+static dsd_squelch_setting g_due_gate;
+static const dsd_opts* g_due_opts;
+static const dsd_state* g_due_state;
+
+/* A write marked due (a stream open, a family request): resolved at the next settle the stub sees, or at the call of
+   dsd_test_channel_scan_gates_due() with the options the last settle saw. */
+void
+dsd_engine_receiver_gate_due(void) {
+    g_gates_due++;
+    if (g_due_opts) {
+        g_due_gate = dsd_scan_mode_channel_squelch(g_due_opts, g_due_state);
+    }
+}
+
+int
+dsd_test_channel_scan_gates_due(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* out) {
+    const int due = g_gates_due;
+    g_gates_due = 0;
+    g_due_opts = opts;
+    g_due_state = state;
+    if (out) {
+        *out = g_due_gate;
+    }
+    return due;
+}
+
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    (void)hold;
+}
+
+/* As a start resolves it under a command (the engine's hold): the session's own squelch alone. */
+int
+dsd_engine_receiver_gate_resolve_start(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* gate,
+                                       dsd_squelch_setting* digital, dsd_squelch_setting* session) {
+    (void)gate;
+    (void)digital;
+    if (!opts || !session) {
+        return 0;
+    }
+    *session = dsd_squelch_channel_gate(opts, state, NULL, 0);
+    return 0;
+}
+
+void
+dsd_engine_receiver_gate_settle(const dsd_opts* opts, const dsd_state* state, int changed) {
+    if (!changed || !opts || opts->audio_in_type != AUDIO_IN_RTL) {
+        return;
+    }
+    const dsd_squelch_setting gate = dsd_scan_mode_channel_squelch(opts, state);
+    if (dsd_squelch_mode_is_dynamic(gate.mode)) {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch_setting(&gate);
+    } else {
+        (void)dsd_rtl_stream_metrics_hook_set_channel_squelch(gate.level);
+    }
 }
 
 /* Nor a running scan list: no row waits to run the configured NFM width (issue #526). APP_COMMAND_QUEUE drives the real

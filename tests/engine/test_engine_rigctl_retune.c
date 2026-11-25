@@ -1773,7 +1773,7 @@ leg_io_control(dsd_opts* opts, dsd_state* state, long hz) {
 static int
 leg_scan(dsd_opts* opts, dsd_state* state, long hz) {
     uint64_t request_id = 0U;
-    return dsd_engine_scan_tune_to_freq(opts, state, hz, 0, &request_id) == DSD_TRUNK_TUNE_RESULT_OK;
+    return dsd_engine_scan_tune_to_freq(opts, state, hz, 0, 0, &request_id) == DSD_TRUNK_TUNE_RESULT_OK;
 }
 
 static int

@@ -19,6 +19,7 @@
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/platform/atomic_compat.h>
@@ -513,6 +514,11 @@ manual_tune_poll_noted(dsd_opts* opts, dsd_state* state) {
 }
 
 int
+dsd_engine_manual_tune_awaited(void) {
+    return atomic_load(&g_record_pending) == MANUAL_TUNE_NOTED;
+}
+
+int
 dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
     if (g_displaced_unreported) {
         /* The displaced step first: the record that displaced it is polled next. */
@@ -531,6 +537,10 @@ dsd_engine_manual_tune_poll(dsd_opts* opts, dsd_state* state) {
     const int polled = manual_tune_poll_noted(opts, state);
     if (take_guard) {
         p25_sm_tick_guard_leave();
+    }
+    /* The record settled: the receiver is where it went, or stayed, and runs that channel's squelch gate (issue #899). */
+    if (polled != DSD_MANUAL_TUNE_NONE) {
+        dsd_engine_receiver_gate_due();
     }
     return polled;
 }

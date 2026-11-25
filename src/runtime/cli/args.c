@@ -887,8 +887,29 @@ cli_parse_squelch_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
+    /* An explicit squelch: the analog default stays out for the session (issue #899). */
+    dsd_squelch_analog_default_end(opts);
     dsd_squelch_setting_store(opts, &setting);
     opts->rtl_squelch_cli_set = 1;
+    return 1;
+}
+
+/* --squelch-analog-default <auto[+N]|noise[+N]> (issue #899): the squelch an analog channel of a radio input runs
+ * while no squelch was set explicitly. Off and a level are refused (no default is the option left out); the refusal
+ * names the grammar, never the text. */
+static int
+cli_parse_squelch_analog_default_option(const char* in, dsd_opts* opts, int* out_exit_rc) {
+    char err[96];
+    if (!in) {
+        LOG_ERROR("--squelch-analog-default requires a setting: auto[+N] or noise[+N]\n");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    if (dsd_squelch_analog_default_parse(opts, in, err, sizeof err) != 0) {
+        LOG_ERROR("--squelch-analog-default: %s\n", err);
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
     return 1;
 }
 
@@ -2127,6 +2148,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strcmp(argv[i], "--squelch") == 0 || strncmp(argv[i], "--squelch=", 10) == 0) {                            \
             const char* value = argv[i][9] == '=' ? argv[i] + 10 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL);  \
             if (!cli_parse_squelch_option(value, opts, out_exit_rc)) {                                                 \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--squelch-analog-default") == 0                                                           \
+            || strncmp(argv[i], "--squelch-analog-default=", 25) == 0) {                                               \
+            const char* value = argv[i][24] == '=' ? argv[i] + 25 : (i + 1 < argc ? DSD_PARSE_ARGS_NEXT_ARG() : NULL); \
+            if (!cli_parse_squelch_analog_default_option(value, opts, out_exit_rc)) {                                  \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \

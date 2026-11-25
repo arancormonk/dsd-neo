@@ -9,6 +9,44 @@ set(_DSD_NEO_RR_FIXTURE_DIR
     "${PROJECT_SOURCE_DIR}/tests/fixtures/radioreference"
 )
 
+# Whether these tests may be built with link-time optimization (issue #899). The cost counters
+# some cases keep (calls, lookups and reads counted through --wrap) cannot see a call that LTO
+# inlined before the wrap applied. Their count-only CTest entries (*_COST) return CTest's skip
+# code 77 in such a build (DSD_TEST_LTO_BUILD); the behaviour entries run as always. Fail-safe:
+# LTO or IPO requested for any configuration, or -flto as an argument in any configuration's
+# compile or executable link flags, sets it for every configuration. Over-skipping is accepted:
+# it only loses coverage in configurations no preset or CI job builds.
+set(_DSD_TEST_LTO_BUILD OFF)
+if(DSD_ENABLE_LTO OR CMAKE_INTERPROCEDURAL_OPTIMIZATION)
+    set(_DSD_TEST_LTO_BUILD ON)
+endif()
+set(_dsd_lto_flag_vars CMAKE_C_FLAGS CMAKE_CXX_FLAGS CMAKE_EXE_LINKER_FLAGS)
+foreach(
+    _dsd_lto_config
+    IN
+    LISTS CMAKE_CONFIGURATION_TYPES CMAKE_BUILD_TYPE
+    ITEMS Debug Release RelWithDebInfo MinSizeRel
+)
+    string(TOUPPER "${_dsd_lto_config}" _dsd_lto_config)
+    if(CMAKE_INTERPROCEDURAL_OPTIMIZATION_${_dsd_lto_config})
+        set(_DSD_TEST_LTO_BUILD ON)
+    endif()
+    list(
+        APPEND _dsd_lto_flag_vars
+        CMAKE_C_FLAGS_${_dsd_lto_config}
+        CMAKE_CXX_FLAGS_${_dsd_lto_config}
+        CMAKE_EXE_LINKER_FLAGS_${_dsd_lto_config}
+    )
+endforeach()
+foreach(_dsd_lto_flags_var IN LISTS _dsd_lto_flag_vars)
+    separate_arguments(_dsd_lto_args NATIVE_COMMAND "${${_dsd_lto_flags_var}}")
+    foreach(_dsd_lto_arg IN LISTS _dsd_lto_args)
+        if(_dsd_lto_arg STREQUAL "-flto" OR _dsd_lto_arg MATCHES "^-flto=")
+            set(_DSD_TEST_LTO_BUILD ON)
+        endif()
+    endforeach()
+endforeach()
+
 # Release-style configurations put -DNDEBUG on the command line, and nearly
 # every test here carries its logic inside assert(). Left alone, a Release or
 # RelWithDebInfo build with BUILD_TESTING=ON - a plain `cmake ..`, or the
@@ -10298,7 +10336,7 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             dsd-neo_engine
             "-Wl,--end-group"
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=Connect"
             "-Wl,--wrap=RigctlRebindPeer"
@@ -10340,7 +10378,7 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=rtlsdr_get_device_count"
             "-Wl,--wrap=rtlsdr_get_device_usb_strings"
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_destroy"
             ${LIBS}
             dsd-neo_test_support
@@ -10747,13 +10785,29 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--wrap=getFrameSync"
             "-Wl,--wrap=dsd_engine_scan_tune_to_freq"
             "-Wl,--wrap=SetFreq"
+            "-Wl,--wrap=dsd_scan_mode_prepare"
+            "-Wl,--wrap=dsd_decode_now_mono_s"
+            "-Wl,--wrap=dsd_state_ext_get"
+            "-Wl,--wrap=dsd_engine_channel_scan_owed_recovery_window"
             "-Wl,--start-group"
             dsd-neo_engine
             "-Wl,--end-group"
             ${LIBS}
             dsd-neo_test_support
     )
+    if(_DSD_TEST_LTO_BUILD)
+        target_compile_definitions(
+            dsd-neo_test_engine_scan_timing
+            PRIVATE DSD_TEST_LTO_BUILD=1
+        )
+    endif()
     add_test(NAME ENGINE_SCAN_TIMING COMMAND dsd-neo_test_engine_scan_timing)
+    # The healthy -Y pass's --wrap cost counts alone (issue #899): skipped (77) in an LTO test build.
+    add_test(
+        NAME ENGINE_SCAN_TIMING_COST
+        COMMAND dsd-neo_test_engine_scan_timing --cost
+    )
+    set_tests_properties(ENGINE_SCAN_TIMING_COST PROPERTIES SKIP_RETURN_CODE 77)
     # --dmr-chan-overrides lies over the -C map before the first frame (discussion #900 F3).
     add_executable(
         dsd-neo_test_engine_dmr_chan_overrides
@@ -10873,6 +10927,7 @@ add_test(
 add_executable(
     dsd-neo_test_engine_channel_scan
     test_support/scan_group_stubs.c
+    test_support/channel_gate_fake.c
     engine/test_engine_channel_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
     # A tetra-dmo row's eligibility and the TETRA state's lifetime across its landings (issue #890).
@@ -10944,6 +10999,7 @@ add_executable(
     dsd-neo_test_engine_trunk_scan
     ${PROJECT_SOURCE_DIR}/src/core/util/dsd_event_staging.c
     ${PROJECT_SOURCE_DIR}/src/core/util/scan_profile.c
+    test_support/channel_gate_fake.c
     test_support/scan_group_stubs.c
     engine/test_engine_trunk_scan.c
     ${PROJECT_SOURCE_DIR}/src/engine/channel_scan.c
@@ -11416,6 +11472,21 @@ add_executable(dsd-neo_test_runtime_squelch runtime/test_runtime_squelch.c)
 target_link_libraries(dsd-neo_test_runtime_squelch PRIVATE dsd-neo_runtime)
 add_test(NAME RUNTIME_SQUELCH COMMAND dsd-neo_test_runtime_squelch)
 
+# Issue #899: the analog default squelch (--squelch-analog-default) in and out of
+# force by channel, input, scan row and explicit squelch, and the AM notice.
+add_executable(
+    dsd-neo_test_runtime_squelch_analog_default
+    runtime/test_runtime_squelch_analog_default.c
+)
+target_link_libraries(
+    dsd-neo_test_runtime_squelch_analog_default
+    PRIVATE dsd-neo_runtime dsd-neo_test_support
+)
+add_test(
+    NAME RUNTIME_SQUELCH_ANALOG_DEFAULT
+    COMMAND dsd-neo_test_runtime_squelch_analog_default
+)
+
 # Issue #621: the passband a rigctl peer that demodulates audio input is asked
 # for, and the opts predicates that say whether one is there.
 add_executable(
@@ -11532,6 +11603,7 @@ add_test(NAME RUNTIME_CONFIG_ENV COMMAND dsd-neo_test_runtime_config_env)
 add_executable(
     dsd-neo_test_runtime_config_apply
     runtime/test_runtime_config_apply.cpp
+    test_support/channel_gate_fake.c
 )
 set_source_files_properties(
     runtime/test_runtime_config_apply.cpp
@@ -11598,11 +11670,14 @@ if(NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             ${LIBS}
             dsd-neo_test_support
             "-Wl,--wrap=rtl_stream_create"
-            "-Wl,--wrap=rtl_stream_start"
+            "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_stop"
             "-Wl,--wrap=rtl_stream_destroy"
             "-Wl,--wrap=rtl_stream_set_channel_squelch"
             "-Wl,--wrap=rtl_stream_set_channel_squelch_setting"
+            "-Wl,--wrap=rtl_stream_prepare_retune_new_channel_for_target"
+            "-Wl,--wrap=rtl_stream_write_squelch_gate"
+            "-Wl,--wrap=rtl_stream_gate_closed_start"
             "-Wl,--wrap=rtl_stream_output_rate"
     )
 else()
@@ -11881,6 +11956,7 @@ endif()
 add_executable(
     dsd-neo_test_app_command_queue
     ui/test_ui_cmd_queue.c
+    test_support/channel_gate_fake.c
     ${PROJECT_SOURCE_DIR}/src/app_control/app_command_queue.c
 )
 target_compile_definitions(
@@ -11971,21 +12047,34 @@ if(
         dsd-neo_test_app_command_queue
         PRIVATE DSD_NEO_TEST_RTL_WRAP DSD_NEO_TEST_ANALOG_WRAP
     )
+    if(_DSD_TEST_LTO_BUILD)
+        target_compile_definitions(
+            dsd-neo_test_app_command_queue
+            PRIVATE DSD_TEST_LTO_BUILD=1
+        )
+    endif()
     target_link_options(
         dsd-neo_test_app_command_queue
         PRIVATE
             "LINKER:--wrap=dsd_symbol_note_timing_rate"
             "LINKER:--wrap=rtl_stream_create"
-            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_gated"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_start_opened_capture"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
+            "LINKER:--wrap=rtl_stream_prepare_retune_new_channel_for_target"
+            "LINKER:--wrap=rtl_stream_write_squelch_gate"
+            "LINKER:--wrap=rtl_stream_gate_closed_start"
+            "LINKER:--wrap=dsd_scan_mode_channel_squelch"
+            "LINKER:--wrap=dsd_squelch_channel_gate"
+            "LINKER:--wrap=dsd_squelch_analog_default_sync"
             "LINKER:--wrap=rtl_stream_check_analog_profile"
             "LINKER:--wrap=rtl_stream_request_analog_profile"
             "LINKER:--wrap=rtl_stream_request_demod_profile"
+            "LINKER:--wrap=rtl_stream_request_decode_demod_profile"
             "LINKER:--wrap=rtl_stream_analog_family_active"
             "LINKER:--wrap=rtl_stream_family_landing_after_pending"
             "LINKER:--wrap=rtl_stream_request_digital_family_landing"
@@ -12014,6 +12103,22 @@ if(
 endif()
 add_test(NAME APP_COMMAND_QUEUE COMMAND dsd-neo_test_app_command_queue)
 set_tests_properties(APP_COMMAND_QUEUE PROPERTIES TIMEOUT 120)
+if(
+    DSD_HAS_RADIO
+    AND NOT APPLE
+    AND NOT WIN32
+    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+)
+    # The idle drain's --wrap cost counts alone (issue #899): skipped (77) in an LTO test build.
+    add_test(
+        NAME APP_COMMAND_QUEUE_COST
+        COMMAND dsd-neo_test_app_command_queue --cost
+    )
+    set_tests_properties(
+        APP_COMMAND_QUEUE_COST
+        PROPERTIES TIMEOUT 120 SKIP_RETURN_CODE 77
+    )
+endif()
 
 add_executable(dsd-neo_test_ui_key_cleanup ui/test_ui_key_cleanup.c)
 target_link_libraries(
@@ -12404,6 +12509,23 @@ add_test(
         DSD_NEO_CLI_SMOKE_MODE=print-config-rtltcp-bad-port -P
         ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
 )
+# Issue #899: a spec's squelch field --squelch would refuse fails the export (B14), and a
+# level the rtl_sql key cannot hold exactly exports as the nearest whole dB, with a word (B15).
+foreach(_mode IN ITEMS rtl-bad-squelch soapy-bad-squelch rtl-rounded-squelch)
+    string(TOUPPER "${_mode}" _mode_upper)
+    string(REPLACE "-" "_" _mode_upper "${_mode_upper}")
+    add_test(
+        NAME RUNTIME_BOOTSTRAP_PRINT_CONFIG_${_mode_upper}
+        COMMAND
+            ${CMAKE_COMMAND} -D DSD_NEO_CLI=$<TARGET_FILE:dsd-neo> -D
+            DSD_NEO_CLI_SMOKE_MODE=print-config-${_mode} -P
+            ${CMAKE_CURRENT_SOURCE_DIR}/cmake/RunCliSmoke.cmake
+    )
+    set_tests_properties(
+        RUNTIME_BOOTSTRAP_PRINT_CONFIG_${_mode_upper}
+        PROPERTIES WORKING_DIRECTORY "${_DSD_BOOTSTRAP_FIXTURE_DIR}"
+    )
+endforeach()
 # --no-config does nothing since config loading became opt-in; it says so.
 add_test(
     NAME RUNTIME_CLI_NO_CONFIG_NOTICE
@@ -20879,6 +21001,31 @@ if(DSD_HAS_RADIO)
         COMMAND dsd-neo_test_io_rtl_squelch_plumbing
     )
 
+    # The auto squelch's floor key from the input spec (issue #899 B12): an rtl or rtltcp spec's start
+    # frequency, squelch field and volume leave it as it was; every other field and spec as before.
+    add_executable(
+        dsd-neo_test_io_rtl_squelch_device_key
+        io/test_io_rtl_squelch_device_key.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_squelch_device_key
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_squelch_device_key
+        PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core
+    )
+    if(DSD_HAS_RTLSDR)
+        target_link_libraries(
+            dsd-neo_test_io_rtl_squelch_device_key
+            PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+        )
+    endif()
+    add_test(
+        NAME IO_RTL_SQUELCH_DEVICE_KEY
+        COMMAND dsd-neo_test_io_rtl_squelch_device_key
+    )
+
     add_executable(
         dsd-neo_test_io_rtl_analog_family_switch
         io/test_io_rtl_analog_family_switch.cpp
@@ -27404,24 +27551,69 @@ if(DSD_HAS_RADIO)
         "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB [(]row[)].*ANALOG AUDIO OK"
         "${_analog_off_path}"
     )
-    # The AM monitor has no discriminator to quiet: -fM --squelch noise stops at startup
-    # and says why, before any replay.
-    add_test(
-        NAME DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
-        COMMAND
-            dsd-neo_test_analog_replay --frontend none -fM --squelch noise
-            --iq-replay
-            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/am_burst_synth.iq.json" -o
-            null
+    # The AM monitor has no discriminator to quiet: -fM --squelch noise runs the auto
+    # squelch with the same N, says so at startup, and the burst gates exactly as under
+    # --squelch auto (issue #899 D4: it stopped the start), in either spelling.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_AM_AS_AUTO
+        am_burst_synth
+        "-fM --squelch noise ${_sql_auto_burst_bounds}"
+        "NOTICE: The noise squelch needs an FM channel; this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}|--squelch noise needs an FM channel"
     )
-    set_tests_properties(
-        DECODE_IQ_ANALOG_SQL_NOISE_AM_REFUSED
-        PROPERTIES
-            LABELS "iq-decode;analog"
-            TIMEOUT 120
-            PASS_REGULAR_EXPRESSION
-                "--squelch noise needs an FM channel and -fM is AM"
-            FAIL_REGULAR_EXPRESSION "ANALOG AUDIO OK|ANALOG METRIC"
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_NOISE_AM_AS_AUTO_EQUALS
+        am_burst_synth
+        "-fM --squelch=noise+10 ${_sql_auto_burst_bounds}"
+        "this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}|--squelch noise needs an FM channel"
+    )
+    # The analog default squelch (issue #899, --squelch-analog-default): with no squelch
+    # set, the -fA monitor gates exactly as under --squelch noise, ten seconds of noise
+    # never open it, and AM runs it as auto with the notice. --squelch off, a squelch
+    # someone set, ends it: the noise plays. A -Y map row on a DMR session with no
+    # squelch of its own runs it too.
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NFM_BURST
+        nfm_burst_synth
+        "-fA --squelch-analog-default noise ${_sql_noise_burst_bounds}"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NOISE_FLOOR
+        noise_floor
+        "-fA --squelch-analog-default noise+3 --analog-max-audible-ms 0 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_EXPLICIT_OFF
+        noise_floor
+        "-fA --squelch-analog-default noise --squelch off --analog-audible-dbfs -40 --analog-min-audible-ms 5000 --analog-min-total-ms 9900"
+        ""
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AM_AS_AUTO
+        am_burst_synth
+        "-fM --squelch-analog-default=noise ${_sql_auto_burst_bounds}"
+        "this AM channel runs auto[+]10dB[.].*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    set(_scan_sql_default_csv
+        "${CMAKE_CURRENT_BINARY_DIR}/scan_mode_sql_default_row.csv"
+    )
+    file(
+        WRITE "${_scan_sql_default_csv}"
+        "channel,frequency_hz,mode,options\n1,150000000,nfm,\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_SCAN_SQL_DEFAULT_ROW
+        nfm_burst_synth
+        "-fs -C ${_scan_sql_default_csv} --analog-scan-row 0 --squelch-analog-default noise ${_sql_noise_burst_bounds}"
+        "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
+        "${_analog_off_path}|squelch noise [+]10 dB [(]row[)]"
     )
 
     # Negative controls: bounds that must NOT hold, run through
@@ -28158,6 +28350,59 @@ if(DSD_ENABLE_QT_UI)
         NAME UI_QT_SESSION_ARGS_PARSE
         COMMAND dsd-neo_test_ui_qt_session_args_parse
     )
+endif()
+
+# Issue #899: what a listener hears from the sessions the app starts with its default squelch. Each case builds the
+# app's argv, starts it as the decoder host does and runs the real engine over a capture made from the committed
+# fixtures, keeping the app's radio spec (and its squelch field); one case per process. Without a radio pipeline the
+# binary exits 77 (skipped).
+if(DSD_ENABLE_QT_UI)
+    add_executable(
+        dsd-neo_test_ui_qt_listener_squelch
+        ui/test_ui_qt_listener_squelch.cpp
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_listener_squelch
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_listener_squelch
+        PRIVATE
+            dsd-neo_ui_qt
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            dsd-neo_feature_radio
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    if(DSD_HAS_RADIO)
+        target_link_libraries(
+            dsd-neo_test_ui_qt_listener_squelch
+            PRIVATE dsd-neo_io_radio
+        )
+    endif()
+    foreach(
+        _listener_case
+        saved-nfm
+        saved-nfm-off
+        explore-live-nfm
+        scan-row
+        scan-row-off
+        opening-nfm
+        opening-nfm-off
+        second-session-nfm
+    )
+        string(TOUPPER "${_listener_case}" _listener_name)
+        string(REPLACE "-" "_" _listener_name "${_listener_name}")
+        add_test(
+            NAME UI_QT_LISTENER_SQUELCH_${_listener_name}
+            COMMAND dsd-neo_test_ui_qt_listener_squelch ${_listener_case}
+        )
+        set_tests_properties(
+            UI_QT_LISTENER_SQUELCH_${_listener_name}
+            PROPERTIES SKIP_RETURN_CODE 77 TIMEOUT 120
+        )
+    endforeach()
 endif()
 
 # The FFT wrapper is usable without radio hardware or an enabled SDR backend.
@@ -29014,6 +29259,103 @@ if(DSD_ENABLE_QT_UI)
     )
 endif()
 
+# Issue #899 (review round 7): the in-process rtl_tcp fixture server's stop() returns while a client stays connected and
+# reads nothing.
+if(NOT WIN32)
+    add_executable(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        io/test_io_rtl_tcp_fixture_server_stop.cpp
+        test_support/rtl_tcp_fixture_server.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/include
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE dsd-neo_runtime dsd-neo_platform dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_tcp_fixture_server_stop
+        PRIVATE
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    add_test(
+        NAME IO_RTL_TCP_FIXTURE_SERVER_STOP
+        COMMAND dsd-neo_test_io_rtl_tcp_fixture_server_stop
+    )
+    set_tests_properties(IO_RTL_TCP_FIXTURE_SERVER_STOP PROPERTIES TIMEOUT 20)
+endif()
+
+# Issue #899: the app's generated mixed scan list (a DMR and an NFM frequency row, the Settings default squelch) run by
+# the real engine on a running rtl_tcp receiver: an in-process server plays committed fixtures for the frequency the
+# stream tunes, and the real trunk-scan coordinator rotates the rows on it. Real time, about 30 s.
+if(DSD_ENABLE_QT_UI AND DSD_HAS_RADIO AND NOT WIN32)
+    add_executable(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        engine/test_engine_trunk_scan_running_receiver.cpp
+        test_support/rtl_tcp_fixture_server.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/session_args.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_import_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/document_save_transport.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE
+            Qt6::Gui
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            dsd-neo_feature_radio
+            dsd-neo_io_radio
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PRIVATE
+            QT_NO_KEYWORDS
+            "DSD_NEO_TEST_IQ_FIXTURE_DIR=\"${PROJECT_SOURCE_DIR}/tests/fixtures/iq\""
+    )
+    set_target_properties(
+        dsd-neo_test_engine_trunk_scan_running_receiver
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_RUNNING_RECEIVER
+        COMMAND dsd-neo_test_engine_trunk_scan_running_receiver
+    )
+    # Skipped (77) when the decoder cannot keep real time, as under the sanitizers: the scan's dwell runs on the real
+    # clock, so its timing-bound checks would judge a slowed decoder, not the squelch.
+    # The same rotation with the digital row from a saved DMR system whose saved squelch is dynamic (the row's own
+    # off, B13) under an Advanced --squelch -1, which ends the analog default and which the NFM row inherits.
+    add_test(
+        NAME ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL
+        COMMAND
+            dsd-neo_test_engine_trunk_scan_running_receiver
+            --saved-digital-under-level
+    )
+    set_tests_properties(
+        ENGINE_TRUNK_SCAN_RUNNING_RECEIVER
+        ENGINE_TRUNK_SCAN_RUNNING_RECEIVER_LEVEL
+        PROPERTIES LABELS "iq-decode" TIMEOUT 120 SKIP_RETURN_CODE 77
+    )
+endif()
+
 # Compile the in-process SDK double with the upstream declarations, without DLL
 # import/export attributes: its symbols are defined in the test executable.
 set(_AIRSPY_TEST_SDK "${CMAKE_CURRENT_BINARY_DIR}/airspy-test-sdk")
@@ -29375,10 +29717,13 @@ if(
     add_executable(
         dsd-neo_test_ui_airspy_config_apply
         ui/test_ui_airspy_config_apply.c
+        test_support/channel_gate_fake.c
     )
     target_include_directories(
         dsd-neo_test_ui_airspy_config_apply
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/app_control
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/app_control
+            ${PROJECT_SOURCE_DIR}/src/engine
     )
     target_link_libraries(
         dsd-neo_test_ui_airspy_config_apply
@@ -29393,7 +29738,7 @@ if(
         dsd-neo_test_ui_airspy_config_apply
         PRIVATE
             "LINKER:--wrap=rtl_stream_create"
-            "LINKER:--wrap=rtl_stream_start"
+            "LINKER:--wrap=rtl_stream_start_gated"
             "LINKER:--wrap=rtl_stream_start_analog_refusal"
             "LINKER:--wrap=rtl_stream_stop"
             "LINKER:--wrap=rtl_stream_destroy"
@@ -29403,6 +29748,10 @@ if(
             "LINKER:--wrap=rtl_stream_set_channel_squelch"
             "LINKER:--wrap=io_control_set_freq_tagged"
             "LINKER:--wrap=dsd_audio_reconfigure_output_for_input_policy"
+            "LINKER:--wrap=rtl_stream_prepare_retune_new_channel_for_target"
+            "LINKER:--wrap=rtl_stream_write_squelch_gate"
+            "LINKER:--wrap=rtl_stream_gate_closed_start"
+            "LINKER:--wrap=rtl_stream_set_channel_squelch_setting"
     )
     add_test(
         NAME UI_MENU_AIRSPY_CONFIG_FAILURE
@@ -29424,12 +29773,17 @@ if(
         NAME RUNTIME_AIRSPY_CLI_OVERRIDE
         COMMAND dsd-neo_test_ui_airspy_config_apply M2
     )
+    add_test(
+        NAME UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT
+        COMMAND dsd-neo_test_ui_airspy_config_apply D899
+    )
     set_tests_properties(
         UI_MENU_AIRSPY_CONFIG_FAILURE
         UI_MENU_AIRSPY_CONFIG_TUNING
         UI_MENU_AIRSPY_CONFIG_REFUSED_WIDTH
         UI_MENU_AIRSPY_CONFIG_72
         RUNTIME_AIRSPY_CLI_OVERRIDE
+        UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT
         PROPERTIES TIMEOUT 120
     )
 endif()

@@ -2249,12 +2249,12 @@ test_refused_scan_tune_reports_no_stale_move(void) {
     opts->setmod_bw = 0;
     g_rigctl_setfreq_ok = 1;
     rc |= expect_true("the rigctl scanner tune lands",
-                      dsd_engine_scan_tune_to_freq(opts, state, 941075000L, state->samplesPerSymbol, NULL)
+                      dsd_engine_scan_tune_to_freq(opts, state, 941075000L, state->samplesPerSymbol, 0, NULL)
                               == DSD_TRUNK_TUNE_RESULT_OK
                           && dsd_engine_scan_tune_moved() == 1);
     const long past_limit = (long)UINT32_MAX + 1L;
     rc |= expect_true("a tune past the tuner limit is refused",
-                      dsd_engine_scan_tune_to_freq(opts, state, past_limit, state->samplesPerSymbol, NULL)
+                      dsd_engine_scan_tune_to_freq(opts, state, past_limit, state->samplesPerSymbol, 0, NULL)
                           == DSD_TRUNK_TUNE_RESULT_FAILED);
     rc |= expect_true("the refused tune reports no move", dsd_engine_scan_tune_moved() == 0);
     g_rigctl_setfreq_ok = 0;

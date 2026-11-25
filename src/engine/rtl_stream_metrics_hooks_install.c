@@ -3,7 +3,6 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
-#include <dsd-neo/core/power.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <stddef.h>
@@ -35,15 +34,10 @@ rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int
                                             0);
 }
 
-/* The demod keeps the threshold as a float, like the operator's own squelch command does. */
-static void
-rtl_stream_metrics_set_channel_squelch(double mean_power) {
-    rtl_stream_set_channel_squelch((float)mean_power);
-}
-
-static void
-rtl_stream_metrics_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
-    rtl_stream_set_channel_squelch_setting(setting);
+/* Whether the newest receive request is still unsettled: requests settle in order, so none is then (issue #899). */
+static int
+rtl_stream_metrics_receive_requests_pending(void) {
+    return rtl_stream_receive_request_outcome(rtl_stream_receive_request_seq()) == RTL_STREAM_RX_REQUEST_PENDING;
 }
 
 /* The fields DSP reads of the replay batch tag: the labels, the media span its samples run the decode clock on, the
@@ -100,8 +94,10 @@ dsd_engine_rtl_stream_metrics_hooks_install(void) {
     hooks.p25_timing_proof = rtl_stream_set_p25_timing_proof;
     hooks.stream_active = rtl_stream_is_active;
     hooks.input_level = rtl_stream_get_input_level;
-    hooks.set_channel_squelch = rtl_stream_metrics_set_channel_squelch;
-    hooks.set_channel_squelch_setting = rtl_stream_metrics_set_channel_squelch_setting;
+    /* No bare squelch setter (issue #899): the engine writes the gate through the closed-start rules. */
+    hooks.write_squelch_gate = rtl_stream_write_squelch_gate;
+    hooks.gate_closed_start = rtl_stream_gate_closed_start;
+    hooks.receive_requests_pending = rtl_stream_metrics_receive_requests_pending;
     hooks.replay_batch = rtl_stream_metrics_replay_batch;
     hooks.discontinuity_seq = rtl_stream_discontinuity_seq;
     hooks.monitor_deemph_gain = rtl_stream_monitor_deemph_gain;

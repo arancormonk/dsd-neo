@@ -674,7 +674,8 @@ the floor) or `noise` / `noise+N` (N from 3 to 30 dB of quieting), opening on th
 `auto+10`, `noise+10`). A level whose dB would not read back as itself opens as its linear power instead: one within
 0.05 dB of full scale (`0.0` would read as off) and one below -200 dB (the prompt's lowest), so accepting the prompt
 unchanged never turns the squelch off or moves it. On audio input the prompt takes a level, `off` or `noise[+N]`, and refuses `auto` with a toast,
-since audio input has no channel power to learn a floor from. The AM monitor on its own refuses `noise` with a toast. It
+since audio input has no channel power to learn a floor from. The AM monitor on its own takes `noise` on a radio input
+and runs it as auto with the same N (the `SQL:` readout says `as auto`), and refuses it on audio input with a toast. It
 always edits that configured default; if a
 row is overriding it, the change takes effect when the scanner leaves the row, and the toast says so
 (`Default squelch -75.0 dB; this channel overrides it (-60.0 dB)`). The M17 VOX `SQL:` field on a non-RTL input
@@ -686,8 +687,9 @@ expected to match exactly.
 While a scan row or target is on air that can take a "this channel" edit (issue #518), the `Squelch...`, `NFM
 bandwidth...`, `AM bandwidth...`, `Gain...` and `Tone filter...` rows open a chooser before their prompt: `All channels
 (default)...` goes on to the prompt above, which edits the configured default; `This channel (county-p25)...` prompts on
-what the row runs now (whole dB from -100 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a radio
-input, or `noise[+N]` on an `nfm` row; the width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row
+what the row runs now (whole dB from -120 to 0 for the squelch, 0 = off, `auto[+N]` on an `nfm` or `am` row on a radio
+input, or `noise[+N]` on an `nfm` row, and a level the row follows opens as its nearest whole dB from -120 to -1, so
+the prompt takes it back; the width in Hz; the gain, 0 = AGC; a tone picker and list) and changes that row
 alone for the rest of the session; `This channel: use the default` (offered when the row's list sets the setting) makes
 it follow the configured default, and `This channel: back to the list value` (offered while it runs an edit) drops the
 edit. The edit goes to the row named when the chooser opened, at once if it is on air and from its next visit otherwise
@@ -1080,7 +1082,7 @@ last sync. NXDN's additional grace period is described below.
 | Phrase | Staying because | Running timer |
 | --- | --- | --- |
 | `Retune pending` | a backend retune request has not resolved | none |
-| `Retune retry` | the retune failed; cooling down before retrying in place | the retry cooldown |
+| `Retune retry` | the retune failed; cooling down before retrying in place (`-Y`: a row's restaged retune failed, and the timed step leaves it) | the retry cooldown (`-Y`: `-t`, at least 1 s, to that step) |
 | `Acquiring control` | the trunking state machine is hunting a control channel | none |
 | `Following call` | the trunking state machine is following a call | none; `hang` is the budget |
 | `Voice` | conventional voice media is active (`--scan-voice-only`) | the activity hold |

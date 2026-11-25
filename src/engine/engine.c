@@ -912,15 +912,49 @@ dsd_engine_setup_parse_iq_stream_input(dsd_opts* opts) {
 #endif
 }
 
-/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB. */
+/* The squelch for a startup notice: a level as dsd_squelch_format() writes it, or auto+NdB, noise+NdB, marked
+   `(default)` while the analog default runs it, as the live readout marks it (issue #899). */
 static void
 dsd_engine_squelch_notice_text(const dsd_opts* opts, char* out, size_t out_size) {
+    const char* mark = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED ? " (default)" : "";
     if (dsd_squelch_mode_is_dynamic(opts->rtl_squelch_mode)) {
-        DSD_SNPRINTF(out, out_size, "%s+%ddB", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
-                     opts->rtl_squelch_margin_db);
+        DSD_SNPRINTF(out, out_size, "%s+%ddB%s", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
+                     opts->rtl_squelch_margin_db, mark);
         return;
     }
-    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", out, out_size);
+    char level[24];
+    (void)dsd_squelch_format(opts->rtl_squelch_level, "dB", level, sizeof level);
+    DSD_SNPRINTF(out, out_size, "%s%s", level, mark);
+}
+
+/* A radio input's tuning notice, printed once the squelch the receiver opens with is resolved
+   (dsd_engine_setup_io()): a spec read earlier says which one it owes. */
+typedef enum {
+    ENGINE_TUNING_NOTICE_NONE = 0,
+    ENGINE_TUNING_NOTICE_SOAPY,
+    ENGINE_TUNING_NOTICE_RTL,
+} engine_tuning_notice;
+
+static engine_tuning_notice s_tuning_notice_owed;
+
+static void
+dsd_engine_setup_print_tuning_notice(const dsd_opts* opts) {
+    const engine_tuning_notice owed = s_tuning_notice_owed;
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_NONE;
+    if (owed == ENGINE_TUNING_NOTICE_NONE) {
+        return;
+    }
+    char sql[40];
+    dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
+    if (owed == ENGINE_TUNING_NOTICE_SOAPY) {
+        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
+                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+                 opts->rtl_volume_multiplier);
+        return;
+    }
+    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
+             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
+             opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
 }
 
 static int
@@ -938,11 +972,7 @@ dsd_engine_setup_parse_soapy_input(dsd_opts* opts) {
     }
     LOG_INFO("NOTICE: SoapySDR Input: %s\n", soapy_args[0] != '\0' ? soapy_args : "default device args");
     if (tuning_applied) {
-        char sql[24];
-        dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
-        LOG_INFO("NOTICE: SoapySDR tuning: Freq=%u Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d\n",
-                 opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
-                 opts->rtl_volume_multiplier);
+        s_tuning_notice_owed = ENGINE_TUNING_NOTICE_SOAPY;
     }
     opts->rtltcp_enabled = 0;
     opts->audio_in_type = AUDIO_IN_RTL;
@@ -1040,11 +1070,7 @@ dsd_engine_setup_configure_local_rtl(dsd_opts* opts, dsd_state* state, char* ven
     }
 
     opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(opts->rtl_volume_multiplier);
-    char sql[24];
-    dsd_engine_squelch_notice_text(opts, sql, sizeof sql);
-    LOG_INFO("NOTICE: RTL #%d: Freq=%d Gain=%d PPM=%d DSP-BW=%dkHz SQ=%s VOL=%d%s\n", opts->rtl_dev_index,
-             opts->rtlsdr_center_freq, opts->rtl_gain_value, opts->rtlsdr_ppm_error, opts->rtl_dsp_bw_khz, sql,
-             opts->rtl_volume_multiplier, opts->rtl_bias_tee ? " BIAS=on" : "");
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_RTL;
     opts->audio_in_type = AUDIO_IN_RTL;
     return 1;
 #else
@@ -1235,16 +1261,18 @@ dsd_engine_setup_check_analog_width(const dsd_opts* opts) {
 /*
  * The auto squelch needs a radio input: elsewhere it is off, and says so. The noise squelch runs on audio input too
  * (issue #628), where the PCM noise squelch says so itself if the input has no room or no band above voice. It needs
- * FM: on the AM monitor (-fM, no scan) a --squelch noise is refused, and a noise setting from an input spec or the
- * config runs as auto with the same N. A scan's AM rows inherit a noise default as auto without a word: each row
- * resolves its own. EDACS analog voice runs either setting as auto on a radio input and neither on audio input (issue
- * #625); the M17 encoder's VOX says its own once its user data is read (dsd_engine_note_m17_encoder_squelch()).
+ * FM: on the AM monitor (-fM, no scan) of a radio input a noise setting runs as auto with the same N and says so,
+ * whatever set it (issue #899 D4: a --squelch noise there stopped the start, so a saved Noise choice refused AM), and
+ * the configured setting stays noise for a switch back to FM. A scan's AM rows inherit a noise default as auto without
+ * a word: each row resolves its own. EDACS analog voice runs either setting as auto on a radio input and neither on
+ * audio input (issue #625); the M17 encoder's VOX says its own once its user data is read
+ * (dsd_engine_note_m17_encoder_squelch()).
  */
-static int
-dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
+static void
+dsd_engine_setup_note_noise_squelch(const dsd_opts* opts, const dsd_state* state) {
     const int mode = opts->rtl_squelch_mode;
     if (!dsd_squelch_mode_is_dynamic(mode)) {
-        return 0;
+        return;
     }
     if (dsd_squelch_edacs_analog_voice(opts, state)) {
         if (!dsd_opts_input_is_radio(opts)) {
@@ -1254,25 +1282,13 @@ dsd_engine_setup_check_noise_squelch(const dsd_opts* opts, const dsd_state* stat
         } else if (mode == DSD_SQUELCH_MODE_NOISE) {
             LOG_INFO("NOTICE: EDACS analog voice runs the noise squelch as auto+%ddB.\n", opts->rtl_squelch_margin_db);
         }
-        return 0;
+        return;
     }
-    if (!dsd_opts_input_is_radio(opts)) {
-        if (mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
-            LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
-                     "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
-        }
-        return 0;
+    if (!dsd_opts_input_is_radio(opts) && mode == DSD_SQUELCH_MODE_AUTO && !dsd_opts_runs_m17_encoder(opts)) {
+        LOG_WARN("WARNING: --squelch auto needs a radio input (rtl:, rtltcp:, soapy:, airspy or --iq-replay); the "
+                 "squelch is off on this input. On audio input use --squelch noise[+N] or a level.\n");
     }
-    if (mode != DSD_SQUELCH_MODE_NOISE || !dsd_squelch_noise_has_no_fm(opts, state)) {
-        return 0;
-    }
-    if (opts->rtl_squelch_cli_set) {
-        LOG_ERROR("--squelch noise needs an FM channel and -fM is AM: use --squelch auto[+N] or a level.\n");
-        return -1;
-    }
-    LOG_INFO("NOTICE: The noise squelch needs an FM channel; this AM channel runs auto+%ddB.\n",
-             opts->rtl_squelch_margin_db);
-    return 0;
+    /* The AM monitor's notice is dsd_squelch_analog_default_sync()'s, which says it at each start of noise as auto. */
 }
 
 /* The UDP specs, read before anything opens: an M17 frame input, a PCM input, an M17 frame output. -1 when one is
@@ -1300,6 +1316,7 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
+    s_tuning_notice_owed = ENGINE_TUNING_NOTICE_NONE;
 
     if (dsd_opts_audio_in_dev_is_iqreplay_spec(opts->audio_in_dev) && !opts->iq_replay_requested) {
         LOG_ERROR("Direct -i iqreplay:... is not supported. Use --iq-replay <path>.\n");
@@ -1328,9 +1345,11 @@ dsd_engine_setup_io(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     dsd_engine_setup_parse_pulse_input(opts);
-    if (dsd_engine_setup_check_noise_squelch(opts, state) != 0) {
-        return -1;
-    }
+    /* The squelch the receiver opens with: the analog default on an analog channel of a radio input while no squelch
+       was set (issue #899), from the decoder the CLI and a config left; and the AM monitor's notice. */
+    (void)dsd_squelch_analog_default_sync(opts, state);
+    dsd_engine_setup_print_tuning_notice(opts);
+    dsd_engine_setup_note_noise_squelch(opts, state);
     if (dsd_engine_setup_parse_udp_output(opts, state) != 0) {
         return -1;
     }
@@ -1818,9 +1837,19 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
      * the voice gate holds for as long as media keeps arriving. Opt-in, so with the cap off this
      * is a no-op and the rules below decide alone. So does a row the operator avoided, when the scan has somewhere to
      * go and its paced departure is due (issue #644): the frame loop yielded for it while the carrier held sync. */
-    if (dsd_engine_scan_visit_expired(opts, state, dsd_decode_now_mono_s())
-        || dsd_engine_channel_scan_departure_due(opts, state, dsd_decode_now_mono_s())) {
+    /* A commit owed with nothing in flight (issue #899) is recovered on a pace of its own: the row it is owed for
+     * keeps no frame, yet its sync keeps refreshing the hangtime anchor. One clock sample serves every rule here. */
+    const double now_m = dsd_decode_now_mono_s();
+    if (dsd_engine_scan_visit_expired(opts, state, now_m)
+        || dsd_engine_channel_scan_departure_due(opts, state, now_m)) {
         *due = 1;
+        return 1;
+    }
+    /* Armed, that recovery governs every timed step below these: none before its deadline, the hangtime rule's
+     * included, so the scan steps when the countdown it publishes ends, not on every pass once sync stops. */
+    const int owed = dsd_engine_channel_scan_owed_recovery_due(state, now_m);
+    if (owed >= 0) {
+        *due = owed;
         return 1;
     }
     /* Analog traffic the tone policy rejected (issue #527) does not hold the row: it neither stamps the hangtime anchor
@@ -1830,7 +1859,7 @@ no_carrier_step_forced(const dsd_opts* opts, dsd_state* state, int tone_gate, in
      * where it is, as a fixed frequency does: a step would land on the same row, end the reception and judge the same
      * traffic again, and so would the hangtime rule below. A receive-policy leave is answered the same way. */
     if ((!dsd_engine_channel_scan_hold_keeps_row(state)
-         && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, dsd_decode_now_mono_s()))
+         && dsd_scan_receive_should_leave(opts, state, state->scan_voice_gate_arrive_m, now_m))
         || tone_gate == DSD_ANALOG_TONE_GATE_REJECTED) {
         *due = dsd_engine_channel_scan_has_other_row(opts, state);
         return 1;
@@ -4328,6 +4357,8 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
     if (opts->audio_in_type == AUDIO_IN_RTL) {
         dsd_opts_forget_iq_replay_center(opts);
         if (state->rtl_ctx == NULL) {
+            /* The stream opens on the squelch the options hold: the analog default where it belongs (issue #899). */
+            (void)dsd_squelch_analog_default_sync(opts, state);
             if (rtl_stream_create(opts, &state->rtl_ctx) < 0) {
                 LOG_ERROR("Failed to create radio stream.\n");
                 opts->rtl_started = 0;
@@ -4335,7 +4366,14 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
                 return -1;
             }
         }
-        if (state->rtl_ctx && rtl_stream_start(state->rtl_ctx) < 0) {
+        /* With none of the decoder's tunes outstanding, the stream starts on the gate resolved now, from its first
+           block: nothing the engine starts before its first settle (the audio output, rigctl, the frontends) mutes
+           what the receiver produces meanwhile (issue #899). The gate is this start's argument alone. */
+        rtl_stream_start_gate start_gate;
+        DSD_MEMSET(&start_gate, 0, sizeof start_gate);
+        start_gate.resolved = dsd_engine_receiver_gate_resolve_start(opts, state, &start_gate.gate, &start_gate.digital,
+                                                                     &start_gate.session);
+        if (state->rtl_ctx && rtl_stream_start_gated(state->rtl_ctx, &start_gate) < 0) {
             LOG_ERROR("Failed to open radio stream.\n");
             rtl_stream_destroy(state->rtl_ctx);
             state->rtl_ctx = NULL;
@@ -4345,6 +4383,9 @@ live_scanner_start_rtl_if_needed(dsd_opts* opts, dsd_state* state) {
         }
         opts->rtl_started = 1;
         opts->rtl_needs_restart = 0;
+        /* The decoder writes its gate at its first settle: a channel the open ran closed (a tune of its own was
+           outstanding) opens then (issue #899). */
+        dsd_engine_receiver_gate_due();
         dsd_engine_note_run_stream_source(opts, state);
     }
     return 0;
@@ -5009,6 +5050,9 @@ live_scanner_main_pass(dsd_opts* opts, dsd_state* state, dsd_engine_slicer_thres
         return;
     }
     dsd_runtime_pump_controls(opts, state);
+    /* A receiver channel the decoder committed gets its squelch gate once the receiver is on it, a new analog one
+       closed until then (issue #899): with none due, a branch on what the decoder knows. */
+    dsd_engine_receiver_gate_settle(opts, state, 0);
     /* A manual tune that timed out lands or fails late (issue #671): two loads while none is pending. An untyped
        -Y step's row commits as it lands. */
     (void)dsd_engine_scan_untyped_poll(opts, state);
@@ -5382,6 +5426,8 @@ dsd_engine_run_install_hooks(void) {
     dsd_engine_udp_audio_hooks_install();
     dsd_engine_m17_udp_hooks_install();
     dsd_engine_p25_optional_hooks_install();
+    /* The scan scope's resume settles the receiver's squelch gate through the engine (issue #899). */
+    dsd_receiver_gate_settle_hook_set(dsd_engine_receiver_gate_settle_now);
 }
 
 /* Embedded in a host process (Android service, GUI shell), the library must not steal the process signal dispositions;

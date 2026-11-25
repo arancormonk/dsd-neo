@@ -29,6 +29,7 @@ ttb_put(ttb_block* b, uint32_t value, int width) {
 
 static inline void
 ttb_put_bits(ttb_block* b, const uint8_t* bits, int nbits) {
+    assert(nbits >= 0 && b->n >= 0 && b->n <= TTB_SCH_F_BITS - nbits);
     for (int i = 0; i < nbits; i++) {
         ttb_put(b, bits[i] & 1u, 1);
     }

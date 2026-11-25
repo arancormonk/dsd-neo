@@ -182,6 +182,22 @@ struct dsd_opts {
     int rtl_squelch_margin_db;
     /* 1 once --squelch set the squelch: an input spec's sql field then leaves it (dsd_squelch_spec_field_apply()). */
     int rtl_squelch_cli_set;
+    /* The analog default squelch (--squelch-analog-default, issue #899): an AUTO or NOISE setting with its N, run on an
+       analog channel of a radio input while nothing set a squelch explicitly (dsd_squelch_analog_default_sync(),
+       runtime/squelch.h); LEVEL while the option is absent or off. The decoder thread owns the rest:
+       squelch_default_state is a dsd_squelch_default_state, and while it is APPLIED the rtl_squelch_* fields above hold
+       the default and the squelch_default_base_* fields the setting they held before it; squelch_default_moved is 1
+       once something else wrote the fields over an applied default, until a sync says so to its caller, who pushes.
+       squelch_am_auto_noted is 1 while a NOISE setting runs as AUTO on a standalone AM monitor of a radio input, once
+       its notice was logged. */
+    int squelch_default_mode;
+    int squelch_default_margin_db;
+    int squelch_default_state;
+    int squelch_default_moved;
+    double squelch_default_base_level;
+    int squelch_default_base_mode;
+    int squelch_default_base_margin_db;
+    int squelch_am_auto_noted;
     double input_warn_db;
     time_t last_input_warn_time; // decode time of the last input-level warning
     // P25 SM unified follower configuration (CLI values override environment defaults)

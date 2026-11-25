@@ -456,6 +456,12 @@ dsd_engine_prepare_retune_profile_for_target(const dsd_opts* opts, const dsd_sta
     rtl_stream_prepare_retune_profile_for_target_with_gain(target_freq_hz, cqpsk_enable, symbol_rate_hz, levels,
                                                            channel_profile, ted_sps, persist_ted_override,
                                                            &gain_profile);
+    if (symbol_rate_hz > 0 || cqpsk_enable >= 0) {
+        /* The engine retunes with a symbol profile only for a digital channel (a typed digital row or target, a
+           trunked control or voice channel): one that may take an analog family's monitor away (issue #899). An analog
+           row queues none, and attaches the analog family. */
+        rtl_stream_prepare_retune_digital_decode_for_target(target_freq_hz);
+    }
 }
 
 static void
@@ -1503,6 +1509,17 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
     return result;
 }
 
+#ifdef USE_RADIO
+/* Mark the retune a scan tune queued as a new channel (issue #899, @p new_channel; @p mark 1), attached last, since a
+   store replaces the whole profile; once the tune returned (@p mark 0), a profile it never took is marked no more. */
+static void
+dsd_engine_mark_scan_new_channel(const dsd_opts* opts, long int freq, int new_channel, int mark) {
+    if (new_channel && opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_stream_prepare_retune_new_channel_for_target((uint32_t)freq, mark);
+    }
+}
+#endif
+
 /**
  * @brief Tune to a P25 control channel candidate without marking as tuned.
  *
@@ -1547,7 +1564,15 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
         dsd_engine_prepare_digital_family(state, freq, lands_digital_family, 0);
 #endif
     }
+#ifdef USE_RADIO
+    /* A trunk-scan park, which switches targets, lands on a new channel (dsd_trunk_tuning_new_channel()). */
+    const int new_channel = dsd_trunk_tuning_new_channel();
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 1);
+#endif
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
+#ifdef USE_RADIO
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 0);
+#endif
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -1785,8 +1810,31 @@ dsd_engine_scan_tune_moved(void) {
     return s_scan_tune_moved;
 }
 
+/* dsd_engine_scan_tune_to_freq() once the backend took the tune: the hunt starts over on the new frequency, and the
+   request completes, or becomes ready for its landing. */
+static dsd_trunk_tune_result
+dsd_engine_scan_tune_accepted(dsd_opts* opts, dsd_state* state, uint64_t tune_request_id,
+                              dsd_trunk_tune_result result) {
+    dsd_frame_sync_reset_mod_state();
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    state->last_vc_sync_time = 0;
+    state->last_vc_sync_time_m = 0.0;
+    opts->trunk_is_tuned = 0;
+    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
+        dsd_trunk_tuning_request_mark_ready(tune_request_id);
+        if (dsd_trunk_tuning_request_status(tune_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_OK) {
+            result = DSD_TRUNK_TUNE_RESULT_OK;
+        }
+    } else {
+        dsd_trunk_tuning_request_complete(tune_request_id, result);
+    }
+    return result;
+}
+
 dsd_trunk_tune_result
-dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t* out_request_id) {
+dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, int new_channel,
+                             uint64_t* out_request_id) {
     dsd_trunk_tune_result result = DSD_TRUNK_TUNE_RESULT_OK;
     uint64_t tune_request_id = 0U;
 #ifdef USE_RADIO
@@ -1813,6 +1861,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
     }
 #ifndef USE_RADIO
     (void)ted_sps;
+    (void)new_channel;
 #else
     dsd_engine_rtl_profile_snapshot_capture(opts, state, &rtl_snapshot);
     if (dsd_engine_prepare_scan_profile(opts, state, freq, ted_sps) != 0) {
@@ -1824,11 +1873,15 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         dsd_trunk_tuning_request_complete(tune_request_id, DSD_TRUNK_TUNE_RESULT_FAILED);
         return DSD_TRUNK_TUNE_RESULT_FAILED;
     }
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 1);
 #endif
 
     dsd_engine_maybe_drain_audio(opts, state);
     result = dsd_engine_tune_with_backend(opts, state, freq, tune_request_id);
     s_scan_tune_moved = s_backend_rigctl_moved;
+#ifdef USE_RADIO
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 0);
+#endif
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -1837,19 +1890,5 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long int freq, in
         return result;
     }
 
-    dsd_frame_sync_reset_mod_state();
-    state->last_cc_sync_time = dsd_decode_time();
-    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
-    state->last_vc_sync_time = 0;
-    state->last_vc_sync_time_m = 0.0;
-    opts->trunk_is_tuned = 0;
-    if (result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        dsd_trunk_tuning_request_mark_ready(tune_request_id);
-        if (dsd_trunk_tuning_request_status(tune_request_id, NULL) == DSD_TRUNK_TUNE_RESULT_OK) {
-            result = DSD_TRUNK_TUNE_RESULT_OK;
-        }
-    } else {
-        dsd_trunk_tuning_request_complete(tune_request_id, result);
-    }
-    return result;
+    return dsd_engine_scan_tune_accepted(opts, state, tune_request_id, result);
 }

@@ -88,6 +88,13 @@ typedef enum {
  */
 dsd_cli_long_arity dsd_cli_long_option_arity(const char* arg);
 
+/**
+ * @brief Nonzero when the DSD_CLI_LONG_NEXT_NON_OPTION option @p arg does without its value (`--config`,
+ * `--validate-config`, which then read the default path); every other such option needs one, and the parser refuses it
+ * without (issue #899). 0 for any other argument.
+ */
+int dsd_cli_long_option_value_optional(const char* arg);
+
 /** @brief The getopt option string the parser reads short options with. */
 const char* dsd_cli_short_options(void);
 

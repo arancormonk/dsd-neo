@@ -9,11 +9,13 @@
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
+#include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/engine/frame_processing.h>
+#include <dsd-neo/engine/scan_entry.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/platform/sockets.h>
@@ -24,6 +26,8 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/scan_mode.h>
+#include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/scan_row_edit.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
 #include <stdbool.h>
@@ -42,6 +46,11 @@ static int g_tune_calls;
 static uint64_t g_tune_request;
 static int g_wait_polls;
 static int g_pending_seen;
+/* The wrapped tune fails (issue #899): a restaged row's tune the front end refuses. */
+static int g_tune_fails;
+/* The wrapped row preparation fails (issue #899), and how many times it failed. */
+static int g_prepare_fails;
+static int g_prepare_failed_calls;
 
 // NOLINTBEGIN(misc-use-internal-linkage)
 void printFrameInfo(dsd_opts* opts, dsd_state* state);
@@ -71,9 +80,63 @@ processFrame(dsd_opts* opts, dsd_state* state) {
 
 // NOLINTBEGIN(bugprone-reserved-identifier, cert-dcl37-c, cert-dcl51-cpp, misc-use-internal-linkage)
 dsd_trunk_tune_result __wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps,
-                                                          uint64_t* request);
+                                                          int new_channel, uint64_t* request);
 int __wrap_getFrameSync(dsd_opts* opts, dsd_state* state);
 bool __wrap_SetFreq(dsd_socket_t sockfd, long freq);
+int __real_dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode,
+                                 const dsd_scan_option_values* row, dsd_scan_settings* out);
+int __wrap_dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode,
+                                 const dsd_scan_option_values* row, dsd_scan_settings* out);
+
+/* Every decode monotonic clock read and every lookup of the -Y scan's extension (issue #899 r13t: a healthy pass's
+   cost). */
+static int g_mono_reads;
+static int g_scan_ext_lookups;
+/* What a healthy digital -Y pass of test_healthy_digital_pass_costs() makes of each. */
+static const int kHealthyPassMonoReads = 1;
+static const int kHealthyPassScanLookups = 1;
+/* And what its -Y timing tick makes of them (the tick is handed its clock samples). */
+static const int kHealthyTickMonoReads = 0;
+static const int kHealthyTickScanLookups = 1;
+double __real_dsd_decode_now_mono_s(void);
+double __wrap_dsd_decode_now_mono_s(void);
+void* __real_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
+void* __wrap_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id);
+
+/* Every call the -Y timing tick makes for the owed recovery's window (issue #899 r14t: none on a healthy row). */
+static int g_owed_window_calls;
+int __real_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
+int __wrap_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s);
+
+int
+__wrap_dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s) {
+    ++g_owed_window_calls;
+    return __real_dsd_engine_channel_scan_owed_recovery_window(state, deadline_m, span_s);
+}
+
+double
+__wrap_dsd_decode_now_mono_s(void) {
+    ++g_mono_reads;
+    return __real_dsd_decode_now_mono_s();
+}
+
+void*
+__wrap_dsd_state_ext_get(const dsd_state* state, dsd_state_ext_id id) {
+    if (id == DSD_STATE_EXT_ENGINE_CHANNEL_SCAN) {
+        ++g_scan_ext_lookups;
+    }
+    return __real_dsd_state_ext_get(state, id);
+}
+
+int
+__wrap_dsd_scan_mode_prepare(dsd_opts* opts, dsd_state* state, dsd_scan_mode mode, const dsd_scan_option_values* row,
+                             dsd_scan_settings* out) {
+    if (g_prepare_fails) {
+        ++g_prepare_failed_calls;
+        return -1;
+    }
+    return __real_dsd_scan_mode_prepare(opts, state, mode, row, out);
+}
 
 bool
 __wrap_SetFreq(dsd_socket_t sockfd, long freq) {
@@ -83,14 +146,20 @@ __wrap_SetFreq(dsd_socket_t sockfd, long freq) {
 }
 
 dsd_trunk_tune_result
-__wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, uint64_t* request) {
+__wrap_dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sps, int new_channel,
+                                    uint64_t* request) {
     (void)opts;
     (void)state;
     (void)sps;
+    (void)new_channel;
     assert(freq > 0);
     ++g_tune_calls;
     *request = dsd_trunk_tuning_request_begin();
     g_tune_request = *request;
+    if (g_tune_fails) {
+        dsd_trunk_tuning_request_complete(*request, DSD_TRUNK_TUNE_RESULT_FAILED);
+        return DSD_TRUNK_TUNE_RESULT_FAILED;
+    }
     if (g_pending) {
         dsd_trunk_tuning_request_mark_ready(*request);
     } else {
@@ -361,8 +430,375 @@ test_protocol_hangtime_publication(const char* protocol, float configured_hangti
     assert(remove(path) == 0);
 }
 
+/* A -Y list of @p count DMR rows (@p placeholder_row a zero-frequency placeholder, -1 for none), -t 2, the visit cap
+ * and the voice-only scan off, at decode time 7000 s: row 0 on air, then row 1's tune lands stale (the row edited while
+ * it was pending) and its restaged tune fails (issue #899). The receiver moved with no row committed on it: frames are
+ * held and the gate stays closed until a row commits, and the cursor is past row 1. Returns the tune count then. */
+static int
+owed_scan_setup(dsd_opts* opts, dsd_state* state, int count, int placeholder_row, float hangtime) {
+    initOpts(opts);
+    initState(state);
+    opts->audio_out_type = 9;
+    opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
+    opts->trunk_hangtime = hangtime;
+    opts->scan_max_visit_ms = 0;
+    opts->scan_voice_only = 0;
+    state->lcn_freq_count = count;
+    for (int row = 0; row < count; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = row == placeholder_row ? 0 : 150000000 + 1000000 * row;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    decode_clock_at_s(7000U);
+    g_tune_calls = 0;
+    g_tune_fails = 0;
+    g_pending = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1); /* row 0 on air */
+    g_pending = 1;
+    assert(dsd_engine_channel_scan_step(opts, state) == 0 && dsd_engine_channel_scan_waiting(state));
+    dsd_scan_row_edit_value value;
+    DSD_MEMSET(&value, 0, sizeof value);
+    value.squelch_db = -40;
+    assert(dsd_engine_channel_scan_edit_row(opts, state, state->scan_row_session, 1, DSD_SCAN_ROW_FIELD_SQUELCH,
+                                            DSD_SCAN_ROW_EDIT_SET, &value, NULL)
+           == DSD_SCAN_ROW_EDIT_STORED);
+    dsd_trunk_tuning_request_complete(g_tune_request, DSD_TRUNK_TUNE_RESULT_OK);
+    g_pending = 0;
+    g_tune_fails = 1;
+    for (int i = 0; i < 4 && dsd_engine_channel_scan_waiting(state); i++) {
+        (void)dsd_engine_channel_scan_pending(opts, state);
+    }
+    assert(g_tune_calls == 3 && !dsd_engine_channel_scan_waiting(state));
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 0); /* the commit owed holds frames */
+    assert(state->lcn_freq_roll == 2);
+    (void)dsd_engine_scan_entry_take_failure(state, NULL);
+    g_tune_fails = 0;
+    return g_tune_calls;
+}
+
+/* While set, owed_scan_second() stamps no sync: the row's carrier has gone quiet. */
+static int g_owed_scan_quiet;
+
+/* Second @p second of a busy row whose commit the scan owes: its sync, as frame_sync_try_dmr_bs_data() stamps it (none
+ * while g_owed_scan_quiet), the scan's service (which holds the frame while the commit is owed), then @p passes main
+ * passes at that same decode time, each the engine's real no-carrier step, the service and the -Y timing publication.
+ * Returns 1 once a row has committed (the service passes frames again). */
+static int
+owed_scan_second(dsd_opts* opts, dsd_state* state, uint64_t second, int passes) {
+    decode_clock_at_s(second);
+    if (!g_owed_scan_quiet) {
+        state->last_cc_sync_time = dsd_decode_time();
+        state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    }
+    if (dsd_engine_channel_scan_service_sync(opts, state)) {
+        return 1;
+    }
+    for (int pass = 0; pass < passes; pass++) {
+        noCarrier(opts, state);
+        if (dsd_engine_channel_scan_service_sync(opts, state)) {
+            return 1;
+        }
+        dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    }
+    return 0;
+}
+
+/* Whether the -Y timing publication counts down the owed commit's recovery to @p deadline_m (a retune retry, -t long). */
+static int
+owed_scan_publishes(const dsd_state* state, double deadline_m) {
+    const dsd_scan_timing_publication* t = &state->scan_timing;
+    return t->reason == (uint8_t)DSD_SCAN_STAY_RETUNE_RETRY && fabs(t->deadline_m - deadline_m) < 1e-6
+           && fabs(t->started_m - (deadline_m - 2.0)) < 1e-6 && t->span_ms == 2000U;
+}
+
+static void
+owed_scan_teardown(dsd_opts* opts, dsd_state* state) {
+    state->lcn_scan_hold = 0U;
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_decode_clock_use_system();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/*
+ * Issue #899 (targeted review of round 10): the owed commit of owed_scan_setup(). The row keeps syncing (a busy
+ * carrier: each sync refreshes the hangtime anchor before the owed commit discards the frame). The engine's real
+ * no-carrier step decides every pass: it recovers on a pace of its own (-t after the failure), held or not, never
+ * before it, and the row it lands commits; a hold then keeps that row. Before, the refreshed anchor kept the step from
+ * ever coming. Round 12: the -Y timing publication both frontends read counts down to that step (a retune retry), not
+ * to a hangtime deadline each sync moves on.
+ */
+static void
+test_owed_commit_recovers_under_continuing_sync(int held) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    const int tunes_before = owed_scan_setup(opts, state, 3, -1, 2.0f);
+    if (held) {
+        state->lcn_scan_hold = 1U;
+    }
+    int recovered_at = -1;
+    double published_m = -1.0;
+    int published_retry = 1;
+    for (int s = 0; s <= 30; s++) {
+        if (owed_scan_second(opts, state, 7000U + (uint64_t)s, 1)) {
+            recovered_at = s;
+            break;
+        }
+        if (s < 2) {
+            assert(g_tune_calls == tunes_before); /* paced: no step before -t has run since the failure */
+        }
+        published_retry = published_retry && state->scan_timing.reason == (uint8_t)DSD_SCAN_STAY_RETUNE_RETRY;
+        if (s == 0) {
+            published_m = state->scan_timing.deadline_m;
+        } else if (fabs(state->scan_timing.deadline_m - published_m) > 1e-6) {
+            published_retry = 0; /* the countdown moved */
+        }
+    }
+    if (recovered_at < 0 || recovered_at > 3) {
+        DSD_FPRINTF(stderr, "%s scan: an owed commit under continuing sync recovered at %d s (tunes %d), want 2-3 s\n",
+                    held ? "held" : "unheld", recovered_at, g_tune_calls - tunes_before);
+        assert(0);
+    }
+    assert(g_tune_calls == tunes_before + 1);
+    const double step_m = dsd_decode_now_mono_s();
+    if (!published_retry || fabs(published_m - step_m) > 1e-6) {
+        DSD_FPRINTF(stderr,
+                    "%s scan: the timing publication counted down to %.3f (retune retry throughout: %d), but the "
+                    "owed commit's recovery stepped at %.3f\n",
+                    held ? "held" : "unheld", published_m, published_retry, step_m);
+        assert(0);
+    }
+    if (held) {
+        assert(state->lcn_scan_hold && dsd_engine_channel_scan_hold_keeps_row(state));
+    }
+    owed_scan_teardown(opts, state);
+}
+
+/*
+ * Issue #899 (targeted review of round 11): the timed step that recovers an owed commit stages no tune -- it parks on
+ * a zero-frequency placeholder (@p prepare_fails 0), or the row it starts is not prepared (@p prepare_fails 1) -- so
+ * the commit is still owed after it. The next recovery step waits -t from that step: two passes at the step's own
+ * decode time take one step, not two, and the placeholder keeps its dwell (-t 2), as does a row whose preparation keeps
+ * failing (one attempt per pace). Before, the deadline stayed expired: the very next pass stepped again (the row after
+ * the placeholder tuned at once; the failing row retried on every pass). The publication counts down to the next step.
+ */
+static void
+test_owed_recovery_step_staging_no_tune(int prepare_fails) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    const int tunes_before = owed_scan_setup(opts, state, 4, prepare_fails ? -1 : 2, 2.0f);
+    g_prepare_failed_calls = 0;
+    g_prepare_fails = prepare_fails;
+    for (uint64_t s = 0; s < 2; s++) {
+        assert(!owed_scan_second(opts, state, 7000U + s, 1));
+    }
+    assert(g_tune_calls == tunes_before && g_prepare_failed_calls == 0);
+    /* The recovery step at 7002 s, and a second pass at that same decode time. */
+    const int recovered = owed_scan_second(opts, state, 7002U, 2);
+    const int step_tunes = g_tune_calls - tunes_before;
+    const int step_failures = g_prepare_failed_calls;
+    if (recovered || step_tunes != 0 || step_failures != prepare_fails
+        || state->lcn_freq_roll != (prepare_fails ? 2 : 3)) {
+        DSD_FPRINTF(
+            stderr,
+            "%s: two passes at the recovery step's decode time: recovered %d, tunes %d, failed preparations %d, "
+            "cursor %d; want one step (no tune, %d failed preparation, cursor %d)\n",
+            prepare_fails ? "unprepared row" : "placeholder", recovered, step_tunes, step_failures,
+            state->lcn_freq_roll, prepare_fails, prepare_fails ? 2 : 3);
+        assert(0);
+    }
+    assert(owed_scan_publishes(state, dsd_decode_now_mono_s() + 2.0));
+    assert(!owed_scan_second(opts, state, 7003U, 2));
+    assert(g_tune_calls == tunes_before && g_prepare_failed_calls == prepare_fails);
+    if (prepare_fails) {
+        /* The row still not prepared: one more attempt, at the next pace, and the one after it waits again. */
+        assert(!owed_scan_second(opts, state, 7004U, 2) && g_prepare_failed_calls == 2);
+        assert(owed_scan_publishes(state, dsd_decode_now_mono_s() + 2.0));
+        assert(!owed_scan_second(opts, state, 7005U, 2) && g_prepare_failed_calls == 2);
+        g_prepare_fails = 0;
+        assert(owed_scan_second(opts, state, 7006U, 1));
+    } else {
+        /* The placeholder's dwell ends at -t: the row after it tunes, lands and commits. */
+        assert(owed_scan_second(opts, state, 7004U, 1));
+        assert(state->lcn_freq_roll == 4);
+    }
+    assert(g_tune_calls == tunes_before + 1);
+    owed_scan_teardown(opts, state);
+}
+
+/*
+ * Issue #899 (push-gate review r13t): the recovery step of owed_scan_setup()'s commit fails its row's preparation with
+ * the carrier gone quiet (its last sync at 7000 s, -t 2, cap and voice-only off). The step at 7002 arms the next for
+ * 7004, and that armed recovery governs the timed step until then: the hangtime rule, run out since 7003, takes no step
+ * before it (before, it retried at 7003 and on every pass after). The publication's "Retune retry" deadline is the next
+ * attempt.
+ */
+static void
+test_owed_recovery_cooldown_with_sync_stopped(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    const int tunes_before = owed_scan_setup(opts, state, 4, -1, 2.0f);
+    state->last_cc_sync_time = dsd_decode_time(); /* 7000 s */
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    g_owed_scan_quiet = 1;
+    g_prepare_failed_calls = 0;
+    g_prepare_fails = 1;
+    for (uint64_t s = 0; s < 2; s++) {
+        assert(!owed_scan_second(opts, state, 7000U + s, 2));
+    }
+    assert(g_prepare_failed_calls == 0);
+    assert(!owed_scan_second(opts, state, 7002U, 2) && g_prepare_failed_calls == 1);
+    const double next_m = dsd_decode_now_mono_s() + 2.0;
+    assert(owed_scan_publishes(state, next_m));
+    const int at_7003 = (owed_scan_second(opts, state, 7003U, 2), g_prepare_failed_calls);
+    if (at_7003 != 1 || !owed_scan_publishes(state, next_m)) {
+        DSD_FPRINTF(stderr,
+                    "quiet carrier: %d failed preparations by 7003 s, want 1 (the next attempt at the published %.3f, "
+                    "publication deadline %.3f)\n",
+                    at_7003, next_m, state->scan_timing.deadline_m);
+        assert(0);
+    }
+    assert(!owed_scan_second(opts, state, 7004U, 2) && g_prepare_failed_calls == 2);
+    assert(owed_scan_publishes(state, dsd_decode_now_mono_s() + 2.0));
+    g_prepare_fails = 0;
+    assert(!owed_scan_second(opts, state, 7005U, 2));
+    assert(owed_scan_second(opts, state, 7006U, 1));
+    assert(g_tune_calls == tunes_before + 1);
+    g_owed_scan_quiet = 0;
+    owed_scan_teardown(opts, state);
+}
+
+/*
+ * Issue #899 (push-gate review r13t): the publication counts down the recovery that was armed. With -t 10 the owed
+ * commit's recovery is armed at 7000 s for 7010; one second later -t is edited to 1 s (as DSD_APP_CMD_HANGTIME_SET's
+ * svc_set_hangtime() writes it). The row reads 9 s left of 10, not 9 s of 1, and the step still waits for 7010.
+ */
+static void
+test_owed_recovery_publishes_the_armed_span(void) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    const int tunes_before = owed_scan_setup(opts, state, 3, -1, 10.0f);
+    const double armed_m = dsd_decode_now_mono_s();
+    assert(!owed_scan_second(opts, state, 7000U, 1));
+    decode_clock_at_s(7001U);
+    opts->trunk_hangtime = 1.0f;
+    assert(!owed_scan_second(opts, state, 7001U, 1));
+    const dsd_scan_timing_publication* t = &state->scan_timing;
+    const double left_s = t->deadline_m - dsd_decode_now_mono_s();
+    if (t->reason != (uint8_t)DSD_SCAN_STAY_RETUNE_RETRY || fabs(t->deadline_m - (armed_m + 10.0)) > 1e-6
+        || fabs(t->started_m - armed_m) > 1e-6 || t->span_ms != 10000U || fabs(left_s - 9.0) > 1e-6) {
+        DSD_FPRINTF(stderr,
+                    "after a -t edit to 1 s: the row reads %.3f s left of %u ms (started %.3f), want 9 s of 10000\n",
+                    left_s, t->span_ms, t->started_m - armed_m);
+        assert(0);
+    }
+    for (uint64_t s = 2; s < 10; s++) {
+        assert(!owed_scan_second(opts, state, 7000U + s, 1));
+    }
+    assert(g_tune_calls == tunes_before);
+    assert(owed_scan_second(opts, state, 7010U, 1));
+    owed_scan_teardown(opts, state);
+}
+
+/*
+ * Issue #899 (push-gate review r13t): a healthy digital -Y pass pays nothing for the owed-commit recovery. A typed DMR
+ * row committed and syncing (no recovery owed, nothing avoided, no visit cap): the engine's real no-carrier decision
+ * stays, and the decode monotonic clock reads and the -Y scan's extension lookups it makes are counted
+ * (test-only wraps). The counts are this pass's own: one more clock read (a rule sampling the clock apart from the
+ * forced rules' one sample) or one more lookup (a recovery check that looks the scan up unarmed) fails. The counts are
+ * checked with @p counts set, by the count-only ENGINE_SCAN_TIMING_COST entry (main()'s --cost); ENGINE_SCAN_TIMING
+ * runs the pass and its tick for their behaviour alone.
+ */
+static void
+test_healthy_digital_pass_costs(int counts) {
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    assert(opts && state);
+    initOpts(opts);
+    initState(state);
+    opts->audio_out_type = 9;
+    opts->scanner_mode = 1;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "scan.csv"); /* an imported list */
+    opts->trunk_hangtime = 2.0f;
+    opts->scan_max_visit_ms = 0;
+    opts->scan_voice_only = 0;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 150000000 + 1000000 * row;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_DMR) == 0);
+    }
+    decode_clock_at_s(7000U);
+    g_tune_calls = 0;
+    g_pending = 0;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1); /* row 0 on air */
+    decode_clock_at_s(7001U);
+    state->last_cc_sync_time = dsd_decode_time();
+    state->last_cc_sync_time_m = dsd_decode_now_mono_s();
+    assert(dsd_engine_channel_scan_service_sync(opts, state) == 1 && !state->lcn_owed_recovery_armed);
+    g_mono_reads = 0;
+    g_scan_ext_lookups = 0;
+    noCarrier(opts, state);
+    const int reads = g_mono_reads;
+    const int lookups = g_scan_ext_lookups;
+    assert(g_tune_calls == 1); /* it stayed */
+    if (counts && (reads != kHealthyPassMonoReads || lookups != kHealthyPassScanLookups)) {
+        DSD_FPRINTF(stderr, "a healthy digital -Y pass: %d decode clock reads and %d -Y scan lookups, want %d and %d\n",
+                    reads, lookups, kHealthyPassMonoReads, kHealthyPassScanLookups);
+        assert(0);
+    }
+    /* The pass's -Y timing publication: no call for the owed recovery's window, and its own lookups and reads. */
+    g_mono_reads = 0;
+    g_scan_ext_lookups = 0;
+    g_owed_window_calls = 0;
+    dsd_engine_scan_y_timing_tick(opts, state, dsd_decode_now_mono_s(), dsd_decode_now_realtime_s());
+    const int tick_reads = g_mono_reads - 1;
+    if (counts
+        && (g_owed_window_calls != 0 || tick_reads != kHealthyTickMonoReads
+            || g_scan_ext_lookups != kHealthyTickScanLookups)) {
+        DSD_FPRINTF(stderr,
+                    "a healthy digital -Y tick: %d owed-window calls, %d decode clock reads and %d -Y scan lookups, "
+                    "want 0, %d and %d\n",
+                    g_owed_window_calls, tick_reads, g_scan_ext_lookups, kHealthyTickMonoReads,
+                    kHealthyTickScanLookups);
+        assert(0);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    dsd_decode_clock_use_system();
+    freeState(state);
+    free(state);
+    free(opts);
+}
+
+/* ENGINE_SCAN_TIMING_COST: the --wrap cost counts alone (issue #899). They count calls an LTO build can inline away, so
+   an LTO test build skips them (CTest's 77). */
+static int
+scan_timing_cost_cases(void) {
+#if defined(DSD_TEST_LTO_BUILD)
+    DSD_FPRINTF(stderr, "skipped: --wrap cost counts in an LTO test build (DSD_TEST_LTO_BUILD)\n");
+    return 77;
+#else
+    test_healthy_digital_pass_costs(1);
+    return 0;
+#endif
+}
+
 int
-main(void) {
+main(int argc, char** argv) {
+    if (argc > 1 && strcmp(argv[1], "--cost") == 0) {
+        return scan_timing_cost_cases();
+    }
+    test_owed_commit_recovers_under_continuing_sync(0);
+    test_owed_commit_recovers_under_continuing_sync(1);
+    test_owed_recovery_step_staging_no_tune(0);
+    test_owed_recovery_step_staging_no_tune(1);
+    test_owed_recovery_cooldown_with_sync_stopped();
+    test_owed_recovery_publishes_the_armed_span();
+    test_healthy_digital_pass_costs(0);
     test_legacy_deadline_matches_rotation();
     test_analog_carrier_deadline_matches_rotation();
     test_scan_retune_publication(0, 0, 0);

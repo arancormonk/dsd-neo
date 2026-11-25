@@ -24,6 +24,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/dsp/analog_rx.h>
 #include <dsd-neo/dsp/frame_sync.h>
+#include <dsd-neo/engine/channel_scan.h>
 #include <dsd-neo/engine/frame_processing.h>
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
@@ -147,6 +148,22 @@ rtl_stream_enforce_tuner_autogain(int value) {
 
 void
 rtl_stream_clear_pending_retune_profile(void) {}
+
+/* The retune's new-channel mark (issue #899), which no scene here reads. */
+void
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
+    (void)target_freq_hz;
+    (void)new_channel;
+}
+
+/* The engine's side of the receiver's gate (issue #899; channel_scan.c, not linked here), which no scene here reads. */
+void
+dsd_engine_receiver_gate_hold(int hold) {
+    (void)hold;
+}
+
+void
+dsd_engine_receiver_gate_due(void) {}
 
 int
 rtl_stream_airspy_controls(const dsd_airspy_config* cfg) {

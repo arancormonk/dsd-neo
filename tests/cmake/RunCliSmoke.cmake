@@ -46,6 +46,43 @@ elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtltcp-bad-port")
     set(_want_stdout_regex "")
     set(_want_stderr_regex "\"12x\".*65535")
     set(_forbid_output_regex "rtltcp_port")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtl-bad-squelch")
+    # Issue #899 B14: a spec's squelch field --squelch would refuse fails --print-config,
+    # naming the field, as it fails the start; it was ignored, leaving the -110 dB default.
+    set(_args
+        "--no-config"
+        "-i"
+        "rtl:0:154.43M:30:0:24:auto+31:3"
+        "--print-config"
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "squelch field \"auto[+]31\".*3 to 30")
+    set(_forbid_output_regex "rtl_sql")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-soapy-bad-squelch")
+    # The same on a SoapySDR shorthand tuning tail, which it turned into device args at 850 MHz.
+    set(_args
+        "--no-config"
+        "-i"
+        "soapy:driver=foo:154.43M:30:0:24:auto+31:3"
+        "--print-config"
+    )
+    set(_want_rc 1)
+    set(_want_stdout_regex "")
+    set(_want_stderr_regex "squelch field \"auto[+]31\".*3 to 30")
+    set(_forbid_output_regex "rtl_freq|soapy_args")
+elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "print-config-rtl-rounded-squelch")
+    # Issue #899 B15: rtl_sql holds whole dB; an export rounds a level to the nearest one
+    # and says so, and an active level never exports as 0 (off).
+    set(_args
+        "--no-config"
+        "-i"
+        "rtl:0:155.34M:30:5:24:-65.5:3"
+        "--print-config"
+    )
+    set(_want_rc 0)
+    set(_want_stdout_regex "rtl_sql = -66\n")
+    set(_want_stderr_regex "squelch level -65[.]50 dB.*rounded")
 elseif(DSD_NEO_CLI_SMOKE_MODE STREQUAL "no-config-notice")
     # --no-config was accepted and silently did nothing once config loading became opt-in: it says so now, once,
     # and the run goes on.

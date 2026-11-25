@@ -174,22 +174,6 @@ user_config_strip_wrapping_quotes(char* val) {
     }
 }
 
-// Local helper to convert linear power to dB (avoids dependency on dsd_misc.c)
-static double
-local_pwr_to_dB(double mean_power) {
-    if (mean_power <= 0) {
-        return -120.0;
-    }
-    double dB = 10.0 * std::log10(mean_power);
-    if (dB > 0.0) {
-        dB = 0.0;
-    }
-    if (dB < -120.0) {
-        dB = -120.0;
-    }
-    return dB;
-}
-
 void
 user_cfg_reset(dsdneoUserConfig* cfg) {
     if (!cfg) {
@@ -423,6 +407,7 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. */
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         const dsd_squelch_setting setting =
             dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
@@ -485,17 +470,26 @@ apply_soapy_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 
 /* The squelch a save writes: the configured default beneath any scan row's own (--squelch-db, issue #521), whose
    value is effective state. Off is a setting in its own right, and 0 is how the CLI and the config key both spell it:
-   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold. A level saves as it runs, down to
-   pwr_to_dB()'s -120 dB floor (the key's range), so a level gate decides after a reload as it did before: the unset
-   -110 dB default reloads as -110. The mode and margin the same way; the level stays the level under auto and
-   noise. */
+   rendering it through pwr_to_dB() saved -120, which reloaded as a real threshold. A level saves as the key's whole
+   dB from -120 to -1 (dsd_squelch_level_whole_db()), so a whole-dB gate decides after a reload as it did before (the
+   unset -110 dB default reloads as -110), an active level never saves as off (truncating saved -0.25 dB and a linear
+   1 as 0; issue #899 B15), and one the key cannot hold saves as the nearest, which the render says. The mode and
+   margin the same way; the level stays the level under auto and noise. */
 static void
 snapshot_squelch_values(const dsd_opts* opts, const dsd_state* state, dsdneoUserConfig* cfg) {
     const dsd_scan_settings* configured = dsd_scan_mode_configured_view(state);
-    const double squelch = configured ? configured->rtl_squelch_level : opts->rtl_squelch_level;
-    cfg->rtl_sql = dsd_squelch_is_off(squelch) ? 0 : (int)local_pwr_to_dB(squelch);
-    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : opts->rtl_squelch_mode;
-    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : opts->rtl_squelch_margin_db;
+    /* Outside a scope, the session's squelch beneath an analog default in force: the default is no INI key (issue
+       #899), so a save never makes it an explicit squelch. */
+    double own_level = 0.0;
+    int own_mode = DSD_SQUELCH_MODE_LEVEL;
+    int own_margin_db = DSD_SQUELCH_MARGIN_DEFAULT_DB;
+    dsd_squelch_configured_fields(opts, &own_level, &own_mode, &own_margin_db);
+    const double squelch = configured ? configured->rtl_squelch_level : own_level;
+    (void)dsd_squelch_level_whole_db(squelch, &cfg->rtl_sql);
+    cfg->rtl_sql_rounded = !dsd_squelch_level_is_whole_db(squelch, NULL);
+    cfg->rtl_sql_unrounded_db = cfg->rtl_sql_rounded ? 10.0 * std::log10(squelch) : 0.0;
+    cfg->rtl_sql_mode = configured ? configured->rtl_squelch_mode : own_mode;
+    cfg->rtl_sql_margin_db = configured ? configured->rtl_squelch_margin_db : own_margin_db;
 }
 
 /* A PCM session (issue #628) saves its squelch, off included (`rtl_sql = 0`), so loading the save puts back what ran,
@@ -915,9 +909,17 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
     }
 }
 
-/* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. */
+/* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. A level a snapshot rounded to rtl_sql's
+   whole dB is said (issue #899 B15): the fixed gate compares the level itself, so the reload decides a little
+   differently. */
 static void
 render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_sql_rounded) {
+        LOG_WARN(
+            "WARNING: The squelch level %.2f dB is saved as rtl_sql = %d: the key holds whole dB, so it is rounded "
+            "to the nearest one from -120 to -1.\n",
+            cfg->rtl_sql_unrounded_db, cfg->rtl_sql);
+    }
     DSD_FPRINTF(out, "rtl_sql = %d\n", cfg->rtl_sql);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         DSD_FPRINTF(out, "rtl_sql_mode = \"%s\"\n", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto");
@@ -925,7 +927,7 @@ render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
     }
 }
 
-/* A PCM source's squelch keys, when its config or session set them (issue #628). */
+/* A PCM source's squelch keys, or a source-less [input]'s, when its config or session set them (issues #628, #899). */
 static void
 render_input_pcm_squelch(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_sql_is_set) {
@@ -1106,6 +1108,9 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
             break;
         case DSDCFG_INPUT_IQTCP:
         case DSDCFG_INPUT_IQUDP: render_input_iq_stream(out, cfg); break;
+        /* An [input] that names no source (an I/Q replay's retained input) keeps the squelch keys it applies (issue
+           #899), with no source invented for them. */
+        case DSDCFG_INPUT_UNSET: render_input_pcm_squelch(out, cfg); break;
         default: break;
     }
     DSD_FPRINTF(out, "input_warn_db = %.1f\n", cfg->input_warn_db);
@@ -1669,7 +1674,7 @@ apply_input_source_rtltcp(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
-static void apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts);
+static void apply_squelch_keys_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts);
 
 /* A raw I/Q stream [input] (issue #743): the spec it builds is the input, rtl_bw_khz the DSP bandwidth request its rate
    is planned to, and the squelch and monitor volume act on it as on any radio input. Gain, PPM, auto-PPM and rtl_freq
@@ -1687,7 +1692,7 @@ apply_input_source_iq_stream(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     apply_input_rtl_bw_request(cfg, opts);
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", spec);
     opts->rtltcp_enabled = 0;
-    apply_pcm_squelch_from_config(cfg, opts);
+    apply_squelch_keys_from_config(cfg, opts);
     if (cfg->rtl_volume) {
         opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(cfg->rtl_volume);
     }
@@ -1752,14 +1757,17 @@ apply_input_rtl_auto_ppm(const dsdneoUserConfig* cfg, dsd_opts* opts) {
 }
 
 /* A PCM source's squelch keys (issue #628), when the config names them: the noise squelch runs on audio input, and a
-   level always did. --squelch wins; a config without them leaves the session's squelch as it is. */
+   level always did. An [input] that names no source sets the squelch of the input running the same way (issue #899):
+   its keys are a squelch someone chose, whichever input it is. --squelch wins; a config without them leaves the
+   session's squelch as it is. */
 static void
-apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
+apply_squelch_keys_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     if (!cfg->rtl_sql_is_set || opts->rtl_squelch_cli_set) {
         return;
     }
     opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
     opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    dsd_squelch_analog_default_note_written(opts);
     if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         const dsd_squelch_setting setting =
             dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
@@ -1767,14 +1775,17 @@ apply_pcm_squelch_from_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The sources whose squelch keys apply_squelch_keys_from_config() sets: the PCM ones, and an [input] that names none. */
+static int
+input_source_takes_squelch_keys(dsdneoUserInputSource source) {
+    return source == DSDCFG_INPUT_PULSE || source == DSDCFG_INPUT_FILE || source == DSDCFG_INPUT_TCP
+           || source == DSDCFG_INPUT_UDP || source == DSDCFG_INPUT_UNSET;
+}
+
 static void
 apply_input_source_config(const dsdneoUserConfig* cfg, dsd_opts* opts, int apply_file_input_rate_now) {
-    switch (cfg->input_source) {
-        case DSDCFG_INPUT_PULSE:
-        case DSDCFG_INPUT_FILE:
-        case DSDCFG_INPUT_TCP:
-        case DSDCFG_INPUT_UDP: apply_pcm_squelch_from_config(cfg, opts); break;
-        default: break;
+    if (input_source_takes_squelch_keys(cfg->input_source)) {
+        apply_squelch_keys_from_config(cfg, opts);
     }
     switch (cfg->input_source) {
         case DSDCFG_INPUT_PULSE: apply_input_source_pulse(cfg, opts); break;
@@ -2203,6 +2214,11 @@ dsd_apply_user_config_to_opts_impl(const dsdneoUserConfig* cfg, dsd_opts* opts, 
         return;
     }
 
+    /* A config's squelch keys are a squelch someone chose: the analog default stays out for the session (issue
+       #899). */
+    if (cfg->has_input && cfg->rtl_sql_is_set) {
+        dsd_squelch_analog_default_end(opts);
+    }
     const int old_effective_input_rate = dsd_opts_effective_input_rate(opts);
     apply_input_config(cfg, opts, apply_file_input_rate_now);
     apply_output_config(cfg, opts);

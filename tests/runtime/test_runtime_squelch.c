@@ -520,6 +520,49 @@ test_opts_store_and_spec_field(void) {
     assert(dsd_squelch_spec_field_apply(&opts, "-60") == 1 && opts.rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO);
 }
 
+/* Issue #899 B15: the whole-dB form a level saves as. An active level is never 0 (off): -0.25 dB and a linear 1 (0 dB)
+   are -1 dB, a level under -120 dB is -120, and a fractional one is the nearest whole dB. Off is 0. Only Off and a
+   whole dB from -120 to -1 have that form exactly. */
+static void
+test_level_whole_db(void) {
+    static const struct {
+        double level;
+        int db;
+        int exact;
+    } cases[] = {
+        {0.0, 0, 1},       {-1.0, 0, 1},                      /* at or below 0 is off */
+        {1.0, -1, 0},                                         /* linear 1 is 0 dB: active, so -1 */
+        {301.0, -1, 0},    {INFINITY, -1, 0}, {-0.25, -1, 0}, /* from here on dB figures, but the last */
+        {-4.49, -4, 0},    {-65.5, -66, 0},   {-60.0, -60, 1},  {-1.0, -1, 1},
+        {-120.0, -120, 1}, {-160.0, -120, 0}, {1e-16, -120, 0}, /* linear: -160 dB */
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        double level = cases[i].level;
+        if (i >= 5U && i + 1U < sizeof cases / sizeof cases[0]) {
+            level = dsd_squelch_level_from_sql(cases[i].level);
+        }
+        int db = 12345;
+        if (dsd_squelch_level_whole_db(level, &db) != 0 || db != cases[i].db) {
+            DSD_FPRINTF(stderr, "whole dB case %zu: got %d, want %d\n", i, db, cases[i].db);
+            assert(0);
+        }
+        int exact_db = 12345;
+        if (dsd_squelch_level_is_whole_db(level, &exact_db) != cases[i].exact
+            || (cases[i].exact && exact_db != cases[i].db)) {
+            DSD_FPRINTF(stderr, "exact whole dB case %zu: got %d (%d)\n", i, dsd_squelch_level_is_whole_db(level, NULL),
+                        exact_db);
+            assert(0);
+        }
+    }
+    /* Exact means within 1e-9 dB of the level a whole dB makes: a hair off -60 is still -60, 1e-6 dB off is not. */
+    assert(dsd_squelch_level_is_whole_db(dsd_squelch_level_from_sql(-60.0) * (1.0 + 1e-13), NULL) == 1);
+    assert(dsd_squelch_level_is_whole_db(dsd_squelch_level_from_sql(-60.000001), NULL) == 0);
+    int db = 0;
+    assert(dsd_squelch_level_whole_db(dsd_squelch_level_from_sql(-60.0), NULL) == -1);
+    assert(dsd_squelch_level_whole_db(NAN, &db) == 0 && db == 0); /* not a number reads as off, as everywhere */
+}
+
 /* A frontend's level must be a finite number; an AUTO setting's level is not in force. */
 static void
 test_level_finite(void) {
@@ -536,8 +579,9 @@ test_level_finite(void) {
     assert(!dsd_squelch_setting_level_finite(NULL));
 }
 
-/* The AM monitor on its own refuses a NOISE setting; a scan running AM rows runs it as AUTO there. A paused trunk scan
-   runs no row: its manual AM session is on its own (issue #671). */
+/* The AM monitor on its own has no FM channel for a NOISE setting (a radio input runs it as AUTO, audio input refuses
+   it); a scan running AM rows runs it as AUTO there. A paused trunk scan runs no row: its manual AM session is on its
+   own (issue #671). */
 static void
 test_noise_has_no_fm(void) {
     static dsd_opts opts;
@@ -619,6 +663,7 @@ main(void) {
     test_grammar();
     test_noise_has_no_fm();
     test_level_finite();
+    test_level_whole_db();
     test_opts_store_and_spec_field();
     test_gate_helpers();
     test_paths_off_the_analog_family();

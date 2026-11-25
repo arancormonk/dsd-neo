@@ -246,6 +246,15 @@ dsd_engine_channel_scan_hold_keeps_row(const dsd_state* state) {
     return state && state->lcn_scan_hold && !g_on_avoided_row;
 }
 
+/* From engine/channel_scan.c, which this fixture does not link: no -Y row's commit is owed here (issue #899). */
+int
+dsd_engine_channel_scan_owed_recovery_window(const dsd_state* state, double* deadline_m, double* span_s) {
+    (void)state;
+    (void)deadline_m;
+    (void)span_s;
+    return 0;
+}
+
 /* From engine/channel_scan.c, which this fixture does not link: with no RTL front end no row's width is refused, so the
    rows a step can land on are the usable ones of a list of the user's. */
 int

@@ -510,6 +510,26 @@ dsd_trunk_tuning_caller_judges(void) {
     return s_caller_judges_depth > 0;
 }
 
+/* How deep this thread is in tunes to a new channel (dsd_trunk_tuning_new_channel_begin()). */
+static DSD_TRUNK_TUNING_THREAD_LOCAL int s_new_channel_depth = 0;
+
+void
+dsd_trunk_tuning_new_channel_begin(void) {
+    s_new_channel_depth++;
+}
+
+void
+dsd_trunk_tuning_new_channel_end(void) {
+    if (s_new_channel_depth > 0) {
+        s_new_channel_depth--;
+    }
+}
+
+int
+dsd_trunk_tuning_new_channel(void) {
+    return s_new_channel_depth > 0;
+}
+
 void
 dsd_trunk_tuning_hooks_set(dsd_trunk_tuning_hooks hooks) {
     g_trunk_tuning_hooks = hooks;

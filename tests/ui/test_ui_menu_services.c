@@ -53,8 +53,10 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/receive_policy.h>
+#include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
+#include <dsd-neo/runtime/squelch.h>
 #include <math.h>
 #include <sndfile.h>
 #include <stdint.h>
@@ -62,6 +64,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include "channel_scan_stubs.h"
 #include "commands_internal.h"
 #include "services.h"
 
@@ -705,6 +708,8 @@ static int g_rtl_start_clears_latch = 0;
 /* Issue #578: whether the last create was handed an I/Q capture request, and how many creates were. */
 static int g_rtl_create_capture = -1;
 static int g_rtl_create_captures = 0;
+/* The squelch the last create opened on: the setting and whether it was the analog default (issue #899). */
+static int g_rtl_create_squelch_default = -1;
 static int g_rtltcp_autotune_result = 0;
 
 /* No rigctl peer is asked anything here (issue #621): the width and -B services' follow finds none, and
@@ -832,6 +837,9 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_rtl_create_calls++;
     g_rtl_create_capture = opts ? opts->iq_capture_requested : -1;
     g_rtl_create_captures += g_rtl_create_capture == 1;
+    if (opts) {
+        g_rtl_create_squelch_default = opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED;
+    }
     if (out_ctx) {
         *out_ctx = g_rtl_create_result == 0 ? (RtlSdrContext*)out_ctx : NULL;
     }
@@ -839,8 +847,9 @@ rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
 }
 
 int
-rtl_stream_start(RtlSdrContext* ctx) {
+rtl_stream_start_gated(RtlSdrContext* ctx, const rtl_stream_start_gate* start_gate) {
     (void)ctx;
+    (void)start_gate;
     note_rtl_lifecycle_call();
     g_rtl_start_calls++;
     if (g_rtl_start_clears_latch) {
@@ -964,6 +973,23 @@ rtl_stream_set_channel_squelch_setting(const dsd_squelch_setting* setting) {
     g_squelch_setting_pushes++;
     g_squelch_setting_pushed = *setting;
 }
+
+/* The stream hook's level setter, as the engine installs it: the demod keeps the threshold as a float. */
+static void
+push_channel_squelch_level(double mean_power) {
+    rtl_stream_set_channel_squelch((float)mean_power);
+}
+
+/* The retune's new-channel mark (issue #899), which no case here reads: these services retune through the stubs
+   above. */
+void
+rtl_stream_prepare_retune_new_channel_for_target(uint32_t target_freq_hz, int new_channel) {
+    (void)target_freq_hz;
+    (void)new_channel;
+}
+
+void
+rtl_stream_clear_pending_retune_profile(void) {}
 
 int
 rtl_stream_set_bias_tee(int on) {
@@ -1618,6 +1644,129 @@ test_tune_and_start_run_the_carrier_boundary(void) {
     return rc;
 }
 
+/* Issue #899: a failed change's recovery under a suspended -Y scope reopens the stream, which on the analog family
+ * starts closed ("analog starts closed", round 6), and the decoder commits its channel, whose gate resolves to the row's,
+ * from the profile restored, not the configured one the suspend put back: an nfm row with no squelch of its own on a
+ * DMR session resolves to the analog default (Noise +10), one with its own level to that level. The configured standing
+ * stays in the options, for the resume to put the row over. A change that ended the default while the scope was
+ * suspended (@p end_default: a failed config reopen whose squelch keys ended it, review round 3) leaves the inheriting
+ * row on the session's Off beneath it, not on the default the row ran before the change. No stream open can carry a
+ * row's standing out of the scope: the default's standing in the options is the session's throughout. */
+static int
+recovery_opens_on_the_row_squelch(const char* label, const dsd_scan_option_values* row, dsd_squelch_setting want,
+                                  int end_default) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return expect_int(label, 0, 1);
+    }
+    reset_rtl_restart_stubs();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->frame_dmr = 1;
+    opts->squelch_default_mode = DSD_SQUELCH_MODE_NOISE;
+    opts->squelch_default_margin_db = 10;
+    int rc = expect_int(label, dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    rc |= expect_int(label, dsd_scan_mode_options(opts, state, row), 0);
+    rc |= expect_int(label, dsd_scan_mode_suspend(opts, state), 1);
+    if (end_default) {
+        dsd_squelch_analog_default_end(opts);
+    }
+    const dsd_squelch_setting configured = dsd_squelch_setting_of_opts(opts);
+    rc |= expect_int(label, dsd_squelch_setting_is_off(&configured), 1);
+    g_rtl_create_result = 0;
+    g_rtl_start_result = 0;
+    g_rtl_create_squelch_default = -1;
+    const int default_state_before = opts->squelch_default_state;
+    (void)dsd_test_channel_scan_gates_due(opts, state, NULL);
+    rc |= expect_int(label, svc_rtl_restart_recovery_locked(opts, state, 1, 0, NULL, NULL), 0);
+    dsd_squelch_setting committed;
+    const int opens = dsd_test_channel_scan_gates_due(NULL, NULL, &committed);
+    if (opens != 1 || !dsd_squelch_setting_equal(&committed, &want) || g_rtl_create_squelch_default != 0) {
+        DSD_FPRINTF(
+            stderr,
+            "%s: %d opens with a gate due, the last resolving to mode %d margin %d level %g (the default applied in "
+            "the options at the open: %d), want 1 resolving to mode %d margin %d level %g with the session's "
+            "standing\n",
+            label, opens, committed.mode, committed.margin_db, committed.level, g_rtl_create_squelch_default, want.mode,
+            want.margin_db, want.level);
+        rc |= 1;
+    }
+    rc |= expect_int(label, opts->squelch_default_state, default_state_before);
+    const dsd_squelch_setting after = dsd_squelch_setting_of_opts(opts);
+    rc |= expect_int(label, dsd_squelch_setting_equal(&after, &configured), 1);
+    rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_APPLIED, 0);
+    rc |= expect_int(label, opts->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED, end_default);
+    (void)dsd_scan_mode_resume(opts, state);
+    dsd_scan_mode_leave(opts, state);
+    state->rtl_ctx = NULL;
+    reset_rtl_restart_stubs();
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
+static int
+test_recovery_under_a_suspended_scope_opens_on_the_row_squelch(void) {
+    int rc = recovery_opens_on_the_row_squelch("inheriting nfm row", NULL,
+                                               dsd_squelch_setting_dynamic(DSD_SQUELCH_MODE_NOISE, 10), 0);
+    dsd_scan_option_values own = {0};
+    own.present = DSD_SCAN_OPT_SQUELCH;
+    own.squelch_db = -60;
+    const dsd_squelch_setting own_level = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-60.0));
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level", &own, own_level, 0);
+    rc |= recovery_opens_on_the_row_squelch("inheriting nfm row, the default ended", NULL,
+                                            dsd_squelch_setting_of_level(0.0), 1);
+    rc |= recovery_opens_on_the_row_squelch("nfm row with its own level, the default ended", &own, own_level, 1);
+    return rc;
+}
+
+/*
+ * Issue #899 (review round 5, P2): a squelch edit hands the receiver the gates of the channels it may produce, resolved
+ * by the engine for each (dsd_engine_receiver_gate_settle(); a -Y row whose retune landed before its commit is one of
+ * them), whether or not the row on air keeps its own squelch over the edit. With the row on air at its own -40 dB, a
+ * configured -20 dB edit (by level, then by setting) settles the receiver, which here, with no row staged, runs the row
+ * on air's -40 dB. Before the fix the edit decided from the row on air alone: shadowed by the row's own squelch, it
+ * handed the receiver nothing, so a landed row that inherits the edit kept the old level until its commit.
+ */
+static int
+test_shadowed_squelch_edit_settles_the_receiver(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return 1;
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    int rc = expect_int("shadowed edit: scope", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_NFM), 0);
+    dsd_scan_option_values own = {0};
+    own.present = DSD_SCAN_OPT_SQUELCH;
+    own.squelch_db = -40;
+    rc |= expect_int("shadowed edit: the row's own", dsd_scan_mode_options(opts, state, &own), 0);
+    const dsd_squelch_setting minus20 = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-20.0));
+    for (int by_setting = 0; by_setting < 2; by_setting++) {
+        g_squelch_level_pushes = 0;
+        g_squelch_level_pushed = -1.0f;
+        if (by_setting) {
+            rc |= expect_int("shadowed edit by setting", svc_rtl_set_sql_setting(opts, state, &minus20), 0);
+        } else {
+            rc |= expect_int("shadowed edit by level", svc_rtl_set_sql_db(opts, state, -20.0), 0);
+        }
+        rc |= expect_int("shadowed edit: the receiver is settled", g_squelch_level_pushes >= 1, 1);
+        rc |= expect_double("shadowed edit: the row on air keeps its own", (double)g_squelch_level_pushed,
+                            (double)(float)dsd_squelch_level_from_sql(-40.0));
+    }
+    dsd_scan_mode_leave(opts, state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    return rc;
+}
+
 /* A restart that leaves an I/Q replay's decode clock while the input is still that replay replays it on the system
  * clock, which is logged once, at the leave (issue #572). No notice when the clock is not the replay's, or when the
  * input is no longer the replay. The engine's leave is a stub here, so the source stays REPLAY between restarts. */
@@ -1718,8 +1867,15 @@ test_locked_restarts(void) {
         opts.iq_capture_requested = 1;
         dsd_airspy_config next = opts.airspy;
         next.sample_rate = 2500000;
-        const svc_airspy_tuning tuning = {
-            851000000, 12, 0.0, 2, DSD_SQUELCH_MODE_LEVEL, 0, DSD_RTL_DSP_BW_SOURCE_DEFAULT};
+        const svc_airspy_tuning tuning = {851000000,
+                                          12,
+                                          0.0,
+                                          2,
+                                          DSD_SQUELCH_MODE_LEVEL,
+                                          0,
+                                          DSD_RTL_DSP_BW_SOURCE_DEFAULT,
+                                          0,
+                                          {0.0, 0.0, 0, 0, 0, 0, 0, 0}};
         const int result = locked ? svc_airspy_apply_config_locked(&opts, &state, &next, &tuning)
                                   : svc_airspy_apply_config(&opts, &state, &next, &tuning);
         rc |= expect_int("Airspy reopen reports start failure", result, -1);
@@ -2193,7 +2349,8 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_int("rtl squelch accepts positive", svc_rtl_set_sql_db(&opts, &state, 3.0), 0);
     rc |= expect_double("rtl squelch positive switches off", opts.rtl_squelch_level, 0.0);
     /* A level from the menu puts a level squelch in force in place of an auto one, and the demod hears the whole
-       setting (issue #518 follow-up). */
+       setting (issue #518 follow-up), on the radio input it gates (issue #899: a receiver hears its channel's gate). */
+    opts.audio_in_type = AUDIO_IN_RTL;
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
     opts.rtl_squelch_margin_db = 6;
     g_squelch_setting_pushes = 0;
@@ -2202,16 +2359,18 @@ test_rtl_service_option_contracts(void) {
     rc |= expect_int("rtl squelch level over auto: mode", opts.rtl_squelch_mode, DSD_SQUELCH_MODE_LEVEL);
     rc |= expect_int("rtl squelch level over auto: pushed", g_squelch_level_pushes, 1);
     rc |= expect_double("rtl squelch level over auto: pushed level", (double)g_squelch_level_pushed, 1e-6);
-    /* svc_rtl_push_squelch(): a level as a level, an auto squelch whole. */
+    /* svc_rtl_push_channel_squelch(): a level as a level, an auto squelch whole (issue #899: the engine's settle writes
+       it for the channel on air). */
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_AUTO;
-    svc_rtl_push_squelch(&opts);
+    svc_rtl_push_channel_squelch(&opts, &state);
     rc |= expect_int("auto squelch pushed whole", g_squelch_setting_pushes, 1);
     rc |= expect_int("auto squelch pushed margin", g_squelch_setting_pushed.margin_db, 6);
     rc |= expect_int("auto squelch pushed no level", g_squelch_level_pushes, 1);
     opts.rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    svc_rtl_push_squelch(&opts);
+    svc_rtl_push_channel_squelch(&opts, &state);
     rc |= expect_int("level squelch pushed as a level", g_squelch_level_pushes, 2);
-    svc_rtl_push_squelch(NULL);
+    svc_rtl_push_channel_squelch(NULL, &state);
+    opts.audio_in_type = 0;
     rc |= expect_int("rtl volume invalid defaults", svc_rtl_set_volume_mult(&opts, -1), 0);
     rc |= expect_int("rtl volume default stored", opts.rtl_volume_multiplier, 1);
     rc |= expect_int("rtl volume valid stored", svc_rtl_set_volume_mult(&opts, 3), 0);
@@ -3399,6 +3558,13 @@ test_p2_identity_lifecycle(void) {
 int
 main(void) {
     int rc = 0;
+    /* The squelch a settle hands the receiver reaches the stream's setters, as the engine's hooks route it (the engine
+       itself is stubbed here: channel_scan_stubs.c). */
+    dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    hooks.set_channel_squelch = push_channel_squelch_level;
+    hooks.set_channel_squelch_setting = rtl_stream_set_channel_squelch_setting;
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
     rc |= test_source_alias_services();
     rc |= test_mute_and_protocol_inversion_toggles();
     rc |= test_enable_per_call_wav_stamps_open_time();
@@ -3410,6 +3576,8 @@ main(void) {
     rc |= test_rtl_row_destination();
 #ifdef USE_RADIO
     rc |= test_rtl_restart_quiesces_p25_retunes();
+    rc |= test_recovery_under_a_suspended_scope_opens_on_the_row_squelch();
+    rc |= test_shadowed_squelch_edit_settles_the_receiver();
     rc |= test_tune_and_start_run_the_carrier_boundary();
     rc |= test_tune_notes_a_timed_out_tune();
     rc |= test_locked_restarts();

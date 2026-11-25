@@ -5854,7 +5854,10 @@ suite runs under this compiler.
     into another frequency. `dsd_normalize_soapy_input_spec()` reads a K/M/G-suffixed number (any strtod() number
     before the suffix: `+5.8G`, `5.8e0G`) in the frequency place as a frequency, never device args: out of range
     (refused by `dsd_parse_freq_hz()` or under the 1 MHz floor) it logs the token and fails, and engine setup and `--print-config` fail with it; a bare number keeps the opaque-args
-    fallback (`RUNTIME_INPUT_SPEC`). Both read a gain field the same way: one whose tenths of a dB (the gain times ten,
+    fallback (`RUNTIME_INPUT_SPEC`). It splits the tail at colons outside brackets (`soapy_split_fields()`): a
+    bracketed part (SoapyRemote's `remote=[2001:db8::1]`) runs to the next `]`, or to the end when none follows, and
+    stays in one device-args field, so its groups are never read as a frequency and a squelch field (issue #899).
+    The rtl and Soapy readers both read a gain field the same way: one whose tenths of a dB (the gain times ten,
     as the tuner is set) do not fit an int, above 214748364, is ignored with a warning naming it, like a field that
     does not parse, and the gain before stays; 0 and negatives (automatic) are taken as written. The two places that
     turn the configured gain into tenths, the stream's open (`rtl_sdr_fm.cpp`) and a trunk scan's retune gain profile
@@ -5887,9 +5890,12 @@ suite runs under this compiler.
     installs `rtl_stream_request_analog_profile()`, `rtl_stream_request_digital_family_landing()`,
     `rtl_stream_get_analog_profile()`, `rtl_stream_analog_family_active()`, `rtl_stream_family_landing_after_pending()`,
     `rtl_stream_output_rate_for_family()` and `rtl_stream_get_replay_batch()` behind them. It also hands the
-    demodulator a whole squelch setting (`set_channel_squelch_setting`, `rtl_stream_set_channel_squelch_setting()`;
-    issue #518 follow-up), which a scan scope's push uses for every setting, levels included; a table without it falls
-    back to the level call, with an AUTO setting off. Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
+    demodulator a whole squelch setting, bare (`set_channel_squelch_setting`, issue #518 follow-up; a table without it
+    falls back to the level call, `set_channel_squelch`, with an AUTO setting off). The engine installs neither bare
+    setter (issue #899): on a radio it writes the gate only through `write_squelch_gate`
+    (`rtl_stream_write_squelch_gate()`), from its settle (`dsd_receiver_gate_settle_hook_run()`), which a scan scope's
+    push goes through; the bare setters return -1 there and remain the fallback of a runtime with no engine installed.
+    Tests: `RUNTIME_RTL_STREAM_METRICS_HOOKS`,
     `ENGINE_RTL_STREAM_METRICS_HOOKS_INSTALL`.
   - The P25 timing proof (`p25_timing_proof`, `dsd_rtl_stream_metrics_hook_note_p25_proven()` /
     `dsd_rtl_stream_metrics_hook_forget_p25_proof()`): the decoder thread's word to the CQPSK Gardner that the carrier
@@ -5956,9 +5962,19 @@ suite runs under this compiler.
     `dsd_squelch_mode_is_dynamic()` -- the AUTO margin or NOISE quieting in whole dB 3..30, the LEVEL threshold in
     mean-power units) and its one grammar, `off | 0 | <negative dB> | <positive linear> | auto[+N] | noise[+N]`
     (`dsd_squelch_setting_parse()`, `dsd_squelch_setting_format()`), which `--squelch`, the `sql` field of every radio
-    spec (`dsd_squelch_spec_field_apply()`, which leaves the setting alone once `--squelch` set it:
-    `dsd_opts::rtl_squelch_cli_set`) and the terminal prompt share; scan rows (`scan_options.c`, `--squelch` sharing
-    `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
+    spec and the terminal prompt share. A spec's field is read by `dsd_spec_squelch_field_parse()` (`input_spec.c`)
+    before the spec sets anything (`rtl:`/`rtltcp:` in `dsd_rtl_input_spec_apply()`, `soapy:` once its frequency place
+    holds a frequency, however many fields follow, Airspy's third tuning field): one `--squelch` would refuse is logged naming the field
+    and refuses the spec (issue #899 B14), even under `--squelch`, an empty one keeps its place and the setting, and
+    `dsd_squelch_spec_field_apply()` stores it unless `--squelch` set the squelch (`dsd_opts::rtl_squelch_cli_set`).
+    The Soapy tail reads its fields in place (`dsd_spec_split_fields()`), an empty first field being no device args
+    and empty fields at the end not counted; a K/M/G number after an empty frequency place, past any run of empty
+    fields, is refused (`SOAPY_HEAD_FREQ_LATE`); a run longer than the 16 fields stored is followed on through the
+    split text (`soapy_first_nonempty_field()`).
+    `dsd_squelch_level_whole_db()` is the whole dB a level saves as in `rtl_sql` (nearest, -120..-1, never 0 while
+    active; 0 for off) and `dsd_squelch_level_is_whole_db()` whether a level is exactly one (or off): a config
+    snapshot sets `rtl_sql_rounded` when it rounds (a retained [input] merges it with `rtl_sql`), and the INI
+    render warns (issue #899 B15); scan rows (`scan_options.c`, `--squelch` sharing `--squelch-db`'s option bit) take whole dB, `off`, `auto[+N]` on analog rows and `noise[+N]` on nfm rows only.
     `dsd_opts` holds it as `rtl_squelch_mode`, `rtl_squelch_margin_db` and `rtl_squelch_level` (the level kept beneath
     a dynamic setting, for a switch back), the config as `[input] rtl_sql_mode`, `rtl_sql_margin_db` and `rtl_sql`.
     `dsd_squelch_setting_resolve()`, the one policy every surface shares, takes the input kind
@@ -5967,9 +5983,11 @@ suite runs under this compiler.
     channel) or is off (AUTO off a radio input, either off audio and radio input, a digital channel, NOISE on AM audio:
     `DSD_SQUELCH_RESOLVED_AUDIO_AM`), for the views, the engine's startup check and the scan warnings;
     `dsd_squelch_noise_has_no_fm()` is the AM monitor on its own (`-fM`, no scan running: a paused `-Y` scan or trunk
-    scan runs no row, issue #671), where the engine refuses `--squelch noise` at startup and `svc_rtl_set_sql_setting()`
-    refuses a NOISE request (`SVC_SQL_NOISE_NEEDS_FM`); it refuses AUTO on audio input too (`SVC_SQL_AUTO_NEEDS_RADIO`,
-    issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
+    scan runs no row, issue #671). On a radio input a NOISE setting runs there as AUTO with the same N whatever set it,
+    the engine saying so at startup and `svc_rtl_set_sql_setting()` storing NOISE (issue #899 D4: the engine refused
+    `--squelch noise`, so a saved Noise choice stopped an AM start, and the service refused the request); on audio
+    input `svc_rtl_set_sql_setting()` refuses a NOISE request there (`SVC_SQL_NOISE_NEEDS_FM`), and AUTO anywhere
+    (`SVC_SQL_AUTO_NEEDS_RADIO`, issue #628). `dsd_squelch_pcm_noise_in_force()` is NOISE on audio input's FM monitor, the PCM noise squelch (DSP,
     below). `dsd_squelch_analog_calls_allowed()` (issue #667 D2) is whether an analog reception may become a call:
     always off a radio input; on one only under a dynamic squelch in force, a level above `DSD_SQUELCH_STARTUP_DB`
     (-110, `<dsd-neo/core/power.h>`, which `dsd_init.c` starts from; within the levels' 1e-9 relative tolerance), or a
@@ -5987,6 +6005,183 @@ suite runs under this compiler.
     (`squelch_noise_state`, the `dsd_squelch_noise_state` learning, provisional, known, no-band or no-room, among them),
     and elsewhere it clears them; the frame sync's throttled UI publish calls it. Tests: `RUNTIME_SQUELCH`,
     `RUNTIME_CLI_PARSE`, `INPUT_SPEC`, `RUNTIME_CONFIG_USER`, `RUNTIME_SCAN_OPTIONS`, `ENGINE_IO_HOOKS_INSTALL`.
+  - Analog default squelch (`--squelch-analog-default`, issue #899; `squelch.h`, `src/runtime/squelch.c` for its
+    standing, `src/runtime/squelch_analog_default.c` for `dsd_squelch_analog_default_sync()`): an AUTO or NOISE setting
+    (`dsd_squelch_analog_default_parse()`; absent is none, `off` and a level refused) the decoder runs on an analog channel
+    of a radio input while no squelch was set. No INI key. `dsd_opts::squelch_default_mode`/`_margin_db` hold it and
+    `squelch_default_state` (a `dsd_squelch_default_state`, decoder thread only) where it stands: IDLE, APPLIED (the
+    `rtl_squelch_*` fields run it, the `squelch_default_base_*` fields keep what they held, the level beneath kept) or
+    ENDED. In force (`dsd_squelch_analog_default_wanted()`): pending (given, not ENDED), `dsd_opts_input_is_radio()`,
+    `dsd_opts_is_analog_family()` (so not EDACS, not the M17 encoder, not digital) and the scan row on air, if any,
+    without its own `DSD_SCAN_OPT_SQUELCH` (a row's `--squelch`/`--squelch-db`, a signal-search range's squelch), never
+    while a scan scope is suspended (its resume decides). Explicit, and so ENDED for the session
+    (`dsd_squelch_analog_default_end()`, which first puts the base back): `--squelch` (`cli_parse_squelch_option()`),
+    a spec's `sql` field other than exactly `0` (`dsd_squelch_spec_field_apply()`, Airspy's `squelch_explicit`), a
+    config with `[input]` and its squelch keys (`rtl_sql_is_set`: `dsd_apply_user_config_to_opts_impl()` and the live
+    `apply_cfg_rtl_receive()`), and every successful configured-squelch edit
+    (`dsd_scan_mode_set_configured_squelch_setting()`, which `svc_rtl_set_sql_setting()` and `svc_rtl_set_sql_db()` call
+    for the terminal, Qt, Android and the control API alike; a refused request ends nothing). Every other write of the
+    fields marks an applied default out (`dsd_squelch_analog_default_note_written()`: `dsd_squelch_setting_store()`, the
+    scan scope's restores, a config's values), setting `squelch_default_moved` so the next sync returns 1 and its
+    caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
+    scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
+    ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
+    ended it, and so does a failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except
+    that a config apply whose squelch keys ended the default keeps it ended over the session's own squelch when its
+    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`;
+    the in-place Airspy failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
+    options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and `channel_scan_tune_staged()`, a suspended
+    scope's restart on the profile that ran, `svc_rtl_start_on_the_profile_that_ran_locked()`) saves the fields and the
+    standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured
+    squelch the captures hold. One resolver gives the gate a receiver runs on a channel (issue #899 r4,
+    `dsd_squelch_channel_gate()`): the row's, target's or range's own option, else the session's configured squelch (a
+    scope's configured settings, else `dsd_squelch_configured_fields()`) with the default in its place where the
+    channel is the analog monitor on a radio input and the session still owns it. Nothing caches a gate: every write
+    resolves it again from the options as they stand. `dsd_scan_mode_channel_squelch()` resolves the channel the scope
+    has on air (a typed row's class, an inherited row's configured decoder, the one the options hold while a command
+    has the scope suspended, as that command left it; a suspended scope's leave takes the configured settings the
+    command left first). Closed start, no IDs (review round 7): a new channel on the analog monitor
+    (`dsd_demod_analog_monitor_active()`) starts closed in the receiver (`kGateClosed`, `DSD_SQUELCH_LEVEL_CLOSED`: a level no power reaches, and every sample flagged closed, so a
+    decoder reading the flags neither plays nor learns from it): a stream open with no gate resolved for it
+    (`rtl_stream_gate_open()`; `rtl_stream_start()`, for a caller with no decoder loop to write the gate, runs the
+    options' own from the first block instead, resolved as for a channel with no scan row on air), a
+    retune the decoder marks as a new channel (a -Y row's, a trunk-scan target's, and a trunk-scan park on a control
+    channel, which switches targets: `dsd_trunk_tuning_new_channel_begin()` around its `dsd_trunk_tuning_hook_tune_to_cc()`,
+    while a trunk machine's own grants, hunts and returns stay unmarked;
+    `rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
+    attached last since a store replaces the whole profile, a profile for the mark alone, `new_channel_only`, when
+    nothing else is queued, unmarked once a tune returned without taking it) landing on the monitor (the controller's
+    finalize and an external backend's landing, whatever the profile's family did there), a family switch into the
+    analog family or onto another analog kind (the demod thread's take, or a retune profile's family; a width change on
+    the same kind keeps the gate), and any return to the monitor from a symbol profile on the analog family (a typed
+    digital -Y row paused in place on an `-fA`/`-fM` session, whose leave asks the monitor back with neither a family
+    nor a kind change; CQPSK toggled off; review round 8) all go through `rtl_stream_gate_boundary()`, which every
+    landing and every applied family or symbol request reaches. The receiver numbers nothing and checks no tags: it
+    records at each boundary whether it is on the monitor (`g_gate_monitor`, taken from the demodulator by the thread
+    that changed it, under `g_pending_retune_profile_mutex`), and a write (`rtl_stream_write_squelch_gate()`, under the
+    same lock, never reading the demodulator: round 8, TSan) applies to the channel it is on, the analog gate on the
+    monitor and the digital gate it carries off it (`dsd_scan_mode_digital_squelch()`: a digital row's own option or
+    the session's configured squelch, never the analog-only default and never an analog row's own option, round 8).
+    The write also carries the session's own squelch (`dsd_squelch_channel_gate()` with no row, not analog;
+    `g_gate_session`). Off the monitor (the digital family, or a typed digital row's symbol profile on the analog family
+    of any mode and modulation, whatever channel filter it names, whose landing never starts closed: round 8) a marked
+    new channel or a switch off the monitor runs that session gate until the decoder writes for the channel, so no
+    analog gate and no row's own squelch outlives its channel (round 9: a digital row's own level no longer runs on
+    the next digital row's landing); a boundary that stays off the monitor on the same channel (a retune nobody marks,
+    a trunking grant; a P25 Phase 1 CQPSK profile pushed again at every accepted sync) takes no lock and keeps the gate
+    the receiver runs (round 9), as before #899. The public setters (`rtl_stream_set_channel_squelch()`,
+    `rtl_stream_set_channel_squelch_setting()`) run their setting through the same gate under its lock, ending a closed
+    start as a write does, so the decoder's next write compares against what they set (round 9); the gate's own store is
+    private (`rtl_stream_store_channel_squelch()`). A direct `rtl_stream_toggle_cqpsk()` is a boundary of its own
+    (round 10): it records whether the front end left or entered the monitor, so a later write or request selects the
+    right gate (the toggles inside a profile request or a retune landing leave that to their caller's boundary).
+    `rtl_stream_gate_closed_start()` reports a closed start lock-free. The decoder's side (`channel_scan.c`, decoder
+    thread, `dsd_engine_receiver_gate_settle()`) writes the gate resolved at write time
+    (`dsd_scan_mode_channel_squelch()`) only when none of its own requests is outstanding
+    (`receiver_gate_outstanding()`): a -Y row's (requested, retrying, or landed and owed its commit,
+    `channel_scan_gate_waiting()`, the commit staying owed when the row it landed for goes before its retry: the
+    receiver has moved and no row owns it until the next row commits, round 9; a stream reopen recognized as the
+    pending row's landing owes it too, so a restaged tune that fails there keeps the gate closed, round 10; with
+    nothing in flight to commit, an operator Hold keeps no row, `dsd_engine_channel_scan_hold_keeps_row()`, and the
+    scan recovers by its next timed step, round 10, a forced step paced -t from the first decision that finds the scan
+    so, `dsd_engine_channel_scan_owed_recovery_due()`, since a busy row's sync keeps refreshing the hangtime anchor
+    though the owed commit discards its frames, round 11; the deadline and the span it was armed with are the scan's
+    (its extension, cleared with the commit owed and by every staged tune), armed by the scan's service
+    `dsd_engine_channel_scan_pending()` and armed again by a timed step that stages no tune (a placeholder keeps its
+    `-t` dwell, a row not prepared is tried once a pace), round 12; while armed it governs every timed step below the
+    per-visit cap and the avoided-row departure, none before its deadline, the hangtime rule's included, and the `-Y`
+    timing tick publishes it as `Retune retry` over its armed span, which a live `-t` edit leaves alone
+    (`dsd_engine_channel_scan_owed_recovery_window()`); `dsd_state::lcn_owed_recovery_armed`, set and cleared with it,
+    lets a healthy pass's decision and tick skip the scan lookup, round 13), the active trunk-scan target's retune (`dsd_engine_trunk_scan_retune_pending()`),
+    a timed-out manual tune still followed (`dsd_engine_manual_tune_awaited()`), a signal-search visit's or restore's
+    tune (`dsd_engine_signal_search_tune_pending()`: its ticket, or the TUNING phase, which retries a tune the receiver
+    deferred with no ticket until its landing is observed, so the range's squelch is never written on the channel being
+    left; a search's ticket goes when its input is lost and when it stops, so a stopped search never
+    holds a reopened radio's gate, round 8), and any receive request the demod thread has not settled (the
+    newest's `rtl_stream_receive_request_outcome()`, through the stream hooks; a stream's soft stop settles every request
+    its joined demod thread never took, so none holds the next stream's start closed, round 10). It writes when one is due
+    (`dsd_engine_receiver_gate_due()`: a stream open, a family request, a -Y commit or release, a trunk-scan landing, a
+    settled manual tune; a command or a change, `changed`), and whenever the receiver reports a closed start on an
+    analog session with nothing outstanding, so no channel stays muted for good. While the drain applies a command, or a
+    coordinator switches (the trunk scan's target switch, the -Y staging and leave, a signal search's visit and restore),
+    `dsd_engine_receiver_gate_hold()` holds every write, and one is due once the outermost hold ends. When the engine
+    starts its stream with none of that outstanding and no hold (`live_scanner_start_rtl_if_needed()`), it resolves the
+    gate first (`dsd_engine_receiver_gate_resolve()`, the settle's own resolution) and passes it to that start
+    (`rtl_stream_start_gated()`, an `rtl_stream_start_gate` argument of the start alone: round 10, no staged state a
+    start that opens nothing could leave behind), which runs it from the first block instead of a closed start, so the
+    audio output, rigctl and the frontends starting before the main loop mute nothing (round 9). Every start the decoder
+    makes (the engine's, app-control's `svc_rtl_open_on_the_channel_squelch_locked()`) passes the session's own squelch
+    too (`dsd_engine_receiver_gate_resolve_start()`; a settle resolves nothing while anything is outstanding), resolved
+    on the decoder thread whatever is outstanding (the scan scope's configured setting while one is in
+    force): a start that cannot resolve the gate (a tune outstanding, a command applying: the restart of a gain change
+    or a go-to pending) starts an analog channel closed as before, and off the monitor runs that session squelch, never
+    a row's own the options hold (round 10). The settle runs at
+    the drain (before and after each command, `ui_settle_squelch()`; the analog default's policy,
+    `dsd_squelch_analog_default_sync()`, only on a change), at each analog block the decoder takes (the engine's
+    `analog_call_block` hook) and in the engine's main pass, at a -Y row's commit and release, and when the trunk scan
+    sees its retune land; with nothing due on a digital session it reads, resolves and writes nothing, so an idle
+    digital drain does no gate work. Limits: while a request is outstanding the receiver runs what it ran (closed for a
+    new analog channel), set right at the commit; a timed-out tune that lands after the decoder gave up on it gets the
+    gate of the channel the decoder has on air then; trunking grants and hunts behave as before #899. The landing's
+    mute is the decoder's time to its next settle (about 100 ms of wall time behind a trunk-scan retune on rtl_tcp,
+    ENGINE_TRUNK_SCAN_RUNNING_RECEIVER, over before the new channel's first samples are produced: the receiver counts the
+    monitor samples a closed start mutes where they are produced, `rtl_stream_squelch_status::closed_samples`, 0 there;
+    every block that took the closed gate counts, one the demod thread finishes after the opening write included, and
+    only the analog monitor is counted, FM and AM alike, never the M17 encoder's FM audio, rounds 8 and 9). A block
+    produced on a closed start publishes no dynamic squelch status: the status goes by whether the tracker or the noise
+    squelch ran on the block, not by its flags (round 9).
+    An `[input]` that names no source applies its squelch keys to the input running
+    (`apply_squelch_keys_from_config()`), and a radio receiver that keeps running hears them
+    (`apply_cfg_rtl_hot_restart()`). It also logs the AM notice each time a NOISE setting starts running as
+    AUTO on a standalone AM monitor of a radio input (`squelch_am_auto_noted`), whatever started it, never as a toast;
+    `dsd_engine_setup_note_noise_squelch()` no longer says it. `dsd_app_squelch_view` sets `analog_default` while it is
+    APPLIED and no row overrides, filling the configured fields from it, and `dsd_app_squelch_view_format()` reads
+    `noise +10 dB (default; ...)`; the Qt Radio sheet's status line under the reading shows the same `default; ...`
+    (`MetricsModel::squelchAnalogDefault`, hidden while an edit is outstanding), and its spoken reading says it as the
+    terminal does. `channel_scan_analog_squelch()` counts it for an analog row's open-squelch warning.
+    Tests: `RUNTIME_SQUELCH_ANALOG_DEFAULT` (channel kinds, explicit sources, scan rows, suspend/resume, saves, the AM
+    notice), `RUNTIME_CLI_PARSE`, `APP_COMMAND_QUEUE` (a live decode switch's order, refusals, explicit edits, an input
+    change, a stream reopened by the RTL-SDR row, a config's [mode] alone, a config under an inheriting -Y row in
+    place, with keys and reopened, a reopen onto an inherited analog row, a reopen that stops the scanner, an FM-to-AM
+    refusal's publication, a family switch closed until the decoder writes it, an idle digital drain reading and
+    resolving nothing and running no default policy, a same-input config from NFM to DMR, a family switch refused where
+    it lands, overlapping tune and family requests in every round-7 order), `ENGINE_CHANNEL_SCAN` (each -Y row closed
+    from its landing until its commit, pending and failed tunes, late failures, a refused go-to over a pending one, a
+    dropped retry, a restarted stream over a pending go-to to a digital or an analog row, an unrelated command's resume,
+    a live Off edit over a pending go-to then reinstated, edits while a tune is outstanding and between a landing and its
+    commit, a leave to a digital session, nine stalled family switches, an idle settle, a late landing's closed start,
+    a commit still owed after a stale landing's restaged row is removed, a digital row's own level kept off the next
+    digital row's landing, the same across a restart while the next row's tune is pending, a reopen's restaged tune
+    failing, a held scan's restaged tune failing),
+    `ENGINE_TRUNK_SCAN` (an NFM-to-DMR rotation writing nothing on the NFM channel), `ENGINE_TRUNK_SCAN_RUNNING_RECEIVER`
+    (no FM monitor sample produced open without the noise squelch on a running receiver, and each landing's mute in
+    produced samples), `IO_RTL_RETUNE_PREPARE` (the receiver's closed starts: controller and external landings closed
+    whatever the profile's family did, the mark alone, an unmarked retune, a write opening it, family switches into the
+    analog family and onto another kind, a width change, the digital gate at a digital switch, write and hunt landing, a
+    refusal, a retired request, an analog open and its counts, a typed digital row's landing on `-fA` running the
+    digital gate and its pause in place closed, the same for every typed row profile x rf_mod x channel profile by
+    retune and by request (`test_typed_digital_rows_are_digital()`, TETRA 18000/4 on rf_mod 0 included), an in-place
+    pause's FM request against a frame-sync hunt request in all four orders (`test_pause_against_hunt()`), the closed-start count of a block finished after the write, no
+    telemetry on the M17 encoder, an AM channel's closed and unjudged counts, a closed start's produced block publishing
+    no dynamic status, the public setters through the gate, a digital row's landing on the session gate and no gate work
+    on a repeated digital symbol request, a start with a resolved gate and one without, a resampled AM channel's counts in
+    produced samples, a direct CQPSK toggle off the monitor; and, under TSan, gate writes against landings on another
+    thread, the two meeting at every round so one core runs it too), `IO_RTL_STREAM_ORCHESTRATOR` (the start gate an
+    argument of that start alone), `UI_QT_LISTENER_SQUELCH_*` (no closed start at the lifecycle's start and the setting
+    the receiver's first blocks take then, the first read's samples produced under the gate, an opening transmission at
+    the stream's first sample heard from its talker's start inside its carrier, a second session after one stopped with
+    a request its stream never took), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
+    edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile, as a control-channel tune
+    marked one does), `ENGINE_TRUNK_SCAN` (a DMR target's own squelch not run on the P25 control channel the next park
+    lands on), `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands), `IO_RTL_ANALOG_OPEN` (a
+    standalone start never closed),
+    `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
+    `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed
+    edit settling the receiver), `UI_MENU_AIRSPY_CONFIG_SQUELCH_DEFAULT` (failed Airspy applies, the running receiver
+    told, a live retune closed then written, source-less squelch keys, the config's squelch reaching the receiver under
+    rigctl and over a native retune that lands or fails late, or lands late after a refused tune),
+    `UI_MENU_AIRSPY_CONFIG_TUNING`, `DECODE_IQ_ANALOG_SQL_DEFAULT_*` and `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` (what the
+    monitor plays).
   - Sub-audible signalling tables and text (`include/dsd-neo/runtime/analog_tones.h`, `src/runtime/analog_tones.c`):
     the 50 CTCSS tones radios commonly offer (TIA-603-E's 39 and 11 more) and 150.0 Hz in tenths of a hertz, index
     lookup and the
@@ -8104,26 +8299,33 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   state or reading changes (Qt keeps the plain text);
   Qt's `configuredSquelchAuto`/`effectiveSquelchAuto` and their margins (kept under a level setting) drive the radio
   panel's `dB | Auto` choice, whose buttons step the margin in Auto; dB puts the default back on the level it kept
-  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included;
+  (`CommandBridge::restoreSquelchLevel()`, the stored level whole, a legacy linear one included; it returns what it
+  submitted, `{request, off, whole, db}`, or null;
   `configuredSquelchLevelOff` says whether it is off). The channel-map review and target
   preview carry a row's own auto squelch as `squelch_margin_db` (`dsd_csv_channel_profile`, `dsd_app_scan_csv_target`;
   Qt `squelchMarginDb`). `DSD_APP_CMD_RTL_SET_SQL_SETTING` (`dsd_app_squelch_setting_payload`,
   `svc_rtl_set_sql_setting()`) sets a whole setting on the configured default as `RTL_SET_SQL_DB` sets a level (it
-  coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land),
+  coalesces only with a queued request of the same mode, so an AUTO request's margin and a LEVEL one's level both land;
+  a nonzero `request_id` is written to `dsd_state::squelch_request_answered`, and whether the handler applied or refused
+  it to `dsd_state::squelch_request_applied`, once the handler has run, or as refused when Signal search refuses the
+  request before its handler (`ui_cmd_answer_refused_squelch_request()`): the state snapshot carries both with the scan
+  scope's configured squelch, so a frontend confirms an edit of any scope from one publication -- Qt
+  `configuredSquelchRequestAnswered`/`configuredSquelchRequestApplied`, issue #899),
   and a scan row edit carries `squelch_mode`/`squelch_margin_db` (AUTO on an nfm or am row only; a level edit without a
   margin keeps the one the row had, its list's or the last edited, for a switch back to Auto). The noise squelch adds
   `effective_noise`/`configured_noise` beside the AUTO flags and what it shows (`dsd_state::squelch_noise_*`):
   `noise +10 dB (quieting 23 dB)`, `(starting)`, and `(as auto: floor -78.3 dB)` where the floor tracker runs a NOISE
   setting (an AM channel, a channel with no band above voice), which `dsd_app_squelch_view_dynamic_status()` gives
   alone as it does AUTO's. Qt adds `configuredSquelchNoise`/`effectiveSquelchNoise` and `squelchNoiseOffered` (false on
-  the AM monitor on its own), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
+  an audio input's AM monitor on its own; a radio's AM monitor offers it and runs it as auto, issue #899 D4, so the
+  sheet keeps showing and stepping Noise while its status line reads `as auto: ...`), and the radio panel's choice becomes `dB | Auto | Noise` (Noise on an nfm row only,
   `CommandBridge::setSquelchNoise()`); the previews carry `squelch_mode` (Qt `squelchNoise`) beside the margin. On
   audio input the metrics model publishes the same squelch values, flagged `squelchAudioInput`: the monitor's
   `SQUELCH` row reads `squelchReadout` and opens `SquelchSheet.qml` (`dB | Noise`, no Auto; "This channel" under a
   row that takes the edit), and the terminal's Input > `Squelch...` row (offered on radio and audio input,
   `io_squelch_offered()`) and the SQL field on every PCM input line read it too. The squelch commands and
-  `svc_rtl_set_sql_db()`/`svc_rtl_set_sql_setting()` run in every build and on every input; only
-  `svc_rtl_push_squelch()`'s body is radio-only. Tests: `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE` (the PCM
+  `svc_rtl_set_sql_db()`/`svc_rtl_set_sql_setting()` run in every build and on every input; only a radio input's
+  receiver is handed the gates (`svc_rtl_push_channel_squelch()`). Tests: `APP_CONTROL_SQUELCH_VIEW`, `APP_COMMAND_QUEUE` (the PCM
   case runs in radio-off builds), `UI_MENU_CALLBACKS`, `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_NCURSES_PRINTER_HELPERS`,
   `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_radio_squelch_auto.qml`, `tst_monitor_squelch.qml`).
   `include/dsd-neo/app_control/rtl_gain_view.h` and `src/app_control/rtl_gain_view.c` do the same for the tuner gain
@@ -9846,7 +10048,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   block counts in every mode (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds
   a floor provisionally.
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
-  its context afresh: at the same context it keeps the floor and starts the windows and coherence history over. A
+  its context afresh, as does a block after a spell under another squelch: at the same context that is a stream
+  boundary (`dsd_squelch_floor_stream_restart()`, issue #899), which keeps the floor (SEEDED, PROVISIONAL or KNOWN),
+  starts the windows and coherence history over, closes the gate, drops the learning windows and a seed's confirmation
+  and a shift's run so far, and holds the power gate (`dsd_squelch_floor::restart_hold`) until a window classes NOISE
+  or CARRIER (an UNDECIDED one, zeros or a power step inside it, keeps the hold); a live plan change (`dsd_squelch_floor_set_plan()`) restarts only the windows, as before.
+  A new context drops the hold with the context it was for (`dsd_squelch_floor_change_context()`), so a retune after a
+  restart gates on the new channel's cached floor at once. A stream open marks `demod_state::squelch_new_stream`
+  (`rtl_demod_init_for_mode()`), which only the tracker's first context after the open consumes
+  (`squelch_auto_take_context()`; level, off and digital blocks before it leave it set): when that context is new and
+  the cache seeds its floor, the tracker holds it as a kept one (`dsd_squelch_floor_stream_restart()`), since the sample
+  time its age counts stopped while no stream ran. A retune to another centre before that drops the mark
+  (`dsd_demod_squelch_note_retune()`, from `demod_reset_on_retune()` for any reset but the open's own that moves the
+  centre, a hop that also lands a pending PPM correction and a replayed gap after a retune included, and from an
+  external backend's landing on another frequency), so the new channel's cached floor gates at once. A
   floor the tracker kept through a spell without running ages the same way (`demod_state::squelch_floor_active_s`):
   past `DSD_SQUELCH_FLOOR_STALE_S` it is learned again, neither kept nor stored for its channel with a fresh stamp. Inside `full_demod()` (`squelch_auto_run()`) the tracker runs on an AUTO setting on a path
   `dsd_demod_dynamic_squelch_path()` names:
@@ -9947,7 +10162,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
   low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
   output is slowly centred on the carrier and scaled to counts, not the radians the plan is calibrated on), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
-  count (designed only when NOISE needs it), and it keeps its own context record (`demod_state::noise_context`), so a
+  count (designed only when NOISE needs it; the last four valid plans stay kept in `demod_state::noise_plan_cache`,
+  the one taken longest ago giving way, since a design calibrates on 2 s of noise, 30-45 ms on the desktop, and a scan
+  alternating NFM widths would otherwise design one at every visit, issue #899), and it keeps its own context record
+  (`demod_state::noise_context`), so a
   spell under NOISE never stores the tracker's floor under another channel; a new context or
   `dsd_demod_reset_filter_state()` starts it over, closed. The IO layer's status adds which squelch ran and its quieting
   (`rtl_stream_squelch_status::noise`, `quieting_db`). Tests: `DSP_NFM_NOISE_SQUELCH`, `DSP_NOISE_SQUELCH_DEMOD`,
@@ -10743,7 +10961,13 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
   published `complex_rate`, the monitor over `post_downsample`, then the output resampler or digital_resample),
   `rtl_stream_set_digital_decode_modes()` (the decoder's configured digital modes, which pick the FSK channel profile
   a CQPSK toggle returns to once a live switch has moved the stream onto the digital family),
-  `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target), and
+  `rtl_stream_prepare_retune_analog_profile_for_target()` (the same fields bound to a retune target),
+  `rtl_stream_prepare_retune_new_channel_for_target()` (issue #899: a retune the decoder marks as a new channel, whose
+  landing on the analog monitor starts closed), `rtl_stream_write_squelch_gate()` (the gate of the channel the
+  receiver is on, its digital gate, and the session's a new channel off the monitor runs), `rtl_stream_gate_closed_start()` (a closed start waits for
+  that write) and `rtl_stream_start_gated()` (a start on the `rtl_stream_start_gate` the decoder resolved for it: run
+  from the first block when resolved, the session's squelch always; `rtl_stream_get_squelch_running()` says what the
+  next block takes, and `rtl_stream_get_squelch_status()`, which the telemetry polls, loads none of its gate word), and
   `rtl_stream_live_family_request_count()` (the live family requests accepted so far; one accepted after a retune
   profile's family was attached supersedes that family), `rtl_stream_familyless_retune_supersedes()` (the live analog
   requests among them, and the scan leaves; one counted after a retune profile with no family was queued supersedes
@@ -12106,9 +12330,22 @@ Notes:
     output runs on the analog channel: CQPSK toggled on under `-fA`, or a typed digital scan row's profile, keeps its
     own profile filter across the rate change.
   - The width-driven filter and the published analog profile follow `dsd_demod_analog_monitor_active()` (analog
-    family, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel profile), so CQPSK toggled on under `-fA` keeps
-    its P25 CQPSK profile filter, and a typed digital scan row's symbol profile on an analog session keeps the monitor
-    output but filters with the row's channel profile and publishes no analog profile. An IQ replay that decimates
+    family, no digital decode's symbol profile in place, `AUDIO_MONITOR` output, CQPSK off, the analog WIDE channel
+    profile), so CQPSK toggled on under `-fA` keeps its P25 CQPSK profile filter, and a typed digital scan row's symbol
+    profile on an analog session keeps the monitor output but filters with the row's channel profile and publishes no
+    analog profile. Whether a digital decode's profile is in place is what was asked for, not which filter it names
+    (`demod_state::symbol_profile_on_analog`, issue #899 round 8): only a profile its requester marks a digital decode's
+    sets it (`rtl_stream_request_decode_demod_profile()`: the decoder's digital mode and a republished typed row,
+    `app_control/symbol_profile.c`, and the CQPSK toggle; a retune profile the engine marks with
+    `rtl_stream_prepare_retune_digital_decode_for_target()` in `dsd_engine_prepare_retune_profile_for_target()`: typed
+    digital rows and targets, trunked channels), and applying the analog channel again (`rtl_demod_apply_analog_channel()`,
+    a family switch, an open) clears it. An unmarked profile (the frame sync's hunt, the restore after a failed tune,
+    through `rtl_stream_request_demod_profile()`) applies only off the monitor: on it the demod thread lands none of it
+    (`rtl_stream_apply_demod_profile_params()`, `rtl_stream_apply_retune_symbols()`), so a stale hunt request taken
+    after an in-place pause's FM request, at the same block boundary or a later one, never takes the restored monitor
+    away (the FM request still drops one queued before it), and that monitor starts closed and runs the analog gate. So TETRA's 18000/4 on the FSK discriminator, whose channel profile is WIDE like the monitor's, is a
+    digital row too: no width refresh, no analog profile published, no dynamic squelch, and the receiver's gate runs
+    the digital one (on main the same predicate took it for the monitor). An IQ replay that decimates
     after the demodulator (`post_downsample` above 1) designs and runs the channel filter at `complex_rate`, ahead of
     that decimator, and publishes the width it filters.
   - While the pipeline runs, `demod_state` is written by the demod thread, or by a thread holding the reconfigure or
@@ -12405,8 +12642,17 @@ Notes:
     demod thread copies the word into `demod_state` before each block (`demod_take_squelch_setting()`), with the
     floor's context (applied frequency, tuner gain as applied, tuner autogain, bias tee, device hash, channel rate,
     capture chain; on an Airspy a hash of its own gain controls as applied, at open and by
-    `rtl_stream_airspy_controls()`, stands for the tuner gain). After the block it publishes the tracker's status
-    (`rtl_stream_get_squelch_status()`).
+    `rtl_stream_airspy_controls()`, stands for the tuner gain). The device hash (`squelch_device_hash()`, stored at
+    stream open) is FNV-1a of the input spec, leaving out an `rtl:`, `rtltcp:` or `airspy:` spec's start frequency,
+    squelch field and volume and the empty fields at its end (issue #899 B12: none sets the noise, and the key has the
+    applied frequency; a parsed Airspy spec is already its device alone, `airspy[:serial=...]`, when a stream opens),
+    so Explore starting on the last channel it tuned finds the floors already learned; every other field,
+    and every other spec, counts as before, so a floor is never shared more widely than the spec text allows (a
+    different dongle at the same index still shares it). After the block it publishes the tracker's status
+    (`rtl_stream_get_squelch_status()`, which also counts the closed starts of new analog channels since the stream
+    opened, how long the last one lasted and the analog monitor samples the latest one muted, and the analog monitor
+    samples produced open with no dynamic squelch judging them, counted where each block is produced, issue #899). Tests: `IO_RTL_SQUELCH_PLUMBING`,
+    `IO_RTL_SQUELCH_DEVICE_KEY`.
   - I/Q replay framing (issue #572; `replay_thread_process_block()` in `rtl_device.cpp`, `demod_read_input_block()`
     in `rtl_sdr_fm.cpp`). Each demod block is exactly one capture chunk:
     - A chunk is at most one live transfer (`dsd_iq_replay_chunk_bytes()`, `<dsd-neo/io/iq_replay.h>`, issue #626):
@@ -18055,8 +18301,83 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     and appended after advanced arguments in `session_args.cpp`, so a confirmed choice wins on restart.
     The saved decoder flag also updates wizard/list metadata; a later wizard preset replaces its saved live
     decoder/modulation override. Manual scan lists inherit saved squelch and modulation (an entry's explicit
-    modulation wins). `UI_QT_PERSISTENCE`, `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence
-    QML test cover disk reload, restart, validation and temporary scopes.
+    modulation wins; the squelch as each row runs it, below). `SavedSystemsModel::clearRadioSetting(uid, key)` takes one
+    saved control out ("Clear saved squelch", issue #899 B11), keeping the others. Issue #899: the audio-input
+    `SquelchSheet` saves through the same object as the Radio sheet (B7: `settingRequested`, `savesToSystem`,
+    `saveError` through `MonitorScreen` to `radioPersistence.request()`; "This channel" edits are the session's), and
+    both sheets offer a content-width clear button while the saved system has one (`Main.sessionSavedSquelch`):
+    "Remove saved squelch", accessible name "Remove Saved Squelch From This System" (it promises nothing about the app
+    default: Advanced arguments or the input can decide the next start), with "Applies from the next start." under it.
+    `clearSquelch()` drops a squelch request still waiting before `clearRadioSetting()`, so an older one cannot put the
+    key back, and `squelchCleared` shows the note until the next squelch request: "Saved squelch cleared for the next
+    start." (it promises nothing about what that start runs: Advanced arguments or the input decide). A clear or
+    squelch save that fails sets `squelchStoreError`, shown by both sheets whatever the setting (Auto and Noise too),
+    apart from the level-only warning, until a clear or squelch save succeeds; the audio sheet's save note shows it in
+    place of "Squelch changes here are saved to this system.". The squelch's failures are its own: `error` ("Could not
+    save Radio settings.") is set and cleared only by saves that carry another setting, and a squelch request does not
+    clear it, so a successful removal clears the squelch failure it answers without hiding another setting's. The
+    note or the failure is read out (`Navigation.announce()`), and a keyboard focus the hidden button held goes to the
+    chosen squelch segment, or with none chosen (a held setting) the first enabled one
+    (`SegmentedControl.focusSegment()`). A squelch level is saved only in a form the app's controls make (B15, fail-closed): Off or a whole dB from -120 to -1: a step asks for one, and a restore reads it
+    from the configured power (`MetricsModel::configuredSquelchLevelWhole`/`configuredSquelchLevelWholeDb`,
+    `dsd_squelch_level_is_whole_db()`). Every persisted squelch edit carries its request's tag:
+    `CommandBridge::setSquelchDb()`/`setSquelchAuto()`/`setSquelchNoise()` return it (a positive int, 0 when not
+    queued; a level goes as a tagged `RTL_SET_SQL_SETTING`, stored as `RTL_SET_SQL_DB` stores it), as
+    `restoreSquelchLevel()` returns `{request, off, whole, db}` for the level the dB choice brings back from
+    Auto/Noise. A request is settled only on the decoder's answer to it, which the state snapshot carries
+    (`configuredSquelchRequestAnswered` is its `request`, `configuredSquelchRequestApplied` the outcome) in the same
+    publication as a scan scope's configured squelch (issue #899 r2): applied, the setting the request asked for is
+    saved, whichever scope it edited (beneath a -Y row's or trunk-scan target's own squelch too, with no wait for the
+    row to end); refused, nothing is, even a request for the setting already in force; a request superseded before the
+    decoder reached it (the queue coalesces setters) is never answered, so nothing of it is saved (`UI_QT_METRICS_MODEL`
+    covers a deferred state publication and the row case). A restore saves the level it asked for (`{off, whole, db}`).
+    It is saved when it has the app's form; otherwise nothing is saved and `squelchLevelError`
+    ("This level was set outside the app, so it is not saved.") shows under the squelch controls, only while a fixed
+    level is the setting; the next squelch request (a step or a mode change) clears it. A dynamic save
+    stores only the dynamic choice. The steppers of both sheets (`Util.squelchStep()`) always ask for a whole dB,
+    never step against their direction (-5 dB is the top a step makes; a level above it set elsewhere stays), stop on
+    the -120 dB floor before Off, and take a row's own level down to -120 dB too. A user squelch edit on either sheet is
+    an explicit squelch in the decoder, which ends the analog default there. The Radio sheet's `default` marker
+    (`squelchDefaultInForce`) is `metrics.squelchAnalogDefault`, the shared decision, under "This channel" too on an
+    analog row that inherits the default, hidden only while an edit is outstanding. `UI_QT_PERSISTENCE`,
+    `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS` and the Radio persistence QML test cover disk reload, restart,
+    validation and temporary scopes.
+  - Qt/Android default squelch (issue #899): `AppPrefs::squelch` (`radio/squelch`, portable; exactly `off`, `auto+N` or
+    `noise+N`, N 3..30, `app_squelch_default_valid()` in `app_squelch_default.h`; `noise+10` when absent or damaged, a
+    refused write writes nothing, a valid one repairs damage; a backup without it restores the default) maps to
+    `SessionArgPrefs::squelchDefault`, which `session_args_build()` passes as `--squelch-analog-default <pref>` with
+    every session it builds, whatever its saved source (`append_squelch_default_args()`; saved systems, Explore, pins,
+    scan lists through `session_args_scan_build_lists()`, Explore here): the decoder applies it only on a radio
+    input, and an Advanced `-i` or `--iq-replay` can make an audio system's input one. A default of `off` passes no
+    option (the decoder takes only `auto[+N]` or `noise[+N]`). It goes right after the input and before the extra
+    options, so an Advanced `--squelch` or default wins. The decoder owns the rest (Runtime, "Analog
+    default squelch"): the spec's squelch field is always `0`, a saved Radio-sheet `squelch` stays the last `--squelch`
+    (explicit), and generated scan rows (`scan_list_targets(list, systems)`) carry no default of their own: a row with
+    no saved squelch inherits, and the decoder runs the default on it when it is analog, as on an imported list's rows.
+    B13 still resolves each saved squelch to one its row takes (noise on an AM row as `auto+N`, a dynamic one on a
+    digital row as `off`, a level as whole dB -120..-1 through `dsd_squelch_level_whole_db()`, with a warning when
+    `dsd_squelch_level_is_whole_db()` says it rounded). Advanced fields that would hide what the app appends are
+    refused (B17, `session_args_extra_incomplete()`, `SessionArgsError::ExtraIncomplete`, category "extra-incomplete"),
+    each field on its own, by the CLI's own tables: a `--` the long-option pass reaches, a field ending with an option
+    that takes the next argument whatever it is, or one that takes it unless an option follows
+    (`DSD_CLI_LONG_NEXT_NON_OPTION`) with no value there, unless the CLI does without one
+    (`dsd_cli_long_option_value_optional()`: `--config`, `--validate-config`; `--api`, `--api-bind`, `--tetra-key` and
+    the rest need theirs). Tests: `UI_QT_SESSION_ARGS`, `UI_QT_SCAN_LIST_TARGETS`, `UI_QT_SESSION_ARGS_PARSE` (live
+    switches, outside and user edits, a refused switch, a recreated bridge, scan rows that inherit, through the real
+    bridge, queue and engine options), `ENGINE_TRUNK_SCAN_SCAN_LIST` (generated rows through the real parser and
+    coordinator, on audio input and on a radio input with the receiver's squelch and the readout's badge checked each
+    visit), `UI_QT_PERSISTENCE`, `UI_QT_BACKUP_MODEL`, and `UI_QT_LISTENER_SQUELCH_*` (what a listener hears: builder
+    argv through `dsd_runtime_bootstrap()` and the real engine over a fixture replay that keeps the app's radio spec,
+    read with `dsd_rtl_input_spec_apply()`, for an NFM saved system with per-call recording and the speech level at
+    the opening, Explore switched live to NFM through the bridge with another UI command 200 ms of stream time later,
+    and a generated scan row; `docs/testing.md`).
+  - Qt/Android default squelch editor (issue #899 D5): `qml/SquelchEditor.qml` in Settings' Radio defaults, beside the
+    tuner gain, edits `prefs.squelch` only in the forms the pref holds: `[Off | Auto | Noise]` and, for Auto and Noise,
+    a `−`/`+` margin stepper (3..30 dB, `commands.squelchMarginMinDb/MaxDb`) with a help line per mode; Off keeps the
+    margin it left while the editor lives. `Util.parseSquelchSetting()`/`squelchSettingText()` read and write the text.
+    The Radio sheet tells a session that saves nothing (Explore, a scan list) that its squelch edits last until Stop
+    and that Settings sets the default, and a running signal search (`signalSearch.status`, owned, phases 1..6) that
+    the range sets the squelch. Tests: `tst_settings_squelch.qml`, `tst_radio_squelch_auto.qml`.
   - Qt/Android tuner gain: `qml/GainEditor.qml` is the one gain editor (Settings' Radio defaults, the system editor, the
     scan list editor). It shows `[Automatic | Set]`, or `[App default | Automatic | Set]` when `inheritable`, with one
     canonical `mode` in both layouts (0 App default, 1 Automatic, 2 Set). An optional `hint` sits right under the strip
@@ -20246,11 +20567,14 @@ Qt Quick frontend (`src/ui/qt`):
   options, the live radio settings), last of the options the decoder reads (before a `--` among
   them that is no long option's value, `long_options_end()`): the CLI keeps the last occurrence, so the saved channels
   win over one the user named, and the engine applies the file only to a session that decodes DMR frames and runs no
-  trunk scan (any other starts without it, with a notice). Known limit: extra decoder arguments (or decode flag
-  tokens) that end on an option missing its value take the next argument as that value, as they would on the command
-  line, so a `--profile` last takes `--dmr-chan-overrides` as the profile name and the saved channels are lost (a
-  short option such as `-C` last instead fails the start: compaction takes the long option and its path out first, so
-  getopt finds `-C` with no value); the builder does not mirror the parser to catch it. A file that cannot be written, or whose path does not fit
+  trunk scan (any other starts without it, with a notice). The two Extra arguments fields (the system's and the app's)
+  are checked each on its own before anything is appended (`session_args_extra_error()`,
+  `session_args_extra_incomplete()`, walked as the decoder walks its argv): one that ends on an option still waiting
+  for its value (`--profile`, `-C`) or holds a bare `--` that is no long option's value refuses the start with
+  `SessionArgsError::ExtraIncomplete`, so no such field takes `--dmr-chan-overrides` as a value or ends the options
+  before it. The decode flag's tokens are not checked that way; they come first, and the options the app always
+  appends after them (`-T` or `--tg-lockout-*`) stand between them and `--dmr-chan-overrides`. A file that cannot be
+  written, or whose path does not fit
   the CLI's 1023 bytes, never stops the start: it starts without the option, logs a warning and posts a
   `json_store_post_notice()` for `dmr_channels/<uid>.csv`, which `StoreNotices` lists as `unwritten` (store
   `dmr-channels`) on Home's notice card ("Starts run without this system's saved channels until they can be written.",
@@ -23343,9 +23667,14 @@ External dependencies (resolved via CMake):
 - App-control scopes force/CRC/voice configuration commands and group imports, while live row policy mutations stay
   with the active context. Configuration export reads saved group paths and voice settings from the configured scope.
 - `DSD_SCAN_OPT_SQUELCH` (`--squelch-db`, issue #521) is the one row option with hardware behind it. The parser
-  accepts whole dB `-100..0` (0 = off) on every class and target type (`ANY_MODES`, not the `DIGITAL_MODES` of the
-  protocol switches); its spec sets `signed_numeric`, the single exception to "a following `-` token is a missing
-  value", applied in `option_argument()` so the parser and `dsd_scan_options_visit_files()` agree. The level lives in
+  accepts whole dB `DSD_SCAN_ROW_SQUELCH_DB_MIN..0` (`-120..0`, 0 = off; issue #899 took it below `-100` so the CLI's
+  `-110` default and the frontends' `-120` floor fit) on every class and target type (`ANY_MODES`, not the
+  `DIGITAL_MODES` of the protocol switches); `dsd_scan_row_edit_value_valid()` and the terminal's "This channel"
+  prompt hold a session edit to the same range, and that prompt opens a row following a session level on
+  `dsd_squelch_level_whole_db()` (nearest whole dB, -120..-1), so it always takes its own prefill back. Its spec sets
+  `signed_numeric`, the single exception to "a following `-` token is a missing value" (a negative number, `-.25`
+  included, which the setter then refuses as fractional), applied in `option_argument()` so the parser and
+  `dsd_scan_options_visit_files()` agree. The level lives in
   `dsd_scan_settings::rtl_squelch_level` (a double, first in the struct, compared with a tolerance) beside the other
   row options, outside `dsd_scan_settings_equal()`. It reaches the demod through the runtime metrics hook
   `set_channel_squelch`, only for `AUDIO_IN_RTL`, and at most once per row change: `dsd_scan_mode_enter` pushes
@@ -23358,9 +23687,9 @@ External dependencies (resolved via CMake):
   the `options` call that completes the row pushes unconditionally for the same reason. `dsd_scan_mode_prepare` and
   `scan_scope_apply` never push.
   `RTL_SET_SQL_DB` is not a scoped command, nor is `RTL_SET_SQL_SETTING` (the auto squelch's whole setting,
-  `svc_rtl_set_sql_setting()` through `dsd_scan_mode_set_configured_squelch_setting()`; `svc_rtl_push_squelch()`
-  hands the demod a level through `rtl_stream_set_channel_squelch()` and an AUTO setting whole, and does nothing in a
-  build without radio support, where both commands still set the configured default for audio input):
+  `svc_rtl_set_sql_setting()` through `dsd_scan_mode_set_configured_squelch_setting()`; on a radio input
+  `svc_rtl_push_channel_squelch()` then has the engine write each channel's gate (issue #899), and without one, or in a
+  build without radio support, both commands still set the configured default for audio input):
   `svc_rtl_set_sql_db()` edits the configured default through
   `dsd_scan_mode_set_configured_squelch()`, which touches no acquisition setting (so a squelch nudge can never read
   as a decoder change that ends the call) and leaves `dsd_opts` and the demod on the row's value while a row

@@ -521,9 +521,18 @@ def receiver_option_tables_match():
             missing = sorted(set(native_items) - set(jvm_items))
             extra = sorted(set(jvm_items) - set(native_items))
             return f"{kotlin_name} in UsbReceiverKind.kt must equal {native_name} in compact.c: missing {missing}, extra {extra}"
+    # k_skip_exact_next_nonopt_optional only marks which k_skip_exact_next_nonopt options may go without a value
+    # (the Qt start check reads it); compaction treats them alike, so the Kotlin copy has nothing to mirror. It must
+    # stay a subset of the table it qualifies.
+    optional = re.search(r"\bk_skip_exact_next_nonopt_optional\[\] = \{(.*?)\};", compact, re.S)
+    nonopt = re.search(r"\bk_skip_exact_next_nonopt\[\] = \{(.*?)\};", compact, re.S)
+    if optional and nonopt:
+        outside = sorted(set(re.findall(r'"([^"]+)"', optional.group(1))) - set(re.findall(r'"([^"]+)"', nonopt.group(1))))
+        if outside:
+            return f"k_skip_exact_next_nonopt_optional in compact.c names options k_skip_exact_next_nonopt lacks: {outside}"
     # Any other long-option table in compact.c would be one this copy does not know.
     tables = set(re.findall(r"static const char\* const (k_\w+)\[\]", compact)) | {"k_free_value_options"}
-    unknown = sorted(tables - {native for native, _ in pairs})
+    unknown = sorted(tables - {native for native, _ in pairs} - {"k_skip_exact_next_nonopt_optional"})
     if unknown:
         return f"compact.c has long-option tables UsbReceiverKind.kt does not mirror: {unknown}"
     return replay_prescan_matches(kotlin, args, compact)

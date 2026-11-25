@@ -11,6 +11,7 @@
 #include <cstring>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
@@ -19,11 +20,14 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/rtl_stream_io_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <memory>
+#include <vector>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 #include "rtl_stream_test_support.h"
@@ -1284,6 +1288,198 @@ test_external_backend_landing_waits_for_reconfiguration(void) {
                             DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR);
     failed |= expect_int_eq("reconfiguration during an external landing: output rate", r.arriving_output_rate, 48000);
     failed |= expect_int_eq("external landing race: the gate is open again", r.gate_open_after, 1);
+    return failed;
+}
+
+/* Issue #899, "closed start, no IDs": every new channel on the analog family (a retune landing the decoder marked,
+ * through the controller or an external backend, whatever its family did there; a live family request into the analog
+ * family or onto another analog kind; a stream open) starts closed, every block muted, until the decoder writes the
+ * gate, which applies to the channel the receiver is on. A width change, or a retune nobody marked, keeps the gate. The
+ * digital family never starts closed: a landing or switch there, or a write that finds the receiver there, runs the
+ * digital gate the decoder gave (round 7: no analog-only default outlives its analog channel). An open starts the
+ * closed-start count and duration over. */
+static int
+test_analog_channel_starts_closed(void) {
+    rtl_stream_test_channel_gate_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("channel gate hook", rtl_stream_test_channel_gate(&r), 0);
+    failed |= expect_int_eq("analog landing: the channel left keeps its gate meanwhile", r.outstanding_open, 1);
+    failed |= expect_int_eq("analog landing: starts closed", r.landing_closed, 1);
+    failed |= expect_int_eq("analog landing: reports the closed start", r.landing_reported, 1);
+    failed |= expect_int_eq("analog landing: the decoder's write opens it", r.write_opened, 1);
+    failed |= expect_int_eq("analog landing: runs the write", r.write_mode, DSD_SQUELCH_MODE_NOISE);
+    failed |= expect_int_eq("analog landing: the write's margin", r.write_margin, 10);
+    failed |= expect_int_eq("analog landing superseded: closed", r.superseded_closed, 1);
+    failed |= expect_int_eq("profile cleared: nothing changes", r.cleared_kept, 1);
+    failed |= expect_int_eq("analog landing refused: refused", r.refused, 1);
+    failed |= expect_int_eq("analog landing refused: closed, the tuner moved", r.refused_closed, 1);
+    failed |= expect_int_eq("new channel alone: closed", r.mark_only_closed, 1);
+    failed |= expect_int_eq("new channel alone: symbols and timing stay", r.mark_only_symbols_kept, 1);
+    failed |= expect_int_eq("retune nobody marked: the gate stays", r.unmarked_kept, 1);
+    failed |= expect_int_eq("external landing: closed", r.external_closed, 1);
+    failed |= expect_int_eq("external new channel alone: closed", r.mark_only_external_closed, 1);
+    failed |= expect_int_eq("external new channel alone: the family stays", r.mark_only_family_kept, 1);
+    failed |= expect_int_eq("external new channel alone: a live request stays queued", r.mark_only_request_kept, 1);
+    failed |= expect_int_eq("family into analog: switched", r.family_switched, 1);
+    failed |= expect_int_eq("family into analog: the first analog block is closed", r.family_closed, 1);
+    failed |= expect_int_eq("analog width change: the gate stays open", r.width_kept, 1);
+    failed |= expect_int_eq("analog kind change: closed", r.kind_closed, 1);
+    failed |= expect_int_eq("family into digital: switched", r.digital_switched, 1);
+    failed |= expect_int_eq("family into digital: the digital gate, not the analog one", r.digital_runs_digital, 1);
+    failed |= expect_int_eq("write on digital: the digital gate", r.digital_write_runs_digital, 1);
+    failed |= expect_int_eq("digital hunt from analog: the digital gate", r.hunt_runs_digital, 1);
+    failed |= expect_int_eq("family refused at once: nothing changes", r.refused_kept, 1);
+    failed |= expect_int_eq("family retired by a marked retune: closed", r.retired_closed, 1);
+    failed |= expect_int_eq("family retired by a retune: the next symbol request keeps the gate", r.retired_kept, 1);
+    failed |= expect_int_eq("analog open: closed-start count and duration start over", r.open_counts_reset, 1);
+    failed |= expect_int_eq("analog open: closed", r.open_closed, 1);
+    failed |= expect_int_eq("analog open: the decoder's write opens it", r.open_opened, 1);
+    failed |= expect_int_eq("analog open: one closed start counted", r.open_counted, 1);
+    failed |= expect_int_eq("analog start with a resolved gate: runs it, no closed start", r.resolved_open_runs, 1);
+    failed |= expect_int_eq("analog start with none resolved: closed", r.resolved_open_once, 1);
+    failed |=
+        expect_int_eq("typed digital row on -fA: off the monitor, family flag kept", r.typed_landing_off_monitor, 1);
+    failed |= expect_int_eq("typed digital row on -fA: its landing does not start closed", r.typed_landing_open, 1);
+    failed |= expect_int_eq("typed digital row on -fA: runs the digital gate (Off) before its commit",
+                            r.typed_landing_runs_digital, 1);
+    failed |= expect_int_eq("typed row paused in place: the monitor is back", r.typed_pause_monitor, 1);
+    failed |= expect_int_eq("typed row paused in place: a new analog channel, closed", r.typed_pause_closed, 1);
+    failed |= expect_int_eq("typed row paused in place: the closed start reported", r.typed_pause_reported, 1);
+    failed |=
+        expect_int_eq("closed start: a block finished after the opening write is counted", r.in_flight_counted, 1);
+    failed |= expect_int_eq("monitor: an open block without dynamic squelch is counted", r.monitor_unjudged_counted, 1);
+    failed |= expect_int_eq("M17 encoder monitor: no landing telemetry", r.encoder_uncounted, 1);
+    failed |= expect_int_eq("AM closed start: blocks before a delayed write are counted", r.am_closed_counted, 1);
+    failed |= expect_int_eq("AM under Off: an open block is counted unjudged", r.am_unjudged_counted, 1);
+    failed |=
+        expect_int_eq("resampled AM: two closed 48-sample blocks produce 24 each", r.am_resampled_closed_produced, 48);
+    failed |= expect_int_eq("resampled AM closed start: counted in produced samples", r.am_resampled_closed_counted, 1);
+    failed |=
+        expect_int_eq("resampled AM under Off: produced samples counted unjudged", r.am_resampled_unjudged_counted, 1);
+    failed |= expect_int_eq("direct CQPSK toggle on the monitor: off it", r.cqpsk_toggle_off_monitor, 1);
+    failed |=
+        expect_int_eq("direct CQPSK toggle: runs the session's Off, not noise +10", r.cqpsk_toggle_runs_session, 1);
+    failed |= expect_int_eq("direct CQPSK toggle, a digital request, a write: the digital -40 dB",
+                            r.cqpsk_toggle_write_runs_digital, 1);
+    failed |=
+        expect_int_eq("public level setter Off, then the decoder's noise +10 write runs", r.public_level_then_write, 1);
+    failed |= expect_int_eq("public setting setter Off, then the decoder's noise +10 write runs",
+                            r.public_setting_then_write, 1);
+    failed |= expect_int_eq("public setter on a closed start ends it, counted", r.public_ends_closed, 1);
+    failed |= expect_int_eq("digital row: the decoder's write runs its own -40 dB", r.digital_row_runs_own, 1);
+    failed |= expect_int_eq("next digital row: its landing runs the session's Off, not the last row's -40 dB",
+                            r.digital_landing_runs_session, 1);
+    failed |= expect_int_eq("digital grant retune: the running gate stays", r.digital_grant_kept, 1);
+    failed |= expect_int_eq("digital symbol re-push: no gate work", r.digital_repush_locks, 0);
+    failed |= expect_int_eq("digital symbol re-push: the running gate stays", r.digital_repush_kept, 1);
+    failed |= expect_int_eq("digital status polls: no running-setting read", r.digital_poll_running_reads, 0);
+    failed |= expect_int_eq("digital running getter: one read", r.digital_getter_running_reads, 1);
+    failed |= expect_int_eq("open channel under noise +10: a block publishes it running", r.running_status_active, 1);
+    failed |= expect_int_eq("closed start: the produced block is muted, flagged closed", r.closed_block_flagged, 1);
+    failed |=
+        expect_int_eq("closed start: the produced block publishes no dynamic squelch", r.closed_status_inactive, 1);
+    return failed;
+}
+
+/* Issue #899, round 8 follow-up: a typed digital row is digital whatever channel filter its profile names. Every typed
+ * row profile the -Y and trunk-scan grammar can put in place (the typed classes' symbol profiles, P25 Phase 2's, and
+ * TETRA's 18000/4, which on the FSK discriminator filters with WIDE like the monitor) on every modulation (rf_mod 0
+ * C4FM, 1 CQPSK, 2 GFSK) with every channel profile dsd_rtl_channel_profile_for() can give, reaching an -fA receiver
+ * by a marked retune landing or by a live symbol request: the receiver leaves the monitor and runs no dynamic squelch,
+ * the landing does not start closed and runs the digital gate (Off), not the analog default (noise +10), so the row's
+ * first samples before its commit pass; the published analog profile says no monitor, and a demod rate change's
+ * analog channel refresh leaves the row's profile (both read the same predicate, so main shared the TETRA case); a
+ * pause in place then returns to the monitor closed. */
+static int
+test_typed_digital_rows_are_digital(void) {
+    std::unique_ptr<dsd_opts, decltype(&free)> opts(static_cast<dsd_opts*>(calloc(1, sizeof(dsd_opts))), &free);
+    if (!opts) {
+        return 1;
+    }
+    std::vector<dsd_decode_mode_profile> profiles;
+    for (int mode = DSD_SCAN_MODE_P25; mode <= DSD_SCAN_MODE_LAST; mode++) {
+        if (!dsd_scan_mode_is_analog(static_cast<dsd_scan_mode>(mode))) {
+            profiles.push_back(dsd_scan_mode_profile(static_cast<dsd_scan_mode>(mode)));
+        }
+    }
+    profiles.push_back(dsd_decode_mode_profile_for(DSDCFG_MODE_P25P2));
+    profiles.push_back(dsd_decode_mode_profile_for(DSDCFG_MODE_TETRA));
+    int failed = 0;
+    int cases = 0;
+    for (const dsd_decode_mode_profile& profile : profiles) {
+        for (int rf_mod = 0; rf_mod <= 2; rf_mod++) {
+            std::vector<int> channel_profiles;
+            for (int chan = DSD_CH_LPF_PROFILE_WIDE; chan <= DSD_CH_LPF_PROFILE_TETRA; chan++) {
+                channel_profiles.push_back(chan);
+            }
+            /* The profile the grammar's own mapping gives, first, so a failure names it. */
+            channel_profiles.insert(
+                channel_profiles.begin(),
+                dsd_rtl_channel_profile_for(opts.get(), profile.symbol_rate_hz, profile.levels, rf_mod));
+            for (const int chan : channel_profiles) {
+                for (int by_request = 0; by_request <= 1; by_request++) {
+                    const rtl_stream_test_typed_row_profile p = {rf_mod == 1 ? 1 : 0, profile.symbol_rate_hz,
+                                                                 profile.levels, chan, by_request};
+                    rtl_stream_test_typed_row_gate_result r;
+                    DSD_MEMSET(&r, 0, sizeof r);
+                    const int rc = rtl_stream_test_typed_row_gate(&p, &r);
+                    cases++;
+                    if (rc != 0 || !r.family_kept || !r.off_monitor || !r.landing_open || !r.runs_digital
+                        || !r.published_off_monitor || !r.refresh_kept || !r.pause_monitor || !r.pause_closed) {
+                        DSD_FPRINTF(stderr,
+                                    "FAIL: typed row %d/%d rf_mod %d channel profile %d by %s: rc %d family kept %d "
+                                    "off monitor %d landing open %d digital gate %d published off monitor %d refresh "
+                                    "kept %d pause monitor %d pause closed %d\n",
+                                    profile.symbol_rate_hz, profile.levels, rf_mod, chan,
+                                    by_request ? "request" : "retune", rc, r.family_kept, r.off_monitor, r.landing_open,
+                                    r.runs_digital, r.published_off_monitor, r.refresh_kept, r.pause_monitor,
+                                    r.pause_closed);
+                        failed = 1;
+                    }
+                }
+            }
+        }
+    }
+    failed |= expect_int_eq("typed digital rows: cases run", cases >= 8 * 3 * 8 * 2 ? 1 : 0, 1);
+    return failed;
+}
+
+/* Issue #899, round 8 follow-up 2: a typed digital row paused in place puts the monitor back with its FM request, and a
+ * frame-sync hunt's symbol request (no digital decode's) never takes it away again, in either order and whether the
+ * demod thread takes the two at one block boundary or at two: the restored monitor starts closed, and the decoder's
+ * write then runs the analog gate (noise +10), not the digital one. */
+static int
+test_pause_against_hunt(void) {
+    static const char* const kOrders[4] = {"FM then hunt, one boundary", "FM, then hunt at the next boundary",
+                                           "hunt then FM, one boundary", "hunt, then FM at the next boundary"};
+    int failed = 0;
+    for (int order = 0; order < 4; order++) {
+        rtl_stream_test_pause_hunt_result r;
+        DSD_MEMSET(&r, 0, sizeof r);
+        const int rc = rtl_stream_test_pause_against_hunt(order, &r);
+        if (rc != 0 || !r.row_off_monitor || !r.monitor || !r.closed || !r.analog_gate) {
+            DSD_FPRINTF(stderr,
+                        "FAIL: pause against a hunt request (%s): rc %d row off monitor %d monitor %d closed %d "
+                        "analog gate %d\n",
+                        kOrders[order], rc, r.row_off_monitor, r.monitor, r.closed, r.analog_gate);
+            failed = 1;
+        }
+    }
+    return failed;
+}
+
+/* Issue #899, round 8: the decoder's gate write reads only what the gate keeps under its own lock, never the
+ * demodulator's family, which the controller changes at a landing on its thread. Run under TSan (tsan-debug), a write
+ * that read the family would be reported here. The two threads meet at every round before its write and its landing
+ * (round 10), so neither runs ahead on a single core either (taskset -c 0), and each round's write races its landing. */
+static int
+test_gate_write_during_landings(void) {
+    rtl_stream_test_gate_write_race_result r;
+    DSD_MEMSET(&r, 0, sizeof r);
+    int failed = expect_int_eq("gate write race hook", rtl_stream_test_gate_write_during_landings(40, &r), 0);
+    failed |= expect_int_eq("gate write race: every landing ran", r.landings, 40);
+    failed |= expect_int_eq("gate write race: the decoder wrote once in each landing's round", r.writes, r.landings);
+    failed |= expect_int_eq("gate write race: the last write opens the analog channel", r.final_open, 1);
     return failed;
 }
 
@@ -3064,6 +3260,8 @@ main(void) {
     failed |= expect_int_eq("near RF retune keeps normal frequency reason", fll_retune.distant_frequency_reason, 0);
     failed |= expect_double_near("near RF retune clears prior-channel FLL", fll_retune.fll_freq_after, 0.0, 1e-7);
     failed |= expect_double_near("near RF retune leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
+    failed |=
+        expect_int_eq("near RF retune drops a stream open's auto squelch mark", fll_retune.new_stream_mark_after, 0);
 
     fll_retune = {};
     rc = rtl_stream_test_fll_retune_policy(769668750U, 770418750U, 48000, 48000, &fll_retune);
@@ -3075,10 +3273,44 @@ main(void) {
     rc = rtl_stream_test_fll_retune_policy(770418750U, 770418750U, 48000, 60000, &fll_retune);
     failed |= expect_int_eq("same RF rate-change FLL policy helper rc", rc, 0);
     failed |= expect_int_eq("same RF rate change retains FLL", fll_retune.reset_retained_fll, 0);
+    failed |= expect_int_eq("same RF rate change keeps a stream open's auto squelch mark",
+                            fll_retune.new_stream_mark_after, 1);
     failed |= expect_double_near("same RF rate change scales FLL", fll_retune.fll_freq_after,
                                  fll_retune.fll_freq_before * 0.8, 1e-7);
     failed |=
         expect_double_near("same RF rate change off TETRA leaves the mixer off", fll_retune.fll_pre_after, 0.0, 0.0);
+
+    /* Issue #899: whatever names the reset, a move to another centre drops the stream open's auto squelch mark, and only
+       the open itself or a reset on the same centre keeps it (a PPM correction carried by a hop, a replayed gap after a
+       retune). */
+    struct mark_case {
+        const char* reason;
+        uint32_t previous_center;
+        uint32_t next_center;
+        int want_mark;
+    };
+
+    const mark_case marks[] = {
+        {"ppm-correction", 770418750U, 769668750U, 0},
+        {"ppm-correction", 770418750U, 770418750U, 1},
+        {RTL_STREAM_GAP_REASON_USB_RECOVERY, 770418750U, 769668750U, 0},
+        {RTL_STREAM_GAP_REASON_USB_RECOVERY, 770418750U, 770418750U, 1},
+        {"cqpsk-reacquire", 770418750U, 770418750U, 1},
+        {"distant-frequency", 770418750U, 154430000U, 0},
+        {"fresh-stream", 0U, 770418750U, 1},
+    };
+    for (const mark_case& c : marks) {
+        rtl_stream_test_fll_mixer_retune_result r = {};
+        const int mark_rc = rtl_stream_test_fll_mixer_retune(c.reason, 0, 0.0f, 0.1f, c.previous_center, c.next_center,
+                                                             48000, 48000, &r);
+        char label[160];
+        DSD_SNPRINTF(label, sizeof label, "%s reset %u -> %u Hz: helper rc", c.reason, c.previous_center,
+                     c.next_center);
+        failed |= expect_int_eq(label, mark_rc, 0);
+        DSD_SNPRINTF(label, sizeof label, "%s reset %u -> %u Hz: the stream open's auto squelch mark", c.reason,
+                     c.previous_center, c.next_center);
+        failed |= expect_int_eq(label, r.new_stream_mark_after, c.want_mark);
+    }
 
     rtl_stream_test_fll_retune_cache_result fll_cache = {};
     rc = rtl_stream_test_fll_retune_cache_round_trip(&fll_cache);
@@ -3703,6 +3935,10 @@ main(void) {
     failed |= test_external_backend_retune_lands_where_timed();
     failed |= test_external_backend_landing_waits_for_reconfiguration();
     failed |= test_external_backend_landing_filter_state();
+    failed |= test_analog_channel_starts_closed();
+    failed |= test_gate_write_during_landings();
+    failed |= test_typed_digital_rows_are_digital();
+    failed |= test_pause_against_hunt();
     failed |= test_external_profileless_landing_waits_for_block();
     failed |= test_family_landing_after_pending();
     failed |= test_live_republish_lands_where_it_was_timed();
