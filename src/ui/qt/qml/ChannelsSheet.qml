@@ -94,8 +94,15 @@ ModalSheet {
         var focused = window ? window.activeFocusItem : null;
         if (editSheet.visible || !focused)
             return;
-        if (!Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5)
+        if (sheet.focusLost(focused))
             readOnlyNote.forceActiveFocus();
+    }
+    // Whether the keyboard has no place of its own in the sheet: on a row that
+    // went (held: not drawn at once, out of the tree by the end of the turn),
+    // or (issue #902) on the sheet itself, where a row that went out of reach
+    // with the keyboard hands it (Navigation.keyOwner()).
+    function focusLost(focused) {
+        return focused === sheet || !Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5;
     }
     // What the last edit leaves to say: not kept, kept for this session only,
     // not saved, or refused after the editor closed.
@@ -466,9 +473,7 @@ ModalSheet {
         followLpcn = 0;
         var window = sheet.Window.window;
         var focused = window ? window.activeFocusItem : null;
-        // A row whose channel went is held: not drawn at once, out of the tree
-        // by the end of the turn.
-        if (focused && (!Navigation.presented(focused) || focused.live === false || focused.opacity < 0.5))
+        if (focused && sheet.focusLost(focused))
             addButton.forceActiveFocus();
     }
     Connections {
