@@ -268,6 +268,29 @@ Item {
     // freeze before resetView() runs on hide (a binding on `visible` could be
     // told after it and rebuild them while hidden).
     property bool listsLive: false
+    // Issue #902: the local day the history rows say their found times
+    // against (Util.clockText()), and the recordings revision their counts
+    // are read at. Both are frozen with the rows while the screen is hidden,
+    // as the rows' heights read them: a midnight or a recording kept or
+    // deleted meanwhile lands on show. With no saved systems there is no day,
+    // and every time carries its date.
+    property var shownDay: null
+    property var shownRecordingsRevision: 0
+    Binding {
+        target: screen
+        property: "shownDay"
+        // Evaluated while `when` is false too.
+        value: screen.systems && screen.systems.localDay ? screen.systems.localDay : null
+        when: screen.listsLive
+        restoreMode: Binding.RestoreNone
+    }
+    Binding {
+        target: screen
+        property: "shownRecordingsRevision"
+        value: recordings.revision
+        when: screen.listsLive
+        restoreMode: Binding.RestoreNone
+    }
     onVisibleChanged: {
         listsLive = visible;
         if (!visible) {
@@ -302,6 +325,8 @@ Item {
         if (!searchModel || exportPending)
             return;
         clearExportMessages();
+        // Before the model takes any rows: a failure here leaves nothing held.
+        var stamp = Qt.formatDateTime(new Date(systems.realtimeNowMs()), "yyyy-MM-dd");
         // The model takes the rows now; a list that changes later does not change the file.
         var prepared = searchModel.prepareExport(kind) || {};
         var token = Number(prepared.token) || 0;
@@ -312,8 +337,6 @@ Item {
                 setExportMessage(kind, qsTr("The avoid lists were changing. Try again."), true);
             return;
         }
-        // Before the export is held: a failure here leaves nothing pending.
-        var stamp = Qt.formatDate(new Date(systems.realtimeNowMs()), "yyyy-MM-dd");
         exportKind = kind;
         exportToken = token;
         exportCount = Number(prepared.count) || 0;
@@ -543,9 +566,10 @@ Item {
         return found;
     }
     /** How many recordings detection @p h kept (issue #809), read again each
-     * time the store's recordings change; 0 for no detection. */
+     * time the store's recordings change while the screen shows (issue #902:
+     * shownRecordingsRevision); 0 for no detection. */
     function recordingCount(h) {
-        var revision = recordings.revision;
+        var revision = screen.shownRecordingsRevision;
         var key = String(h.recordingKey || "");
         return key.length > 0 ? recordings.recordingCountForDetection(key) : 0;
     }
@@ -584,8 +608,13 @@ Item {
         items.push({ text: qsTr("Save as system"), key: "save", objectName: "searchActionSave" });
         // A permanent avoid is excluded already: avoiding it this session too
         // would do nothing (issue #828).
+        // Issue #902 B8: for the session running as the menu opened, which it
+        // acts on; disabled, saying so, once that session ends, fails or gives
+        // way to another while the menu is open.
         if (ownedSession && phase !== 0 && sessionAvoidsLive && !permanentlyAvoided(h))
-            items.push({ text: qsTr("Avoid this session"), key: "avoidSession", objectName: "searchActionAvoidSession" });
+            items.push({ text: qsTr("Avoid this session"), key: "avoidSession", objectName: "searchActionAvoidSession",
+                enabled: function () { return screen.menuSessionLive(); },
+                description: function () { return screen.menuSessionLive() ? "" : qsTr("That search session has ended."); } });
         if (permanentlyAvoided(h))
             items.push({ text: qsTr("Remove permanent avoid"), key: "removePermanent", objectName: "searchActionRemovePermanent" });
         else
@@ -599,9 +628,22 @@ Item {
         var hz = hitHz(h);
         return !!searchModel && (searchModel.avoids || []).some(function (f) { return Number(f) === hz; });
     }
+    // Whether the session the detection menu opened in still runs, owned,
+    // with its avoid list (issue #902 B8).
+    function menuSessionLive() {
+        return detectionMenu.session.length > 0 && String(status.session || "") === detectionMenu.session && ownedSession && phase !== 0 && sessionAvoidsLive;
+    }
+    /** "462.5625 MHz · 14:32:05": detection @p h's frequency and, when it
+     * has one, the time it was found (issue #902), as its row says it on
+     * @p day. */
+    function detectionName(h, day) {
+        var mhz = qsTr("%1 MHz").arg(Util.mhzText(hitHz(h)));
+        var at = Util.clockText(h.started, day);
+        return at.length > 0 ? mhz + " · " + at : mhz;
+    }
     function openDetectionMenu(h, all) {
         detectionMenu.target = Object.assign({}, h);
-        detectionMenu.title = qsTr("%1 MHz").arg(Util.mhzText(hitHz(h)));
+        detectionMenu.session = String(status.session || "");
         detectionMenu.actions = detectionActions(h, all);
         detectionMenu.open();
     }
@@ -1273,7 +1315,11 @@ Item {
                                 // many recordings it kept (issue #809).
                                 readonly property string details: [modelData.site || "", modelData.access || "", modelData.tone || "", modelData.crypt || ""].filter(function (s) { return s.length > 0; }).join(" · ")
                                 readonly property int recordingCount: screen.recordingCount(modelData)
-                                readonly property string fullText: (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (details ? "\n" + details : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "") + (recordingCount > 0 ? "\n" + screen.recordingCountText(recordingCount) : "")
+                                // Issue #902: when the search found it,
+                                // leading the verdict: a clock time today,
+                                // with its date on any other day.
+                                readonly property string foundText: Util.clockText(modelData.started, screen.shownDay)
+                                readonly property string fullText: (foundText ? foundText + " · " : "") + (modelData.confirmed ? modelData.protocol + qsTr(" · confirmed") : qsTr("RF only")) + (modelData.ended ? qsTr(" · ended") : "") + (details ? "\n" + details : "") + (modelData.knownLabel ? "\n" + modelData.knownLabel : "") + (recordingCount > 0 ? "\n" + screen.recordingCountText(recordingCount) : "")
                                 text: {
                                     // advanceWidth() is a call, which a binding does not
                                     // track: reading the font re-measures on a scale change.
@@ -1302,7 +1348,8 @@ Item {
                             objectName: "searchHistoryActions"
                             anchors.right: parent.right
                             icon: "more"
-                            accessibleName: qsTr("Actions for %1 MHz").arg(Util.mhzText(screen.hitHz(modelData)))
+                            readonly property string foundText: Util.clockText(modelData.started, screen.shownDay)
+                            accessibleName: foundText.length > 0 ? Util.fill(qsTr("Actions for %1 MHz, %2"), [Util.mhzText(screen.hitHz(modelData)), foundText]) : qsTr("Actions for %1 MHz").arg(Util.mhzText(screen.hitHz(modelData)))
                             onClicked: screen.openDetectionMenu(modelData, true)
                         }
                     }
@@ -1367,6 +1414,11 @@ Item {
         id: detectionMenu
         objectName: "searchDetectionMenu"
         property var target: ({})
+        // The running session as the menu opened (issue #902 B8).
+        property string session: ""
+        // Its detection's frequency and found time, on the screen's day: a
+        // midnight while it is open dates the time, as the row's.
+        title: screen.detectionName(target || {}, screen.shownDay)
         onTriggered: function (index) {
             // Qualified: the action grid's id is "actions".
             var item = detectionMenu.actions[index];
@@ -1378,7 +1430,7 @@ Item {
             else if (item.key === "save")
                 screen.saveDetection(Object.assign({}, h));
             else if (item.key === "avoidSession")
-                searchModel.avoidFrequency(String(screen.status.session || ""), screen.hitHz(h));
+                searchModel.avoidFrequency(detectionMenu.session, screen.hitHz(h));
             else if (item.key === "avoidPermanent")
                 searchModel.avoidPermanently(screen.hitHz(h));
             else if (item.key === "removePermanent")
