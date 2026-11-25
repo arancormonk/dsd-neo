@@ -1329,8 +1329,11 @@ test_device_change_over_a_staged_pcm_name_is_refused(void) {
     const int creates = g_wrap_creates;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "MISSING", 8U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the device change is refused",
-                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
+    rc |= expect_true(
+        "the device change is refused",
+        strstr(state->ui_msg,
+               "Refused: pulse is staged; use Switch source to open it, or load a config for the running radio")
+            != NULL);
     rc |= expect_true("nothing stopped or opened", g_wrap_stops == stops && g_wrap_creates == creates);
     rc |= expect_true("the TCP receiver and its capture run on",
                       state->rtl_ctx != NULL && opts->iq_capture_requested == 1 && opts->rtltcp_enabled == 1
@@ -1340,13 +1343,19 @@ test_device_change_over_a_staged_pcm_name_is_refused(void) {
        (The restart used to open the staged "pulse" as a local dongle.) */
     dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the restart is refused",
-                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
+    rc |= expect_true(
+        "the restart is refused",
+        strstr(state->ui_msg,
+               "Refused: pulse is staged; use Switch source to open it, or load a config for the running radio")
+            != NULL);
     const int32_t gain = 30;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_GAIN, &gain, sizeof gain);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the gain edit is refused",
-                      strstr(state->ui_msg, "Refused: another input (pulse) is staged") != NULL);
+    rc |= expect_true(
+        "the gain edit is refused",
+        strstr(state->ui_msg,
+               "Refused: pulse is staged; use Switch source to open it, or load a config for the running radio")
+            != NULL);
     rc |= expect_true("nothing stopped or opened by them", g_wrap_stops == stops && g_wrap_creates == creates);
 
     /* The RTL-SDR row's switch that does not open: the rollback reopens the receiver that ran (rtl_tcp), with the
@@ -1400,11 +1409,146 @@ test_device_change_over_a_staged_rtl_spec_is_refused(void) {
     const int creates = g_wrap_creates;
     dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "MISSING", 8U);
     (void)dsd_app_drain_cmds(opts, state);
-    rc |= expect_true("the device change is refused", strstr(state->ui_msg, "Refused: another input") != NULL);
+    rc |= expect_true("the device change is refused",
+                      strstr(state->ui_msg, "Refused: rtl:serial=BBBB is staged; use Switch source") != NULL);
     rc |= expect_true("A untouched", g_wrap_stops == stops && g_wrap_creates == creates && state->rtl_ctx != NULL
                                          && strcmp(g_wrap_opened_serial, "AAAA") == 0
                                          && strcmp(opts->audio_in_dev, "rtl:serial=BBBB") == 0);
     g_wrap_missing_serial[0] = '\0';
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/* Serial A runs (through the restart on its spec), as each staged-input case below starts. */
+static int
+start_rtl_serial_a(dsd_opts* opts, dsd_state* state) {
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24:0:2");
+    g_wrap_missing_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_RESTART, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    return expect_true("A runs", state->rtl_ctx != NULL && strcmp(g_wrap_opened_serial, "AAAA") == 0);
+}
+
+/* A config's file [input] naming @p file_path over the running radio, which keeps running. */
+static void
+stage_file_input(dsd_opts* opts, dsd_state* state, const char* file_path) {
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_FILE;
+    DSD_SNPRINTF(cfg.file_path, sizeof cfg.file_path, "%s", file_path);
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+}
+
+/*
+ * Serial A runs; a file [input] is staged over it; Switch source opens that file; the RTL-SDR row then comes back to A,
+ * the radio the switch left, not a bare `rtl` (index 0): the switch remembers the receiver that ran, not the staged
+ * name.
+ */
+static int
+test_switch_back_from_a_staged_file_opens_the_radio_that_ran(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = start_rtl_serial_a(opts, state);
+    dsd_test_temp_cwd cwd;
+    if (dsd_test_temp_cwd_enter(&cwd, "dsdneo_cfg_staged_file") != 0) {
+        free_test_runtime(&runtime);
+        return 1;
+    }
+    static const unsigned char k_raw[32] = {0};
+    rc |= write_test_file("input.pcm", k_raw, sizeof k_raw);
+    stage_file_input(opts, state, "input.pcm");
+    rc |= expect_true("the file is staged over A", strcmp(opts->audio_in_dev, "input.pcm") == 0);
+    dsd_app_command_submit(DSD_APP_CMD_INPUT_WAV_SET, "input.pcm", sizeof "input.pcm");
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the switch opens the file", opts->audio_in_type == AUDIO_IN_WAV);
+    rc |= expect_true("the switch remembers A", strcmp(opts->radio_in_dev, "rtl:serial=AAAA:851375000:22:0:24:0:2") == 0
+                                                    && opts->radio_running_dev[0] == '\0');
+    g_wrap_opened_serial[0] = '\0';
+    dsd_app_command_submit(DSD_APP_CMD_RTL_ENABLE_INPUT, NULL, 0U);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the RTL-SDR row opens A again",
+                      opts->audio_in_type == AUDIO_IN_RTL && strcmp(g_wrap_opened_serial, "AAAA") == 0
+                          && strcmp(opts->audio_in_dev, "rtl:serial=AAAA:851375000:22:0:24:0:2") == 0);
+    closeAudioInDevice(opts);
+    (void)remove("input.pcm");
+    rc |= dsd_test_temp_cwd_leave(&cwd);
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * Serial A runs; a file [input] stages B's whole spec over it; a real RTL-SDR config that builds that same spec (with
+ * a new gain) reopens the receiver on B: it is decided against the receiver that runs (A), not the staged name that
+ * happens to match. It used to keep A streaming while the spec said B and the options showed the new gain.
+ */
+static int
+test_config_naming_the_staged_spec_reopens_on_it(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = start_rtl_serial_a(opts, state);
+    dsdneoUserConfig cfg;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_RTL;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "851375000");
+    DSD_SNPRINTF(cfg.rtl_serial, sizeof cfg.rtl_serial, "%s", "BBBB");
+    cfg.rtl_serial_is_set = 1;
+    cfg.rtl_gain = 30;
+    cfg.rtl_gain_is_set = 1;
+    char spec[sizeof opts->audio_in_dev];
+    rc |=
+        expect_true("the config builds B's spec", dsd_user_config_radio_input_spec(&cfg, opts, spec, sizeof spec) == 0);
+    stage_file_input(opts, state, spec);
+    rc |= expect_true("B's spec is staged over A", strcmp(opts->audio_in_dev, spec) == 0 && opts->radio_running_dev[0]);
+    const int creates = g_wrap_creates;
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the config reopens on B",
+                      g_wrap_creates == creates + 1 && strcmp(g_wrap_opened_serial, "BBBB") == 0
+                          && opts->radio_running_dev[0] == '\0' && opts->rtl_gain_value == 30);
+    free_test_runtime(&runtime);
+    return rc;
+}
+
+/*
+ * RTL-SDR A runs; a file [input] names `airspy` over it. An Airspy setting edit is no input switch: it is refused
+ * before anything stops, A still running. It used to stop A and open the Airspy.
+ */
+static int
+test_airspy_setting_over_a_staged_airspy_is_refused(void) {
+    test_runtime runtime;
+    if (alloc_test_runtime(&runtime) != 0) {
+        return 1;
+    }
+    dsd_opts* opts = runtime.opts;
+    dsd_state* state = runtime.state;
+    int rc = start_rtl_serial_a(opts, state);
+    stage_file_input(opts, state, "airspy");
+    rc |=
+        expect_true("airspy is staged over A", strcmp(opts->audio_in_dev, "airspy") == 0 && opts->radio_running_dev[0]);
+    const int stops = g_wrap_stops;
+    const int creates = g_wrap_creates;
+    dsd_app_airspy_setting_payload p;
+    DSD_MEMSET(&p, 0, sizeof p);
+    DSD_SNPRINTF(p.key, sizeof p.key, "%s", "airspy_serial");
+    DSD_SNPRINTF(p.value, sizeof p.value, "%s", "0123456789abcdef");
+    dsd_app_command_submit(DSD_APP_CMD_AIRSPY_SET, &p, sizeof p);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("the Airspy edit is refused", strstr(state->ui_msg, "Refused: airspy is staged") != NULL);
+    rc |= expect_true("A runs on, nothing stopped or opened", g_wrap_stops == stops && g_wrap_creates == creates
+                                                                  && state->rtl_ctx != NULL
+                                                                  && strcmp(g_wrap_opened_serial, "AAAA") == 0);
     free_test_runtime(&runtime);
     return rc;
 }
@@ -4426,6 +4570,9 @@ main(void) {
     rc |= test_device_change_with_no_spec_remembered_creates_it();
     rc |= test_device_change_over_a_staged_pcm_name_is_refused();
     rc |= test_device_change_over_a_staged_rtl_spec_is_refused();
+    rc |= test_switch_back_from_a_staged_file_opens_the_radio_that_ran();
+    rc |= test_config_naming_the_staged_spec_reopens_on_it();
+    rc |= test_airspy_setting_over_a_staged_airspy_is_refused();
     rc |= test_config_whole_with_a_bad_serial_is_refused();
     rc |= test_config_source_change_is_a_carrier_boundary();
     rc |= test_config_stream_to_live_is_a_carrier_boundary();

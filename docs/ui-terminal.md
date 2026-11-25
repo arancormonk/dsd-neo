@@ -385,11 +385,7 @@ frame is waited for, as before.
 Input > RTL-SDR > `Device...` chooses the local RTL-SDR the input opens. Its prompt, `Device (index or serial)`, opens
 on the device the RTL-SDR spec that would open names: its index (`0`; `0` too for a bare `rtl`), or its USB serial in
 the explicit form (`serial=00000001`), never a device an earlier input opened, so Enter confirms what would open. It reads
-the answer the way `-i rtl:<dev>:...` reads its device field: A config whose
-`[input]` names another input while the radio runs stages that input for the next start; until you switch to it (or
-apply the config again), `Device...`, `Restart stream` and a gain or bandwidth edit answer
-`Refused: another input (pulse) is staged; switch to it, or apply the config again` and leave the running receiver
-alone.
+the answer the way `-i rtl:<dev>:...` reads its device field:
 
 - A plain number with no leading zero (`0`, `1`, `12`) is an index. Indexes follow USB enumeration and can change
   between boots.
@@ -408,6 +404,14 @@ spec names. A save writes the dongle chosen (`rtl_serial` or `rtl_device`). Over
 rtl_tcp the server chooses its dongle, so the row is hidden there (the API answers `Unsupported`). A serial too long
 for the toast is shown cut with `...`; the log names it whole. The I/O pane names a dongle chosen by serial on
 a row of its own (`| RTL: SN 00000001;`), and the Source row reads `Source: RTL-SDR SN 00000001`.
+
+A config whose `[input]` names another input while the radio runs (a Pulse or file input, say) stages that input for
+the next start and leaves the radio running. Until then, `Device...`, `Restart stream`, a gain or bandwidth edit, an
+Airspy setting and a scan's gain reopen would open the staged input in place of the running radio, so they are
+refused and leave the radio and any I/Q capture alone:
+`Refused: pulse is staged; use Switch source to open it, or load a config for the running radio`. Switch source opens
+the staged input, and the RTL-SDR row then comes back to the radio that ran. Loading a config for the running radio
+(or one that reopens it on another device) ends the staging.
 
 ### Frequency entry
 
