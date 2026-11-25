@@ -903,6 +903,26 @@ test_stream_selects_from_its_spec(void) {
     assert(dsd_test_rmdir(dir) == 0);
 }
 
+/* Only an rtl spec opens a local dongle: a name the source detection takes as a local RTL-SDR by default (a "pulse" a
+   config staged over a running rtl_tcp stream) opens nothing, whatever device the options last selected. An empty
+   device field opens index 0 with no serial, not a cached serial. */
+void
+test_stream_opens_a_dongle_only_from_an_rtl_spec(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_rtl_nospec") != nullptr);
+    auto caller = std::make_unique<dsd_opts>();
+    std::string args;
+    set_devs({"00000001", "00000002"});
+    assert(!stream_start(dir, "pulse", "00000002", 1, caller.get(), &args));
+    assert(g_stream_opens == 0 && g_world.count_calls == 0 && g_world.handle_calls == 0);
+
+    set_devs({"00000001", "00000002"});
+    assert(stream_start(dir, "rtl::851.0125M", "00000002", 1, caller.get(), &args));
+    assert(caller->rtl_dev_index == 0 && caller->rtl_dev_serial[0] == '\0');
+    assert(g_world.count_calls == 0 && g_world.handle_calls == 0);
+    assert(dsd_test_rmdir(dir) == 0);
+}
+
 /* A live restart on an Android descriptor (the device row, a config reopen) that names an index: the descriptor is the
    one device there is, so it runs as 0 and the caller's options, its spec and the capture all say 0. */
 void
@@ -1067,6 +1087,7 @@ main(void) {
     test_stream_looks_the_serial_up_at_every_start();
     test_stream_selects_from_its_spec();
     test_stream_descriptor_index_is_zero();
+    test_stream_opens_a_dongle_only_from_an_rtl_spec();
 
     rtl_usb_identity_set_driver_ops(nullptr);
     rtl_device_select_set_driver_ops(nullptr);

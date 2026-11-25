@@ -11755,7 +11755,9 @@ Key public headers:
     Without a serial, the descriptor identity's serial is the opened one. Every local RTL-SDR stream start selects
     its dongle from the spec it opens (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`:
     `dsd_rtl_spec_select_device()`, so a cached index or serial a former spec left never opens another dongle; a field
-    the grammar refuses fails the start before anything opens) and, with a pre-opened descriptor, runs an index as 0
+    the grammar refuses fails the start before anything opens, and so does a spec that is no `rtl` one, which
+    `detect_radio_source()` reads as a local dongle by default: a staged `pulse` opens nothing) and, with a pre-opened
+    descriptor, runs an index as 0
     with the spec rewritten. The stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index`
     and its options, and `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the
     caller's spec moved on) to the caller's (decoder-owned) options, as it does `airspy_info`; the log

@@ -10955,10 +10955,19 @@ extern "C" int dsd_rtl_stream_soft_stop(void);
    before (a cached index or serial from another spec) the device field selects it here (dsd_rtl_spec_select_device()),
    and a field the grammar refuses fails the start before anything opens. With an Android descriptor, which is the one
    device there is, an index names it as 0, the spec rewritten so the options, the spec and a capture agree (as the
-   engine's startup does); a serial is checked on the descriptor's dongle at the open. 0, or -1 when refused. */
+   engine's startup does); a serial is checked on the descriptor's dongle at the open. A spec that is no rtl one opens
+   nothing. 0, or -1 when refused. */
 static int
 stream_open_select_local_rtl(dsd_opts* opts) {
-    if (dsd_rtl_spec_select_device(opts, opts->audio_in_dev) < 0) {
+    /* Only an rtl spec opens a local dongle: any other name the source detection reads as one by default (a staged
+       "pulse", say) opens nothing, rather than whatever dongle the options last selected. */
+    const int selected = dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
+    if (selected == 0) {
+        LOG_ERROR("RTL-SDR: the input \"%s\" is no RTL-SDR spec (rtl or rtl:<dev>:...); no local dongle opens.\n",
+                  opts->audio_in_dev);
+        return -1;
+    }
+    if (selected < 0) {
         LOG_ERROR("RTL-SDR: the input \"%s\" names no device that can be opened.\n", opts->audio_in_dev);
         return -1;
     }
