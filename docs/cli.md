@@ -14,7 +14,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets, YSF/D-STAR/dPMR/M17/TETRA DMO conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`, `--scan-skip-silent-ms <ms>`
-- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
+- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`dev` = device index or USB serial, see [Choosing a dongle by serial](#choosing-a-dongle-by-serial); `gain` `0` = automatic, `1`–`49` = manual dB); `--rtl-list` lists the dongles with their serials
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`; the Windows ZIP ships it and the Airspy and HackRF modules)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
   `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
@@ -94,7 +94,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   input's CQPSK search records four; that difference is in the capture only, not in what decodes.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
-  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
+  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`, `rtl:00000001:851.375M:22:-2:24:0:2`
+  - `dev` is a device index (`0`, `1`, ...) or the dongle's USB serial (`00000001`, or `serial=1090` for a serial
+    that is a plain number); see [Choosing a dongle by serial](#choosing-a-dongle-by-serial).
   - `gain` `0` is automatic gain (the tuner's automatic gain and the RTL2832U's digital AGC); `1`–`49` is a manual
     gain in dB, run at the nearest step the tuner has. The first example asks for a manual 22 dB, the second for
     automatic gain. See RTL‑SDR details below.
@@ -1736,10 +1738,11 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's floor until three noise
   windows confirm it. The device is the input spec as written, except that an `rtl:`, `rtltcp:` or `airspy:` spec's
   start frequency, `sql` field and volume do not count (nor empty fields at its end), so a new start on another
-  frequency, squelch or volume finds the floors learned before; a change to the device index, the rtl_tcp host or port,
-  the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
-  `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by its index, so a different dongle at the same index
-  can take a floor learned on the one before.
+  frequency, squelch or volume finds the floors learned before; a change to the RTL-SDR device, the rtl_tcp host or
+  port, the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
+  `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by index or serial: one serial is one device however it
+  is written (`rtl:00000001` and `rtl:serial=00000001`); by index, a different dongle at the same index can take a
+  floor learned on the one before.
 - Restarts. A retune to another channel starts the windows over and moves to that channel's floor, which gates at once,
   even when the retune comes right after a restart. Any receiver restart on the same channel keeps its floor but starts
   closed: Stop and Start in the app, a stream reopen, an rtl_tcp reconnect, a USB recovery, an input overflow gap (an
@@ -3291,7 +3294,7 @@ does.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise); one `--squelch` refuses stops the start, naming the field), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index or USB serial, below), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise); one `--squelch` refuses stops the start, naming the field), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
   it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
@@ -3330,6 +3333,7 @@ does.
   on a fixed scale already, 3 kHz deviation at 15000). `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
+  - `-i rtl:00000001:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
 - External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` listens on `127.0.0.1` by default. Use
   `--rtl-udp-control-bind <ipv4>` only when the unauthenticated listener must be reachable remotely.
@@ -3366,6 +3370,11 @@ Stall recovery (`-i rtl`)
   When Android refuses that reset, the dongle is reopened without one, and a stall that persists ends with `... none
   since it was reopened (its USB reset was refused); the stream stops`. On Windows a WinUSB reset may not be a full
   port reset; whether it worked is judged by the samples that follow.
+- After the reset the dongle is found again by its triple and reopened only when the device found, the triple it was
+  identified by and the reopened handle all agree; the devices changing in between (another dongle at that index for a
+  moment) fail the recovery, which then stays off, rather than record the other dongle for the next reset. A dongle
+  chosen by serial is reopened only while that serial still leads to it alone: another readable device with the same
+  serial (whatever its other strings) fails the recovery the same way.
 - While the dongle is being reset, a frequency, gain, PPM or bias-tee change from a frontend or the control API is refused
   with `Failed: the RTL-SDR is being reset; try again in a moment` and changes nothing; every other command (menus, an
   input switch, quit) applies as soon as it is queued.
@@ -3406,6 +3415,52 @@ Advanced (env)
 - `DSD_NEO_RTL_VERIFY=0|1` — Retry and verify local USB RTL-SDR control applies (default on).
 - `DSD_NEO_RTL_VERIFY_ATTEMPTS=1..10` — Total local USB apply attempts when verification is enabled (default 10).
 - An rtl_tcp reconnect and a USB stall recovery reapply every one of these settings the dongle had taken.
+
+### Choosing a dongle by serial
+
+librtlsdr numbers the dongles it finds `0`, `1`, ... in the order the USB stack lists them, and that order can change
+from one boot or replug to the next. With several dongles, name each by its USB serial instead, which stays with the
+dongle:
+
+- The `dev` field is an index when it is a plain decimal number with no leading zero (`0`, `1`, `12`), so scripts
+  that name a dongle by index read as before. `serial=<sn>` is always a serial, for a serial such as `1090` that would
+  read as an index. Any other value (`00000001`, `0000001`, `A1B2`) is a serial. `01` and `+1` are serials now, not
+  index 1. An empty field (`rtl::851.375M`) keeps the device as it was.
+- A serial matches exactly, case included, as librtlsdr's own lookup does: no prefix, suffix or number reading
+  (`00000001` never opens index 1). It is 1 to 127 printable ASCII characters with no `:` or `"` and no space at
+  either end; a dongle whose serial is anything else is still listed by `--rtl-list`, and can be chosen by index or
+  given a serial `rtl_eeprom -s` can write.
+- `dsd-neo --rtl-list` prints each dongle's index, manufacturer, product and serial, and the `-i` field that names it
+  (`RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: 00000002  (-i rtl:00000002)`). It exits 0, also when no dongle is found,
+  and 1 when the build has no RTL-SDR support or the enumeration failed.
+- The serial is looked up at every start, so the dongle is found wherever it is enumerated; the startup lines say
+  which (`Selected Device #2 with Serial Number: 00000002`, `RTL #2 (SN 00000002): Freq=...`). After it opens, its
+  serial is read back from the device itself; one that reports another (the dongles changed in that instant) is closed
+  untouched and the serial looked up once more.
+- No dongle with the serial: the start is refused, never falling back to device 0. The error names the serial, says
+  how many devices could not be read, and points at `--rtl-list`.
+- Two or more dongles with the same serial (many generic dongles ship as `00000001`): the start is refused, since
+  they cannot be told apart. Give each its own serial with `rtl_eeprom -s <serial>`, with only that dongle plugged in.
+- A dongle another program is using cannot be read on Windows (WinUSB lets one program open a device at a time), and
+  one this user may not open cannot be read anywhere. Such a dongle is listed as `(could not read: in use by another
+  program, or no permission)`, never matches a serial and never counts as a duplicate. So with three dsd-neo
+  instances, start each by serial: an instance never takes a dongle another one already runs.
+- An index past the dongles found keeps falling back to device 0 with a warning, except when its digits are a
+  readable dongle's serial: `rtl:1090` with one dongle whose serial is `1090` is refused with the hint
+  `use rtl:serial=1090`.
+- The scheme may be written in capitals: `-i RTL:00000001` is `-i rtl:00000001`.
+- On Android the app picks the dongle and hands over its USB connection; a serial in the spec must then be that
+  dongle's, or the start is refused, and nothing is enumerated.
+- An I/Q capture records the dongle as `index=N,serial=<sn>` (`source_args` in its sidecar), the serial read from the
+  dongle whether it was chosen by serial or by index (by index only where stall recovery identified it).
+
+Three dongles, one antenna each, on Windows (one `.bat` per receiver, or all three from one):
+
+```bat
+start "North" dsd-neo.exe -fa -i rtl:00000001:851.0125M:30:0:48:0:2 --frontend terminal
+start "East" dsd-neo.exe -fa -i rtl:00000002:852.5375M:30:0:48:0:2 --frontend terminal
+start "West" dsd-neo.exe -fa -i rtl:00000003:853.6625M:30:0:48:0:2 --frontend terminal
+```
 
 ## SoapySDR details (`-i soapy`)
 
