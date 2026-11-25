@@ -1184,8 +1184,9 @@ test_data_grant_never_names_late_entry_voice(dsd_opts* opts, dsd_state* st) {
 
 /* A followed private data grant's slot carries a voice call a checked LC names (TG 400). Its first voice publishes
    nothing of the data grant's, and it is the slot's first voice all the same: an in-place voice grant naming that call
-   (TG 400) while it goes on changes only the P_CLEAR addresses, never publishes over the call playing. One
-   transmission, TG 400. A voice grant naming another call there (TG 500) ends the assignment (issue #903). */
+   (TG 400, RAS-accepted) while it goes on is accepted, giving the followed channel its provenance, and never publishes
+   over the call playing. One transmission, TG 400. A voice grant naming another call there (TG 500) ends the
+   assignment (issue #903). */
 static int
 test_data_follow_first_voice_consumes_publication(dsd_opts* opts, dsd_state* st) {
     init_env(opts, st, 2.0);
@@ -1198,8 +1199,13 @@ test_data_follow_first_voice_consumes_publication(dsd_opts* opts, dsd_state* st)
     const uint64_t voice_epoch = slot_transmission(st, 0);
     rc |= expect_true("the first voice is handled", voice_epoch != 0U && sm()->vc_identity_published == 1);
     clock_at(0.4);
+    rc |= expect_true("the data grant's channel is verified", sm()->vc_crc_flags == 0U);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
     tv_grant(opts, st, LPCN_A, 0, 400, 5);
-    rc |= expect_true("the voice grant for the LC's call is in place", vc(st) == VC_A && sm()->state == DMR_SM_TUNED);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the voice grant for the LC's call is in place, the channel its provenance",
+                      vc(st) == VC_A && sm()->state == DMR_SM_TUNED
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
     clock_at(0.5);
     voice(opts, st, 0);
     dsd_call_snapshot call;

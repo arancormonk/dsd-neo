@@ -14464,12 +14464,13 @@ Private per-protocol modules worth knowing about:
   changes nothing at all (its record, dwell, channel, provenance and publication stay), and a grant naming the call a
   checked LC named on the slot gives the followed channel that grant's number and provenance and spends the followed
   grant's pending publication, but leaves the identity a clear is matched to the followed grant's. Decided limit (issue
-  #903, fail closed): no separate clear address is kept, so an addressed clear matches nothing while that identity
-  names no call: after the grant's transmission ends and another begins on the slot (a private call's reverse leg
-  included, `test_p_clear_private_reverse_leg()`), for the call a checked LC or an in-place grant names on the slot
-  instead of the followed grant's (`test_p_clear_in_place_grant_matching_slot_lc()`), for a companion adopted for a
-  retired slot (`dmr_sm_end_changed_assignment()`, whether or not a grant named its call,
-  `test_p_clear_after_companion_adoption()`), and under a status follow; such a call ends on its terminator, timeout or
+  #903, fail closed): no separate clear address is kept. While the grant identity is retained, a clear naming another
+  call does not match: after a checked LC and an in-place grant name TG 5678 on a slot followed for TG 1234, a clear
+  for 5678 changes nothing and one for 1234 still releases the slot (`test_p_clear_in_place_grant_matching_slot_lc()`).
+  Once the identity is dropped, no addressed clear matches at all: after the grant's transmission ends and another
+  begins on the slot (a private call's reverse leg included, `test_p_clear_private_reverse_leg()`), for a companion
+  adopted for a retired slot (`dmr_sm_end_changed_assignment()`, whether or not a grant named its call,
+  `test_p_clear_after_companion_adoption()`), and under a status follow. Such a call ends on its terminator, timeout or
   hangtime. Otherwise it prints "not for the followed call" ("no followed call" when nothing is followed) and changes
   nothing: no burst hint, activity, force latch or release. Applied, it clears its own slot's burst hint and the
   machine's voice flag for that slot only, so a busy companion slot keeps the carrier, zero hangtime included, unless
@@ -14479,9 +14480,15 @@ Private per-protocol modules worth knowing about:
   `test_p_clear_deferred_return_retires_the_slot()`) also retires what would name a later transmission on that slot:
   its record, Capacity Plus seed and status-acquisition bit, its place in the carrier's acquisition
   (`vc_cleared_slots`: no longer one of `dmr_sm_acquire_slots()`, until a grant names a call there anew, so a carrier
-  whose every acquisition slot was cleared holds nothing and returns at the next tick,
-  `test_p_clear_cleared_slot_holds_no_acquisition()`), and the followed grant's pending publication and acquisition on
-  the followed slot, or on either slot before a slotless grant's first voice (`test_p_clear_retires_a_slotless_grant()`),
+  whose every acquisition slot was cleared holds nothing and returns at the next tick, before any wait on the receive
+  check when no slot is admitted, `test_p_clear_cleared_slot_holds_no_acquisition()`,
+  `test_p_clear_emptied_acquisition_skips_the_receive_wait()`; a grant naming a call there, one keeping a checked LC's
+  record included, `test_p_clear_lc_matching_grant_reacquires_the_slot()`, spends the clear, and on the followed slot
+  restarts its acquisition, its first media awaited again within a window from the regrant, `vc_reacquire_m`,
+  `test_p_clear_regrant_restarts_the_acquisition()`), and the followed grant's pending publication, media verdict
+  (`vc_media_known`, `vc_data_call`: a grant of either media names the slot anew,
+  `test_p_clear_forgets_the_followed_media()`) and acquisition on the followed slot, or on either slot before a
+  slotless grant's first voice (`test_p_clear_retires_a_slotless_grant()`),
   so the next anonymous voice there is not published as the cleared grant's call
   (`test_p_clear_before_first_voice_retires_the_grant()`); the companion's call, activity and hangtime and mono
   playout are untouched. Decided limit (discussion #900): a P_CLEAR is matched to the call as dsd-neo
@@ -14651,8 +14658,9 @@ Private per-protocol modules worth knowing about:
     voice sync publishes the followed grant's identity only when its burst supplied accepted voice (a sync the
     confidence gate has not corroborated, as `dmrBSBootstrap()` emits it first, publishes nothing and leaves the
     publication pending, `test_unaccepted_sync_publishes_no_grant()`): voice accepted since the slot's previous sync
-    (`vc_voice_seen_m`), never voice an earlier sync already handled within the evidence window
-    (`test_publication_takes_the_bursts_own_verdict()`), and only into a call that names nothing yet
+    (`vc_voice_seen_m`, which every sync advances, one the receive policy rejects included), never voice an earlier
+    sync already handled within the evidence window (`test_publication_takes_the_bursts_own_verdict()`,
+    `test_filtered_sync_spends_its_voice()`), and only into a call that names nothing yet
     (`dmr_sm_grant_publishable()` for the voice's slot, checked again at the sync): a call a voice LC named since the
     grant (its header comes before the first voice sync) keeps its caller, and the grant is spent, never renaming or
     splitting that call. Nor does it publish over a checked LC bound to the slot's active call

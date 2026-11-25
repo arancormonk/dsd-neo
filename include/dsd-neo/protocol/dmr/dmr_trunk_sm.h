@@ -193,6 +193,9 @@ typedef struct {
        or the followed slot's, whatever the retention rule says of the carrier, until a grant names a call there anew.
        Cleared with vc_acquire_slots. */
     int vc_cleared_slots;
+    /* When a grant named a cleared followed slot's call anew (dmr_sm_slot_regranted()): that assignment's acquisition
+       window runs from here, not from the tune (0: none since the follow). Cleared with vc_cleared_slots. */
+    double vc_reacquire_m;
     /* The accepted-voice time (dsd_state::dmr_confidence_voice_m) each slot's last voice sync saw: a grant is published
        only on accepted voice newer than that (dmr_sm_publish_grant_identity()), never on voice an earlier sync already
        handled. */

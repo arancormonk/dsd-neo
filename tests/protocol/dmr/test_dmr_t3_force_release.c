@@ -20,12 +20,14 @@
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/receive_types.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/dmr/dmr_trunk_sm.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/trunk_cc_candidates.h>
 #include <dsd-neo/runtime/trunk_tuning_hooks.h>
 #include <math.h>
@@ -600,6 +602,137 @@ test_p_clear_retires_a_slotless_grant(void) {
     assert(dsd_call_state_get(&state, 1U, &call) <= 0 || call.ota_target_id != 1234U);
 }
 
+/* TS1 followed for voice, TS2's live call keeps the carrier when TS1 clears. The clear ends TS1's media verdict with its
+   identity: a data grant naming TS1 afterwards is the slot's new assignment, followed in place, never judged as
+   replacing the ended voice assignment and discarded. */
+static void
+test_p_clear_forgets_the_followed_media(void) {
+    init_env();
+    opts.trunk_tune_data_calls = 1;
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    accepted_voice_sync(1U);
+    state.dmrburstL = 16;
+    state.dmrburstR = 16;
+    send_pclear(0U, 0U, 1U, 1234U);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == 0 && ctx->vc_identity_known == 0);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_HZ, 20, /*tg*/ 5555, /*src*/ 55);
+    ev.slot = 0;
+    ev.kind = DSD_CALL_KIND_DATA;
+    assert(dmr_sm_submit_grant(&opts, &state, &ev) == DMR_SM_GRANT_IN_PLACE);
+    assert(ctx->vc_slot == 0 && ctx->vc_identity_known == 1 && ctx->vc_tg == 5555 && ctx->vc_data_call == 1);
+}
+
+/* A cleared TS1 regranted in place acquires the new call afresh: its window runs from the regrant (variant 0: the
+   clear's slot status calls TS2 busy, no voice there; regranted just before the original grant's timeout, the carrier
+   is still held after it) and the slot awaits its own first voice again, so it is a held member of the busy view
+   while TS2's live call holds the carrier (variant 1). */
+static void
+test_p_clear_regrant_restarts_the_acquisition(void) {
+    for (int live = 0; live < 2; live++) {
+        init_env();
+        dsd_decode_clock_use_test(k_t0_ns);
+        clock_at_ms(0U);
+        opts.frame_dmr = 1;
+        dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+        if (live) {
+            observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+            accepted_voice_sync(1U);
+        }
+        state.dmrburstL = 9;
+        state.dmrburstR = 16;
+        send_pclear(0U, 0U, 1U, 1234U);
+        assert(opts.trunk_is_tuned == 1 && state.trunk_sm_force_release == 0);
+        clock_at_ms(live ? 100U : 3900U);
+        dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 5555, /*src*/ 55);
+        const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+        assert(ctx->vc_slot == 0 && ctx->vc_tg == 5555);
+        if (live) {
+            dmr_sm_busy_view_t view;
+            (void)dmr_sm_describe_held_calls(dmr_sm_get_ctx(), &opts, &state, dsd_decode_now_mono_s(), &view);
+            assert(view.held && (view.members & 0x1) != 0);
+        } else {
+            clock_at_ms(4500U); // past the original grant's timeout, within the regrant's
+            dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+            assert(opts.trunk_is_tuned == 1);
+        }
+        dsd_decode_clock_use_system();
+    }
+}
+
+/* Before a slotless follow's first voice, TS2's checked LC keeps it in the acquisition, and a clear of the followed
+   call on TS1 retires TS1. A checked LC and a matching grant then name a call on TS1: the grant spends the clear even
+   though it keeps the LC's record, so TS1 is acquired again. */
+static void
+test_p_clear_lc_matching_grant_reacquires_the_slot(void) {
+    init_env();
+    dmr_sm_emit_group_grant(&opts, &state, VC_HZ, /*lpcn*/ 0, /*tg*/ 1234, /*src*/ 42);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_slot == -1);
+    observe_call(1U, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    dmr_sm_note_lc_identity(&opts, &state, 1, DSD_CALL_KIND_GROUP_VOICE, 4321U, 43U);
+    state.dmrburstL = 9;
+    state.dmrburstR = 16;
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 1 && state.trunk_sm_force_release == 0);
+    observe_call(0U, DSD_CALL_KIND_GROUP_VOICE, 777U, 77U);
+    dmr_sm_note_lc_identity(&opts, &state, 0, DSD_CALL_KIND_GROUP_VOICE, 777U, 77U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 777, /*src*/ 77);
+    assert(ctx->vc_slot == -1);
+    dmr_sm_busy_view_t view;
+    (void)dmr_sm_describe_held_calls(dmr_sm_get_ctx(), &opts, &state, dsd_decode_now_mono_s(), &view);
+    assert(view.held && view.members == 0x3);
+}
+
+/* A clear retires the only acquisition slot while the clear's slot status calls TS2 busy, and the colour-code filter
+   then admits neither slot: the next tick returns to the control channel, never waiting out the receive check. */
+static void
+test_p_clear_emptied_acquisition_skips_the_receive_wait(void) {
+    init_env();
+    dsd_decode_clock_use_test(k_t0_ns);
+    clock_at_ms(0U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    state.dmrburstL = 9;
+    state.dmrburstR = 16;
+    send_pclear(0U, 0U, 1U, 1234U);
+    assert(opts.trunk_is_tuned == 1 && state.trunk_sm_force_release == 0);
+    assert(dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_DCC, 1, "", "7", "", NULL, 0) == 0);
+    state.dmr_color_code = 7U;
+    clock_at_ms(1000U);
+    opts.frame_dmr = 1;
+    dmr_sm_tick_ctx(dmr_sm_get_ctx(), &opts, &state);
+    assert(opts.trunk_is_tuned == 0);
+    DSD_MEMSET(&opts.receive, 0, sizeof(opts.receive));
+    dsd_decode_clock_use_system();
+}
+
+/* A sync the receive policy rejects still sees the slot's accepted voice: once the filter admits the slot again, a bare
+   sync after it publishes nothing on that filtered burst's voice; the next accepted voice publishes the grant. */
+static void
+test_filtered_sync_spends_its_voice(void) {
+    init_env();
+    dsd_decode_clock_use_test(k_t0_ns);
+    clock_at_ms(0U);
+    dmr_sm_emit_group_grant_slot(&opts, &state, VC_HZ, /*lpcn*/ 20, /*slot*/ 0, /*tg*/ 1234, /*src*/ 42);
+    const dmr_sm_ctx_t* ctx = dmr_sm_get_ctx();
+    assert(opts.trunk_is_tuned == 1 && ctx->vc_identity_published == 0);
+    assert(dsd_receive_edit_parse(&opts.receive, DSD_RECEIVE_SLOT, 1, "", "1", "", NULL, 0) == 0);
+    clock_at_ms(10U);
+    accepted_voice_sync(0U); // filtered
+    opts.receive.filters[DSD_RECEIVE_SLOT].enabled = 0;
+    clock_at_ms(70U);
+    dmr_sm_emit_voice_sync(&opts, &state, 0);
+    dsd_call_snapshot call;
+    assert(ctx->vc_identity_published == 0);
+    assert(dsd_call_state_get(&state, 0U, &call) <= 0 || call.ota_target_id != 1234U);
+    clock_at_ms(100U);
+    accepted_voice_sync(0U);
+    assert(dsd_call_state_get(&state, 0U, &call) > 0 && call.ota_target_id == 1234U);
+    DSD_MEMSET(&opts.receive, 0, sizeof(opts.receive));
+    dsd_decode_clock_use_system();
+}
+
 /* A voice sync whose burst supplied no accepted voice (the confidence gate has not corroborated it) publishes nothing
    and spends nothing; the first sync with accepted voice publishes the followed grant's call. */
 static void
@@ -642,7 +775,9 @@ test_publication_takes_the_bursts_own_verdict(void) {
     assert(ctx->vc_identity_published == 0);
     clock_at_ms(50U);
     accepted_voice_sync(1U);
-    assert(ctx->vc_identity_published == 1);
+    dsd_call_snapshot call;
+    assert(ctx->vc_identity_published == 1 && dsd_call_state_get(&state, 1U, &call) > 0 && call.ota_target_id == 700U
+           && call.ota_source_id == 70U);
     dsd_decode_clock_use_system();
 }
 
@@ -896,6 +1031,11 @@ main(int argc, char** argv) {
     test_p_clear_cleared_slot_holds_no_acquisition();
     test_p_clear_deferred_return_retires_the_slot();
     test_p_clear_retires_a_slotless_grant();
+    test_p_clear_forgets_the_followed_media();
+    test_p_clear_regrant_restarts_the_acquisition();
+    test_p_clear_lc_matching_grant_reacquires_the_slot();
+    test_p_clear_emptied_acquisition_skips_the_receive_wait();
+    test_filtered_sync_spends_its_voice();
     test_unaccepted_sync_publishes_no_grant();
     test_publication_takes_the_bursts_own_verdict();
     test_p_clear_mono_stays_on_followed_slot();
