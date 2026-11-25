@@ -21883,7 +21883,8 @@ Qt Quick frontend (`src/ui/qt`):
     after it, a new call, still is.
   - The screen (issue #903; `qml/TalkgroupsScreen.qml`, `TalkgroupCard.qml`, `TalkgroupEditSheet.qml`). A remembered
     card's second line is "Last heard %1" (`MapText.agoText()` to the minute on `metrics.decodeNowMs`, with the screen's
-    minute `ageTick`; a time ahead of the decode clock by its date and time); a card heard only this session keeps
+    minute `ageTick`; a time ahead of the decode clock by its time, with its date off the viewer's local day:
+    `MapText.clockText()` on `savedSystems.localDay`); a card heard only this session keeps
     "Heard in this session". A heard card has no name line. Its switch reads "Listen to talkgroup %1", and a remembered
     card's switch name goes on with ", last heard %1" in the order it is drawn (not said again in its description). The
     edit sheet opens with the card's `remembered` flag and `viewedOwner` (`openRow()`'s last two arguments) and offers

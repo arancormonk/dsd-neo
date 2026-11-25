@@ -325,6 +325,18 @@ Item {
             tryCompare(findChild(card, "talkgroupCardTags"), "text", "Last heard just now");
             compare(toggle.accessibleName, "Listen to talkgroup 4242, last heard just now");
 
+            // A time ahead of the decode clock (a replay of an older capture after live listening) is said by its time,
+            // with its date only off the viewer's local day (savedSystems.localDay, #905).
+            testContext.rememberTalkgroup(uid, 1, 4343, -7200);
+            var aheadMs = (Math.floor(metrics.decodeNowMs / 1000) + 7200) * 1000;
+            testContext.setLocalNowMs(aheadMs);
+            var ahead = cardFor(4343);
+            var aheadTags = findChild(ahead, "talkgroupCardTags");
+            tryCompare(aheadTags, "text", "Last heard at " + Qt.formatDateTime(new Date(aheadMs), "hh:mm:ss"));
+            testContext.setLocalNowMs(aheadMs + 3 * 86400000);
+            tryCompare(aheadTags, "text", "Last heard at " + Qt.formatDateTime(new Date(aheadMs), "yyyy-MM-dd hh:mm:ss"));
+            testContext.resetLocalDay();
+
             // A call this session heard on no saved system: not remembered, today's line (the owner's change is the
             // refresh that reads it).
             callHistory.pushWithIds(5151, 77);

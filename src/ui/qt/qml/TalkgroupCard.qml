@@ -24,11 +24,12 @@ Rectangle {
     signal clicked
     // When a remembered card was last heard ("12 min ago", "just now"), empty on any other card.
     readonly property string heardWhen: !listed && remembered && lastHeard > 0 ? heardAgo() : ""
-    // "12 min ago", "just now"; a time ahead of the decode clock (a replay of an older capture) by its date and time.
+    // "12 min ago", "just now"; a time ahead of the decode clock (a replay of an older capture) by its time, with its
+    // date when not today (MapText.clockText() on savedSystems.localDay).
     function heardAgo() {
         var now = (card.ageTick, metrics.decodeNowMs);
         var age = now / 1000 - card.lastHeard;
-        return MapText.agoText(age < 0 ? -1 : Math.floor(age / 60) * 60, MapText.clockText(card.lastHeard, now));
+        return MapText.agoText(age < 0 ? -1 : Math.floor(age / 60) * 60, MapText.clockText(card.lastHeard, savedSystems.localDay));
     }
     implicitHeight: content.implicitHeight + 28
     radius: Theme.radiusPanel
