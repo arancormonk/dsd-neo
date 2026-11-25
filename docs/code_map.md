@@ -5964,7 +5964,10 @@ suite runs under this compiler.
     decoder reading the flags neither plays nor learns from it): a stream open with no gate resolved for it
     (`rtl_stream_gate_open()`; `rtl_stream_start()`, for a caller with no decoder loop to write the gate, runs the
     options' own from the first block instead, resolved as for a channel with no scan row on air), a
-    retune the decoder marks as a new channel (`rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
+    retune the decoder marks as a new channel (a -Y row's, a trunk-scan target's, and a trunk-scan park on a control
+    channel, which switches targets: `dsd_trunk_tuning_new_channel_begin()` around its `dsd_trunk_tuning_hook_tune_to_cc()`,
+    while a trunk machine's own grants, hunts and returns stay unmarked;
+    `rtl_stream_prepare_retune_new_channel_for_target()`, `RtlRetuneProfile::new_channel`,
     attached last since a store replaces the whole profile, a profile for the mark alone, `new_channel_only`, when
     nothing else is queued, unmarked once a tune returned without taking it) landing on the monitor (the controller's
     finalize and an external backend's landing, whatever the profile's family did there), a family switch into the
@@ -6087,8 +6090,9 @@ suite runs under this compiler.
     the receiver's first blocks take then, the first read's samples produced under the gate, an opening transmission at
     the stream's first sample heard from its talker's start inside its carrier, a second session after one stopped with
     a request its stream never took), `RUNTIME_SCAN_MODE` (a suspended leave resolving the
-    edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile),
-    `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands), `IO_RTL_ANALOG_OPEN` (a
+    edited session), `ENGINE_TRUNK_RETUNE_REGRESSION` (the scan tune marks a new channel over its profile, as a control-channel tune
+    marked one does), `ENGINE_TRUNK_SCAN` (a DMR target's own squelch not run on the P25 control channel the next park
+    lands on), `ENGINE_SIGNAL_SEARCH` (a deferred visit tune outstanding until it lands), `IO_RTL_ANALOG_OPEN` (a
     standalone start never closed),
     `ENGINE_MANUAL_TUNE_PENDING` (a timed-out tune awaited until its completion, which marks a write due),
     `UI_MENU_SERVICES` (a suspended scope's recovery marking the open's write due, the default ended or not, a shadowed

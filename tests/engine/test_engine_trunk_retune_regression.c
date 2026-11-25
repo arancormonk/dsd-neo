@@ -379,6 +379,27 @@ dsd_trunk_tuning_caller_judges(void) {
     return g_caller_judges_depth > 0;
 }
 
+/* From runtime/trunk_tuning_hooks.c: a tune to a new channel (dsd_trunk_tuning_new_channel_begin(), issue #899), as the
+   real one counts it on this thread. */
+static int g_new_channel_depth = 0;
+
+void
+dsd_trunk_tuning_new_channel_begin(void) {
+    g_new_channel_depth++;
+}
+
+void
+dsd_trunk_tuning_new_channel_end(void) {
+    if (g_new_channel_depth > 0) {
+        g_new_channel_depth--;
+    }
+}
+
+int
+dsd_trunk_tuning_new_channel(void) {
+    return g_new_channel_depth > 0;
+}
+
 void
 // NOLINTNEXTLINE(misc-use-internal-linkage)
 dsd_trunk_tuning_generation_advance(void) {
@@ -1807,6 +1828,22 @@ test_backend_tune_updates_center_freq_cache(void) {
     /* Round 8: the digital row's symbol profile is marked a digital decode's, over the profile its preparation queued, so
        only it (never a frame-sync hunt's request) may take an analog family's monitor away. */
     assert(g_rtl_retune_digital_marks == 1 && g_rtl_retune_digital_over_profile == 1);
+    /* Issue #899: a control-channel tune marked a new channel (a trunk-scan park, which switches targets) is
+       marked over the profile its preparation queued, as a conventional row's retune is, so the outgoing target's gate
+       does not run on it; a trunk machine's own tune to its control channel stays unmarked. */
+    g_rtl_pending_active = 0;
+    g_rtl_retune_channels = 0;
+    g_rtl_retune_channel_unnamed = 0;
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852000000, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    assert(g_rtl_retune_channels == 0 && g_rtl_retune_channel_unnamed == 0);
+    g_rtl_pending_active = 0;
+    dsd_trunk_tuning_new_channel_begin();
+    assert(dsd_engine_trunk_tune_to_cc_request(opts, state, 852012500, 10, 0U) == DSD_TRUNK_TUNE_RESULT_OK);
+    dsd_trunk_tuning_new_channel_end();
+    assert(!dsd_trunk_tuning_new_channel());
+    assert(g_rtl_retune_channels == 1 && g_rtl_retune_channel_hz == 852012500U);
+    assert(g_rtl_retune_channel_over_profile == 1 && g_rtl_retune_channel_unnamed == 1);
+    rtl_stream_clear_pending_retune_profile();
 
     /* A conventional P25 target selects the P25 chain without enabling a trunk SM. */
     g_trunk_scan_active_p25_class = 1;

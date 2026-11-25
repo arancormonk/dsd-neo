@@ -7661,6 +7661,8 @@ static dsd_trunk_tune_result g_counting_tune_to_cc_result = DSD_TRUNK_TUNE_RESUL
 static uint64_t g_counting_tune_to_cc_last_request_id = 0U;
 /* A tune that blocks this long on the TEST decode clock before it answers, as a rigctl round trip does (0 none). */
 static uint64_t g_counting_tune_to_cc_latency_ns = 0U;
+/* With g_scan_tune_lands_channel set: the gate the stand-in receiver ran once the last park landed. */
+static dsd_squelch_setting g_counting_tune_to_cc_landed_gate;
 
 static dsd_trunk_tune_result
 counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
@@ -7685,6 +7687,12 @@ counting_tune_to_cc(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps
     }
     if (g_counting_tune_to_cc_result == DSD_TRUNK_TUNE_RESULT_OK) {
         g_counting_tune_to_cc_parked_freq = freq;
+        if (g_scan_tune_lands_channel) {
+            /* The park lands on the stand-in receiver (issue #899), a new channel when the tune is marked one, on the
+               digital family; the gate it runs before the decoder writes is kept. */
+            channel_gate_fake_land(dsd_trunk_tuning_new_channel(), 0);
+            g_counting_tune_to_cc_landed_gate = channel_gate_fake_gate();
+        }
     }
     return g_counting_tune_to_cc_result;
 }
@@ -15766,6 +15774,91 @@ test_nfm_to_dmr_rotation_writes_nothing_on_the_nfm_channel(void) {
                     "level %g; want Off only on the dmr target\n",
                     g_rx_watch_off_runs, channel_gate_fake_analog(), channel_gate_fake_closed(), dmr_rx.mode,
                     dmr_rx.level);
+        test_rc = 1;
+    }
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    g_scan_tune_lands_channel = 0;
+    dsd_receiver_gate_settle_hook_set(NULL);
+    dsd_rtl_stream_metrics_hooks_set(NULL);
+    trunk_scan_test_clear_now();
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    dsd_state_trunk_scan_avoids_free(state);
+    free(state);
+    free(opts);
+    cleanup_paths(dir, target_path, NULL);
+    return test_rc;
+}
+
+/*
+ * Issue #899: a rotation from a DMR conventional target with a squelch of its own (-40 dB) to a P25
+ * trunk target. The trunk target parks on its control channel through the trunk-tuning hook, and that park switches
+ * targets: it lands as a new channel, as a conventional target's retune does, so the receiver runs the session's gate
+ * (Off) on the control channel from its first block, not the DMR target's -40 dB until the decoder writes. Before the
+ * fix the park went unmarked, and the control channel's first blocks ran the outgoing row's squelch.
+ */
+static int
+test_dmr_to_p25_trunk_park_lands_a_new_channel(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char target_path[DSD_TEST_PATH_MAX];
+    if (make_temp_dir(dir, sizeof dir) != 0
+        || write_targets_file_with_header(dir, k_squelch_targets_header,
+                                          "dmr,dmr-conventional,461000000,,250,250,,--squelch-db -40\n"
+                                          "p25,p25-trunk,853000000,,250,250,\n",
+                                          target_path, sizeof target_path)
+               != 0) {
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
+    dsd_opts* opts = calloc(1, sizeof(*opts));
+    dsd_state* state = calloc(1, sizeof(*state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        cleanup_paths(dir, target_path, NULL);
+        return 1;
+    }
+    reset_scan_opts_state(opts, state);
+    opts->frame_dmr = 1;
+    opts->frame_p25p1 = 1;
+    opts->dmr_stereo = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->trunk_scan_lists[0].path, sizeof opts->trunk_scan_lists[0].path, "%s", target_path);
+    opts->trunk_scan_list_count = 1;
+    g_scan_tune_to_freq_failures_remaining = 0;
+    static dsd_rtl_stream_metrics_hooks hooks;
+    DSD_MEMSET(&hooks, 0, sizeof hooks);
+    channel_gate_fake_install(&hooks);
+    dsd_rtl_stream_metrics_hooks_set(&hooks);
+    dsd_receiver_gate_settle_hook_set(dsd_engine_receiver_gate_settle_now);
+    const dsd_squelch_setting session = dsd_squelch_setting_of_opts(opts);
+    int test_rc = dsd_squelch_setting_is_off(&session) ? 0 : 1;
+    channel_gate_fake_open(0, &session, NULL);
+    g_scan_tune_lands_channel = 1;
+    g_counting_tune_to_cc_landed_gate = dsd_squelch_setting_of_level(1.0);
+    char err[256] = {0};
+    trunk_scan_test_set_now(0.0);
+    if (dsd_engine_trunk_scan_init(opts, state, err, sizeof err) != 0) {
+        DSD_FPRINTF(stderr, "park gate: init failed: %s\n", err);
+        test_rc = 1;
+    }
+    test_rc |= expect_active_target(state, "park gate: the dmr target", 0U);
+    dsd_engine_receiver_gate_settle(opts, state, 0);
+    const dsd_squelch_setting dmr_rx = channel_gate_fake_gate();
+    const dsd_squelch_setting dmr_own = dsd_squelch_setting_of_level(dsd_squelch_level_from_sql(-40.0));
+    if (!dsd_squelch_setting_equal(&dmr_rx, &dmr_own)) {
+        DSD_FPRINTF(stderr, "park gate: the dmr target runs mode %d level %g, want its own -40 dB\n", dmr_rx.mode,
+                    dmr_rx.level);
+        test_rc = 1;
+    }
+    trunk_scan_test_set_now(0.26);
+    dsd_engine_trunk_scan_tick(opts, state);
+    test_rc |= expect_active_target(state, "park gate: the p25 trunk target", 1U);
+    if (!dsd_squelch_setting_is_off(&g_counting_tune_to_cc_landed_gate) || dsd_trunk_tuning_new_channel()) {
+        DSD_FPRINTF(stderr,
+                    "park gate: the control channel landed on mode %d level %g (new channel still %d), want Off\n",
+                    g_counting_tune_to_cc_landed_gate.mode, g_counting_tune_to_cc_landed_gate.level,
+                    dsd_trunk_tuning_new_channel());
         test_rc = 1;
     }
     dsd_engine_trunk_scan_shutdown(opts, state);
@@ -31074,6 +31167,7 @@ main(void) {
     rc |= run_with_default_tune_hook(test_nfm_target_parse_and_row_diagnostics);
     rc |= run_with_default_tune_hook(test_nfm_target_rotation_restores_family_and_width);
     rc |= run_with_default_tune_hook(test_nfm_to_dmr_rotation_writes_nothing_on_the_nfm_channel);
+    rc |= run_with_default_tune_hook(test_dmr_to_p25_trunk_park_lands_a_new_channel);
     rc |= run_with_default_tune_hook(test_nfm_target_rollback_restores_the_analog_row);
     rc |= run_with_default_tune_hook(test_analog_target_carrier_holds_and_idle_dwell_rotates);
     rc |= run_with_default_tune_hook(test_nfm_targets_leave_digital_activity_accounting_intact);

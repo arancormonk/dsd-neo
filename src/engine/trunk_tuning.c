@@ -1509,6 +1509,17 @@ dsd_engine_trunk_tune_to_freq_request(dsd_opts* opts, dsd_state* state, long int
     return result;
 }
 
+#ifdef USE_RADIO
+/* Mark the retune a scan tune queued as a new channel (issue #899, @p new_channel; @p mark 1), attached last, since a
+   store replaces the whole profile; once the tune returned (@p mark 0), a profile it never took is marked no more. */
+static void
+dsd_engine_mark_scan_new_channel(const dsd_opts* opts, long int freq, int new_channel, int mark) {
+    if (new_channel && opts->audio_in_type == AUDIO_IN_RTL) {
+        rtl_stream_prepare_retune_new_channel_for_target((uint32_t)freq, mark);
+    }
+}
+#endif
+
 /**
  * @brief Tune to a P25 control channel candidate without marking as tuned.
  *
@@ -1553,7 +1564,15 @@ engine_trunk_tune_to_cc_request_once(dsd_opts* opts, dsd_state* state, long int 
         dsd_engine_prepare_digital_family(state, freq, lands_digital_family, 0);
 #endif
     }
+#ifdef USE_RADIO
+    /* A trunk-scan park, which switches targets, lands on a new channel (dsd_trunk_tuning_new_channel()). */
+    const int new_channel = dsd_trunk_tuning_new_channel();
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 1);
+#endif
     result = dsd_engine_tune_with_backend(opts, state, freq, request_id);
+#ifdef USE_RADIO
+    dsd_engine_mark_scan_new_channel(opts, freq, new_channel, 0);
+#endif
     if (!dsd_trunk_tune_result_is_ok(result)) {
 #ifdef USE_RADIO
         dsd_engine_rtl_profile_snapshot_restore(state, &rtl_snapshot);
@@ -1594,15 +1613,6 @@ dsd_engine_trunk_tune_to_cc_request(dsd_opts* opts, dsd_state* state, long int f
 }
 
 #ifdef USE_RADIO
-/* Mark the retune a scan tune queued as a new channel (issue #899, @p new_channel; @p mark 1), attached last, since a
-   store replaces the whole profile; once the tune returned (@p mark 0), a profile it never took is marked no more. */
-static void
-dsd_engine_mark_scan_new_channel(const dsd_opts* opts, long int freq, int new_channel, int mark) {
-    if (new_channel && opts->audio_in_type == AUDIO_IN_RTL) {
-        rtl_stream_prepare_retune_new_channel_for_target((uint32_t)freq, mark);
-    }
-}
-
 /* Queue the receive profile a scanner row runs on. Returns -1 when the front end refuses it. */
 static int
 dsd_engine_prepare_scan_profile(const dsd_opts* opts, dsd_state* state, long int freq, int ted_sps) {

@@ -3556,14 +3556,18 @@ trunk_scan_retune_active(dsd_opts* opts, dsd_state* state, dsd_trunk_scan_target
     /* Trunk targets re-park on their control channel; only the two axes differ per type. The park judges the move
        for the DMR calls' privacy and voice hold itself (trunk_scan_judge_park(): its restore, or a walk's or
        resume's switch once this retune is accepted), so the engine's tune hook leaves it to the park
-       (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. */
+       (dsd_trunk_tuning_caller_judges()), as the conventional tunes above run no judge. The park switches targets, so
+       it lands on a new channel, as the conventional retunes above do (issue #899): the outgoing target's squelch gate
+       does not run on the control channel until the decoder writes the incoming one's. */
     state->p25_cc_freq = trunk_scan_type_anchors_p25_cc_freq(rt->target.type) ? freq : 0;
     state->trunk_cc_freq = freq;
     /* A P25 control channel is timed for the rate its anchor's TDMA flag gives now. */
     const int cc_sps =
         trunk_scan_target_is_p25(&rt->target) ? trunk_scan_p25_cc_sps(opts, state) : rt->landing.samples_per_symbol;
     dsd_trunk_tuning_caller_judges_begin();
+    dsd_trunk_tuning_new_channel_begin();
     const dsd_trunk_tune_result result = dsd_trunk_tuning_hook_tune_to_cc(opts, state, freq, cc_sps, out_request_id);
+    dsd_trunk_tuning_new_channel_end();
     dsd_trunk_tuning_caller_judges_end();
     return result;
 }

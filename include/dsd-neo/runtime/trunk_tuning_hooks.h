@@ -263,6 +263,17 @@ void dsd_trunk_tuning_caller_judges_end(void);
 /** @brief Whether a tune this thread is making is judged by its caller (dsd_trunk_tuning_caller_judges_begin()). */
 int dsd_trunk_tuning_caller_judges(void);
 
+/**
+ * @brief Mark the control-channel tunes this thread makes until the matching end as moves to a new channel (issue
+ * #899; nested pairs count): a trunk-scan park, which switches targets, so the receiver lands it as it lands a
+ * conventional target's retune, the outgoing target's squelch gate never running on the incoming target's channel. A
+ * trunk machine's own grants, hunts and returns stay on their target and are never marked.
+ */
+void dsd_trunk_tuning_new_channel_begin(void);
+void dsd_trunk_tuning_new_channel_end(void);
+/** @brief Whether a tune this thread is making goes to a new channel (dsd_trunk_tuning_new_channel_begin()). */
+int dsd_trunk_tuning_new_channel(void);
+
 /** @brief The installed tuner_free_for_protocol() answer; 1 (free) when no hook is installed (headless and test builds). */
 int dsd_trunk_tuning_hook_tuner_free(const dsd_opts* opts, const dsd_state* state);
 
