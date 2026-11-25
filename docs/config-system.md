@@ -278,6 +278,13 @@ line and log say so. Two startup refusals are not checked here, because the save
 scan needs an RTL-family input or rigctl tuning (`-U`, which no config key holds), and `frontend = terminal` needs a
 build with the terminal UI.
 
+A config loaded while a radio runs (an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay) whose
+`[input]` selects Pulse, file, TCP or UDP audio is not applied at all, since a loaded config never switches the input
+type: the status line says `Refused: this config selects Pulse audio while the radio runs; use Switch source, or stop
+the receiver first`, and the receiver and any I/Q capture run on untouched. Open that input with Switch source, or
+stop the receiver, then load the config. An `[input]` for the running radio applies live (an RTL-SDR source without
+`rtl_freq` applies its settings only), and one naming another radio input reopens the receiver on it.
+
 An I/Q stream input (`source = "iqtcp"` or `"iqudp"`, or `-i iqtcp:` / `-i iqudp:`) decodes the one channel another
 program sends, and nothing can retune it (issue #743). So `[trunking] enabled`, `[trunking] scanner` and
 `[trunk_scan] enabled` cannot be on beside one, by one rule everywhere:

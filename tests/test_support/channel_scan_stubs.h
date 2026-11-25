@@ -21,10 +21,6 @@ void dsd_test_channel_scan_leave_seen(int* scanner_mode, int* row_keys);
    the call before) in @p out (may be NULL). The options and state are kept for the marks that follow. */
 int dsd_test_channel_scan_gates_due(const dsd_opts* opts, const dsd_state* state, dsd_squelch_setting* out);
 
-/* Whether the stubbed trunk-scan pause reports a target gain to reopen on (dsd_trunk_scan_leave_report::restart_gain),
-   0 by default. */
-void dsd_test_trunk_scan_pause_restarts_gain(int restart_gain);
-
 #ifdef __cplusplus
 }
 #endif

@@ -2001,8 +2001,8 @@ svc_rtl_enable_input_locked(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->audio_in_type = AUDIO_IN_RTL;
-    /* Ensure an RTL stream is ready immediately when switching inputs: the input the switch names, on purpose. */
-    return svc_rtl_restart_onto_locked(opts, state);
+    /* Ensure an RTL stream is ready immediately when switching inputs. */
+    return svc_rtl_restart_locked(opts, state);
 }
 
 int
@@ -2109,8 +2109,6 @@ svc_rtl_start_locked(dsd_opts* opts, dsd_state* state) {
         return -1;
     }
     opts->rtl_started = 1;
-    /* The input in force is the one running now: nothing is staged in its place. */
-    opts->radio_running_dev[0] = '\0';
     opts->rtl_needs_restart = 0;
     ++g_svc_rtl_starts;
     svc_apply_scan_autogain(opts, state);
@@ -2149,36 +2147,7 @@ svc_restart_stop_capture(dsd_opts* opts, int stream_ran) {
 }
 
 int
-svc_rtl_staged_input_blocks_restart(const dsd_opts* opts, const dsd_state* state) {
-    return opts && state && state->rtl_ctx && opts->audio_in_type == AUDIO_IN_RTL && opts->radio_running_dev[0] != '\0'
-           && strcmp(opts->audio_in_dev, opts->radio_running_dev) != 0;
-}
-
-void
-svc_rtl_staged_input_why(const dsd_opts* opts, char* why, size_t why_size) {
-    svc_why(why, why_size, "%.24s is staged; use Switch source to open it, or load a config for the running radio",
-            opts ? opts->audio_in_dev : "");
-}
-
-int
 svc_rtl_restart_locked(dsd_opts* opts, dsd_state* state) {
-    if (!opts || !state) {
-        return -1;
-    }
-    /* A restart reopens the receiver that runs: with another input staged in its place (a config's [input] applied over
-       the running stream), it would open that one instead, so it is refused before anything stops. */
-    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
-        LOG_WARN(
-            "Radio restart refused: the running receiver is \"%s\", but \"%s\" is staged as the input for the next "
-            "start. Use Switch source to open the staged input, or load a config for the running radio.\n",
-            opts->radio_running_dev, opts->audio_in_dev);
-        return SVC_ERR_INPUT_STAGED;
-    }
-    return svc_rtl_restart_onto_locked(opts, state);
-}
-
-int
-svc_rtl_restart_onto_locked(dsd_opts* opts, dsd_state* state) {
     if (!opts || !state) {
         return -1;
     }
@@ -2369,38 +2338,6 @@ svc_rtl_start_on_the_profile_that_ran_locked(dsd_opts* opts, dsd_state* state) {
     return rc;
 }
 
-/* The recovery's start (svc_rtl_start_on_the_profile_that_ran_locked()) on the receiver that ran (@p stream_ran): with
-   a config's [input] staged over it, its spec (dsd_opts::radio_running_dev), the staged input staying named for the next
-   start once that receiver runs again. */
-static int
-svc_rtl_start_the_receiver_that_ran_locked(dsd_opts* opts, dsd_state* state, int stream_ran) {
-    if (!stream_ran || opts->audio_in_type != AUDIO_IN_RTL || opts->radio_running_dev[0] == '\0'
-        || strcmp(opts->audio_in_dev, opts->radio_running_dev) == 0) {
-        return svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
-    }
-    char* staged = (char*)malloc(sizeof opts->audio_in_dev);
-    if (!staged) {
-        return -1;
-    }
-    DSD_SNPRINTF(staged, sizeof opts->audio_in_dev, "%s", opts->audio_in_dev);
-    char* running = (char*)malloc(sizeof opts->radio_running_dev);
-    if (!running) {
-        free(staged);
-        return -1;
-    }
-    DSD_SNPRINTF(running, sizeof opts->radio_running_dev, "%s", opts->radio_running_dev);
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", running);
-    const int rc = svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
-    /* The staged input stays named over the receiver that runs again (a start that works cleared the record). */
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", staged);
-    if (rc == 0) {
-        DSD_SNPRINTF(opts->radio_running_dev, sizeof opts->radio_running_dev, "%s", running);
-    }
-    free(running);
-    free(staged);
-    return rc;
-}
-
 int
 svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_stopped, int capture_before,
                                 const dsd_input_failure* failure_before, int* out_capture_stopped) {
@@ -2433,7 +2370,7 @@ svc_rtl_restart_recovery_locked(dsd_opts* opts, dsd_state* state, int stream_sto
         dsd_input_failure_report((dsd_input_failure_kind)failure_before->kind, failure_before->native_code);
         put_back_generation = dsd_input_failure_generation();
     }
-    const int rc = svc_rtl_start_the_receiver_that_ran_locked(opts, state, stream_stopped);
+    const int rc = svc_rtl_start_on_the_profile_that_ran_locked(opts, state);
     /* The input that ran is back, on the centre it ran: a tune a stop dropped lands if that is its target (issue #644).
        A stream still running stopped above, and noted its own. */
     svc_rtl_scans_stream_reopened(opts, state, rc);
@@ -2492,7 +2429,7 @@ svc_airspy_reopen_impl(dsd_opts* opts, dsd_state* state, const dsd_airspy_config
     const int stream_stopped = state->rtl_ctx != NULL;
     const int capture_before = opts->iq_capture_requested;
     svc_airspy_select(opts, config);
-    const int rc = svc_rtl_restart_onto_locked(opts, state);
+    const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_airspy_select(opts, previous);
         svc_airspy_restore_tuning(opts, previous_tuning);
@@ -2511,7 +2448,7 @@ svc_airspy_reopen_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_conf
         return -1;
     }
     svc_airspy_select(opts, config);
-    const int rc = svc_rtl_restart_onto_locked(opts, state);
+    const int rc = svc_rtl_restart_locked(opts, state);
     (void)rtl_stream_airspy_info(&opts->airspy_info);
     return rc;
 }
@@ -2606,11 +2543,6 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     if (!opts) {
         return -1;
     }
-    /* A setting edit is no input switch: with another input staged over the running receiver (an `airspy` a config
-       named while an RTL-SDR runs), it would stop that receiver and open the staged one, so it is refused first. */
-    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
-        return SVC_ERR_INPUT_STAGED;
-    }
     svc_airspy_tuning tuning;
     DSD_MEMSET(&tuning, 0, sizeof tuning);
     tuning.frequency = opts->rtlsdr_center_freq;
@@ -2668,7 +2600,7 @@ svc_rtl_device_reopen(dsd_opts* opts, dsd_state* state, const svc_rtl_device_cho
     const int stream_stopped = state->rtl_ctx != NULL;
     const int capture_before = opts->iq_capture_requested;
     svc_rtl_device_select(opts, next);
-    const int rc = svc_rtl_restart_onto_locked(opts, state);
+    const int rc = svc_rtl_restart_locked(opts, state);
     if (rc != 0) {
         svc_rtl_device_select(opts, previous);
         if (stream_stopped) {
@@ -2732,11 +2664,6 @@ svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* seri
     if (svc_rtl_device_not_selectable(opts)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    /* The change rewrites the running receiver's spec and reopens it: with another input staged in its place, the
-       rewrite would name that one, and a rollback would reopen it, so nothing changes or stops. */
-    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
-        return SVC_ERR_INPUT_STAGED;
-    }
     svc_rtl_device_choice previous;
     svc_rtl_device_choice next;
     const int staged = svc_rtl_device_stage(opts, index, serial, &previous, &next);
@@ -2751,22 +2678,6 @@ svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* seri
     return svc_rtl_device_reopen(opts, state, &next, &previous, out_capture_stopped);
 }
 
-/* Why a gain edit on the receiver in force is refused before anything changes, 0 when it is taken: a device control
-   the receiver cannot take now (rtl_stream_control_unavailable()), or another input staged in its place, which the
-   reopen would open instead (SVC_ERR_INPUT_STAGED). */
-static int
-svc_rtl_gain_refusal(const dsd_opts* opts, const dsd_state* state) {
-    dsd_app_rtl_gain_view view;
-    (void)dsd_app_rtl_gain_view_get(opts, state, &view);
-    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !view.row_override) {
-        const int unavailable = rtl_stream_control_unavailable();
-        if (unavailable != 0) {
-            return unavailable;
-        }
-    }
-    return svc_rtl_staged_input_blocks_restart(opts, state) ? SVC_ERR_INPUT_STAGED : 0;
-}
-
 int
 svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     /* A fixed source (an I/Q replay) has no tuner gain: its gain is the one its capture recorded, and the restart a
@@ -2777,9 +2688,13 @@ svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value) {
     if (!opts || !state) {
         return -1;
     }
-    const int refused = svc_rtl_gain_refusal(opts, state);
-    if (refused != 0) {
-        return refused;
+    dsd_app_rtl_gain_view view;
+    (void)dsd_app_rtl_gain_view_get(opts, state, &view);
+    if (opts->audio_in_type == AUDIO_IN_RTL && state->rtl_ctx && !view.row_override) {
+        const int unavailable = rtl_stream_control_unavailable();
+        if (unavailable != 0) {
+            return unavailable;
+        }
     }
     if (value < 0) {
         value = 0;
@@ -2918,17 +2833,6 @@ svc_rtl_bw_request_restore(dsd_opts* opts, dsd_state* state, const void* ctx) {
     dsd_opts_set_rtl_dsp_bw(opts, req->khz, req->source);
 }
 
-/* Whether a DSP bandwidth of @p khz is refused before anything changes, the reason in @p why: another input staged in
-   place of the running receiver, which the reopen would open instead, or a width in use it cannot run. */
-static int
-svc_rtl_bandwidth_refused(const dsd_opts* opts, const dsd_state* state, int khz, char* why, size_t why_size) {
-    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
-        svc_rtl_staged_input_why(opts, why, why_size);
-        return 1;
-    }
-    return !svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size);
-}
-
 int
 svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* why, size_t why_size) {
     svc_why(why, why_size, "%s", "");
@@ -2936,7 +2840,7 @@ svc_rtl_set_bandwidth_locked(dsd_opts* opts, dsd_state* state, int khz, char* wh
         return -1;
     }
     khz = dsd_analog_rtl_dsp_bw_or_default(khz);
-    if (svc_rtl_bandwidth_refused(opts, state, khz, why, why_size)) {
+    if (!svc_rtl_bandwidth_fits_analog_width(opts, state, khz, why, why_size)) {
         return -1;
     }
     const svc_rtl_bw_request before = {opts->rtl_dsp_bw_khz, opts->rtl_dsp_bw_source};
@@ -3215,11 +3119,7 @@ svc_trunk_scan_settle_gain(dsd_opts* opts, dsd_state* state, const dsd_trunk_sca
     dsd_input_failure_get(&failure_before);
     const int stream_stopped = state->rtl_ctx != NULL;
     const int capture_before = opts->iq_capture_requested;
-    /* A restart refused before it stopped anything (another input staged over the running receiver) leaves the stream
-       and its capture running, the configured gain waiting for the next start (rtl_needs_restart); only a start that
-       failed has a receiver to bring back. */
-    const int rc = svc_rtl_restart_locked(opts, state);
-    if (rc != 0 && rc != SVC_ERR_INPUT_STAGED) {
+    if (svc_rtl_restart_locked(opts, state) != 0) {
         (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before, NULL);
     }
 #else

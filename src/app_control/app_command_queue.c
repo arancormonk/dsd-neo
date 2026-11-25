@@ -1586,14 +1586,6 @@ ui_mark_operator_tuned(dsd_state* state) {
     ui_rxid_guard_leave(taken);
 }
 
-/* The spec of the radio that runs: the one recorded under a staged input (@p running_dev, dsd_opts::radio_running_dev),
-   else the input in force (@p audio_in_dev). Whether a config's [input] reopens the radio, or applies to it live, is
-   decided against the receiver that runs, never against a name merely staged for the next start. Every build: the config's reopen check reads it. */
-static const char*
-cfg_running_radio_dev(const char* audio_in_dev, const char* running_dev) {
-    return running_dev[0] != '\0' ? running_dev : audio_in_dev;
-}
-
 #ifdef USE_RADIO
 
 /* A rollback's toast: @p prefix and the reason @p why, and, when the restart of the input that ran turned the I/Q
@@ -1640,9 +1632,6 @@ typedef struct {
     int iq_capture_requested;
     dsd_audio_in_type audio_in_type;
     char audio_in_dev[sizeof(((dsd_opts*)0)->audio_in_dev)];
-    /* The receiver running under a staged input (dsd_opts::radio_running_dev): a start that worked cleared it, and a
-       rollback of that start (a scan row it cannot run) needs it back to reopen the receiver that ran. */
-    char radio_running_dev[sizeof(((dsd_opts*)0)->radio_running_dev)];
     int rtltcp_enabled;
     char rtltcp_hostname[sizeof(((dsd_opts*)0)->rtltcp_hostname)];
     int rtltcp_portno;
@@ -1691,7 +1680,6 @@ ui_capture_radio_input(const dsd_opts* opts, const dsd_state* state, ui_radio_in
     out->iq_capture_requested = opts->iq_capture_requested;
     out->audio_in_type = opts->audio_in_type;
     DSD_MEMCPY(out->audio_in_dev, opts->audio_in_dev, sizeof out->audio_in_dev);
-    DSD_MEMCPY(out->radio_running_dev, opts->radio_running_dev, sizeof out->radio_running_dev);
     out->rtltcp_enabled = opts->rtltcp_enabled;
     DSD_MEMCPY(out->rtltcp_hostname, opts->rtltcp_hostname, sizeof out->rtltcp_hostname);
     out->rtltcp_portno = opts->rtltcp_portno;
@@ -1730,7 +1718,6 @@ static void
 ui_restore_radio_input(dsd_opts* opts, const ui_radio_input* in) {
     opts->audio_in_type = in->audio_in_type;
     DSD_MEMCPY(opts->audio_in_dev, in->audio_in_dev, sizeof opts->audio_in_dev);
-    DSD_MEMCPY(opts->radio_running_dev, in->radio_running_dev, sizeof opts->radio_running_dev);
     opts->rtltcp_enabled = in->rtltcp_enabled;
     DSD_MEMCPY(opts->rtltcp_hostname, in->rtltcp_hostname, sizeof opts->rtltcp_hostname);
     opts->rtltcp_portno = in->rtltcp_portno;
@@ -2173,19 +2160,6 @@ ui_cmd_handle_rtl_enable_input(dsd_opts* opts, dsd_state* state, const struct ds
     return result;
 }
 
-/* A restart of the running receiver refused because another input is staged in its place (SVC_ERR_INPUT_STAGED):
-   "Refused: " and what to do. 1 when @p rc is that refusal and the toast says so. */
-static int
-ui_set_staged_input_toast(dsd_state* state, const dsd_opts* opts, int rc) {
-    if (rc != SVC_ERR_INPUT_STAGED) {
-        return 0;
-    }
-    char why[128];
-    svc_rtl_staged_input_why(opts, why, sizeof why);
-    ui_set_toast(state, 5, "Refused: %s", why);
-    return 1;
-}
-
 static int
 ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
     (void)c;
@@ -2198,7 +2172,7 @@ ui_cmd_handle_rtl_restart(dsd_opts* opts, dsd_state* state, const struct dsd_app
             ui_set_toast(state, 3, "Applied: RTL stream restarted");
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: active radio backend cannot restart stream");
-        } else if (!ui_set_staged_input_toast(state, opts, rc)) {
+        } else {
             ui_set_failed_restart_toast(state, opts, capture_before, "RTL stream restart");
         }
     }
@@ -2241,7 +2215,7 @@ ui_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* seria
         ui_set_toast(state, 3, "Applied: RTL device -> %s", what);
     } else if (ui_rc_is_not_supported(rc)) {
         ui_set_toast(state, 3, "Unsupported: this radio source has no RTL-SDR device to select");
-    } else if (!ui_set_staged_input_toast(state, opts, rc)) {
+    } else {
         char why[DSD_RTL_SERIAL_MAX + 64];
         DSD_SNPRINTF(why, sizeof why, "RTL device -> %s (see log)", what);
         ui_set_rollback_toast(state, "Failed: ", why, capture_stopped);
@@ -2668,7 +2642,7 @@ ui_cmd_handle_rtl_set_gain(dsd_opts* opts, dsd_state* state, const struct dsd_ap
             ui_set_toast(state, 3, "%s", notice);
         } else if (ui_rc_is_not_supported(rc)) {
             ui_set_toast(state, 3, "Unsupported: gain control not available on active backend");
-        } else if (!ui_set_staged_input_toast(state, opts, rc) && !ui_cmd_radio_unavailable_toast(state, rc)) {
+        } else if (!ui_cmd_radio_unavailable_toast(state, rc)) {
             char what[32];
             DSD_SNPRINTF(what, sizeof what, "RTL gain -> %d", (int)v);
             ui_set_failed_restart_toast(state, opts, capture_before, what);
@@ -2723,7 +2697,7 @@ ui_cmd_handle_airspy_set(dsd_opts* opts, dsd_state* state, const struct dsd_app_
     const int rc = svc_airspy_apply(opts, state, &config, &capture_stopped);
     if (rc == 0) {
         ui_set_toast(state, 3, "Applied: Airspy setting");
-    } else if (!ui_set_staged_input_toast(state, opts, rc)) {
+    } else {
         /* A reopen whose start failed started the settings it replaced again without the I/Q capture (issue #578). */
         ui_set_rollback_toast(state, "Failed: ", "Airspy setting", capture_stopped);
     }
@@ -4775,26 +4749,8 @@ apply_cfg_rtl_live_gain(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig
     if (opts->rtl_gain_value == before->input.rtl_gain_value) {
         return 0;
     }
-    /* Another input staged over the running receiver (svc_rtl_staged_input_blocks_restart()): the gain waits for the
-       start that opens it, and the running receiver is not reopened. */
-    if (svc_rtl_staged_input_blocks_restart(opts, state)) {
-        return 0;
-    }
     return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
                                       ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
-}
-
-/* A config's [input] that names another input while a radio stream runs and is not reopened (a Pulse or file [input]
-   over a running RTL-SDR or rtl_tcp stream) stages that input for the next start: the stream keeps running, and its
-   spec is recorded (dsd_opts::radio_running_dev, the first one while staging lasts), so a restart of the running
-   receiver is refused rather than open the staged name (svc_rtl_staged_input_blocks_restart()) and a rollback reopens
-   the receiver that runs. */
-static void
-apply_cfg_note_staged_input(dsd_opts* opts, const dsd_state* state, const char* old_audio_in_dev) {
-    if (state->rtl_ctx && opts->audio_in_type == AUDIO_IN_RTL && opts->radio_running_dev[0] == '\0'
-        && strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) != 0) {
-        DSD_SNPRINTF(opts->radio_running_dev, sizeof opts->radio_running_dev, "%s", old_audio_in_dev);
-    }
 }
 
 /* A config's RTL-family [input] that builds a spec other than the RTL-family input's (@p before, the input the apply
@@ -4808,14 +4764,10 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     const char* old_audio_in_dev = before->input.audio_in_dev;
     if (!cfg_uses_rtl_runtime(cfg) || before->input.audio_in_type != AUDIO_IN_RTL
         || opts->audio_in_type != AUDIO_IN_RTL) {
-        apply_cfg_note_staged_input(opts, state, old_audio_in_dev);
         apply_cfg_push_sourceless_squelch(opts, state, cfg);
         return 0;
     }
-    /* Same spec as the receiver that runs (a staged name is not one: a config naming it opens it). */
-    if (strncmp(cfg_running_radio_dev(old_audio_in_dev, before->input.radio_running_dev), opts->audio_in_dev,
-                sizeof opts->audio_in_dev)
-        == 0) {
+    if (strncmp(old_audio_in_dev, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         /* The input keeps running, so the receive settings the config staged reach it here, not through a start: the
            squelch goes to the demodulator's own copy, as apply_cfg_rtl_receive() hands it a reopened input's. A spec
            that carries no squelch (a raw I/Q stream's, a SoapySDR device's) builds the same spec whatever the config's
@@ -4853,9 +4805,8 @@ apply_cfg_rtl_hot_restart(dsd_opts* opts, dsd_state* state, const dsdneoUserConf
     }
     int prev_gain = 0;
     const int staged = apply_cfg_stage_scan_gain(opts, state, cfg, before, &prev_gain);
-    return apply_cfg_settle_scan_gain(
-        opts, state, before, staged, prev_gain,
-        ui_cfg_settle_reopen(opts, state, svc_rtl_restart_onto_locked(opts, state), before));
+    return apply_cfg_settle_scan_gain(opts, state, before, staged, prev_gain,
+                                      ui_cfg_settle_reopen(opts, state, svc_rtl_restart_locked(opts, state), before));
 }
 #endif
 
@@ -5174,7 +5125,7 @@ static int
 apply_cfg_radio_input_tuned(dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg,
                             const ui_cfg_rollback* before) {
     const ui_radio_input* in = &before->input;
-    if (!cfg_is_live_airspy(cfg, cfg_running_radio_dev(in->audio_in_dev, in->radio_running_dev), in->audio_in_type)) {
+    if (!cfg_is_live_airspy(cfg, in->audio_in_dev, in->audio_in_type)) {
         apply_cfg_live_rtl_ppm_request(opts, cfg, in->audio_in_type);
         return apply_cfg_rtl_hot_restart(opts, state, cfg, before);
     }
@@ -9908,8 +9859,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
     if (opts->audio_in_type != AUDIO_IN_RTL) {
         return CFG_REOPEN_NONE;
     }
-    const char* running = cfg_running_radio_dev(opts->audio_in_dev, opts->radio_running_dev);
-    if (cfg_is_live_airspy(cfg, running, opts->audio_in_type)) {
+    if (cfg_is_live_airspy(cfg, opts->audio_in_dev, opts->audio_in_type)) {
         /* The Airspy path applies what it can live, but reopens the device for a new sample rate or serial, or a DSP
            bandwidth or monitor volume other than the stream opened with (svc_airspy_settings_reopen()), with the
            shared tuning the config applies (apply_shared_radio_tuning_from_config()). A reopen runs at the new DSP
@@ -9934,7 +9884,7 @@ cfg_radio_reopen(const dsd_opts* opts, const dsd_state* state, const dsdneoUserC
        (apply_cfg_rtl_live_gain()). An I/Q replay never restarts for a gain: it reopens, where it stopped, only when
        the config re-plans its rate (apply_cfg_replay_replan()). */
     if (dsd_user_config_radio_input_spec(cfg, opts, spec, sizeof spec) != 0
-        || strncmp(spec, running, sizeof opts->audio_in_dev) == 0) {
+        || strncmp(spec, opts->audio_in_dev, sizeof opts->audio_in_dev) == 0) {
         /* A raw I/Q stream re-plans the same way, through a restart (issue #743). */
         if (dsd_opts_input_rate_is_fixed(opts)) {
             return cfg_replay_reopen(opts, state, cfg);
@@ -10267,6 +10217,54 @@ cfg_check_iq_stream_input(const dsd_opts* opts, dsd_state* state, const dsdneoUs
     return cfg_check_iq_stream_spec(opts, state, cfg, cfg);
 }
 
+/* The audio input a config's [input] names in place of the radio, or NULL when it names none: a PCM source with its
+   device set (dsd_user_config_input_sets_device()). A radio source builds a radio spec, which reopens the receiver
+   when it differs from the running one, or names nothing (an RTL-SDR source without rtl_freq: settings only). */
+static const char*
+cfg_pcm_input_label(const dsdneoUserConfig* cfg) {
+    if (!dsd_user_config_input_sets_device(cfg)) {
+        return NULL;
+    }
+    switch (cfg->input_source) {
+        case DSDCFG_INPUT_PULSE: return "Pulse audio";
+        case DSDCFG_INPUT_FILE: return "a file";
+        case DSDCFG_INPUT_TCP: return "TCP audio";
+        case DSDCFG_INPUT_UDP: return "UDP audio";
+        default: return NULL;
+    }
+}
+
+/* No input is staged over a running radio receiver (an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream
+   or replay): a config apply never switches the input type, so a PCM [input] would leave the options naming an input
+   that does not run while the receiver runs on. Such a config is refused before anything changes, the receiver and its
+   I/Q capture untouched; Switch source opens the input, or the config applies once the receiver is stopped. Configs
+   for the running receiver, or for another radio input (which reopens it), apply as before. */
+static int
+cfg_check_input_over_running_radio(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg) {
+    const char* label = cfg_pcm_input_label(cfg);
+    if (!label || !state->rtl_ctx || opts->audio_in_type != AUDIO_IN_RTL) {
+        return UI_CMD_APPLY_COMPLETED;
+    }
+    LOG_WARN("Config not applied: its [input] selects %s while the radio runs; use Input > Switch source to open it, "
+             "or stop the receiver, then load the config.\n",
+             label);
+    ui_set_toast(state, 5,
+                 "Refused: this config selects %s while the radio runs; use Switch source, or stop the receiver first",
+                 label);
+    return UI_CMD_APPLY_FAILED;
+}
+
+/* The [input] checks: no PCM input over a running radio (cfg_check_input_over_running_radio()), then a stream's
+   (cfg_check_iq_stream_input()). */
+static int
+cfg_check_input(const dsd_opts* opts, dsd_state* state, const dsdneoUserConfig* cfg, int loaded_file) {
+    const int over_radio_rc = cfg_check_input_over_running_radio(opts, state, cfg);
+    if (over_radio_rc != UI_CMD_APPLY_COMPLETED) {
+        return over_radio_rc;
+    }
+    return cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
+}
+
 /* Check that the config @p cfg applies, before anything changes. A group file it names in place of the session's is
    loaded here, not installed: @p groups receives it (one reference), for cfg_begin_apply() to install once the calls of
    a scan the config stops have ended under the list they were heard with. @p groups stays NULL otherwise, and on any
@@ -10281,7 +10279,7 @@ cfg_prepare_runtime_apply(const dsd_opts* opts, dsd_state* state, const dsdneoUs
         ui_set_toast(state, 5, "Config not applied: rtl_serial is not a serial an RTL-SDR can have (see log)");
         return UI_CMD_APPLY_FAILED;
     }
-    const int stream_rc = cfg_check_iq_stream_input(opts, state, cfg, loaded_file);
+    const int stream_rc = cfg_check_input(opts, state, cfg, loaded_file);
     if (stream_rc != UI_CMD_APPLY_COMPLETED) {
         return stream_rc;
     }

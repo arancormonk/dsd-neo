@@ -278,13 +278,7 @@ switch_raw_rate(const dsd_opts* opts) {
 
 static void
 switch_commit_name(dsd_opts* opts, const char* name) {
-    /* The radio the switch leaves is the one running: with a config's input staged over it (dsd_opts::radio_running_dev),
-       audio_in_dev names the staged input, so the running radio's own spec is the one the RTL-SDR row comes back to.
-       The record ends here: the input in force is the PCM one now. */
-    if (opts->radio_running_dev[0] != '\0') {
-        DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", opts->radio_running_dev);
-        opts->radio_running_dev[0] = '\0';
-    } else if (dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)) {
+    if (dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)) {
         DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", opts->audio_in_dev);
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", name);
@@ -373,7 +367,11 @@ switch_input_name(const dsd_opts* opts, const dsd_audio_input_request* req, cons
                 DSD_SNPRINTF(name, name_size, "%s", "pulse");
             }
             break;
-        default: DSD_SNPRINTF(name, name_size, "%s", path); break;
+        default:
+            /* A file whose name reads as a radio spec (`rtl:serial=BBBB`, `airspy`) is named by its relative path, so
+               the input name stays a file: the radio rows read a radio spec there as one staged for them. */
+            DSD_SNPRINTF(name, name_size, "%s%s", dsd_opts_audio_in_dev_is_radio_spec(path) ? "./" : "", path);
+            break;
     }
 }
 

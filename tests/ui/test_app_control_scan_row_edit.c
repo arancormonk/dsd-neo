@@ -611,18 +611,6 @@ test_gain_restart(void) {
     assert(g_recovery_calls == 1 && g_recovery_stream_stopped == 1);
     assert(g_guard_depth == 0 && g_guard_held_through);
     expect_notice(notice, "Failed: this channel's RTL gain did not apply; kept the previous gain");
-    /* A restart refused before it stopped anything (another input staged over the running receiver): the gain goes
-       back, and no recovery stops the stream that still runs or ends its capture. */
-    reset();
-    g_engine_result.restart_gain = 1;
-    g_engine_result.previous.set = DSD_SCAN_ROW_FIELD_GAIN;
-    g_engine_result.previous.value.gain_db = 10;
-    g_restart_rc = SVC_ERR_INPUT_STAGED;
-    assert(apply(command(DSD_SCAN_ROW_FIELD_GAIN, DSD_SCAN_ROW_EDIT_SET, NULL), notice, sizeof notice, &ttl)
-           == DSD_APP_SCAN_ROW_EDIT_REFUSED);
-    assert(g_restart_calls == 1 && g_restore_calls == 1 && g_restored.value.gain_db == 10);
-    assert(g_recovery_calls == 0);
-    assert(g_guard_depth == 0 && g_guard_held_through);
 }
 
 static void

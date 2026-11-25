@@ -405,13 +405,13 @@ rtl_tcp the server chooses its dongle, so the row is hidden there (the API answe
 for the toast is shown cut with `...`; the log names it whole. The I/O pane names a dongle chosen by serial on
 a row of its own (`| RTL: SN 00000001;`), and the Source row reads `Source: RTL-SDR SN 00000001`.
 
-A config whose `[input]` names another input while the radio runs (a Pulse or file input, say) stages that input for
-the next start and leaves the radio running. Until then, `Device...`, `Restart stream`, a gain or bandwidth edit, an
-Airspy setting and a scan's gain reopen would open the staged input in place of the running radio, so they are
-refused and leave the radio and any I/Q capture alone:
-`Refused: pulse is staged; use Switch source to open it, or load a config for the running radio`. Switch source opens
-the staged input, and the RTL-SDR row then comes back to the radio that ran. Loading a config for the running radio
-(or one that reopens it on another device) ends the staging.
+While a radio runs (an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay), Config > Load
+refuses a config whose `[input]` selects Pulse, file, TCP or UDP audio, and changes nothing:
+`Refused: this config selects Pulse audio while the radio runs; use Switch source, or stop the receiver first`. Open
+that input with Input > `Switch source`, or stop the receiver, then load the config. A config for the running radio
+(the same device, or settings only, such as an RTL-SDR `[input]` without `rtl_freq`) applies live, and one naming
+another radio input reopens the receiver on it. With audio input running, a config naming a radio input writes its
+spec for the switch back to the radio, as before.
 
 ### Frequency entry
 

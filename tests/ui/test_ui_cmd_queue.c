@@ -24844,32 +24844,6 @@ test_config_reopen_whose_scan_row_the_new_stream_refuses(void) {
     rc |= expect_int("reopen row refused: the configured DMR kept",
                      configured && configured->analog_only == 0 && configured->frame_dmr == 1, 1);
 
-    /* The same refusal with another input staged over the RTL-SDR that runs (a file [input] naming rtl:serial=BBBB): the
-       Airspy starts, which clears the staging record, then cannot run the row; the rollback puts the record back with
-       the input and reopens the receiver that ran, the RTL-SDR, never the staged name. */
-    dsdneoUserConfig staged;
-    DSD_MEMSET(&staged, 0, sizeof staged);
-    staged.has_input = 1;
-    staged.input_source = DSDCFG_INPUT_FILE;
-    DSD_SNPRINTF(staged.file_path, sizeof staged.file_path, "%s", "rtl:serial=BBBB");
-    rc |= submit_config(&opts, &state, &staged, "staged over the RTL-SDR");
-    rc |= expect_str("staged over the RTL-SDR: named", opts.audio_in_dev, "rtl:serial=BBBB");
-    rc |= expect_str("staged over the RTL-SDR: running recorded", opts.radio_running_dev, "rtl:0:851.375M:0:0:16");
-    reset_rx_family_wrap();
-    g_config_rtl_open_ok = 1;
-    g_analog_check_result = -1;
-    g_fake_request_rate_hz = 19531;
-    rc |= submit_config_device_source(&opts, &state, DSDCFG_INPUT_AIRSPY, 48, 0, "staged reopen row refused");
-    rc |= expect_int("staged reopen row refused: failed", dsd_app_command_test_last_failed(), 1);
-    rc |= expect_int("staged reopen row refused: the Airspy, then one more start",
-                     g_config_rtl_creates == 2 && state.rtl_ctx != NULL, 1);
-    rc |= expect_str("staged reopen row refused: the RTL-SDR that ran reopened", g_config_rtl_create_dev,
-                     "rtl:0:851.375M:0:0:16");
-    rc |= expect_str("staged reopen row refused: the staged name kept", opts.audio_in_dev, "rtl:serial=BBBB");
-    rc |= expect_str("staged reopen row refused: the record kept", opts.radio_running_dev, "rtl:0:851.375M:0:0:16");
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851.375M:0:0:16");
-    opts.radio_running_dev[0] = '\0';
-
     /* A rate that filters the row's width keeps the reopened Airspy. */
     reset_rx_family_wrap();
     g_config_rtl_open_ok = 1;

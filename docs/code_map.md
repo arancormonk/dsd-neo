@@ -8092,23 +8092,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note
   (a serial past `UI_RTL_TOAST_SERIAL_MAX` shown cut with `...`, so the note always fits the 128-byte toast). With no
   stream running before (an RTL-SDR input whose last start failed) the failed start puts back only the options and
-  opens nothing. Staged input (no reopen of a different receiver): a config's `[input]` applied over a running stream
-  that it does not reopen (a Pulse or file `[input]` over a running RTL-SDR or rtl_tcp stream) names the new input
-  in `audio_in_dev` for the next start while the stream runs on, and records the running spec
-  (`apply_cfg_note_staged_input()`, `dsd_opts::radio_running_dev`, cleared by every start that works). While the two
-  differ (`svc_rtl_staged_input_blocks_restart()`), a device change, `RTL_RESTART`, a gain or DSP-bandwidth edit and
-  any other restart of the running receiver (`svc_rtl_restart_locked()`) are refused with `SVC_ERR_INPUT_STAGED`
-  before anything stops, toasting `Refused: <name> is staged; use Switch source to open it, or load a config for the
-  running radio`; so is an Airspy setting edit (`svc_airspy_apply()`), which is no input switch, and a scan's gain
-  reopen (`scan_row_edit_restart_gain()`, `svc_trunk_scan_settle_gain()`) skips its recovery on that refusal, so the
-  stream and its I/Q capture keep running. The paths that open the named input on purpose (an input switch, a config
-  reopen, an Airspy or device change) use `svc_rtl_restart_onto_locked()`, and a rollback reopens the recorded running
-  spec with the staged name kept (`svc_rtl_start_the_receiver_that_ran_locked()`); the record is part of the rollback
-  snapshot (`ui_radio_input`), so a reopen whose start cleared it and that a scan row then refuses still reopens the
-  receiver that ran. A config's reopen decision and its preflight compare the spec it builds with the receiver that
-  runs (`cfg_running_radio_dev()`), never with a staged name. A switch to PCM remembers the running radio's spec in
-  `radio_in_dev` and ends the record (`switch_commit_name()`), so the RTL-SDR row comes back to the radio that ran. The spec is the one record of the dongle an input opens: the
-  change writes it where the next open reads the spec (`dsd_app_rtl_device_spec_field()` in
+  opens nothing. No input is staged over a running radio: while a radio stream runs (`state->rtl_ctx` with
+  `AUDIO_IN_RTL`: an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay), a config whose
+  `[input]` selects a PCM input (Pulse, file, TCP or UDP with its device set, `dsd_user_config_input_sets_device()`)
+  is refused in preflight before anything changes (`cfg_check_input_over_running_radio()` in
+  `cfg_prepare_runtime_apply()`), toasting `Refused: this config selects <input> while the radio runs; use Switch
+  source, or stop the receiver first`. A config apply never switches the input type, so that `[input]` would leave
+  `audio_in_dev` naming an input that does not run; refused, `audio_in_dev` always names the running receiver while a
+  radio runs, which every restart, rollback and device change reopens. A radio `[input]` builds a spec, which reopens
+  the receiver when it differs from the running one, or builds none (an RTL-SDR source without `rtl_freq`), applying
+  settings only. With no radio running, a config staging a radio spec over PCM applies as before. An input switch to
+  a file whose relative name reads as a radio spec (`rtl:serial=BBBB`) names it `./rtl:serial=BBBB`
+  (`switch_input_name()`), so the radio rows never read a file just opened as a spec staged for them. The spec is the
+  one record of the dongle an input opens: the change writes it where the next open reads the spec (`dsd_app_rtl_device_spec_field()` in
   `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which must be a local `rtl` spec; with PCM
   running the one the RTL-SDR row opens, picked by the row's own rule, `dsd_app_radio_row_source_field()`, a spec a
   config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept; with no RTL-SDR spec remembered it creates
