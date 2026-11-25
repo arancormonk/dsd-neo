@@ -26,16 +26,29 @@
 #define DPMR          MODE_BIT(DSD_SCAN_MODE_DPMR)
 #define NFM           MODE_BIT(DSD_SCAN_MODE_NFM)
 #define AM            MODE_BIT(DSD_SCAN_MODE_AM)
-/* Blank rows and every digital class (INHERIT through M17). */
-#define DIGITAL_MODES 0x1FFU
+#define TETRA_DMO     MODE_BIT(DSD_SCAN_MODE_TETRA_DMO)
+/* Blank rows and every digital class: INHERIT through M17, and TETRA DMO, appended after the analog classes (issue
+ * #890), so the mask skips their bits. */
+#define DIGITAL_MODES (0x1FFU | TETRA_DMO)
 /* The analog classes (issue #526): no frames, keys, talkgroups or voice verdicts. */
 #define ANALOG_MODES  (NFM | AM)
+/* The digital classes that take keys of their own (issue #890 key matrix, dsd_scan_mode_key_capability()): every one but
+ * M17 (the session's keys apply) and D-STAR, YSF and TETRA DMO (no decryption). dPMR among them, for its scoped -R
+ * scrambler key and the switches a legacy NXDN-scrambler system carries with it. */
+#define KEYED_MODES                                                                                                    \
+    (DIGITAL_MODES                                                                                                     \
+     & ~(MODE_BIT(DSD_SCAN_MODE_M17) | MODE_BIT(DSD_SCAN_MODE_DSTAR) | MODE_BIT(DSD_SCAN_MODE_YSF) | TETRA_DMO))
+/* The fields that carry keys or say how keys are used, which a class taking no keys of its own refuses by name. */
+#define KEY_FIELDS                                                                                                     \
+    (DSD_SCAN_OPT_DIRECT | DSD_SCAN_OPT_FILES | DSD_SCAN_OPT_DMR_MAP | DSD_SCAN_OPT_CLEAR_KEYS                         \
+     | DSD_SCAN_OPT_KEY_PROFILE_REF | DSD_SCAN_OPT_FORCE)
 /* Every class a row or target can declare. An option that is meaningful whatever the class
  * (squelch, the visit cap) uses this; DIGITAL_MODES keeps key, CRC, force, group, call-policy and
  * voice-gate switches off the analog classes. */
-#define ANY_MODES     (DIGITAL_MODES | ANALOG_MODES)
+#define ANY_MODES (DIGITAL_MODES | ANALOG_MODES)
 
 _Static_assert((DIGITAL_MODES & ANALOG_MODES) == 0U, "a class is digital or analog, never both");
+_Static_assert((KEYED_MODES & DPMR) != 0U && (KEYED_MODES & TETRA_DMO) == 0U, "the key matrix's keyed classes");
 _Static_assert(ANY_MODES == (MODE_BIT(DSD_SCAN_MODE_LAST) * 2U) - 1U,
                "ANY_MODES covers every class up to the last one");
 
@@ -132,12 +145,12 @@ static const scan_option_spec specifications[] = {
     {"--dmr-tg-key-csv", DSD_SCAN_OPT_DMR_MAP, DMR, 1, 0, 0, 0, NULL, option_set_path},
     {"--dmr-tg-key-clear", DSD_SCAN_OPT_DMR_MAP, DMR, 0, 0, 0, 0, NULL, option_set_path},
     /* Recognised here and acted on elsewhere: neither carries a value of its own to store. */
-    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_none},
-    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, DIGITAL_MODES, 1, 0, 0, 0, NULL, option_set_path},
-    {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN, 0, 0, 1, 0, NULL, option_set_force},
+    {"--no-decryption-keys", DSD_SCAN_OPT_CLEAR_KEYS, KEYED_MODES, 0, 0, 0, 0, NULL, option_set_none},
+    {"--key-profile-ref", DSD_SCAN_OPT_KEY_PROFILE_REF, KEYED_MODES, 1, 0, 0, 0, NULL, option_set_path},
+    {"-4", DSD_SCAN_OPT_FORCE, DMR | NXDN | DPMR, 0, 0, 1, 0, NULL, option_set_force},
     {"-0", DSD_SCAN_OPT_FORCE, DMR, 0, 0, 0x21, 0, NULL, option_set_force},
     {"--dmr-force-algid", DSD_SCAN_OPT_FORCE, DMR, 1, 0, 0, 0, NULL, option_set_force},
-    {"--no-force-key", DSD_SCAN_OPT_FORCE, DIGITAL_MODES, 0, 0, 0, 0, NULL, option_set_force},
+    {"--no-force-key", DSD_SCAN_OPT_FORCE, KEYED_MODES, 0, 0, 0, 0, NULL, option_set_force},
     {"-F", DSD_SCAN_OPT_CRC, DMR | P25 | MODE_BIT(DSD_SCAN_MODE_M17), 0, 0, 0, 0, NULL, option_set_flag},
     {"--strict-crc", DSD_SCAN_OPT_CRC, DIGITAL_MODES, 0, 0, 1, 0, NULL, option_set_flag},
     {"-^", DSD_SCAN_OPT_P25_CANDIDATES, P25, 0, 0, 1, 0, NULL, option_set_none},
@@ -624,6 +637,17 @@ static int
 option_mode_allowed(const scan_option_spec* spec, unsigned int mode, int conventional, char* error, size_t error_size) {
     if ((spec->modes & MODE_BIT(mode)) && (!spec->conventional || conventional)) {
         return 1;
+    }
+    /* A digital class that takes no keys of its own says why (issue #890 key matrix): M17 rows use the session's keys,
+       D-STAR, YSF and TETRA DMO rows decrypt nothing. */
+    const dsd_scan_key_capability keys = dsd_scan_mode_key_capability((dsd_scan_mode)mode);
+    if ((spec->field & KEY_FIELDS) != 0U && (MODE_BIT(mode) & DIGITAL_MODES) != 0U
+        && (keys == DSD_SCAN_KEYS_SESSION || keys == DSD_SCAN_KEYS_NONE)) {
+        char reason[96];
+        DSD_SNPRINTF(reason, sizeof(reason), "a %s row or target takes no key setting: %s",
+                     dsd_scan_mode_name((dsd_scan_mode)mode), dsd_scan_mode_key_refusal((dsd_scan_mode)mode));
+        (void)option_error(error, error_size, spec->name, reason);
+        return 0;
     }
     if ((spec->modes & ~ANALOG_MODES) != 0U || (MODE_BIT(mode) & ANALOG_MODES) != 0U) {
         (void)option_error(error, error_size, spec->name, "not supported for this mode/target");

@@ -2856,8 +2856,13 @@ under the Entries choice until another target CSV is chosen, the list switches
 to saved systems & frequencies, or the editor closes; Validate and Save then say
 the list has no target CSV yet.
 
-Listen's **Scan lists** tab combines saved systems and bare P25/DMR/NXDN frequencies
-into a single trunk-scan session. Use the visible Edit action (or long-press) to edit entries, order, timing,
+Listen's **Scan lists** tab combines saved systems and bare frequencies (P25, DMR, NXDN96,
+NXDN48, dPMR, D-STAR, YSF, M17, TETRA DMO, NFM and AM) into a single trunk-scan session. The
+simplex digital entries (dPMR, D-STAR, YSF, M17 and TETRA DMO) are conventional only; a list with
+a TETRA DMO entry runs the whole session at 72 kHz under **App default**, and a list set to another
+bandwidth is refused at start (see
+[Simplex digital targets](../docs/trunk-scan.md#simplex-digital-targets)).
+Use the visible Edit action (or long-press) to edit entries, order, timing,
 modulation and gain. Choose one USB or RTL-TCP tuner for the list; it replaces
 individual systems' source, endpoint, PPM, bandwidth and bias-tee settings.
 Scan lists use the app's voice hang time; per-system hang-time overrides do not apply.

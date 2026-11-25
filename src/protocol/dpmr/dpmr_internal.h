@@ -51,5 +51,14 @@ void dpmr_publish_color_code(dsd_state* state, int color_code);
 /* The call's crypto classification by @p scrambled (a DPMR_HALF_* value other than DPMR_HALF_UNVERIFIED) and the
    indication @p enc_observed (dsd_call_crypto_update::enc_observed) the publishing frame checked itself. */
 void dpmr_publish_crypto(dsd_state* state, unsigned int scrambled, uint8_t enc_observed);
+/* A checked dPMR call to trunk scan's policy table (issue #890): its called (@p target, when @p target_known) and calling
+   (@p source, when @p source_known) stations by their raw 24-bit air interface IDs (TS 102 658 A.1.2.1.1.6; the dial
+   string is the display's), its kind by its checked Communications Mode (Table 5.55; 110 and 111 leave it unknown),
+   and its scrambling as the decoder reads it from the checked Version: 3 (binary 11, "Manufacturer Specific" in Table
+   5.111, no scrambler flag of the standard's) is the scrambled indication the voice path already decrypts by
+   (dpmr_resolve_half_scrambling(), issue #655), so the scan's encrypted-call rule and the audio agree. dPMR has no
+   group or individual bit every call carries (Table 5.4, A.1.3.3.5), so the party is unknown. */
+void dpmr_report_scan_activity(const dsd_opts* opts, const dsd_state* state, uint32_t target, int target_known,
+                               uint32_t source, int source_known, uint32_t mode, uint32_t version);
 
 #endif /* DSD_NEO_SRC_PROTOCOL_DPMR_DPMR_INTERNAL_H */

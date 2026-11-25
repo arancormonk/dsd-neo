@@ -20,14 +20,16 @@ rtl_stream_metrics_cqpsk_timing_bias(void) {
 }
 
 static int
-rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
-                                       int ted_sps) {
+rtl_stream_metrics_apply_demod_profile(int cqpsk_enable, int cqpsk_explicit, int symbol_rate_hz, int levels,
+                                       int channel_profile, int ted_sps) {
     const dsdneoRuntimeConfig* cfg = dsd_neo_get_config();
     /* Queue for the demod thread instead of touching demod state from the
-     * decode thread; a user cqpsk override (-1) leaves the family unchanged.
+     * decode thread; a user cqpsk override (-1) leaves the family unchanged
+     * for an automatic request, while a scan row's own choice stands over it
+     * (issue #890), as the row's retune lands it.
      * ted_sps<=0 maps to 0 (clear the override without applying a value),
      * matching the previous synchronous behavior of this hook. */
-    int cqpsk = (!cfg || !cfg->cqpsk_is_set) ? (cqpsk_enable ? 1 : 0) : -1;
+    const int cqpsk = (cqpsk_explicit || !cfg || !cfg->cqpsk_is_set) ? (cqpsk_enable ? 1 : 0) : -1;
     return rtl_stream_request_demod_profile(cqpsk, symbol_rate_hz, levels, channel_profile, ted_sps > 0 ? ted_sps : 0,
                                             0);
 }

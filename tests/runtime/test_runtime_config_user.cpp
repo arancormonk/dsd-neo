@@ -171,15 +171,21 @@ expect_absent_quiet(const char* label, const char* haystack, const char* needle)
 }
 
 /*
- * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN) and
- * an analog target's carrier tail (trunk_scan_conventional_stay_reason(), --help, docs/trunk-scan.md). The schema text,
- * which --dump-config-template prints, said DMR/NXDN only.
+ * Discussion #717: [trunk_scan] activity_hold_ms is the hold of every conventional digital target (DMR, P25, NXDN, and
+ * since issue #890 the simplex families) and an analog target's carrier tail (trunk_scan_conventional_stay_reason(),
+ * --help, docs/trunk-scan.md). The schema text, which --dump-config-template prints, said DMR/NXDN only.
  */
 static int
 test_trunk_scan_activity_hold_description(void) {
     const dsdcfg_schema_entry_t* e = dsdcfg_schema_find("trunk_scan", "activity_hold_ms");
-    if (!e || !e->description || !strstr(e->description, "DMR/P25/NXDN") || !strstr(e->description, "analog")) {
-        DSD_FPRINTF(stderr, "FAIL: [trunk_scan] activity_hold_ms description does not name P25 and analog: %s\n",
+    static const char* const families[] = {"DMR", "P25", "NXDN", "YSF", "D-STAR", "dPMR", "M17", "TETRA DMO", "analog"};
+    int named = e && e->description;
+    for (size_t i = 0; named && i < sizeof families / sizeof families[0]; i++) {
+        named = strstr(e->description, families[i]) != nullptr;
+    }
+    if (!named) {
+        DSD_FPRINTF(stderr,
+                    "FAIL: [trunk_scan] activity_hold_ms description does not name every family and analog: %s\n",
                     (e && e->description) ? e->description : "(missing)");
         return 1;
     }

@@ -435,7 +435,7 @@ main(void) {
     assert(dsd_rtl_stream_metrics_hook_stream_generation() == 123456U);
     assert(g_generation_calls == 1);
     g_request_profile_calls = 0;
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == -21);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 0, 6000, 4, 5, 8) == -21);
     assert(g_request_profile_calls == 1);
     assert(g_last_cqpsk_enable == 1);
     assert(g_last_symbol_rate == 6000);
@@ -447,21 +447,28 @@ main(void) {
     /* A user cqpsk override leaves the demod family unchanged (-1). */
     g_runtime_config.cqpsk_is_set = 1;
     g_runtime_config.cqpsk_enable = 0;
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 6000, 4, 5, 8) == -21);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 0, 6000, 4, 5, 8) == -21);
     assert(g_request_profile_calls == 2);
     assert(g_last_cqpsk_enable == -1);
 
-    g_runtime_config.cqpsk_enable = 1;
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 4800, 4, 3, 10) == -21);
+    /* A scan row's own CQPSK choice stands over it (issue #890: a tetra-dmo row under DSD_NEO_CQPSK=0 keeps the CQPSK
+       chain its retune lands, whichever frame-sync publish comes last). */
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(1, 1, 18000, 4, 7, 4) == -21);
     assert(g_request_profile_calls == 3);
+    assert(g_last_cqpsk_enable == 1);
+    assert(g_last_symbol_rate == 18000);
+
+    g_runtime_config.cqpsk_enable = 1;
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 0, 4800, 4, 3, 10) == -21);
+    assert(g_request_profile_calls == 4);
     assert(g_last_cqpsk_enable == -1);
     assert(g_last_symbol_rate == 4800);
     assert(g_last_symbol_profile == 3);
     assert(g_last_ted_sps == 10);
 
     /* ted_sps<=0 maps to 0: clear the override without applying a value. */
-    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 4800, 4, 3, -5) == -21);
-    assert(g_request_profile_calls == 4);
+    assert(dsd_rtl_stream_metrics_hook_apply_demod_profile(0, 0, 4800, 4, 3, -5) == -21);
+    assert(g_request_profile_calls == 5);
     assert(g_last_ted_sps == 0);
     assert(g_last_ted_sps_is_override == 0);
 

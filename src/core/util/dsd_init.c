@@ -593,6 +593,8 @@ init_state_extension_slots(dsd_state* state) {
         state->state_ext[ext_i] = NULL;
         state->state_ext_cleanup[ext_i] = NULL;
     }
+    /* No scan holds the TETRA extension yet (issue #890). */
+    state->tetra_ext_scan_held = 0U;
 }
 
 /* The rolling dibit buffers, each with its cursor 200 entries in over cleared entries -- only once the allocation is

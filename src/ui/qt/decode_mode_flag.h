@@ -62,10 +62,10 @@ decode_mode_for_flag(const QString& flag) {
  *
  * The allowlist is what the producers write, read from their code:
  * - the wizard's decode chips (qml/Util.js DECODE_MODES): -ft -mq -fs -fi -fn
- *   -fd -fy -fz -fT -fA -fM; the older saves it still labels (LEGACY_DECODE_LABELS)
+ *   -fm -fd -fy -fz -fT -fA -fM; the older saves it still labels (LEGACY_DECODE_LABELS)
  *   and the "-f1 -mq" chip saved_systems_model.cpp migrates on load: -f1;
- * - a scan list's frequency entries (scan_list_targets.cpp resolveSystem()):
- *   -ft -fs -fi -fn -fA -fM;
+ * - a scan list's frequency entries (scan_protocol_catalog.h, issue #890):
+ *   -ft -fs -fn -fi -fm -fd -fy -fz -fT -fA -fM;
  * - signal search's detections (signal_search_model.cpp confirmedDecodeFlag()
  *   and systemForHit()): -ft -fs -fa -fd -fi -fn -fm -fz -fy -fp -fA -fM;
  * - the RadioReference generator (src/runtime/radioreference/rr_generate.c

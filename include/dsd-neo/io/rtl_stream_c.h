@@ -318,6 +318,14 @@ void rtl_stream_set_voice_lane(int enable);
 int rtl_stream_voice_lane_requested(void);
 
 /**
+ * @brief Tell the demod the TETRA decoder is on a direct mode carrier, or no longer (issue #890). From its next block the
+ * TETRA chain takes each DNB's and DSB's timing and carrier phase from its training sequence
+ * (dsd_demod_tetra_uplink_timing_runs()), since a DM-MS keys its transmitter only for its own bursts. Off the TETRA chain
+ * it does nothing, and it costs nothing while off. Process-wide, like rtl_stream_set_voice_lane().
+ */
+void rtl_stream_set_tetra_direct_bursts(int enable);
+
+/**
  * @brief Whether the open stream can carry the FSK voice lane: 0 with no stream, or when its output ring's lane buffer
  * could not be allocated (it is allocated with the ring, so a device short of memory may run without it). Without it
  * every voice-lane sample reads 0, so a reader plays the FSK output instead.

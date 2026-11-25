@@ -18,6 +18,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <dsd-neo/runtime/trunk_scan_hooks.h>
 
 #ifdef __cplusplus
 extern "C" {
@@ -46,6 +47,35 @@ typedef struct {
  */
 int dsd_scan_receive_should_leave(const dsd_opts* opts, const dsd_state* state, double arrived_m, double now_m);
 int dsd_scan_voice_probe(const dsd_opts* opts, const dsd_state* state, dsd_scan_voice_probe_result* out);
+
+/**
+ * The scan's policy table (issue #890): whether activity of @p protocol (a DSD_SYNC_* value) with @p identity may hold
+ * a scan row. Both hold paths ask it, a protocol's activity report and checked voice media; the receive policy (DCC,
+ * RAN, NAC, slot, tone) is the caller's to apply first.
+ *
+ * - A restriction that depends on a field @p identity does not know holds nothing (fail closed): data calls not
+ *   followed (--no-data-calls, the default) with the data field unknown, encrypted calls not followed (--enc-lockout)
+ *   with the encryption unknown, group or private calls not followed with the party unknown.
+ * - Callsign families (YSF, D-STAR, M17) take no talkgroup policy: their callsigns are no talkgroup or radio IDs, so
+ *   only the known data, party and encryption restrictions apply.
+ * - Every other family is judged by its numeric IDs: a known target through the talkgroup policy (a private call by
+ *   both IDs, a group call or one of unknown party by its target and source); with no target known, nothing holds
+ *   under a talkgroup Hold or the allow list, nor a source the radio list blocks, and the known restrictions apply.
+ *
+ * - A transmission the protocol's own receive filter refused (@p identity receive_refused: M17's CAN filter) holds
+ *   nothing.
+ *
+ * 0 for a NULL @p identity.
+ */
+int dsd_scan_activity_policy_allows(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                    const dsd_trunk_scan_activity_identity* identity);
+/** Whether @p protocol (a DSD_SYNC_* value) names its calls by callsign, outside talkgroup policy (YSF, D-STAR, M17). */
+int dsd_scan_activity_protocol_is_callsign(int protocol);
+/** Whether a call of @p protocol (a DSD_SYNC_* value) belongs to scan class @p mode (a dsd_scan_mode): every protocol
+ * for the inherited class (an untyped row), the class's own family otherwise (P25 Phase 1 and 2 for p25, either NXDN
+ * rate for nxdn48 and nxdn96), and none for an analog class. TETRA calls are tetra-dmo's; whether they were direct mode
+ * is the caller's to ask of the call (dsd_call_snapshot::checked_media_tetra_direct). */
+int dsd_scan_mode_family_has_protocol(int mode, int protocol);
 
 /**
  * Non-zero while the analog channel on air has carrier (issue #526), the activity that holds an analog
@@ -173,6 +203,21 @@ double dsd_engine_scan_visit_deadline_m(const dsd_opts* opts, const dsd_state* s
 
 /** Non-zero when the per-visit cap says the -Y visit is over and the scan must advance. */
 int dsd_engine_scan_visit_expired(const dsd_opts* opts, const dsd_state* state, double now_m);
+
+/** Whether the -Y row on air holds only on activity the scan's policy table admits (issue #890; docs/trunk-scan.md, "A
+ * typed row follows the same rules as the target of its type"): a typed row of a simplex digital class (ysf, dstar,
+ * dpmr, m17, tetra-dmo), whose frame-boundary content time moves only with an admitted report
+ * (dsd_engine_scan_y_typed_activity()), not with every checked frame. An untyped row, and a row of any other
+ * class, holds on what its protocols checked, as before. One scope read. 0 for a NULL state. */
+int dsd_engine_scan_y_row_holds_on_admitted(const dsd_state* state);
+/** A simplex digital family's checked activity report (the -Y row hook, dsd_trunk_scan_row_activity_hook_set(); issue
+ * #890): noted as the -Y row's admitted activity when the -Y scan runs (no trunk scan), the row on air is a typed row of
+ * the report's family (dsd_engine_scan_y_row_holds_on_admitted()), the report is an observation of that row's
+ * landed visit and current carrier (dsd_state_scan_observation_origin()), the receive policy lets @p protocol and
+ * @p slot through, and the scan's policy table admits @p identity (dsd_scan_activity_policy_allows()). Decoder thread;
+ * a few loads otherwise. */
+void dsd_engine_scan_y_typed_activity(const dsd_opts* opts, const dsd_state* state, int protocol, int slot,
+                                      const dsd_trunk_scan_activity_identity* identity);
 
 #ifdef __cplusplus
 }

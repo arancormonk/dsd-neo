@@ -13,7 +13,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Modes: `-fa | -ft | -fs | -fr | -f1 | -f2 | -fd | -fx | -fy | -fz | -fU | -fi | -fn | -fp | -fh | -fH | -fe | -fE | -fm | -fT | -fA | -fM` (Auto, `-fa`, is the default)
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
-- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`, `--scan-skip-silent-ms <ms>`
+- Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets, YSF/D-STAR/dPMR/M17/TETRA DMO conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`, `--scan-skip-silent-ms <ms>`
 - RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`; the Windows ZIP ships it and the Airspy and HackRF modules)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
@@ -1098,7 +1098,13 @@ Android session whose saved extra arguments carry one refuses to start the same 
 - EDACS/ProVoice: `-fh` (standard), `-fH` (with ESK 0xA0)
   - Custom AFS bit splits: `-fh344`, `-fH434`
 - EDACS EA/ProVoice: `-fe` (standard), `-fE` (with ESK 0xA0)
-- dPMR: `-fm`. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
+- dPMR: `-fm`. A dPMR call whose header was received carries the header's 24-bit air interface IDs as numbers
+  (shown as dial strings), so group lists (`-G`), a talkgroup Hold, the allow list and `--scan-voice-only` judge it by
+  those numbers: the called station is the talkgroup and the calling station the radio. A call joined after its
+  header has no numbers (its voice frames still show the stations), so a talkgroup Hold, the allow list and
+  voice-only scanning under either treat it as unknown and do not hold it; so is a call picked up again after a short
+  fade without a new header; a frame on another colour code ends the call, and the next call is unknown until its own
+  header. Known limits of its header and end frame reading: a header whose first MI copy is damaged and whose
   24 symbols before the second copy happen to look like a header sync word can be missed, or shown 30 ms late with a
   wrong colour code, and an end frame right after it is then missed; a false header sync word exactly 72 symbols
   before a real header whose own sync word is badly faded can be shown in its place, 30 ms early with a wrong colour
@@ -2882,7 +2888,8 @@ channel is delayed.
   frequency also appears on the next row "hops" to the same frequency, ending the call as an explicit hop rather than
   moving the receiver, and a low `-t` already steps a quiet row about a second after its last sync, so the cap only
   changes what happens on a row that keeps syncing. Optional channel-map `mode` values select `p25`, `dmr`, `nxdn96`,
-  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `nfm` (analog narrowband FM) or `am` (analog AM) for each row. See [the
+  `nxdn48`, `dpmr`, `dstar`, `ysf`, `m17`, `tetra-dmo` (TETRA Direct Mode), `nfm` (analog narrowband FM) or `am`
+  (analog AM) for each row. See [the
   mixed-mode example](../examples/conventional_scan_modes.csv) and [the mixed analog
   example](../examples/conventional_scan_analog.csv). Declared rows work even when excluded by the global preset; blank
   rows inherit it. An `nfm` row runs the analog FM monitor at its own `--nfm-bandwidth-hz` width (the row's `options`)
@@ -2944,8 +2951,10 @@ channel is delayed.
 - Single-tuner trunk scan mode: `--trunk-scan <targets.csv>`
   - Rotates one tuner across CSV-defined P25 trunk, P25 conventional (`p25-conventional`), DMR trunk, DMR
     conventional, NXDN trunk (`nxdn-trunk` NXDN96, `nxdn48-trunk` NXDN48), NXDN96 conventional
-    (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`) and analog NFM and AM conventional
-    (`nfm-conventional`, `am-conventional`, held on carrier) targets. Full guide: `docs/trunk-scan.md`.
+    (`nxdn-conventional`), NXDN48 conventional (`nxdn48-conventional`), analog NFM and AM conventional
+    (`nfm-conventional`, `am-conventional`, held on carrier) and simplex digital (`ysf-conventional`,
+    `dstar-conventional`, `dpmr-conventional`, `m17-conventional`, `tetra-dmo-conventional`) targets. Full guide:
+    `docs/trunk-scan.md`.
   - Several lists: repeat `--trunk-scan <file>` to scan the targets of several files in one session (at most 8), and
     give `--trunk-scan-off <file>` for a list that starts switched off; both also take the `=FILE` form. Lists are
     numbered in command-line order across both options, and a list's name is its file name without folder and
@@ -2964,24 +2973,39 @@ channel is delayed.
     starts off (`--trunk-scan-off`, or `lists_off` in a config;
     `--trunk-scan-hold: target "ROK" is in lists that are off (list 2, conv; list 3, low); start one of them on`), and
     when the target's width does not fit the input, for example
-    `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)`. Without a
+    `--trunk-scan-hold: target "fire"'s width does not fit (NFM 20 kHz does not fit the 16 kHz DSP rate)`, or a TETRA
+    DMO target's receive chain cannot run there (`--trunk-scan-hold: target "dmo" cannot be visited: TETRA needs a 72
+    kHz DSP bandwidth, not 48 kHz; ...`), including a radio that has not published its DSP rate yet, which a start
+    without the hold waits for instead. Without a
     trunk scan (`--trunk-scan`, or a config's `[trunk_scan]` lists) the option is refused, saying why none runs: an
     option on this command line turned off the config's scan, or the config's lists are off (`enabled = false`). The id
     is taken whatever it reads like, so an id that starts with `-` works in both spellings. The start logs whether the
     target is held, holds once its tune lands, or was refused or deferred; a hold that comes once the tune lands shows
     as `HOLD (y continues)` on the Trunk Scan row, with no `Holding:` message. It has no INI key and is never saved: a
     start that wants the hold gives it again.
-  - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`.
+  - Requires a live retuning path: RTL-family input opened by DSD-neo, or rigctl control such as `-U 4532`. A start
+    none of whose targets can be visited on the input is refused, naming the first target and why: for example every
+    target is a TETRA DMO target and the DSP rate is not a TETRA rate or the input is a rigctl peer, or every target is
+    an NFM or AM target whose width the DSP rate cannot filter. A `tetra-dmo-conventional` target (and a `-Y`
+    `tetra-dmo` row) needs a radio I/Q input at a TETRA DSP rate (72 kHz), the channel filter on and no
+    `--tetra-uplink`; otherwise it is skipped at every visit with its reason
+    ([TETRA DMO targets](trunk-scan.md#tetra-dmo-targets)).
   - Use per-target `chan_csv` (and `p25_bandplan_csv`) entries in the target CSV; leave both empty on conventional rows,
     including `p25-conventional` and the analog types. Global `-C` and `--p25-bandplan` are rejected in this mode. P25
     trunk targets that are sites of one system (same WACN/SYS) share the band plan one of them learned over the air.
   - Optional per-target `modulation` and `rtl_gain` columns can override demod hints and RTL-family tuner gain for the
-    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
+    active target. Both P25 types accept `auto`, `c4fm`, or `cqpsk`; DMR and NXDN `auto` or `gfsk`; the simplex digital
+    types only `auto`. Optional `keys_hex_csv`/`keys_dec_csv` columns load a per-target key set, while
     `single_key_dec`/`single_key_hex` embed `-b`/`-H` equivalents; a target cannot mix direct and file key sources.
-    Leaving the target restores the global keys.
+    Leaving the target restores the global keys. The simplex digital types take no key columns: YSF, D-STAR and TETRA
+    DMO targets no key setting at all, M17 targets none of their own (the session's keys apply), and dPMR targets only
+    `-R` (with `-4`, `--no-force-key`, `--key-profile-ref`, `--no-decryption-keys`) in `options`; see
+    [Keys](trunk-scan.md#keys).
   - Idle dwell: `--trunk-scan-dwell-ms <250..600000>` (default `3000`).
-  - Conventional DMR/P25/NXDN activity hold (both NXDN rates), and an analog target's hold after its carrier
-    drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`).
+  - Conventional digital activity hold (DMR, P25, both NXDN rates and the simplex digital types), and an analog
+    target's hold after its carrier drops: `--trunk-scan-activity-hold-ms <250..600000>` (default `1200`). A simplex
+    digital target holds only on content its protocol checked, through the same talkgroup, data, private-call and
+    encryption rules: [What holds a simplex target](trunk-scan.md#what-holds-a-simplex-target).
   - Maximum time per visit: `--scan-max-visit-ms <ms>` (`0` disables, otherwise `1000..3600000`; default `0`).
     Unlike the activity hold above it applies to every target type, trunked and conventional, and it is a ceiling
     rather than a reason to stay: it can cut an ongoing call short, which is the point on a busy system that would
@@ -2994,7 +3018,8 @@ channel is delayed.
   - Voice-only scan (`--scan-voice-only`): digital conventional targets hold only from decoded voice, with `dwell_ms` as
     the qualify window and `activity_hold_ms` as the hold; trunked targets are unchanged (control-only rotates after
     dwell) and show no `Voice:` marker on the status line, and an `nfm-conventional` or `am-conventional` target keeps
-    holding on its carrier. A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
+    holding on its carrier. Only voice of the target's own mode counts (a `tetra-dmo-conventional` target takes only
+    direct mode speech). A conventional target shows `VOICE` while its call is active and `TAIL` after the call ends
     while the hold remains.
   - Silent-channel skip (`--scan-skip-silent`, `--no-scan-skip-silent`; config `[trunking] scan_skip_silent`): a
     conventional target that a quick signal check finds silent is left at once instead of after its idle dwell.

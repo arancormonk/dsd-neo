@@ -358,6 +358,167 @@ twoGeneratedLists() {
     delete opts;
 }
 
+// Issue #890: a list file of @p entries generated from @p systems as the app generates it.
+static QString
+writeEntries(const QTemporaryDir& dir, const QString& file, const QVariantList& systems, const QVariantList& entries) {
+    const auto generated = dsd_qt::scan_list_targets({{"sourceType", "usb"}, {"entries", entries}}, systems);
+    check(generated.ok && generated.targetCount == entries.size());
+    if (!generated.ok) {
+        std::fprintf(stderr, "%s: %s\n", file.toUtf8().constData(), generated.error.toUtf8().constData());
+    }
+    QFile out(dir.filePath(file));
+    check(out.open(QIODevice::WriteOnly));
+    check(out.write(generated.csv) == generated.csv.size());
+    out.close();
+    return out.fileName();
+}
+
+static QVariantMap
+systemEntry(const char* uid, const char* systemUid) {
+    return QVariantMap{{"uid", uid}, {"kind", "system"}, {"systemUid", systemUid}, {"enabled", true}};
+}
+
+static QVariantMap
+freqEntry(const char* uid, const char* protocol, const char* freqMhz) {
+    return QVariantMap{{"uid", uid}, {"kind", "freq"}, {"protocol", protocol}, {"freqMhz", freqMhz}, {"enabled", true}};
+}
+
+// The two lists started as the app starts them (session_args_scan_build_lists(), TETRA DMO targets among them, so App
+// default runs the 72 kHz TETRA rate), parsed as the CLI parses them and initialized by the real coordinator, which
+// merges them (issue #697): the targets it holds, 0 when it refused, with its reason in @p error.
+static size_t
+startTwoLists(const QString& first, const QString& second, QString* error) {
+    QString argsError;
+    const QStringList args = dsd_qt::session_args_scan_build_lists({{"sourceType", "usb"}}, "433", {first, second},
+                                                                   dsd_qt::SessionArgPrefs(), &argsError, true);
+    check(argsError.isEmpty() && args.count("--trunk-scan") == 2);
+    auto* opts = new dsd_opts{};
+    auto* state = new dsd_state{};
+    initOpts(opts);
+    initState(state);
+    QList<QByteArray> storage{QByteArray("scan-lists-test")};
+    for (const auto& arg : args) {
+        storage << arg.toUtf8();
+    }
+    QList<char*> argv;
+    for (auto& arg : storage) {
+        argv << arg.data();
+    }
+    int effective = 0, exitCode = 0;
+    check(dsd_parse_args(static_cast<int>(argv.size()), argv.data(), opts, state, &effective, &exitCode) == 0);
+    check(opts->trunk_scan_enabled == 1 && opts->trunk_scan_list_count == 2);
+    // The receiver runs at the TETRA rate: the -i spec's DSP bandwidth (rtl:dev:freq:gain:ppm:bw:...) is 72 kHz.
+    const qsizetype input = args.indexOf(QStringLiteral("-i"));
+    check(input >= 0 && args.value(input + 1).split(QLatin1Char(':')).value(5) == QStringLiteral("72"));
+    opts->use_rigctl = 1;
+    dsd_trunk_tuning_hooks hooks{};
+    hooks.tune_to_freq_request = tune;
+    hooks.tune_to_cc_request = tune;
+    dsd_trunk_tuning_hooks_set(hooks);
+    // As the engine's own start: a refusal names both lists' paths, which a build's test folder makes long.
+    char initError[DSD_TRUNK_SCAN_ERROR_MAX]{};
+    size_t targets = 0;
+    if (dsd_engine_trunk_scan_init(opts, state, initError, sizeof initError) == 0) {
+        targets = dsd_engine_trunk_scan_target_count(state);
+    }
+    *error = QString::fromUtf8(initError);
+    dsd_engine_trunk_scan_shutdown(opts, state);
+    dsd_trunk_tuning_hooks_set({});
+    dsd_trunk_scan_hooks_set(nullptr);
+    freeState(state);
+    delete state;
+    delete opts;
+    return targets;
+}
+
+// Issue #890: two lists of the simplex digital types, built through the Qt catalog from saved systems (YSF -fy, D-STAR
+// -fd, dPMR -fm with a scrambler key, M17 -fz, TETRA DMO -fT) and frequency entries, merge as every target does (issue
+// #697): an id in both lists with the same settings is one target; the same id with another family, another option
+// (the talkgroup file) or another key is refused, naming both files, both rows and the first setting that differs;
+// two ids on one frequency are two targets, whatever their families.
+static void
+simplexMergedLists() {
+    QTemporaryDir dir;
+    for (const char* name : {"groups-a.csv", "groups-b.csv"}) {
+        QFile groups(dir.filePath(name));
+        check(groups.open(QIODevice::WriteOnly));
+        groups.write("id,mode,name\n6060,A,Simplex\n");
+        groups.close();
+    }
+    const auto simplex = [](const char* uid, const char* flag, const char* mhz) {
+        return QVariantMap{{"uid", uid}, {"decodeFlag", flag}, {"trunking", false}, {"freqMhz", mhz}};
+    };
+    QVariantMap dpmr17 = simplex("dpmr-17", "-fm", "446.1");
+    dpmr17["encKeyType"] = "scrambler";
+    dpmr17["encKeyValue"] = "17";
+    QVariantMap dpmr18 = dpmr17;
+    dpmr18["uid"] = "dpmr-18";
+    dpmr18["encKeyValue"] = "18";
+    QVariantMap ysfGroupA = simplex("ysf-ga", "-fy", "433.1");
+    ysfGroupA["groupCsvPath"] = dir.filePath("groups-a.csv");
+    QVariantMap ysfGroupB = ysfGroupA;
+    ysfGroupB["uid"] = "ysf-gb";
+    ysfGroupB["groupCsvPath"] = dir.filePath("groups-b.csv");
+    const QVariantList systems{simplex("ysf", "-fy", "433"),
+                               simplex("m17", "-fz", "433"),
+                               simplex("dstar", "-fd", "434"),
+                               simplex("tetra", "-fT", "435"),
+                               dpmr17,
+                               dpmr18,
+                               ysfGroupA,
+                               ysfGroupB};
+    const QVariantList base{systemEntry("y", "ysf"), systemEntry("d", "dstar"), systemEntry("t", "tetra"),
+                            systemEntry("p", "dpmr-17"), systemEntry("g", "ysf-ga")};
+    const QString first = writeEntries(dir, "first.csv", systems, base);
+    QFile written(first);
+    check(written.open(QIODevice::ReadOnly));
+    const QByteArray csv = written.readAll();
+    check(csv.contains("\ny,ysf-conventional,433000000,") && csv.contains("\nd,dstar-conventional,434000000,")
+          && csv.contains("\nt,tetra-dmo-conventional,435000000,") && csv.contains("\np,dpmr-conventional,446100000,")
+          && csv.contains("-R 17"));
+
+    QString error;
+    // The same ids with the same settings: one target each, however many lists hold them.
+    check(startTwoLists(first, writeEntries(dir, "same.csv", systems, base), &error) == 5 && error.isEmpty());
+
+    // The same id with another family, another talkgroup file or another key: refused, naming the second list's file
+    // and row, the first's, and the first setting that differs.
+    const struct {
+        const char* file;
+        QVariantMap entry;
+        int firstRow;
+        const char* id;
+        const char* differs;
+    } conflicts[] = {
+        {"family.csv", systemEntry("y", "m17"), 2, "y", "with another type"},
+        {"family-tetra.csv", freqEntry("t", "dpmr", "435"), 4, "t", "with another type"},
+        {"groups.csv", systemEntry("g", "ysf-gb"), 6, "g", "with another -G"},
+        {"key.csv", systemEntry("p", "dpmr-18"), 5, "p", "but the key columns differ"},
+    };
+
+    for (const auto& conflict : conflicts) {
+        const QString second = writeEntries(dir, conflict.file, systems, {conflict.entry});
+        check(startTwoLists(first, second, &error) == 0);
+        const QString want = QStringLiteral("%1 row 2: target id '%2' is also %3 row %4")
+                                 .arg(second, QLatin1String(conflict.id), first)
+                                 .arg(conflict.firstRow);
+        const bool named = error.startsWith(want) && error.contains(QLatin1String(conflict.differs));
+        check(named);
+        if (!named) {
+            std::fprintf(stderr, "%s: '%s', want '%s' and '%s'\n", conflict.file, error.toUtf8().constData(),
+                         want.toUtf8().constData(), conflict.differs);
+        }
+    }
+
+    // Other ids on the first list's frequencies, of other families and of the same: targets of their own.
+    const QVariantList others{systemEntry("m", "m17"), freqEntry("y2", "ysf", "433"), freqEntry("dp", "dpmr", "435"),
+                              freqEntry("t2", "tetra_dmo", "434")};
+    check(startTwoLists(first, writeEntries(dir, "others.csv", systems, others), &error) == 9 && error.isEmpty());
+    if (!error.isEmpty()) {
+        std::fprintf(stderr, "others: %s\n", error.toUtf8().constData());
+    }
+}
+
 #if !DSD_PLATFORM_WIN_NATIVE
 namespace {
 
@@ -964,6 +1125,7 @@ main(int argc, char** argv) {
     keyMuteRotation(false);
     keyMuteRotation(true);
     twoGeneratedLists();
+    simplexMergedLists();
 #if !DSD_PLATFORM_WIN_NATIVE
     mixedAnalogRotation();
     generatedRowSquelchCases();

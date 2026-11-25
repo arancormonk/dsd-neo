@@ -740,11 +740,14 @@ scanBuildRefusal(const QVariantMap& list, const QStringList& csvPaths, const Ses
 
 QStringList
 session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqMhz, const QStringList& csvPaths,
-                              const SessionArgPrefs& prefs, QString* error) {
+                              const SessionArgPrefs& prefs, QString* error, bool tetraTargets) {
     if (error) {
         error->clear();
     }
     QString refusal = scanBuildRefusal(list, csvPaths, prefs);
+    if (refusal.isEmpty()) {
+        refusal = session_args_scan_list_rate_error(list, tetraTargets, prefs.bandwidthKhz);
+    }
     if (!refusal.isEmpty()) {
         if (error) {
             *error = std::move(refusal);
@@ -758,6 +761,10 @@ session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqM
         }
     }
     tuner["freqMhz"] = firstFreqMhz;
+    /* Issue #890 (D3): App default runs a session with TETRA DMO targets at the rate TETRA decodes at. */
+    if (tetraTargets && stored_int_or(list.value("bandwidthKhz"), -1) <= 0) {
+        tuner["bandwidthKhz"] = DSD_TETRA_DSP_BW_KHZ;
+    }
     SessionArgsError reason;
     SessionArgPrefs tunerPrefs = prefs;
     tunerPrefs.skipEncrypted = false;
@@ -1222,7 +1229,7 @@ scan_join_ppm(const QVariantMap& list, const SessionArgPrefs& prefs) {
    only into an RTL spec, the bandwidth only into an RTL or Airspy one, so an Airspy list's stored RTL gain, or a
    network or file list's bandwidth, never keeps it out. */
 QList<QPair<QString, QVariant>>
-scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
+scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs, bool tetraTargets) {
     const QString source = list.value(QStringLiteral("sourceType")).toString();
     const int gain = stored_int_or(list.value(QStringLiteral("gainDb")), -1);
     const bool rtl = is_rtl_source(source);
@@ -1232,10 +1239,7 @@ scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
         {QStringLiteral("Different gain"), rtl ? QVariant(gain >= 0 ? gain : prefs.gainDb) : QVariant()},
         {QStringLiteral("Different PPM correction"), rtl ? scan_join_ppm(list, prefs) : QVariant()},
         {QStringLiteral("Different bandwidth"),
-         tuned ? QVariant(session_args_effective_bandwidth_khz(
-                     QString(), source, stored_int_or(list.value(QStringLiteral("bandwidthKhz")), -1),
-                     prefs.bandwidthKhz))
-               : QVariant()},
+         tuned ? QVariant(session_args_scan_list_bandwidth_khz(list, tetraTargets, prefs.bandwidthKhz)) : QVariant()},
         {QStringLiteral("Different bias tee"),
          rtl && bias_tee_effective(list.value(QStringLiteral("biasTee"), -1), prefs.biasTee)},
         {QStringLiteral("Different Airspy settings"), scan_join_airspy(list)},
@@ -1252,15 +1256,34 @@ scan_join_settings(const QVariantMap& list, const SessionArgPrefs& prefs) {
 } // namespace
 
 QString
-session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other, const SessionArgPrefs& prefs) {
-    const auto mine = scan_join_settings(primary, prefs);
-    const auto theirs = scan_join_settings(other, prefs);
+session_args_scan_join_conflict(const QVariantMap& primary, const QVariantMap& other, const SessionArgPrefs& prefs,
+                                bool tetraTargets) {
+    const auto mine = scan_join_settings(primary, prefs, tetraTargets);
+    const auto theirs = scan_join_settings(other, prefs, tetraTargets);
     for (qsizetype i = 0; i < mine.size(); ++i) {
         if (mine.at(i).second != theirs.at(i).second) {
             return mine.at(i).first;
         }
     }
     return {};
+}
+
+int
+session_args_scan_list_bandwidth_khz(const QVariantMap& list, bool tetraTargets, int prefsKhz) {
+    return session_args_effective_bandwidth_khz(
+        tetraTargets ? QStringLiteral("-fT") : QString(), list.value(QStringLiteral("sourceType")).toString(),
+        stored_int_or(list.value(QStringLiteral("bandwidthKhz")), -1), prefsKhz);
+}
+
+QString
+session_args_scan_list_rate_error(const QVariantMap& list, bool tetraTargets, int prefsKhz) {
+    if (!tetraTargets
+        || session_args_tetra_runs_on(list.value(QStringLiteral("sourceType")).toString(),
+                                      session_args_scan_list_bandwidth_khz(list, true, prefsKhz))) {
+        return {};
+    }
+    return QStringLiteral("This scan has TETRA DMO targets, which decode only at a bandwidth of 72 kHz. Set this "
+                          "list's bandwidth to 72 kHz or App default, or remove the TETRA DMO targets.");
 }
 
 bool

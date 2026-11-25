@@ -1,7 +1,8 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 /**
  * @file
- * @brief Burst timing for a TETRA uplink session, from each burst's training sequence (tetra_uplink_timing.h).
+ * @brief Burst timing for a TETRA uplink session or a direct mode carrier, from each burst's training sequence
+ *        (tetra_uplink_timing.h).
  */
 
 #include <math.h>
@@ -25,6 +26,11 @@ enum {
     UL_NTS_LEN = 11,
     /* The strobe moves onto a burst's grid this many symbols before its first symbol. */
     UL_STROBE_LEAD = 2,
+    /* Direct mode (EN 300 396-2 tables 15 and 16, zero-based): a DNB's normal training sequence and a DSB's
+       synchronization training sequence both end on symbol 125 of 235. */
+    DM_TRAINING_LAST = 125,
+    DM_SYMBOLS = 235,
+    DM_STS_LEN = 19,
 };
 
 /* The agreement a control burst's four outer extended-training symbols need (ul_ets_outer_agreement()): within about 30
@@ -33,12 +39,18 @@ enum {
 
 _Static_assert(DSD_TETRA_UL_LOOKAHEAD_SYMBOLS >= UL_NUB_TRAINING_LAST + UL_STROBE_LEAD + UL_NTS_IN_ETS + 4,
                "the look-ahead covers a normal burst's training, its decision and the strobe lead");
-_Static_assert(DSD_TETRA_UL_RING > DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * DSD_TETRA_UL_MAX_SPS,
+_Static_assert(DSD_TETRA_DM_LOOKAHEAD_SYMBOLS >= DM_TRAINING_LAST + 1 + UL_STROBE_LEAD + 4,
+               "the direct mode look-ahead covers a burst's training and the strobe lead");
+_Static_assert(DSD_TETRA_TIMING_LOOKAHEAD_MAX >= DSD_TETRA_UL_LOOKAHEAD_SYMBOLS
+                   && DSD_TETRA_TIMING_LOOKAHEAD_MAX >= DSD_TETRA_DM_LOOKAHEAD_SYMBOLS,
+               "the largest look-ahead is the larger of the two");
+_Static_assert(DSD_TETRA_UL_RING > DSD_TETRA_TIMING_LOOKAHEAD_MAX * DSD_TETRA_UL_MAX_SPS,
                "the ring holds the look-ahead at the largest sps");
-_Static_assert(DSD_TETRA_UL_DIFF_RING > (UL_ETS_LEN - 1) * DSD_TETRA_UL_MAX_SPS,
-               "the phasor ring holds the extended training sequence at the largest sps");
-_Static_assert(UL_ETS_LEN <= DSD_TETRA_UL_TRAINING_MAX && UL_NTS_LEN <= DSD_TETRA_UL_TRAINING_MAX,
-               "the training tables hold both sequences");
+_Static_assert(DSD_TETRA_UL_DIFF_RING > (DM_STS_LEN - 1) * DSD_TETRA_UL_MAX_SPS,
+               "the phasor ring holds the longest training sequence at the largest sps");
+_Static_assert(UL_ETS_LEN <= DSD_TETRA_UL_TRAINING_MAX && UL_NTS_LEN <= DSD_TETRA_UL_TRAINING_MAX
+                   && DM_STS_LEN <= DSD_TETRA_UL_TRAINING_MAX,
+               "the training tables hold every sequence");
 _Static_assert((DSD_TETRA_UL_RING & (DSD_TETRA_UL_RING - 1)) == 0, "a power of two");
 _Static_assert((DSD_TETRA_UL_DIFF_RING & (DSD_TETRA_UL_DIFF_RING - 1)) == 0, "a power of two");
 
@@ -59,8 +71,8 @@ ul_training_from(dsd_tetra_ul_training* tr, const char* dibits, int len) {
     }
 }
 
-void
-dsd_tetra_ul_timing_reset(dsd_tetra_ul_timing* t, int sps) {
+static void
+ul_timing_reset(dsd_tetra_ul_timing* t, int sps, int direct) {
     if (!t) {
         return;
     }
@@ -69,9 +81,21 @@ dsd_tetra_ul_timing_reset(dsd_tetra_ul_timing* t, int sps) {
         return;
     }
     t->sps = sps;
-    t->delay = DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * sps;
+    t->direct = direct;
+    t->delay = (direct ? DSD_TETRA_DM_LOOKAHEAD_SYMBOLS : DSD_TETRA_UL_LOOKAHEAD_SYMBOLS) * sps;
     ul_training_from(&t->ets_seq, TETRA_CB_SYNC, UL_ETS_LEN);
     ul_training_from(&t->nts_seq, TETRA_NDB_NTS_SYNC, UL_NTS_LEN);
+    ul_training_from(&t->sts_seq, TETRA_SB_SSB_SYNC, DM_STS_LEN);
+}
+
+void
+dsd_tetra_ul_timing_reset(dsd_tetra_ul_timing* t, int sps) {
+    ul_timing_reset(t, sps, 0);
+}
+
+void
+dsd_tetra_ul_timing_reset_direct(dsd_tetra_ul_timing* t, int sps) {
+    ul_timing_reset(t, sps, 1);
 }
 
 /* The score of the training ending on the newest phasor: |sum d[n - k sps] conj(step)|, the larger of the sequence and
@@ -277,8 +301,30 @@ ul_peak_step(dsd_tetra_ul_peak* pk, float score, float phase, int conj, uint64_t
     return finished;
 }
 
+/* Direct mode: a DNB's or DSB's training whose peak finished places its burst at once, the two sequences sharing
+   no symbols with each other's span (tetra_uplink_timing.h). */
+static void
+dm_search(dsd_tetra_ul_timing* t, uint64_t n) {
+    float phase = 0.0f;
+    int conj = 0;
+    const float nts_score = ul_training_score(t, &t->nts_seq, n, &phase, &conj);
+    if (ul_peak_step(&t->nts, nts_score, phase, conj, n, t->sps)) {
+        const dsd_tetra_ul_burst dnb = ul_burst_at(t, &t->nts, DM_TRAINING_LAST, DM_SYMBOLS);
+        ul_burst_found(t, &dnb);
+    }
+    const float sts_score = ul_training_score(t, &t->sts_seq, n, &phase, &conj);
+    if (ul_peak_step(&t->sts, sts_score, phase, conj, n, t->sps)) {
+        const dsd_tetra_ul_burst dsb = ul_burst_at(t, &t->sts, DM_TRAINING_LAST, DM_SYMBOLS);
+        ul_burst_found(t, &dsb);
+    }
+}
+
 static void
 ul_search(dsd_tetra_ul_timing* t, uint64_t n) {
+    if (t->direct) {
+        dm_search(t, n);
+        return;
+    }
     const int sps = t->sps;
     float ets_phase = 0.0f;
     float nts_phase = 0.0f;

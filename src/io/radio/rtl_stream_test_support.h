@@ -145,6 +145,10 @@ typedef struct rtl_stream_test_cqpsk_toggle_result {
     int fsk_reset_pending_after_toggle;
     int reset_consumed;
     int have_prev_after_consume;
+    /* The CQPSK differential demodulator's previous phasor after the toggle (the helper seeds 0.25 - 0.25i when the
+       demod starts on CQPSK). */
+    float cqpsk_prev_r_after;
+    float cqpsk_prev_j_after;
 } rtl_stream_test_cqpsk_toggle_result;
 
 int rtl_stream_test_cqpsk_toggle_output_clear(int start_cqpsk, int target_cqpsk, int active_rtl_digital,

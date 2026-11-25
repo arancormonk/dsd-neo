@@ -25,10 +25,14 @@
 #include <stdio.h>
 #include <stdlib.h>
 
+#include "../../test_support/scan_activity_capture.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dstar_confirm.h"
 #include "dstar_sd_state.h"
+
+/* Trunk scan activity reports (issue #890), recorded. */
+DSD_TEST_SCAN_ACTIVITY_DEFINE_HOOK()
 
 static int g_failures;
 

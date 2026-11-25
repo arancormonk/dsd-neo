@@ -4,6 +4,7 @@
  */
 
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/signal_search_hooks.h>
 #include <stddef.h>
 #include "m17_confirm.h"
@@ -72,6 +73,11 @@ m17_confirm_reset(dsd_state* state) {
     if (ext) {
         DSD_MEMSET(&ext->adata, 0, sizeof(ext->adata));
         DSD_MEMSET(&ext->text_meta, 0, sizeof(ext->text_meta));
+        /* The scan side's copy of the checked LSF, its dispute and its RF continuity (issue #890): no binding outlives
+           the transmission. */
+        DSD_MEMSET(ext->lsf_checked_head, 0, sizeof(ext->lsf_checked_head));
+        ext->lsf_disputed = 0U;
+        ext->lsf_unbroken = 0U;
         ext->pkt_armed = 0U;
         ext->pkt_ref_symbol = 0U;
         ext->ip_stream_last_ms = 0U;
@@ -99,13 +105,15 @@ m17_confirm_note_evidence(const dsd_opts* opts, dsd_state* state, m17_evidence e
     if (!state) {
         return;
     }
-    if (evidence == M17_EVIDENCE_STRONG) {
+    if (evidence == M17_EVIDENCE_STRONG || evidence == M17_EVIDENCE_TEST) {
         state->m17_confirm_frame_evidence = (uint8_t)M17_EVIDENCE_STRONG;
         state->m17_confirm_weak_streak = 0;
         state->m17_confirmed = 1;
         dsd_signal_search_note_evidence(state, "M17", 0, 0, NULL);
         dsd_signal_search_note_call(state, 0U);
-        dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        if (evidence == M17_EVIDENCE_STRONG || dsd_scan_mode_active(state) != DSD_SCAN_MODE_M17) {
+            dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
+        }
         return;
     }
     if (evidence != M17_EVIDENCE_WEAK || state->m17_confirm_frame_evidence != 0) {
@@ -133,6 +141,13 @@ m17_confirm_end_frame(dsd_state* state) {
         return;
     }
     if (state->m17_confirm_frame_evidence == 0) {
+        state->m17_confirm_weak_streak = 0;
+    }
+}
+
+void
+m17_confirm_break_streak(dsd_state* state) {
+    if (state) {
         state->m17_confirm_weak_streak = 0;
     }
 }

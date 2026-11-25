@@ -51,6 +51,16 @@ QString scan_list_settings_error(const QVariantMap& list);
  * digital entry. @p systemDecodeFlag is the saved system's decodeFlag for a system entry, ignored otherwise. An analog
  * entry carries no keys, talkgroups, decryption profile or modulation. */
 int scan_list_entry_analog_kind(const QVariantMap& entry, const QString& systemDecodeFlag);
+struct ScanProtocol;
+/** Issue #890: the catalog protocol (scan_protocol_catalog.h) a scan entry runs -- a frequency entry's protocol id, a
+ * saved system's decode flags @p systemDecodeFlag (scan_protocol_for_flag()) -- or nullptr for one a scan list cannot
+ * map, which it refuses. */
+const ScanProtocol* scan_list_entry_protocol(const QVariantMap& entry, const QString& systemDecodeFlag);
+/** Issue #890: whether a scan entry's own decryption choice (inherit, a profile, no keys) applies to it: the editor
+ * offers it only for a protocol whose row takes keys (P25, DMR, NXDN, and dPMR's scrambler), and hides it for one with
+ * none of its own (YSF, D-STAR, M17, TETRA DMO, NFM, AM), whose stored choice is kept but never resolved. True for an
+ * entry no protocol maps, which the list refuses anyway. */
+bool scan_list_entry_takes_keys(const QVariantMap& entry, const QString& systemDecodeFlag);
 /** The width option of analog demodulator @p kind (dsd_analog_demod): --am-bandwidth-hz for AM, else
  * --nfm-bandwidth-hz, as the CLI and a target's options column spell it. */
 QString scan_list_width_option_name(int kind);

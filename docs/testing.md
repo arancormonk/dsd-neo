@@ -778,6 +778,27 @@ data with a recorded stream gap, a `RETUNE` and a `RESET` as an RTL-SDR stall re
 burst 2005) requires all 16 bursts in order, fast and in real time (`_REALTIME`): the reset starts the burst timing
 over, and before the replay pushed its look-ahead out at a `RETUNE` or `RESET` it dropped the last 108 symbols of 2005.
 
+`tetra_dmo_call_synth_72k` (`TETRA_DMO_NAME`, `build_tetra_dmo()`, issue #890) is a direct mode group call from one
+master at 72 kHz, every identity made up (MNI 460/4242, source 4321, group 6060): DM-SETUP in a DSB in all four slots of
+frames 17 and 18, three multiframes of full-slot speech in a DNB in slot 1 of frames 1 to 17 with DM-OCCUPIED in a DSB
+in slot 3 of frames 6, 12 and 18 and in slot 1 of frame 18, then DM-TX CEASED in slots 1 and 3 of two frames (EN 300
+396-3 clause 4.3). Each burst sits 17 symbols into its slot (EN 300 396-2 tables 14 to 16: preamble, phase adjustment
+symbol, then the trunked blocks and training sequences) with a carrier phase of its own, and the carrier is off between
+bursts (30 dB of noise below the bursts). The DSB blocks are scrambled with the zero colour code, the speech with the DM
+colour code of the MNI and source (EN 300 396-3 clause 8.2.4). `DECODE_IQ_TETRA_DMO_SETUP`, `_OCCUPIED` and `_TX_CEASED`
+require 7 of the 8, all 12 and all 4 of those DSBs (the carrier's first DSB comes before the front end knows it is
+direct mode, on free-running loops, and 5 of 12 realizations lose one), `_SPEECH` all 51 speech bursts with the class-2
+CRC passing and no mismatch, `_CALL_EVENT` the call in the event history as a direct mode group call, and `_DETERMINISM`
+the same decode in fast, real-time, short-read and seeded-sleep legs. The chain's symbol timing and carrier loops
+free-run on the noise between bursts and pulled each burst in late: before the TETRA chain took a direct mode burst's
+timing and carrier phase from its training sequence, as the uplink does (`tetra_uplink_timing.h`, code_map "Direct mode
+bursts"), the replay decoded 9 of the 12 DM-OCCUPIED and 35 of the 51 speech bursts, and with random symbols in the
+empty slots (a carrier that never stops) all of them. The A/B behind the change, 12 realizations each of this call at 30
+and 15 dB (other noise seeds and burst phases, a sample later each) and of the real-air trunked captures and the uplink
+with their first samples dropped, is in the issue #890 PR. `TOOLS_BUILD_IQ_FIXTURES_TETRA` checks each burst's layout,
+its phase adjustment symbol (SN7 to SN126 turn the carrier by whole turns, table 18), the colour code against the
+decoder's seed for the real-air call of `TETRA_DMO`, and the timeslots.
+
 The synthetic TETRA fixtures (`tetra_bsch_*`, `build_tetra_synth()` in `tools/build_iq_fixtures.py`) are pi/4-DQPSK
 shaped by EN 300 392-2's root-raised-cosine (roll-off 0.35, 8 symbols each side, the closed form in
 `tetra_pulse_shape()`), the transmit half of the matched pair the TETRA receive chain completes; they once used a full
@@ -1461,6 +1482,35 @@ within the same bound from the landing (today the off-air `dpmr` capture, typed 
 sync (PROVEN and PARTIAL notes so far, the hangtime anchor) and every step attempt, which is the timeline to read when
 a case fails. Steps `noCarrier()` takes between a call's frames are the hangtime working as set and are reported, not
 failed.
+
+#### Simplex digital targets on a tunable input (issue #890)
+
+I/Q replay is no tunable input, so a replayed `--trunk-scan` can never visit a `tetra-dmo-conventional` target.
+`ENGINE_TRUNK_SCAN_SIMPLEX_RIG` (`tests/trunk_scan_simplex_rig_check.py`, label `scan-rig`; radio builds with the
+control API, not Windows, and numpy, else skipped) runs the real `dsd-neo` against the paced rtl_tcp scene of
+`tools/bench_scan_skip_silent.py` (its `Scene`, with channels of the script's own) at the 72 kHz DSP bandwidth: five
+targets 2 MHz apart, `nfm-conventional` (`nfm_tone_synth`, 3 s), `nxdn48-conventional` (noise only), `ysf-conventional`
+(`ysf_synth`, 4 s), `tetra-dmo-conventional` (`tetra_dmo_call_synth_72k`, 3.8 s) and a second `tetra-dmo-conventional`
+target on trunked TETRA alone (`tetra_bsch_synth_72k`, on the air the whole run). A call plays once, from the first
+retune onto its channel. Every target has a 2 s dwell and a 1 s hold and the visits are capped at 15 s. The run lasts
+until every target has had two whole visits (about 40 s; it stops at 120 s, and the CTest TIMEOUT is 240 s). From the
+scene's record of every retune and the control API's `metrics` lines (`--api`) it checks that every visit lands its
+target's own profile (symbol rate, levels, `rf_mod`, channel profile and width, output rate; the NFM monitor's width and
+output rate), that the NFM, YSF and DMO calls hold their targets for the call and release them within the hold, the
+dwell and 3 s after it, that every other visit is an idle one (its dwell and 3 s), and that the trunked TETRA target
+never holds though its BSCH is decoded. The targets' dwell and hold come from the target CSV over far longer session
+defaults (`--trunk-scan-dwell-ms 8000`, `--trunk-scan-activity-hold-ms 6000`), so a target that ignored its row's would
+hold or idle past its bound (a CSV without the hold column held each call about 11 s and failed). The case runs in real
+time in the default set. A visit is measured in stream time, the samples the paced source delivered between two retunes,
+but the decoder's dwell and hold run on its real clock and the source catches up after a blocked send, so a stalled
+decoder can end a visit early or late by about the stall: what carries a slow or loaded runner is the slack, 3 s on
+every bound and an idle visit's 5 s bound far under the 15 s visit cap a held trunked target would run to. A visit's
+profile is read from the metrics lines between the retune commands as the source received them (not as its next block
+went out, which a stalled decoder delays), leaving out 0.3 s after each and before the next, as the API's lines and the
+commands come on two sockets read apart. With trunked speech reported as direct mode activity (a deliberate break of
+`tetra_nb_speech_decoded()`) the trunked target held to the visit cap on both visits and the case failed. The script
+resamples each channel's call to the 1.152 MHz capture rate before the run: done at the first landing, on the paced
+source's thread, it stalled the stream for a second or more.
 
 #### Received tone (CTCSS) on the analog monitor
 

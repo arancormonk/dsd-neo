@@ -36,6 +36,9 @@
 #include "scan_landing.h"
 #include "test_env.h"
 #include "test_support.h"
+#if defined(DSD_TEST_WRAP_SCAN_DSP_RATE)
+#include "test_engine_scan_entry_seams.h"
+#endif
 
 enum {
     k_fire_hz = 154430000,
@@ -558,6 +561,91 @@ test_trunk_target_unconfirmed_by_a_tune_or_a_reopen(void) {
     return rc;
 }
 
+#if defined(DSD_TEST_WRAP_SCAN_DSP_RATE)
+/* The DSP rate a radio would publish (issue #890): dsd_engine_scan_dsp_rate_hz() reads a running RTL stream's, which
+   none runs here; the match only reads it. */
+static int g_scan_dsp_rate_hz;
+
+int
+scan_entry_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_scan_dsp_rate_hz;
+}
+
+enum { k_dmo_hz = 425000000 };
+
+/* Issue #890: a P25 row and a TETRA DMO row on one frequency of a -Y list. At a 48 kHz DSP rate only P25 is a pick (the
+ * TETRA row is skipped at every visit, and with P25 avoided it names why); at 72 kHz both count, file order deciding,
+ * unless the other one is on air; the TETRA row says why it cannot be picked with the rate not known yet, under
+ * --tetra-uplink and on audio input. */
+static int
+test_y_p25_and_tetra_dmo_on_one_frequency(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (session_new(&opts, &state) != 0) {
+        return 1;
+    }
+    const long rows[] = {k_dmo_hz, k_dmo_hz};
+    y_list(opts, state, rows, 2);
+    opts->audio_in_type = AUDIO_IN_RTL;
+    int rc = expect(dsd_channel_mode_set(state, 0U, DSD_SCAN_MODE_TETRA_DMO) == 0, "row 0 tetra-dmo");
+    rc |= expect(dsd_channel_mode_set(state, 1U, DSD_SCAN_MODE_P25) == 0, "row 1 p25");
+    g_scan_dsp_rate_hz = 48000;
+    rc |= expect_match("48 kHz", opts, state, k_dmo_hz, channel_row(1, 1U, 1U, "row 2"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0, "row 1 avoided");
+    rc |= expect_match("48 kHz, P25 avoided", opts, state, k_dmo_hz,
+                       not_eligible(DSD_SCAN_ENTRY_TETRA_RATE, 0, 0, "row 1"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 0) == 0, "row 1 back");
+    g_scan_dsp_rate_hz = 72000;
+    rc |= expect_match("72 kHz", opts, state, k_dmo_hz, channel_row(0, 1U, 2U, "row 1"));
+    dsd_engine_scan_landing_note_row(state, 1, k_dmo_hz, 0U);
+    rc |= expect_match("72 kHz, P25 on air", opts, state, k_dmo_hz, on_air_row(1, 2U, 2U, "row 2"));
+    g_scan_dsp_rate_hz = 0;
+    rc |= expect_match("the rate not known, P25 on air", opts, state, k_dmo_hz, on_air_row(1, 1U, 1U, "row 2"));
+    rc |= expect(dsd_state_trunk_lcn_avoid_set(state, 1U, 1) == 0, "row 1 avoided again");
+    rc |= expect_match("the rate not known", opts, state, k_dmo_hz,
+                       not_eligible(DSD_SCAN_ENTRY_TETRA_WAIT, 0, 0, "row 1"));
+    g_scan_dsp_rate_hz = 72000;
+    opts->tetra_uplink = 1;
+    rc |=
+        expect_match("--tetra-uplink", opts, state, k_dmo_hz, not_eligible(DSD_SCAN_ENTRY_TETRA_CHAIN, 0, 0, "row 1"));
+    opts->tetra_uplink = 0;
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    opts->use_rigctl = 1;
+    rc |= expect_match("a rigctl peer", opts, state, k_dmo_hz, not_eligible(DSD_SCAN_ENTRY_TETRA_INPUT, 0, 0, "row 1"));
+    g_scan_dsp_rate_hz = 0;
+    session_free(opts, state);
+    return rc;
+}
+
+/* The same pair as trunk-scan targets: at 48 kHz the P25 target alone is a pick; at 72 kHz both count, in list order.
+ * The scan runs on a rigctl peer here; the radio input is the match's to read. */
+static int
+test_trunk_p25_and_tetra_dmo_on_one_frequency(void) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    int rc = trunk_scan_start(&opts, &state,
+                              "p25c,p25-conventional,425000000,,250,250,,,\n"
+                              "dmo,tetra-dmo-conventional,425000000,,250,250,,,TETRA DMO\n",
+                              NULL, 0);
+    if (rc != 0) {
+        trunk_scan_end(opts, state);
+        return expect(0, "trunk scan started");
+    }
+    opts->audio_in_type = AUDIO_IN_RTL;
+    g_scan_dsp_rate_hz = 48000;
+    rc |= expect_match("48 kHz", opts, state, k_dmo_hz, trunk_row(0, 1U, 1U, 0, "p25c"));
+    g_scan_dsp_rate_hz = 72000;
+    rc |= expect_match("72 kHz", opts, state, k_dmo_hz, trunk_row(0, 1U, 2U, 0, "p25c"));
+    opts->audio_in_type = AUDIO_IN_NULL;
+    rc |= expect_match("audio input", opts, state, k_dmo_hz, trunk_row(0, 1U, 1U, 0, "p25c"));
+    g_scan_dsp_rate_hz = 0;
+    trunk_scan_end(opts, state);
+    return rc;
+}
+#endif
+
 int
 main(void) {
     int rc = 0;
@@ -570,6 +658,10 @@ main(void) {
     rc |= test_trunk_targets_sharing_a_frequency();
     rc |= test_trunk_ineligible_targets_name_their_reason();
     rc |= test_trunk_target_unconfirmed_by_a_tune_or_a_reopen();
+#if defined(DSD_TEST_WRAP_SCAN_DSP_RATE)
+    rc |= test_y_p25_and_tetra_dmo_on_one_frequency();
+    rc |= test_trunk_p25_and_tetra_dmo_on_one_frequency();
+#endif
     if (rc == 0) {
         printf("ENGINE_SCAN_ENTRY: OK\n");
     }

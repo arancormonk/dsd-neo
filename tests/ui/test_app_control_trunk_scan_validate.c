@@ -5,6 +5,7 @@
 #include <dsd-neo/core/csv_validate.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/core/trunk_scan_lists.h>
+#include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/runtime/receive_policy.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <errno.h>
@@ -219,6 +220,62 @@ write_targets_with_header(const char* path, const char* header, const char* body
     fputs(header, fp);
     fputs(body, fp);
     fclose(fp);
+}
+
+/* --- Issue #890: the simplex digital target types --- */
+
+static const char k_every_type[] =
+    "expected p25-trunk, p25-conventional, dmr-trunk, dmr-conventional, nxdn-trunk, nxdn-conventional, "
+    "nxdn48-conventional, nxdn48-trunk, nfm-conventional, am-conventional, ysf-conventional, dstar-conventional, "
+    "dpmr-conventional, m17-conventional or tetra-dmo-conventional";
+
+/* The simplex types validate through the facade a frontend previews with, and the preview names each by the parser's
+ * own spelling with its modulation; an unknown type, however long the cell, is refused with every accepted spelling,
+ * alone and as a named list among several. */
+static void
+test_simplex_targets(const char* path) {
+    static const char k_header[] = "id,type,frequency_hz,chan_csv,dwell_ms,activity_hold_ms,notes,modulation\n";
+    write_targets_with_header(path, k_header,
+                              "ysf,ysf-conventional,145500000,,1500,1200,,auto\n"
+                              "dst,dstar-conventional,145670000,,1500,1200,,\n"
+                              "dpm,dpmr-conventional,446006250,,1500,1200,,\n"
+                              "dmo,tetra-dmo-conventional,425000000,,1500,1200,,\n");
+    int count = 0;
+    char err[DSD_TRUNK_SCAN_ERROR_MAX] = {0};
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) == 0);
+    assert(count == 4 && err[0] == '\0');
+    nfm_targets seen = {0};
+    const dsd_app_scan_csv_callbacks callbacks = {collect_nfm_target, NULL, &seen, NULL};
+    assert(dsd_app_scan_csv_inspect(path, NULL, 0, &callbacks, err, sizeof err) == 0);
+    assert(seen.count == 4);
+    assert(strcmp(seen.type[0], "ysf-conventional") == 0 && strcmp(seen.modulation[0], "auto") == 0);
+    assert(strcmp(seen.type[1], "dstar-conventional") == 0 && strcmp(seen.modulation[1], "") == 0);
+    assert(strcmp(seen.type[2], "dpmr-conventional") == 0);
+    assert(strcmp(seen.type[3], "tetra-dmo-conventional") == 0);
+
+    write_targets_with_header(path, k_header, "m17,m17-conventional,145500000,,1500,1200,,gfsk\n");
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+    assert(strstr(err, "row 2 has modulation 'gfsk'; m17-conventional targets take only auto or an empty cell"));
+
+    char cell[301];
+    DSD_MEMSET(cell, 'q', sizeof cell - 1U);
+    cell[sizeof cell - 1U] = '\0';
+    char body[512];
+    DSD_SNPRINTF(body, sizeof body, "bad,%s,145500000,,1500,1200,,\n", cell);
+    write_targets_with_header(path, k_header, body);
+    assert(dsd_app_trunk_scan_validate_targets_csv(path, &count, err, sizeof err) != 0);
+    if (!strstr(err, k_every_type)) {
+        DSD_FPRINTF(stderr, "validator: '%s'\n", err);
+        assert(0);
+    }
+    const char* paths[] = {path};
+    const char* names[] = {"simplex"};
+    DSD_MEMSET(err, 0, sizeof err);
+    assert(dsd_app_trunk_scan_validate_target_lists(paths, names, 1, &count, err, sizeof err) != 0);
+    if (strncmp(err, "simplex: row 2", strlen("simplex: row 2")) != 0 || !strstr(err, k_every_type)) {
+        DSD_FPRINTF(stderr, "list validator: '%s'\n", err);
+        assert(0);
+    }
 }
 
 /* A target's tone list validates through the facade a frontend previews with; a list the parser refuses is refused by
@@ -711,6 +768,7 @@ main(void) {
     test_target_squelch(path);
     test_nfm_targets(path);
     test_am_targets(path);
+    test_simplex_targets(path);
     test_nfm_target_tone_lists(path);
     test_trunk_scan_examples_validate();
     test_rewrite_write_failure();

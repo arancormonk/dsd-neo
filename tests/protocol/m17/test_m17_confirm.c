@@ -20,6 +20,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/runtime/frame_sync_hooks.h>
+#include <dsd-neo/runtime/scan_mode.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -29,6 +30,15 @@
 #include "m17_confirm.h"
 
 static int g_failures;
+
+/* The scan class of the row on air (issue #890 F3), which the test sets: the runtime's scope is not linked. */
+static dsd_scan_mode g_active_scan_mode = DSD_SCAN_MODE_INHERIT;
+
+dsd_scan_mode
+dsd_scan_mode_active(const dsd_state* state) {
+    (void)state;
+    return g_active_scan_mode;
+}
 
 static void
 expect(const char* label, int got, int want) {
@@ -138,6 +148,38 @@ test_quiet_check_hears_the_frame_verdict(dsd_state* state) {
     m17_confirm_reset(state);
 }
 
+/* Issue #890 F3: a BERT lock (a test transmission) confirms the transmission as a CRC does, and is channel activity to an
+   untyped row, but to a row of the m17 class it proves the profile only: no PROVEN note (quiet check) and no -Y content.
+   An LSF CRC on that row is content as ever. */
+static void
+test_bert_is_no_traffic_for_a_typed_row(dsd_state* state) {
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    opts.scan_skip_silent = 1;
+    static const int k_test[] = {M17_EVIDENCE_TEST};
+    static const int k_strong[] = {M17_EVIDENCE_STRONG};
+    quiet_notes_install(1);
+    for (int typed = 0; typed < 2; typed++) {
+        g_active_scan_mode = typed ? DSD_SCAN_MODE_M17 : DSD_SCAN_MODE_INHERIT;
+        m17_confirm_reset(state);
+        const uint32_t content = state->scan_y_content_seq;
+        expect(typed ? "typed row: a BERT lock notes nothing" : "untyped row: a BERT lock is PROVEN",
+               quiet_frame(&opts, state, k_test, 1), typed ? 0 : DSD_CONTENT_EVIDENCE_PROVEN);
+        expect("a BERT lock confirms the transmission", m17_confirm_is_confirmed(state), 1);
+        expect(typed ? "typed row: no -Y content from a BERT lock" : "untyped row: a BERT lock is -Y content",
+               (int)(state->scan_y_content_seq - content), typed ? 0 : 1);
+        expect("an LSF CRC is PROVEN on either row", quiet_frame(&opts, state, k_strong, 1),
+               DSD_CONTENT_EVIDENCE_PROVEN);
+    }
+    /* Another class (a dmr row) is no m17 row: the lock is activity there as on an untyped one. */
+    g_active_scan_mode = DSD_SCAN_MODE_DMR;
+    m17_confirm_reset(state);
+    expect("another class: a BERT lock is PROVEN", quiet_frame(&opts, state, k_test, 1), DSD_CONTENT_EVIDENCE_PROVEN);
+    g_active_scan_mode = DSD_SCAN_MODE_INHERIT;
+    quiet_notes_install(0);
+    m17_confirm_reset(state);
+}
+
 int
 main(void) {
     dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
@@ -197,6 +239,7 @@ main(void) {
     expect("strong evidence overrides a pending streak", m17_confirm_is_confirmed(state), 1);
 
     test_quiet_check_hears_the_frame_verdict(state);
+    test_bert_is_no_traffic_for_a_typed_row(state);
 
     /* NULL is tolerated: the gate is called from paths that run before state exists. */
     m17_confirm_reset(NULL);

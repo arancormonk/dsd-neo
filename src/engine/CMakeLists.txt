@@ -57,6 +57,7 @@ target_sources(
         manual_tune_pending.c
         scan_entry.c
         scan_quiet.c
+        scan_tetra.c
         signal_search.c
         signal_search_protocol.c
         frame_sync_hooks_install.c

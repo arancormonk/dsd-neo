@@ -526,7 +526,8 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("      --p25-bandplan-export <file>  Write the learned P25 band plan CSV once at clean shutdown.\n");
     printf("  -T            Enable Trunking Features (NXDN/P25/EDACS/DMR) with RIGCTL/TCP or RTL Input\n");
     printf("  -Y            Enable Scanning Mode with RIGCTL/TCP or RTL Input\n");
-    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, nfm or am (analog);\n");
+    printf("                 Row mode: p25, dmr, nxdn96, nxdn48, dpmr, dstar, ysf, m17, tetra-dmo (TETRA DMO),\n");
+    printf("                 nfm or am (analog);\n");
     printf("                 blank inherits globals.\n");
     printf("                 Scans conventional frequencies; use -T for trunking.\n");
     printf("      --trunk-scan <targets.csv>  Enable single-tuner trunk scan target rotation.\n");
@@ -537,8 +538,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 its frequency does; y continues the scan. Refused for an id no target has, or a target\n");
     printf("                 in a list that starts off or whose width does not fit.\n");
     printf("      --trunk-scan-dwell-ms <ms>  Set default idle dwell per target (250..600000, default 3000).\n");
-    printf("      --trunk-scan-activity-hold-ms <ms>  Set conventional DMR/P25/NXDN activity hold\n");
-    printf("                 and the analog (nfm/am-conventional) carrier tail (250..600000, default 1200).\n");
+    printf("      --trunk-scan-activity-hold-ms <ms>  Set the conventional digital activity hold (DMR, P25,\n");
+    printf("                 NXDN, YSF, D-STAR, dPMR, M17, TETRA DMO) and the analog (nfm/am-conventional)\n");
+    printf("                 carrier tail (250..600000, default 1200).\n");
     printf("      --scan-voice-only  Digital conventional scan rows/targets: hold only for decoded voice.\n");
     printf("                 Trunked targets use idle dwell and protocol call-following timers.\n");
     printf("                 Analog rows and targets ignore it and hold on carrier.\n");

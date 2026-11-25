@@ -34,6 +34,7 @@
 #include <dsd-neo/engine/trunk_scan.h>
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/protocol/dmr/dmr.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/channel_scan_hooks.h>
 #include <dsd-neo/runtime/config.h>
@@ -89,6 +90,45 @@ dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
     (void)opts;
     (void)state;
     return g_scan_dsp_rate_hz;
+}
+
+/* --- Issue #890: the TETRA visit reset (protocol/tetra/tetra.c) and the TED timing the stream applied
+ * (trunk_tuning.c), which this fixture does not link: each reset counted, with whether the scan held the TETRA state
+ * then and what the frontends were shown (cleared, as the real one clears it); the TED timing is what a test sets. */
+static int g_tetra_visit_resets;
+static int g_tetra_visit_reset_held;
+static int g_tetra_ted_override;
+static int g_tetra_ted_applied;
+
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    g_tetra_visit_resets++;
+    g_tetra_visit_reset_held = state->tetra_ext_scan_held;
+    DSD_MEMSET(&state->tetra_sync, 0, sizeof(state->tetra_sync));
+    dsd_tetra_publication_reset(&state->tetra_pub);
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = g_tetra_ted_override;
+    }
+    if (applied_sps) {
+        *applied_sps = g_tetra_ted_applied;
+    }
+}
+
+/* Whether the stream settled on another receive profile than TETRA's (trunk_tuning.c, issue #890): what a test sets. */
+static int g_tetra_chain_other;
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return g_tetra_chain_other;
 }
 
 /* The live receive-family requests the RTL front end has accepted (trunk_tuning.c). A case standing in for a command
@@ -172,7 +212,8 @@ static int expected_frontend_levels = 2;
 static int expected_frontend_sps = 10;
 
 static int
-restore_frontend(int cqpsk, int rate, int levels, int filter, int sps) {
+restore_frontend(int cqpsk, int cqpsk_explicit, int rate, int levels, int filter, int sps) {
+    (void)cqpsk_explicit;
     assert(cqpsk == 0 && rate == expected_frontend_rate && levels == expected_frontend_levels
            && sps == expected_frontend_sps);
     assert(filter == DSD_RTL_STREAM_CHANNEL_PROFILE_6K25);
@@ -214,6 +255,8 @@ static int tune_landed_closed;
 /* The frequency the next tune must ask for: every list here sits on 150 MHz unless a case lays out rows on distinct
    frequencies to see which row a step picked (issue #666). */
 static long expected_tune_hz = 150000000;
+/* A case whose rows run other symbol rates than 4800 (a tetra-dmo row, issue #890) does not hold their timing here. */
+static int tune_sps_any;
 
 /* A gate a case watches for: every time the receiver comes to run it is counted. */
 static dsd_squelch_setting g_rx_watch;
@@ -253,7 +296,7 @@ dsd_engine_scan_tune_to_freq(dsd_opts* opts, dsd_state* state, long freq, int sp
     tuned_am_width_hz = opts->analog_am_bandwidth_hz;
     const dsd_scan_option_values* row = dsd_engine_scan_tuning_row_options(opts, state);
     tuned_row_width_hz = row && (row->present & DSD_SCAN_OPT_BANDWIDTH) ? row->channel_bw_hz : 0;
-    assert(sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
+    assert(tune_sps_any || sps == (change_rate_on_tune ? (int)reported_rate / 4800 : (expected_nxdn ? 20 : 10)));
     if (change_rate_on_tune) {
         assert(tunes < 100);
         reported_rate = reported_rate == 48000 ? 96000 : 48000;
@@ -2112,7 +2155,8 @@ record_analog_restore(int family, int kind, int width_hz) {
 }
 
 static int
-record_digital_restore(int cqpsk, int rate, int levels, int filter, int sps) {
+record_digital_restore(int cqpsk, int cqpsk_explicit, int rate, int levels, int filter, int sps) {
+    (void)cqpsk_explicit;
     (void)cqpsk;
     (void)rate;
     (void)levels;
@@ -3981,6 +4025,168 @@ dsd_engine_trunk_scan_entry_rows(const dsd_opts* opts, const dsd_state* state, u
     (void)state;
     (void)hz;
     (void)tally;
+}
+
+/* The TETRA state extension a decoder would hold: a stand-in whose frees are counted (issue #890). */
+static int g_fake_tetra_ext;
+static int g_fake_tetra_ext_frees;
+
+static void
+fake_tetra_ext_free(void* ptr) {
+    (void)ptr;
+    g_fake_tetra_ext_frees++;
+}
+
+/* A list of many tetra-dmo rows is named row by row once for the scan session (issue #890): at a 48 kHz DSP rate the
+ * list-wide check names each of the 400 rows (more than the record's first allocation holds) exactly once, and a rate
+ * that moves to another rate TETRA cannot run at names none again, the status line still counting them. The record is
+ * one bit per row, so the check stays linear in the rows however many were named before. */
+static void
+test_tetra_dmo_rows_named_once_list_wide(void) {
+    enum { k_tetra_rows = 400 };
+
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    assert(dsd_state_trunk_lcn_reserve(state, (size_t)k_tetra_rows + 1U) == 0);
+    state->lcn_freq_count = k_tetra_rows + 1;
+    *dsd_state_trunk_lcn_slot(state, 0) = 461000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    for (int row = 1; row <= k_tetra_rows; row++) {
+        *dsd_state_trunk_lcn_slot(state, row) = 420000000L + (long)row * 12500L;
+        assert(dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    }
+    g_scan_dsp_rate_hz = 48000;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tune_sps_any = 1;
+    tunes = 0;
+    state->lcn_freq_roll = 0;
+    expected_tune_hz = 461000000;
+    /* The process's log tap (count_squelch_warnings()) counts every "skipped at every visit" warning. */
+    const int warnings_before = g_analog_warnings;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    const int named_first = g_analog_warnings - warnings_before;
+    /* Another rate TETRA cannot run at: the list-wide check runs again and names none of them again. */
+    g_scan_dsp_rate_hz = 24000;
+    state->lcn_freq_roll = 0;
+    (void)dsd_engine_channel_scan_step(opts, state);
+    const int named_after = g_analog_warnings - warnings_before;
+    if (named_first != k_tetra_rows || named_after != k_tetra_rows) {
+        DSD_FPRINTF(stderr, "FAIL tetra-dmo rows named once list-wide: %d at 48 kHz, %d after 24 kHz (want %d)\n",
+                    named_first, named_after, (int)k_tetra_rows);
+        assert(0);
+    }
+    dsd_engine_channel_scan_leave(opts, state);
+    tune_sps_any = 0;
+    g_scan_dsp_rate_hz = 0;
+    expected_tune_hz = 150000000;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
+}
+
+/* Typed tetra-dmo rows (issue #890 D5) take the TETRA eligibility of a trunk-scan target: at a 48 kHz DSP rate the
+ * row is named once, skipped at every visit with no tune, and a typed frequency is told why; at 72 kHz it lands. A list
+ * with such a row holds the TETRA state from its first landing: every landing starts it cold, a DMR row's leaves it
+ * allocated, and the scan's stop lets it go, freed under a configured DMR session. An untyped list under -fT keeps its
+ * decoding: no hold, no reset. */
+static void
+test_tetra_dmo_rows(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(*state));
+    assert(opts && state);
+    opts->scanner_mode = 1;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->wav_sample_rate = 48000;
+    DSD_SNPRINTF(opts->chan_in_file, sizeof opts->chan_in_file, "%s", "channels.csv");
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_DMR, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    state->lcn_freq_count = 3;
+    *dsd_state_trunk_lcn_slot(state, 0) = 461000000;
+    *dsd_state_trunk_lcn_slot(state, 1) = 425000000;
+    *dsd_state_trunk_lcn_slot(state, 2) = 462000000;
+    assert(dsd_channel_mode_set(state, 0, DSD_SCAN_MODE_DMR) == 0);
+    assert(dsd_channel_mode_set(state, 1, DSD_SCAN_MODE_TETRA_DMO) == 0);
+    assert(dsd_channel_mode_set(state, 2, DSD_SCAN_MODE_DMR) == 0);
+    g_scan_dsp_rate_hz = 48000;
+    g_tetra_visit_resets = 0;
+    g_fake_tetra_ext_frees = 0;
+    expected_nxdn = 0;
+    tune_result = DSD_TRUNK_TUNE_RESULT_OK;
+    tune_sps_any = 1;
+    tunes = 0;
+    state->lcn_freq_roll = 0;
+    expected_tune_hz = 461000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(strstr(state->ui_msg,
+                  "Skipped at every visit: Scan channel 2 (425.000000 MHz): TETRA DMO needs a 72 kHz DSP "
+                  "bandwidth, not 48 kHz")
+           != NULL);
+    /* The list has a tetra-dmo row: its first landing takes the hold. */
+    assert(state->tetra_ext_scan_held == 1U && g_tetra_visit_resets == 1);
+    dsd_scan_entry_match_t match;
+    assert(dsd_engine_scan_entry_match(opts, state, 425000000U, &match) == 0);
+    assert(match.reason == DSD_SCAN_ENTRY_TETRA_RATE && match.row == 1);
+    assert(dsd_engine_channel_scan_reachable_rows(opts, state) == 2);
+    /* The step to it: refused before any backend moves, the cursor past it. */
+    const int tunes_before = tunes;
+    assert(dsd_engine_channel_scan_step(opts, state) == -1);
+    assert(tunes == tunes_before && state->lcn_freq_roll == 2);
+    expected_tune_hz = 462000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+
+    /* 72 kHz: the row lands, the TETRA preset over the state the list holds. */
+    g_scan_dsp_rate_hz = 72000;
+    assert(dsd_engine_scan_entry_match(opts, state, 425000000U, &match) == 1 && match.row == 1);
+    expected_tune_hz = 461000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    expected_tune_hz = 425000000;
+    int resets = g_tetra_visit_resets;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->frame_tetra == 1 && g_tetra_visit_resets == resets + 1 && g_tetra_visit_reset_held);
+    (void)dsd_state_ext_set(state, DSD_STATE_EXT_PROTO_TETRA, &g_fake_tetra_ext, fake_tetra_ext_free);
+    /* A DMR row after it: the TETRA decoder is off, its state dormant, cold and kept. */
+    expected_tune_hz = 462000000;
+    resets = g_tetra_visit_resets;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(opts->frame_tetra == 0 && g_tetra_visit_resets == resets + 1 && g_fake_tetra_ext_frees == 0
+           && dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == &g_fake_tetra_ext);
+    /* The stop: cold, then freed, the configured session running DMR. */
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(state->tetra_ext_scan_held == 0U && g_fake_tetra_ext_frees == 1
+           && dsd_state_ext_get(state, DSD_STATE_EXT_PROTO_TETRA) == NULL);
+
+    /* An untyped list under -fT: every row runs the configured TETRA session, which the scan neither holds nor resets. */
+    dsd_channel_modes_clear(state);
+    assert(dsd_apply_decode_mode_preset(DSDCFG_MODE_TETRA, DSD_DECODE_PRESET_PROFILE_CLI, opts, state) == 0);
+    state->samplesPerSymbol = 10;
+    g_tetra_visit_resets = 0;
+    state->lcn_freq_roll = 0;
+    expected_tune_hz = 461000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    expected_tune_hz = 425000000;
+    assert(dsd_engine_channel_scan_step(opts, state) == 1);
+    assert(state->tetra_ext_scan_held == 0U && g_tetra_visit_resets == 0 && opts->frame_tetra == 1);
+    dsd_engine_channel_scan_leave(opts, state);
+    assert(g_tetra_visit_resets == 0);
+
+    tune_sps_any = 0;
+    g_scan_dsp_rate_hz = 0;
+    expected_tune_hz = 150000000;
+    dsd_state_trunk_lcn_free(state);
+    dsd_state_ext_free_all(state);
+    free(state);
+    free(opts);
+    tunes = reset_count = 0;
 }
 
 /* A frequency typed by hand picks an nfm row only when the width the row runs fits the DSP rate (issue #644 D5): its
@@ -6139,6 +6345,8 @@ main(void) {
     test_row_widths_on_audio_input();
     test_row_session_edits();
     test_entry_match_reads_the_rows_effective_width();
+    test_tetra_dmo_rows();
+    test_tetra_dmo_rows_named_once_list_wide();
     test_receive_row_session_edits();
     test_pause_keeps_the_scan_and_drops_its_row();
     test_pause_in_place_forgets_the_carrier();

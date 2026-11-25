@@ -104,6 +104,20 @@ int dsd_engine_scan_tune_moved(void);
  * stream holds an analog request to (rtl_stream_get_request_rate_hz()), published from its start; 0 when no RTL stream
  * runs. */
 int dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state);
+/** @brief The TED timing a running RTL-family stream publishes, which a TETRA DMO scan row's chain needs (issue #890,
+ * the DSP's dsd_demod_tetra_chain_wanted()), once the stream publishes the TETRA profile a landing came with (the CQPSK
+ * chain at 18000 symbols/s with the TETRA channel profile), which sets both: @p override_sps the override in force
+ * (rtl_stream_get_ted_sps_override()), @p applied_sps the TED's own samples per symbol (rtl_stream_get_ted_sps()).
+ * Each reads 0 for none: no override, a profile not yet TETRA's (whose timing is the last profile's), no RTL stream,
+ * or a radio-off build. Either pointer may be NULL. */
+void dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps);
+/** @brief Whether a running RTL-family stream has settled on a receive profile that is not the TETRA one (issue #890):
+ * no receive request is still waiting for the demod thread (rtl_stream_receive_request_outcome()), and what the stream
+ * publishes is not the CQPSK chain at 18000 symbols/s with the TETRA channel profile. A TETRA DMO scan row landed on such
+ * a profile (the FSK discriminator with the wide filter, say) cannot decode TETRA, while
+ * dsd_engine_scan_tetra_ted_sps() reads it as no timing at all. 0 while a request is pending, with no RTL stream, and in
+ * a radio-off build. */
+int dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state);
 /** @brief When an RTL-family stream's input came back from its last retune's mute (rtl_stream_input_listening_since_ns()),
  * on the decode clock in seconds: -1 while the input is still muted, 0 when no retune armed a mute or no RTL stream
  * runs. A window timed as listening on a landed frequency (the trunk scan's idle dwell) starts no earlier. */

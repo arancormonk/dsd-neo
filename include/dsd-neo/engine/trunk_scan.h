@@ -39,6 +39,13 @@ enum {
     DSD_TRUNK_SCAN_TARGET_MEMORY_BUDGET_BYTES = 256 * 1024 * 1024,
 };
 
+/** Room for any one row's message from the target-list parser (dsd_trunk_scan_load_targets_csv()): the longest, an
+ * unknown type that lists every accepted spelling after its row and a cell cut to 48 bytes, fits with room to spare. */
+#define DSD_TRUNK_SCAN_ROW_ERROR_MAX 512
+/** Room for any message dsd_engine_trunk_scan_init() writes: a row's (DSD_TRUNK_SCAN_ROW_ERROR_MAX) after the path of
+ * the list it is in (up to the 1024 bytes a list path holds), so neither truncates the other. */
+#define DSD_TRUNK_SCAN_ERROR_MAX     2048
+
 /**
  * @brief Largest number of trunk scan targets that fits in the target memory budget.
  *
@@ -64,7 +71,82 @@ typedef enum {
     DSD_TRUNK_SCAN_TARGET_NFM_CONVENTIONAL = 8,
     /** One analog AM channel (issue #526): the AM monitor (-fM), otherwise as an nfm-conventional target. */
     DSD_TRUNK_SCAN_TARGET_AM_CONVENTIONAL = 9,
+    /* The simplex digital channels (issue #890): conventional only, no chan_csv or band plan, and a modulation column
+     * of empty or auto, which lands the class's own modulation (dsd_scan_mode_auto_rf_mod()). */
+    /** One YSF channel: the YSF decoder (-fy), 4800 sym/s C4FM on the 12.5 kHz profile. */
+    DSD_TRUNK_SCAN_TARGET_YSF_CONVENTIONAL = 10,
+    /** One D-STAR channel: the D-STAR decoder (-fd), 4800 bit/s two-level GMSK in a 6.25 kHz channel. */
+    DSD_TRUNK_SCAN_TARGET_DSTAR_CONVENTIONAL = 11,
+    /** One dPMR channel: the dPMR decoder (-fm), 2400 sym/s 4FSK in a 6.25 kHz channel. */
+    DSD_TRUNK_SCAN_TARGET_DPMR_CONVENTIONAL = 12,
+    /** One M17 channel: the M17 decoder (-fz), 4800 sym/s 4FSK on the 12.5 kHz profile. */
+    DSD_TRUNK_SCAN_TARGET_M17_CONVENTIONAL = 13,
+    /** One TETRA Direct Mode channel: the TETRA decoder (-fT), 18 ksym/s pi/4-DQPSK in a 25 kHz channel, on the CQPSK
+     * chain with the TETRA channel filter (scan class tetra-dmo). */
+    DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL = 14,
 } dsd_trunk_scan_target_type;
+
+/** The last target type: the bound every range check and per-type table uses. Types are appended and never renumbered,
+ * so appending one moves this, and a table without the new type's row fails the build. */
+#define DSD_TRUNK_SCAN_TARGET_LAST DSD_TRUNK_SCAN_TARGET_TETRA_DMO_CONVENTIONAL
+
+/**
+ * @brief The receive profile one landing on a trunk-scan target runs (issue #890): one decision, made from the
+ * target's scan class each time the coordinator parks on the target (the initial seeding of every target, a park, a
+ * retry, a walk's rollback, a resume), and used by everything that lands it, so the timing the decoder runs, the
+ * modulation it slices with and the chain the front end is asked for cannot come from three places.
+ *
+ * The coordinator applies it after the target's snapshot is restored, so a snapshot saved under another class never
+ * leaves its timing or rf_mod behind, and passes samples_per_symbol to the target's retune, whose RTL chain the engine
+ * builds from the same profile (dsd_engine_trunk_scan_active_landing()). The live reapply after a command
+ * (dsd_scan_mode_resume()) times the row from the same class table and CQPSK rule, so it lands the same chain.
+ *
+ * Two rates: output_rate_hz is the rate the decoder reads symbols at once the landing has applied (the digital family's
+ * landing when the tune switches family, dsd_scan_mode_symbol_timing_rate_hz()), samples_per_symbol is timed for it;
+ * complex_rate_hz is the complex demodulator (DSP) rate the front end's TED and TETRA's Gardner loop run at, ted_sps is
+ * timed for that. P25 keeps the modulation its target learned (rf_mod, cqpsk); DMR and NXDN keep CQPSK off and the
+ * GFSK slicer they have always landed on.
+ */
+typedef struct {
+    dsd_scan_mode mode;     /**< the target's scan class; INHERIT never occurs for a target */
+    int symbol_rate_hz;     /**< 2400, 4800, 6000 or 18000; 0 for an analog target, whose other fields are 0 too */
+    int levels;             /**< 2 (D-STAR) or 4 */
+    int sps_hunt_idx;       /**< dsd_frame_sync_sps_profile_index the hunt is parked on */
+    int rf_mod;             /**< the decoder's modulation (dsd_state::rf_mod: 0 C4FM, 1 QPSK, 2 GFSK) */
+    int cqpsk;              /**< the chain the front end runs: 1 CQPSK, 0 the FSK discriminator */
+    int channel_profile;    /**< the RTL channel filter of that chain (dsd_rtl_channel_profile_for()) */
+    int output_rate_hz;     /**< the decoder-output rate the decoder is timed for */
+    int samples_per_symbol; /**< dsd_state::samplesPerSymbol at output_rate_hz */
+    int symbol_center;      /**< dsd_state::symbolCenter for samples_per_symbol */
+    int complex_rate_hz;    /**< the complex demodulator rate (dsd_engine_scan_dsp_rate_hz()); 0 when none is known */
+    int ted_sps;            /**< complex_rate_hz / symbol_rate_hz, rounded; 0 when the complex rate is not known */
+} dsd_trunk_scan_landing;
+
+/**
+ * @brief The class part of a target type's landing profile: what the type alone decides.
+ *
+ * The scan class, symbol rate, levels, hunt profile, the class's own modulation (what modulation=auto lands,
+ * dsd_scan_mode_auto_rf_mod(); P25 Phase 1 C4FM), the chain and its channel filter. The rates and timings are 0: they
+ * are the live landing's (dsd_engine_trunk_scan_active_landing()). Usable before any target is parked, e.g. to judge
+ * a TETRA DMO row's chain prospectively (dsd_trunk_scan_landing_ted_agrees()).
+ *
+ * @return 1 for a type with a symbol clock; 0 for an analog type or an unknown value, with @p out zeroed but for mode.
+ */
+int dsd_trunk_scan_type_landing(dsd_trunk_scan_target_type type, dsd_trunk_scan_landing* out);
+
+/**
+ * @brief Whether the front end's TED timing agrees with a landing's complex rate (issue #890, the TETRA chain rule).
+ *
+ * The TETRA downlink chain runs only when both the effective TED samples per symbol (an explicit override when one is
+ * set, else the TED's own) and the applied ones equal the complex rate over the symbol rate (the DSP's own predicate,
+ * dsd_demod_tetra_chain_wanted()). An explicit override that gives the right samples per symbol is honoured; only one
+ * that disagrees with the rate fails. @p ted_sps_override 0 or less: none set. @p applied_ted_sps 0 or less: not
+ * applied yet (a prospective check), judged by the override alone.
+ *
+ * @return 1 when they agree; 0 when they disagree, when the landing has no symbol clock, or when its complex rate is
+ *         not known or not a whole multiple of its symbol rate (landing->ted_sps 0 or inexact).
+ */
+int dsd_trunk_scan_landing_ted_agrees(const dsd_trunk_scan_landing* landing, int ted_sps_override, int applied_ted_sps);
 
 typedef enum {
     DSD_TRUNK_SCAN_MODULATION_UNSET = DSD_SCAN_MODULATION_INHERIT,
@@ -127,6 +209,10 @@ void dsd_trunk_scan_target_list_reset(dsd_trunk_scan_target_list* list);
 
 int dsd_trunk_scan_load_targets_csv(const char* path, const dsd_opts* opts, dsd_trunk_scan_target_list* out, char* err,
                                     size_t err_sz);
+
+/** @brief The type column's spelling of @p type ("p25-trunk", ..., "tetra-dmo-conventional"), as the parser reads it;
+ * "" for a value no row can have. */
+const char* dsd_trunk_scan_target_type_name(dsd_trunk_scan_target_type type);
 
 /**
  * @brief Whether target lists loaded one by one can run in one session (issue #697), and how they merge: the one rule
@@ -447,6 +533,13 @@ void dsd_engine_trunk_scan_nxdn_conventional_activity(const dsd_opts* opts, cons
 void dsd_engine_trunk_scan_p25_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
                                                      int slot, uint32_t target, uint32_t source, int is_private,
                                                      int encrypted, int data_call);
+/**
+ * Checked activity of a simplex digital family (issue #890, dsd_trunk_scan_hook_digital_conventional_activity()): YSF,
+ * D-STAR, dPMR, M17 or TETRA DMO by @p protocol's family, held only by a parked target of that family's conventional
+ * type, on its landed visit, under the receive policy and the scan's policy table (dsd_scan_activity_policy_allows()).
+ */
+void dsd_engine_trunk_scan_digital_conventional_activity(const dsd_opts* opts, const dsd_state* state, int protocol,
+                                                         int slot, const dsd_trunk_scan_activity_identity* identity);
 size_t dsd_engine_trunk_scan_target_count(const dsd_state* state);
 /**
  * @brief Whether the scan running now visits an analog row that runs the configured NFM width (issue #526).
@@ -514,22 +607,41 @@ int dsd_engine_trunk_scan_set_configured_autogain(const dsd_opts* opts, dsd_stat
 int dsd_engine_trunk_scan_set_configured_trunk_enable(dsd_state* state, int enabled);
 int dsd_engine_trunk_scan_active_p25_cqpsk_request(const dsd_state* state, int* out_enable);
 /**
- * @brief Symbol rate of the parked four-level GFSK scan target, or 0 when there is none.
+ * @brief The class part of the parked trunk-scan target's landing (issue #890), which replaced the GFSK-only rate
+ * query: dsd_trunk_scan_type_landing() of its type.
  *
- * The tuning layer cannot derive this on its own. `state->rf_mod == 2` is true for both the
- * 4800 sym/s targets (DMR, NXDN96) and the 2400 sym/s ones (NXDN48), and `state->sps_hunt_idx`
- * is rotated by the no-sync SPS hunt, so a plain `-T` session can be sitting on the 2400 profile
- * during dead air. The coordinator's own target type is the only stable answer.
+ * The tuning layer cannot derive this on its own. `state->rf_mod == 2` is true for both the 4800 sym/s targets (DMR,
+ * NXDN96) and the 2400 sym/s ones (NXDN48), a -m lock leaves rf_mod at the locked value for a target with no modulation
+ * of its own, and `state->sps_hunt_idx` is rotated by the no-sync SPS hunt, so a plain `-T` session can be sitting on
+ * the 2400 profile during dead air. The coordinator's own target type is the only stable answer: the tuning layer
+ * treats it as authoritative for the RTL chain of every target but a P25 one (whose chain follows its learned
+ * modulation, dsd_engine_trunk_scan_active_p25_cqpsk_request()), whatever rf_mod says, so a target whose modulation
+ * column is empty under a global `-m` lock still gets its own symbol rate, levels, CQPSK state and channel filter.
  *
- * The tuning layer treats a non-zero answer as authoritative for the RTL chain regardless of
- * `rf_mod`, so a target whose modulation column is empty under a global `-m` lock still gets its
- * own symbol rate and channel filter.
+ * It reads only which target is parked and that target's type, which never changes once the list is loaded, as the
+ * query it replaced did: so a tune off the decoder thread (the P25 watchdog's) may ask it. The rates and timings are 0
+ * (dsd_engine_trunk_scan_active_landing() has them, on the decoder thread).
  *
  * @param state Decoder state owning the scan coordinator.
- * @return 2400 or 4800 for a parked GFSK-family target; 0 when trunk scan is not installed or the
- *         parked target is P25.
+ * @param out   Receives the class part (may be NULL); zeroed when there is none.
+ * @return 1 for a parked target with a symbol clock; 0 when trunk scan is not installed, is paused, or the parked
+ *         target is analog.
  */
-int dsd_engine_trunk_scan_active_gfsk_symbol_rate(const dsd_state* state);
+int dsd_engine_trunk_scan_active_class_landing(const dsd_state* state, dsd_trunk_scan_landing* out);
+
+/**
+ * @brief The whole landing profile of the parked trunk-scan target (issue #890), rates and timings included: the one
+ * its last park resolved and applied (the eligibility of a TETRA DMO target judges the TED rule from it).
+ *
+ * Decoder thread only: every park rewrites it. A tune off the decoder thread asks
+ * dsd_engine_trunk_scan_active_class_landing() instead.
+ *
+ * @param state Decoder state owning the scan coordinator.
+ * @param out   Receives the profile (may be NULL); zeroed when there is none.
+ * @return 1 for a parked target with a symbol clock; 0 when trunk scan is not installed, is paused, or the parked
+ *         target is analog.
+ */
+int dsd_engine_trunk_scan_active_landing(const dsd_state* state, dsd_trunk_scan_landing* out);
 /**
  * @brief Non-zero while the parked target is p25-trunk or p25-conventional.
  *

@@ -187,10 +187,30 @@ test_soft_data_header_preserves_callsigns(void) {
     state.max = 1.0F;
     build_encoded_header_fixture(soft_rx, 0x80U);
 
-    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
+    /* Issue #890: the checked DATA flag reaches the caller itself (the scan's report reads it there). */
+    int data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 1 && data == 1);
 
     const dsd_call_snapshot call = get_dstar_call(&state);
     assert(call.kind == DSD_CALL_KIND_DATA);
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x78U);
+    data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 1 && data == 0);
+    build_encoded_header_fixture_ex(soft_rx, 0x80U, 1);
+    data = -1;
+    assert(dstar_header_decode_soft_data(&state, soft_rx, &data) == 0 && data == -1);
+    dsd_state_ext_free_all(&state);
+    DSD_MEMSET(&state, 0, sizeof state);
+    state.min = -1.0F;
+    state.center = 0.0F;
+    state.max = 1.0F;
+    build_encoded_header_fixture(soft_rx, 0x80U);
+    assert(dstar_header_decode_soft(&state, soft_rx) == 1);
     assert(strcmp(call.route_text[1], "RPT2TST") == 0);
     assert(strcmp(call.route_text[0], "RPT1TST") == 0);
     assert(strcmp(call.target_text, "CQCQCQ") == 0);

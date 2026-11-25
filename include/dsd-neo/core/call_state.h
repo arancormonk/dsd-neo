@@ -338,6 +338,9 @@ typedef struct {
     uint8_t algid;
     uint8_t audio_permitted;
     uint8_t media_active;
+    /** 1 when the checked media span is TETRA direct mode speech (dsd_call_state_note_checked_media_tetra(), issue
+     * #890): a TETRA DMO scan row takes no other TETRA media. A frame of the other mode starts the span again. */
+    uint8_t checked_media_tetra_direct;
     uint8_t end_reason;  /**< dsd_call_end_reason; meaningful only while phase is DSD_CALL_PHASE_ENDED. */
     uint8_t crc_invalid; /**< Sticky DSD_CRC_* bits (crc_provenance.h) for this transmission; zero is not verified. */
     /**
@@ -650,6 +653,13 @@ int dsd_call_state_update_media(dsd_state* state, uint8_t slot, int media_active
  */
 int dsd_call_state_note_checked_media(dsd_state* state, uint8_t slot, int protocol, double observed_m);
 /**
+ * dsd_call_state_note_checked_media() for a TETRA speech frame (issue #890), which also names the mode its burst was
+ * read in: @p direct 1 for direct mode (EN 300 396), 0 for trunked mode. The span keeps the mode
+ * (dsd_call_snapshot::checked_media_tetra_direct), and a frame of the other mode starts it again, as a frame of
+ * another origin does.
+ */
+int dsd_call_state_note_checked_media_tetra(dsd_state* state, uint8_t slot, int direct, double observed_m);
+/**
  * End the active epoch, recording why it ended.
  *
  * Returns non-zero when the call state changed -- either the epoch was ended, or an already
@@ -721,6 +731,13 @@ int dsd_call_state_get(const dsd_state* state, uint8_t slot, dsd_call_snapshot* 
  * only compares them across a step and needs no snapshot copy. Returns as dsd_call_state_get().
  */
 int dsd_call_state_get_revision(const dsd_state* state, uint8_t slot, uint64_t* epoch, uint64_t* revision);
+/**
+ * How many observations slot @p slot has taken (dsd_call_state_observe(), an identical repeat included), a count that
+ * wraps and that only a caller comparing it across a step reads: an observation is a decoder's checked content naming
+ * the slot's call, which a media refresh (dsd_call_state_update_media()) never is, since it may refresh a call an
+ * earlier transmission left active (issue #890). 0 with no call store or a bad slot.
+ */
+uint32_t dsd_call_state_observation_seq(const dsd_state* state, uint8_t slot);
 int dsd_call_state_copy_snapshot(const dsd_state* state, dsd_call_state_snapshot* out);
 int dsd_call_state_restore_snapshot(dsd_state* state, const dsd_call_state_snapshot* snapshot);
 int dsd_call_context_copy_snapshot(const dsd_state* state, dsd_call_context_snapshot* out);

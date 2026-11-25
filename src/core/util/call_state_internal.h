@@ -16,6 +16,9 @@ typedef struct {
     dsd_recent_activity_snapshot recent;
     dsd_call_event_lifecycle events[DSD_CALL_STATE_SLOT_COUNT];
     uint64_t epoch_sequence[DSD_CALL_STATE_SLOT_COUNT];
+    /* How many observations each slot took (dsd_call_state_observe(), identical repeats included; never a media
+       refresh): dsd_call_state_observation_seq(). */
+    uint32_t observation_seq[DSD_CALL_STATE_SLOT_COUNT];
 } dsd_call_state_ext;
 
 dsd_call_state_ext* dsd_call_state_ext_get(dsd_state* state, int create);

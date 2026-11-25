@@ -1486,10 +1486,13 @@ dsd_demod_tetra_stage(const struct demod_state* d) {
 
 extern "C" int
 dsd_demod_tetra_uplink_timing_runs(const struct demod_state* d, int sps) {
-    if (!d || !d->tetra_uplink || d->tetra_chain || sps < DSD_TETRA_UL_MIN_SPS || sps > DSD_TETRA_UL_MAX_SPS) {
+    if (!d || sps < DSD_TETRA_UL_MIN_SPS || sps > DSD_TETRA_UL_MAX_SPS) {
         return 0;
     }
-    return dsd_demod_tetra_channel_runs(d);
+    if (!d->tetra_uplink) {
+        return d->tetra_chain && d->tetra_direct_bursts ? 1 : 0;
+    }
+    return !d->tetra_chain && dsd_demod_tetra_channel_runs(d);
 }
 
 extern "C" size_t
@@ -1532,7 +1535,7 @@ dsd_demod_tetra_uplink_flush(struct demod_state* d) {
     /* Exactly what it holds, the Gardner's delay included: a closed block drains the same samples, so the symbols and
        the state after them do not depend on where the input stopped. */
     static_assert(sizeof(demod_state::timing_buf) / sizeof(float)
-                      >= 2U * ((size_t)DSD_TETRA_UL_LOOKAHEAD_SYMBOLS * DSD_TETRA_UL_MAX_SPS + TED_DL_SIZE),
+                      >= 2U * ((size_t)DSD_TETRA_TIMING_LOOKAHEAD_MAX * DSD_TETRA_UL_MAX_SPS + TED_DL_SIZE),
                   "the timing buffer holds a whole look-ahead and the Gardner's delay of zeros");
     const size_t cap = sizeof(d->timing_buf) / sizeof(float) / 2U;
     tetra_uplink_drain_zeros(d, d->timing_buf, (int)(held < cap ? held : cap));

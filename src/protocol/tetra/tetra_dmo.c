@@ -18,6 +18,7 @@
 #include <dsd-neo/protocol/tetra/tetra_bits.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_mac.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 
 #include <stdarg.h>
 #include <stddef.h>
@@ -1514,9 +1515,20 @@ dmo_apply_call(tetra_state_t* ts, const tetra_dmo_sync_s_t* s, const tetra_dmo_s
     }
 }
 
+/* The carrier's mode, and the radio stream told of it (issue #890): on a direct mode carrier a DM-MS keys its transmitter
+   for its own bursts only, so the TETRA chain takes each burst's timing and carrier phase from its training
+   (rtl_stream_set_tetra_direct_bursts()). Told only when the mode changes. */
+static void
+dmo_set_mode(tetra_state_t* ts, int dmo) {
+    if ((ts->dmo != 0) != (dmo != 0)) {
+        dsd_rtl_stream_io_hook_set_tetra_direct_bursts(dmo);
+    }
+    ts->dmo = (uint8_t)(dmo != 0);
+}
+
 static void
 dmo_apply_sync(dsd_state* state, tetra_state_t* ts, const tetra_dmo_sync_s_t* s, tetra_dmo_sync_h_t* h) {
-    ts->dmo = 1;
+    dmo_set_mode(ts, 1);
     /* The TMO timebase does not run on a direct mode carrier. */
     tetra_tdma_stop(state);
     if (!s->parsed) {
@@ -1581,7 +1593,7 @@ tetra_dmo_forget_carrier(dsd_state* state) {
     if (!ts) {
         return;
     }
-    ts->dmo = 0;
+    dmo_set_mode(ts, 0);
     ts->dmo_comm_type = 0;
     dmo_forget_channel(ts);
 }

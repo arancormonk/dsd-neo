@@ -11,7 +11,6 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/state_fwd.h>
-#include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_fec.h>
@@ -268,8 +267,10 @@ voice_frame_play(const dsd_opts* opts, dsd_state* state, tetra_voice_t* v, const
     if (bad) {
         v->concealed++;
     } else if (route->admitted && route->decodable && dsd_scan_uses_checked_media(opts, state)) {
-        /* A good frame the codec decoded is the scan's voice credit (issue #890); a concealed one plays but is none. */
-        (void)dsd_call_state_note_checked_media(state, 0U, DSD_SYNC_TETRA_NDB_POS, 0.0);
+        /* A good frame the codec decoded is the scan's voice credit (issue #890); a concealed one plays but is none.
+           It names its burst's mode: a TETRA DMO scan row takes only direct mode speech. */
+        const tetra_state_t* const ts = tetra_st_peek(state);
+        (void)dsd_call_state_note_checked_media_tetra(state, 0U, ts != NULL && ts->dmo, 0.0);
     }
     voice_play(opts, state, v, pcm, bad, route);
 }
@@ -398,6 +399,21 @@ tetra_voice_forget_carrier(tetra_voice_t* voice) {
         voice->gap_kept = 1;
     }
     voice_speech_reset(voice);
+}
+
+void
+tetra_voice_visit_reset(tetra_voice_t* voice) {
+    if (!voice) {
+        return;
+    }
+    voice_speech_reset(voice);
+    voice->frames = 0U;
+    voice->concealed = 0U;
+    voice->codec_errors = 0U;
+    voice->last_decode_failed = 0U;
+    voice->gap_kept = 0U;
+    voice->gap_last_good_m = 0.0;
+    DSD_MEMSET(&voice->gap_owner, 0, sizeof(voice->gap_owner));
 }
 
 /* The frames of one burst of @p sp's call: @p bad[i] for frame i of @p frames. Whether the burst plays is judged first

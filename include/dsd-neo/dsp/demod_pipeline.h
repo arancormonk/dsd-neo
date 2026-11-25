@@ -258,11 +258,13 @@ int dsd_demod_tetra_channel_runs(const struct demod_state* d);
 int dsd_demod_tetra_stage(const struct demod_state* d);
 
 /**
- * @brief Whether the Gardner TED takes a TETRA uplink session's burst timing from the training sequences
- *        (tetra_uplink_timing.h).
+ * @brief Whether the Gardner TED takes a TETRA uplink session's or a direct mode carrier's burst timing from the
+ *        training sequences (tetra_uplink_timing.h).
  *
  * On a trunked mode uplink session (demod_state::tetra_uplink) off the TETRA chain while the TETRA channel filter runs
- * (dsd_demod_tetra_channel_runs()), at @p sps from DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS. Nothing else runs it.
+ * (dsd_demod_tetra_channel_runs()), and (issue #890) on the TETRA chain while the decoder is on a direct mode carrier
+ * (demod_state::tetra_direct_bursts), at @p sps from DSD_TETRA_UL_MIN_SPS to DSD_TETRA_UL_MAX_SPS. Nothing else runs
+ * it: a trunked downlink carrier transmits without gaps, and its loops stay locked from burst to burst.
  *
  * @param d Demodulator state (NULL reads false).
  * @param sps Samples per symbol the Gardner runs at (dsd_cqpsk_timing_sps()).
