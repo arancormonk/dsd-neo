@@ -5375,7 +5375,8 @@ test_api_no_system_skip_said_once_a_run(void) {
 
 // Issue #931 B4: in both modes with an API side, a call skipped for having no system ID still publishes its sidecar,
 // makes no private upload inputs (--rdio-mode both) and queues nothing; a sidecar that cannot be put in place (its name
-// taken by a folder) is still an export failure on that path.
+// taken by a folder) is still an export failure on that path. The API key is checked first: a call with neither a key
+// nor a system ID is an export failure, not a skip, and says nothing about the system ID.
 static int
 test_api_no_system_skip_keeps_the_sidecar_rule(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -5390,6 +5391,9 @@ test_api_no_system_skip_keeps_the_sidecar_rule(void) {
         Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
         if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system_sidecar")
             || dsd_test_path_join(json, sizeof(json), dir, "blocked.json") != 0) {
+            if (dir[0] != '\0') {
+                rdio_test_remove_dir_tree(dir);
+            }
             free(hist);
             free(opts);
             return 1;
@@ -5413,6 +5417,14 @@ test_api_no_system_skip_keeps_the_sidecar_rule(void) {
         if (failed != -1 || queued != 0 || rdio_test_private_inputs_in(dir, NULL) != 0) {
             DSD_FPRINTF(stderr, "%s: a sidecar that cannot be put in place returned %d, queued %d\n", label, failed,
                         queued);
+            rc = 1;
+        }
+        opts->rdio_api_key[0] = '\0';
+        dsd_rdio_session_reset();
+        const int no_key = rdio_no_system_export(opts, hist, dir, "no_key.wav", &queued, &warned);
+        if (no_key != -1 || queued != 0 || warned != 0 || rdio_test_private_inputs_in(dir, NULL) != 0) {
+            DSD_FPRINTF(stderr, "%s: no API key nor system ID returned %d, queued %d, warned %d; want -1, 0, 0\n",
+                        label, no_key, queued, warned);
             rc = 1;
         }
         remove_empty_dir(json);
@@ -5458,7 +5470,15 @@ test_both_mode_delete_after_warning_once_a_run(void) {
                 rc = 1;
             }
         }
+        /* The uploads to the closed port fail as the shutdown drains them: their log lines are the test's own. */
+        dsd_test_capture_stderr cap;
+        const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_delete_after_drain") == 0;
         dsd_rdio_upload_shutdown();
+        if (capturing) {
+            dsd_test_capture_stderr_end(&cap);
+            char drained[512];
+            (void)dsd_test_capture_stderr_read(&cap, drained, sizeof(drained)); /* removes the capture file */
+        }
     }
     rdio_test_remove_dir_tree(dir);
     free(hist);
