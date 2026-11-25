@@ -225,6 +225,29 @@ test_selected_notice_escapes_the_serial(void) {
     return rc;
 }
 
+/* A dongle opened by index whose strings read but report no serial: the selected-device notice says so, never that it
+   could not be read, as the listing shows it with SN: (none); one whose read failed still says that. */
+static int
+test_selected_notice_no_serial(void) {
+    set_devices(1, "", NULL, NULL);
+    run_result r;
+    if (run_local_rtl_setup("rtl:0", &r) != 0) {
+        return 1;
+    }
+    int rc = expect_true("no-serial notice: accepted", r.rc == 0 && r.dev_index == 0);
+    rc |= expect_log("no-serial listed", "0:  Realtek, RTL2838UHIDIR, SN: (none)\n");
+    rc |= expect_log("no-serial notice", "NOTICE: Selected Device #0 (reports no serial)\n");
+    rc |= expect_true("no-serial notice: not unreadable", strstr(g_log, "could not read") == NULL);
+    set_devices(2, "", NULL, NULL);
+    if (run_local_rtl_setup("rtl:1", &r) != 0) {
+        return 1;
+    }
+    rc |= expect_log("unreadable notice",
+                     "Selected Device #1 with Serial Number: (could not read: in use by another program, or no "
+                     "permission)");
+    return rc;
+}
+
 static int
 test_unreadable_after_readable_shows_no_stale_strings(void) {
     set_devices(2, "00000001", NULL, NULL);
@@ -390,6 +413,7 @@ main(void) {
     rc |= test_serial_found_selects_its_index();
     rc |= test_unreadable_after_readable_shows_no_stale_strings();
     rc |= test_selected_notice_escapes_the_serial();
+    rc |= test_selected_notice_no_serial();
     rc |= test_serial_not_found_refuses();
     rc |= test_serial_duplicate_refuses();
     rc |= test_serial_not_found_counts_no_serial_apart();

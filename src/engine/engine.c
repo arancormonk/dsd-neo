@@ -1002,10 +1002,17 @@ dsd_engine_setup_log_rtl_devices(const dsd_opts* opts, const struct rtl_device_e
     }
     if (opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index >= 0 && opts->rtl_dev_index < shown) {
         const struct rtl_device_entry* e = &list[opts->rtl_dev_index];
-        /* The serial as the device reported it, shown escaped as the listing shows it. */
-        char sn[RTL_DEVICE_SHOWN_SIZE];
-        rtl_device_string_shown(e->readable ? e->serial : RTL_DEVICE_UNREADABLE_TEXT, sn, sizeof sn);
-        LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", e->index, sn);
+        if (e->readable) {
+            /* The serial as the device reported it, shown escaped as the listing shows it. */
+            char sn[RTL_DEVICE_SHOWN_SIZE];
+            rtl_device_string_shown(e->serial, sn, sizeof sn);
+            LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", e->index, sn);
+        } else if (e->strings_read) {
+            /* Its strings read, but it reports no serial (the listing's `SN: (none)`): no read failed. */
+            LOG_INFO("NOTICE: Selected Device #%d (reports no serial)\n", e->index);
+        } else {
+            LOG_INFO("NOTICE: Selected Device #%d with Serial Number: %s \n", e->index, RTL_DEVICE_UNREADABLE_TEXT);
+        }
     }
 }
 
