@@ -10319,8 +10319,8 @@ add_test(
     NAME ENGINE_RELEASE_OUTPUTS
     COMMAND dsd-neo_test_engine_release_outputs
 )
-# The CLI's own ways of stopping before the engine runs: a parse error after -P, and --airspy-list.
-foreach(_mode PARSE_ERROR AIRSPY_LIST)
+# The CLI's own ways of stopping before the engine runs: a parse error after -P, --airspy-list and --rtl-list.
+foreach(_mode PARSE_ERROR AIRSPY_LIST RTL_LIST)
     add_test(
         NAME CLI_UNRUN_OUTPUTS_${_mode}
         COMMAND

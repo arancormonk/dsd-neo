@@ -1513,6 +1513,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
+        if (strcmp(argv[i], "--rtl-list") == 0) {                                                                      \
+            opts->rtl_list = 1;                                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
         if (strcmp(argv[i], "--rtltcp-autotune") == 0) {                                                               \
             opts->rtltcp_autotune = 1;                                                                                 \
             analog_cli_seen |= CLI_RTLTCP_AUTOTUNE_SEEN;                                                               \

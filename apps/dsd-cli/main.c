@@ -27,6 +27,9 @@
 #include <dsd-neo/runtime/exitflag.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_device_select.h>
+#include <dsd-neo/runtime/input_spec.h>
+#include <string.h>
 #endif
 #include <inttypes.h>
 #include <stdio.h>
@@ -35,6 +38,94 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "frontend.h"
+
+#ifdef USE_RADIO
+/* The -i device field that names @p e by its serial, into @p out ("" when its serial cannot be named in a spec). */
+static void
+rtl_list_spec_field(const struct rtl_device_entry* e, char* out, size_t out_size) {
+    out[0] = '\0';
+    char serial[RTL_DEVICE_STRING_SIZE];
+    /* The plain serial when it reads back as that serial (00000001); serial=<sn> when it would read as an index. */
+    if (dsd_rtl_device_field_parse(e->serial, NULL, serial, sizeof serial) == DSD_RTL_DEV_SERIAL
+        && strcmp(serial, e->serial) == 0) {
+        DSD_SNPRINTF(out, out_size, "%s", e->serial);
+    } else if (dsd_rtl_serial_is_valid(e->serial)) {
+        DSD_SNPRINTF(out, out_size, "serial=%s", e->serial);
+    }
+}
+
+/* Readable devices that carry @p e's serial. */
+static int
+rtl_list_serial_count(const struct rtl_device_entry* list, int count, const struct rtl_device_entry* e) {
+    int n = 0;
+    for (int i = 0; i < count; i++) {
+        n += (list[i].readable && strcmp(list[i].serial, e->serial) == 0) ? 1 : 0;
+    }
+    return n;
+}
+
+/* One --rtl-list line: index, strings, and how a spec names it, or why it cannot be chosen by serial. Returns 1 when
+   its serial is shared with another readable device. */
+static int
+rtl_list_print_entry(const struct rtl_device_entry* list, int count, const struct rtl_device_entry* e) {
+    char text[3 * RTL_DEVICE_STRING_SIZE + 16];
+    rtl_device_entry_describe(e, text, sizeof text);
+    if (!e->readable) {
+        DSD_FPRINTF(stdout, "RTL-SDR %d: %s\n", e->index, text);
+        return 0;
+    }
+    if (rtl_list_serial_count(list, count, e) > 1) {
+        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  [duplicate serial: cannot be chosen by serial]\n", e->index, text);
+        return 1;
+    }
+    char field[RTL_DEVICE_STRING_SIZE + 8];
+    rtl_list_spec_field(e, field, sizeof field);
+    if (field[0] == '\0') {
+        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  [this serial cannot be given in -i rtl:]\n", e->index, text);
+    } else {
+        DSD_FPRINTF(stdout, "RTL-SDR %d: %s  (-i rtl:%s)\n", e->index, text, field);
+    }
+    return 0;
+}
+
+/* --rtl-list: every RTL-SDR librtlsdr enumerates. 0 (an empty list too), or 1 without RTL-SDR support or when the
+   enumeration failed, as --airspy-list. */
+static int
+rtl_list_run(void) {
+    int total = 0;
+    if (rtl_device_list(NULL, 0, &total) < 0) {
+        DSD_FPRINTF(stderr, "RTL-SDR support unavailable or enumeration failed.\n");
+        return 1;
+    }
+    if (total == 0) {
+        DSD_FPRINTF(stderr, "No RTL-SDR devices found.\n");
+        return 0;
+    }
+    struct rtl_device_entry* list = (struct rtl_device_entry*)calloc((size_t)total, sizeof *list);
+    if (!list) {
+        DSD_FPRINTF(stderr, "Out of memory listing the RTL-SDR devices.\n");
+        return 1;
+    }
+    const int count = rtl_device_list(list, total, NULL);
+    int duplicates = 0;
+    int unreadable = 0;
+    for (int i = 0; i < count; i++) {
+        duplicates |= rtl_list_print_entry(list, count, &list[i]);
+        unreadable += list[i].readable ? 0 : 1;
+    }
+    free(list);
+    if (duplicates) {
+        DSD_FPRINTF(stderr,
+                    "Dongles that share a serial cannot be told apart: give each its own serial with rtl_eeprom "
+                    "-s <serial> (with only that dongle plugged in).\n");
+    }
+    if (unreadable > 0) {
+        DSD_FPRINTF(stderr, "%d device(s) could not be read (in use by another program, or no permission).\n",
+                    unreadable);
+    }
+    return count < 0 ? 1 : 0;
+}
+#endif
 
 int
 main(int argc, char** argv) {
@@ -85,6 +176,14 @@ main(int argc, char** argv) {
         rc = count < 0 ? 1 : 0;
 #else
         DSD_FPRINTF(stderr, "Airspy support unavailable in this build.\n");
+        rc = 1;
+#endif
+        dsd_engine_release_outputs(opts, state);
+    } else if (opts->rtl_list) {
+#ifdef USE_RADIO
+        rc = rtl_list_run();
+#else
+        DSD_FPRINTF(stderr, "RTL-SDR support unavailable in this build.\n");
         rc = 1;
 #endif
         dsd_engine_release_outputs(opts, state);

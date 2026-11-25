@@ -579,6 +579,7 @@ struct dsd_opts {
     dsd_airspy_config airspy;
     dsd_airspy_info airspy_info; /* Decoder-owned value snapshot. */
     int airspy_list;
+    int rtl_list;            /* --rtl-list: list the RTL-SDR dongles and exit */
     int airspy_config_error; /* Invalid INI airspy_serial; cleared only by a valid serial override. */
     char soapy_profile[32];
     char soapy_stream_format[16];

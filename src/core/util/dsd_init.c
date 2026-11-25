@@ -203,6 +203,7 @@ init_opts_radio_input_defaults(dsd_opts* opts) {
     dsd_airspy_config_defaults(&opts->airspy);
     DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
     opts->airspy_list = 0;
+    opts->rtl_list = 0;
     opts->airspy_config_error = 0;
     opts->soapy_bandwidth_hz = -1;
     opts->soapy_profile[0] = '\0';

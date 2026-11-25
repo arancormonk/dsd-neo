@@ -107,6 +107,22 @@ test_p25_sm_log_consumes_path_and_leaves_short_opts(void) {
     return 0;
 }
 
+/* --rtl-list takes no value: the argument after it is kept. */
+static int
+test_rtl_list_long_opt_is_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-list";
+    char arg2[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+
+    int new_argc = dsd_cli_compact_args(3, argv);
+    if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
+        DSD_FPRINTF(stderr, "--rtl-list: expected [dsd-neo -fi], got argc %d\n", new_argc);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_vendor_privacy_long_opts_are_removed(void) {
     char arg0[] = "dsd-neo";
@@ -858,6 +874,8 @@ test_option_arity_matches_the_parser(void) {
         {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
         {"--squelch-analog-default", DSD_CLI_LONG_NEXT},
         {"--squelch-analog-default=noise+10", DSD_CLI_LONG_ALONE},
+        {"--airspy-list", DSD_CLI_LONG_ALONE},
+        {"--rtl-list", DSD_CLI_LONG_ALONE},
         {"--no-such-option", DSD_CLI_LONG_UNKNOWN},
     };
 
@@ -960,5 +978,6 @@ main(void) {
     rc |= test_rdio_analog_long_opts_are_removed();
     rc |= test_rdio_unknown_talkgroup_long_opt_is_removed();
     rc |= test_option_arity_matches_the_parser();
+    rc |= test_rtl_list_long_opt_is_removed();
     return rc;
 }
