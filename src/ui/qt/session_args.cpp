@@ -166,7 +166,9 @@ option_tokens(const QString& tokens) {
 }
 
 /* Whether the extra options @p tokens pick an I/Q stream input (issue #743): an -i the decoder reads whose value is an
-   iqtcp: or iqudp: spec, read as option_tokens() reads the options. */
+   iqtcp: or iqudp: spec, read as option_tokens() reads the options. Each value is read as -i reads it, its scheme
+   lower-cased first when it names a known input in another case (dsd_input_spec_normalize_scheme()): the decoder opens
+   "IQTCP:..." as the stream "iqtcp:..." is. */
 bool
 extra_names_iq_stream(const QString& tokens) {
     const QStringList split = tokens.split(QRegularExpression(QStringLiteral("\\s+")), Qt::SkipEmptyParts);
@@ -174,7 +176,8 @@ extra_names_iq_stream(const QString& tokens) {
     QStringList inputs;
     short_option_tokens(long_option_tokens(split, &options), &options, QLatin1Char('i'), &inputs);
     return std::any_of(inputs.cbegin(), inputs.cend(), [](const QString& input) {
-        const QByteArray spec = input.toUtf8();
+        QByteArray spec = input.toUtf8();
+        dsd_input_spec_normalize_scheme(spec.data());
         return dsd_opts_audio_in_dev_is_iq_stream_spec(spec.constData()) != 0;
     });
 }

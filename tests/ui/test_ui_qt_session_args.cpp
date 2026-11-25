@@ -2036,6 +2036,9 @@ test_iq_stream_extra_refused() {
         "-i iqtcp:127.0.0.1:1234:240k:cs16",
         "-iiqudp:0.0.0.0:7355:48k:cu8",
         "-f1 -i iqudp:0.0.0.0:7355:48k:cu8:426.7M",
+        /* The decoder lower-cases a known scheme at -i, so these open the same streams. */
+        "-i IQTCP:127.0.0.1:1234:240k:cs16",
+        "-iIqUdp:0.0.0.0:7355:48k:cu8",
     };
     for (const char* extra : k_extras) {
         auto sys = usb_system();
