@@ -43,6 +43,13 @@ Item {
         }
     }
 
+    // The app's one Escape and Back owner, as Main registers its safe area (Navigation.backTarget).
+    Item {
+        id: appBack
+        property int escapes: 0
+        Keys.onEscapePressed: escapes++
+    }
+
     SignalSpy {
         id: draftSpy
 
@@ -76,6 +83,8 @@ Item {
         when: windowShown
 
         function init() {
+            Ui.Navigation.backTarget = appBack;
+            appBack.escapes = 0;
             plain.syncing = false;
             plain.mode = 1;
             plain.manualText = "30";
@@ -89,6 +98,8 @@ Item {
         }
 
         function cleanup() {
+            Ui.Navigation.backTarget = null;
+            inherit.visible = true;
             plain.forceActiveFocus();
         }
 
@@ -235,20 +246,23 @@ Item {
             compare(plain.storedValue, 9);
         }
 
-        // Leaving Set hides the field, which then gives up the focus: no key goes to a hidden field.
+        // Leaving Set hides the field, which then gives up the focus: no key goes to a hidden field, and the
+        // keyboard goes to the app's Back owner (issue #902), so Escape still goes back.
         function test_leaving_set_takes_the_focus_from_the_field() {
             inherit.mode = 2;
             var field = inherit.field;
             field.input.forceActiveFocus();
             verify(field.input.activeFocus);
             inherit.mode = 1;
-            verify(!field.input.activeFocus, "Automatic");
             keyClick("7");
             compare(field.text, "", "a key after Automatic reached nothing");
+            tryVerify(function () { return !field.input.activeFocus && appBack.activeFocus; }, 1000, "Automatic: to the Back owner");
+            keyClick(Qt.Key_Escape);
+            compare(appBack.escapes, 1, "Escape goes back");
             inherit.mode = 2;
             field.input.forceActiveFocus();
             inherit.mode = 0;
-            verify(!field.input.activeFocus, "App default");
+            tryVerify(function () { return !field.input.activeFocus && appBack.activeFocus; }, 1000, "App default: to the Back owner");
         }
 
         // The same when the caller hides the whole editor with Set still chosen (a source with no RTL gain).
@@ -259,9 +273,10 @@ Item {
             field.input.forceActiveFocus();
             verify(field.input.activeFocus);
             inherit.visible = false;
-            verify(!field.input.activeFocus, "a hidden editor's field has no focus");
             keyClick("7");
             compare(field.text, "20", "a key after hiding reached nothing");
+            tryVerify(function () { return !field.input.activeFocus && appBack.activeFocus; }, 1000,
+                      "a hidden editor's field hands the keyboard to the Back owner");
             inherit.visible = true;
         }
 

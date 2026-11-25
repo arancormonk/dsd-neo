@@ -9,6 +9,8 @@ import QtQuick
 // wraps the strip onto a second line.
 Rectangle {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string text: ""
     signal clicked
@@ -22,7 +24,7 @@ Rectangle {
     // to drop activeFocusOnTab from the active focus item.
     activeFocusOnTab: (Navigation.allows(control) && enabled && visible && live) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: live ? accessibleName : ""
+    Accessible.name: !navigationAllowed || !visible || !live ? "" : accessibleName
     // Issue #782: focusable only while in the tree (see OutlineButton).
     Accessible.focusable: navigationAllowed && visible && live
     readonly property bool navigationAllowed: Navigation.allows(control)
@@ -30,7 +32,7 @@ Rectangle {
     Accessible.ignored: !navigationAllowed || !visible || !live
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !live || !Navigation.allows(control))
+        if (!enabled || !live || !Navigation.allows(control) || !control.visible)
             return;
         Navigation.commitComposing(true);
         clicked();

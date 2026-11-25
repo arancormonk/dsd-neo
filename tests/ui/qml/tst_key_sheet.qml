@@ -90,12 +90,21 @@ Item {
             var button = findChild(monitor, "openKeySheetButton");
             verify(button !== null);
             verify(button.enabled);
+            // The row is in the details: hidden, it opens nothing (issue #902 B9).
             button.activate();
             var modal = findChild(monitor, "keySheet");
-            verify(modal.visible);
-            verify(!findChild(monitor, "recentCallsList").enabled);
-            monitor.visible = false;
-            verify(!modal.visible);
+            verify(!modal.visible, "a hidden row opens nothing");
+            testContext.setPrefs("monitorDetailsExpanded", true);
+            try {
+                tryVerify(function () { return button.visible; }, 2000, "the details are open");
+                button.activate();
+                verify(modal.visible);
+                verify(!findChild(monitor, "recentCallsList").enabled);
+                monitor.visible = false;
+                verify(!modal.visible);
+            } finally {
+                testContext.setPrefs("monitorDetailsExpanded", false);
+            }
         }
         function test_monitor_effective_decryption_status_data() {
             return [
@@ -128,6 +137,9 @@ Item {
             var label = findChild(row, "decryptionStatusText");
             verify(label !== null);
             compare(label.text, "Decryption · " + data.text + " ›");
+            // The row is in the Monitor's details, named only while they show (issue #902 B9).
+            compare(row.Accessible.name, "", "inside collapsed details, the row is nameless");
+            monitorLoader.item.detailsExpanded = true;
             compare(row.Accessible.name, "Decryption · " + data.text);
             row.forceActiveFocus();
             keyClick(Qt.Key_Return);
@@ -779,6 +791,18 @@ Item {
                 verify(left.visible, "the note stays as the scan rotates");
                 var apply = visualText(sheet, "Apply profile to this target");
                 verify(apply !== null);
+                // Issue #902 B9: the note is the button's description only while the button is in the tree.
+                compare(apply.Accessible.description, left.text, "Apply says why to reopen");
+                var modals = Ui.Navigation.modals;
+                var cover = Qt.createQmlObject("import QtQuick; Item {}", sheet.parent);
+                Ui.Navigation.modals = modals.concat([cover]);
+                try {
+                    compare(apply.Accessible.description, "", "covered, Apply describes nothing");
+                } finally {
+                    Ui.Navigation.modals = modals;
+                    cover.destroy();
+                }
+                compare(apply.Accessible.description, left.text);
                 apply.activate();
                 compare(commands.lastProfileScope(), 1);
                 compare(commands.lastProfileTarget(), "target-2", "apply sends the target the line names");

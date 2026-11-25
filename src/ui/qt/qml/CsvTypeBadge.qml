@@ -28,8 +28,7 @@ Rectangle {
         id: tag
         objectName: "csvTypeBadgeText"
         anchors.centerIn: parent
-        Accessible.ignored: !parent.readAlone || !navigationAllowed || !visible
-        Accessible.name: parent.readAlone && navigationAllowed && visible ? text : ""
+        reachable: parent.readAlone && navigationAllowed && visible
         text: parent.type === "trunkTargets" ? qsTr("TARGET CSV") : parent.type === "chan" ? qsTr("CHANNELS") : parent.type === "group" ? qsTr("TALKGROUPS") : parent.type === "keysDec" ? qsTr("KEYS · DEC") : parent.type === "keysHex" ? qsTr("KEYS · HEX") : parent.type === "vertexKeys" ? qsTr("VERTEX KEYS") : parent.type === "dmrTgKeys" ? qsTr("DMR KEY MAP") : parent.type === "p25Bandplan" ? qsTr("P25 BAND PLAN") : parent.type === "src" ? qsTr("RADIO IDS") : qsTr("FILE")
         font.family: Theme.mono
         font.pixelSize: Theme.fontSize(10)

@@ -6,6 +6,8 @@ import QtQuick
 // History-screen filter pill: fully rounded, cyan-tinted when active.
 Rectangle {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string text: ""
     property bool active: false
@@ -35,7 +37,7 @@ Rectangle {
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control) || !control.visible)
             return;
         // Issue #718: a choice made mid-word keeps the word; focus stays put.
         Navigation.commitComposing(false);

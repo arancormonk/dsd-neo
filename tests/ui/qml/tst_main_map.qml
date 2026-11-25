@@ -39,6 +39,9 @@ Item {
             callHistory.clearAll();
         }
         function cleanup() {
+            app.spectrumOpen = false;
+            app.exploring = false;
+            historyView.filterText = "";
             app.closeMap(false);
             app.sessionDestination = "";
             findChild(app, "sessionMenu").visible = false;
@@ -46,6 +49,92 @@ Item {
             prefs.onboardingDone = originalOnboarding;
             callHistory.clearAll();
             testContext.useLifecycleHost(false);
+        }
+        // Gives @p control the keyboard once the window's own focus transition has settled: run alone, a case can
+        // start while the window is active but not yet the focus window, and a focus given then does not hold.
+        function focusOnceSettled(control) {
+            tryVerify(function () {
+                if (!control.activeFocus)
+                    control.forceActiveFocus();
+                return control.activeFocus;
+            }, 5000, "the control takes the keyboard");
+        }
+        // Issue #902: Resume scan disabled while the window is away (the scan still paused, so the button stays shown):
+        // the window comes back with the keyboard on the Back owner, not on the Spectrum's loader, and Escape still
+        // closes the Spectrum.
+        function test_resume_disabled_while_away_keeps_back_working() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            verify(resume !== null);
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            focusOnceSettled(resume);
+            testContext.sendWindowFocus(resume, false);
+            try {
+                testContext.setMetric("scanResumable", false);
+                verify(resume.visible && !resume.enabled, "away: Resume scan shown, disabled");
+                wait(50);
+            } finally {
+                testContext.sendWindowFocus(resume, true);
+            }
+            verify(!resume.activeFocus, "back: the disabled button has no keyboard");
+            verify(findChild(app, "safeArea").activeFocus, "back: the Back owner has it, not the Spectrum's loader");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+            testContext.setMetric("scanPaused", false);
+        }
+        // Issue #902: with the tuner controlled, "Explore from here" asks first, and its panel is disabled as the
+        // confirmation shows, so the keyboard sits on the Spectrum's loader as the sheet records its opener. The
+        // opener recorded is the button, never the loader: the first Escape closes the confirmation, the keyboard
+        // back on the button, and the second closes the Spectrum.
+        function test_explore_confirmation_then_back_closes_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("tunerControlled", true);
+            try {
+                findChild(app, "spectrumLoader").active = true;
+                app.spectrumOpen = true;
+                var explore = findChild(app, "spectrumExploreFromHere");
+                verify(explore !== null);
+                tryVerify(function () { return explore.visible && explore.enabled; }, 1000, "view only: Explore from here shows");
+                focusOnceSettled(explore);
+                keyClick(Qt.Key_Space);
+                var confirm = findChild(app, "spectrumExploreConfirm");
+                tryVerify(function () { return confirm.visible; }, 1000, "the confirmation shows");
+                keyClick(Qt.Key_Escape);
+                tryVerify(function () { return !confirm.visible; }, 1000, "the first Escape closes the confirmation");
+                tryVerify(function () { return explore.activeFocus; }, 1000, "the keyboard is back on the button");
+                keyClick(Qt.Key_Escape);
+                verify(!app.spectrumOpen, "the second Escape closes the Spectrum");
+            } finally {
+                testContext.setMetric("tunerControlled", false);
+            }
+        }
+        // Issue #902: the same as test_resume_disabled_while_away_keeps_back_working, the window back before the
+        // hand-off ran: Qt has already put the focus on the Spectrum's loader, which is handed on all the same.
+        function test_resume_disabled_while_away_window_back_early() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            focusOnceSettled(resume);
+            testContext.sendWindowFocus(resume, false);
+            testContext.setMetric("scanResumable", false);
+            testContext.sendWindowFocus(resume, true);
+            wait(50);
+            verify(!resume.activeFocus, "the disabled button has no keyboard");
+            verify(findChild(app, "safeArea").activeFocus, "the Back owner has it, not the Spectrum's loader");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+            testContext.setMetric("scanPaused", false);
         }
         function mapScreen() {
             return findChild(app, "mapScreen");
@@ -113,6 +202,64 @@ Item {
             app.requestBack();
             verify(!app.mapOpen);
             compare(app.sessionDestination, "history");
+        }
+
+        // Issue #902: a control that hides with the keyboard on it hands it to Main's one Escape and Back owner (its
+        // safe area, Navigation.backTarget), never to a screen that passes Escape to nothing: neither the idle History
+        // tab (the tab shell is anchored to the safe area, not parented under it) nor the Spectrum's loaded screen.
+        function test_hidden_control_keeps_back_working_on_the_history_tab() {
+            testContext.setLifecyclePhase(0);
+            callHistory.push("TODAY");
+            app.currentTab = 1;
+            var idle = findChild(app, "idleHistoryScreen");
+            historyView.filterText = "no call matches this";
+            var clear = findChild(idle, "historyClearFilters");
+            tryVerify(function () { return clear.visible; }, 1000, "the filters leave nothing: Clear filters shows");
+            clear.forceActiveFocus();
+            tryVerify(function () { return clear.activeFocus; }, 1000, "Clear filters has the keyboard");
+            keyClick(Qt.Key_Space);
+            tryVerify(function () { return !clear.visible && !clear.activeFocus; }, 1000, "Clear filters hides and gives the keyboard up");
+            verify(app.activeFocusItem !== null && app.activeFocusItem.objectName === "safeArea", "to Main's Back owner, not "
+                   + (app.activeFocusItem ? app.activeFocusItem.objectName : "nothing"));
+            keyClick(Qt.Key_Escape);
+            compare(app.currentTab, 0, "Escape goes back to Listen");
+        }
+        function test_hidden_control_keeps_back_working_on_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            app.exploring = true;
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var rail = findChild(app, "spectrumBandRail");
+            verify(rail !== null);
+            tryVerify(function () { return rail.visible; }, 1000, "exploring: the tuning rail shows");
+            focusOnceSettled(rail);
+            app.exploring = false;
+            tryVerify(function () { return !rail.visible && !rail.activeFocus; }, 1000, "view only: the rail hides and gives the keyboard up");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
+        }
+
+        // Issue #902: Resume scan disabled under the keyboard drops it to the Spectrum's loader (its focus scope), not to
+        // the window root; hidden then, it is handed to the Back owner all the same, so Escape still closes the Spectrum.
+        function test_disabled_resume_keeps_back_working_on_the_spectrum() {
+            testContext.setLifecyclePhase(2);
+            testContext.setMetric("centerFreqHz", 460000000);
+            testContext.setMetric("scanPaused", true);
+            testContext.setMetric("scanResumable", true);
+            findChild(app, "spectrumLoader").active = true;
+            app.spectrumOpen = true;
+            var resume = findChild(app, "spectrumResumeScan");
+            verify(resume !== null);
+            tryVerify(function () { return resume.visible && resume.enabled; }, 1000, "paused: Resume scan shows");
+            focusOnceSettled(resume);
+            testContext.setMetric("scanResumable", false);
+            testContext.setMetric("scanPaused", false);
+            tryVerify(function () { return !resume.visible && !resume.activeFocus; }, 1000, "Resume scan hides without the keyboard");
+            tryVerify(function () { return app.activeFocusItem === Ui.Navigation.backTarget; }, 1000,
+                "the keyboard goes to the Back owner, not the Spectrum's loader");
+            keyClick(Qt.Key_Escape);
+            verify(!app.spectrumOpen, "Escape closes the Spectrum");
         }
 
         // "Show on map": the sheet closes first, the map shows the row's pin, and Back opens the sheet again by uid.

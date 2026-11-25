@@ -232,7 +232,7 @@ ModalSheet {
         width: parent.width
         enabled: sheet.detailsUid > 0
         text: qsTr("Call details")
-        Accessible.description: enabled ? "" : callDetailsReason.text
+        Accessible.description: !navigationAllowed || !visible || enabled ? "" : callDetailsReason.text
         onClicked: sheet.showDetails()
     }
     // Why Call details is disabled, as History's Hold says why. Its line is
@@ -244,6 +244,7 @@ ModalSheet {
         width: parent.width
         wrapMode: Text.Wrap
         opacity: callDetailsButton.enabled ? 0 : 1
+        Accessible.name: !navigationAllowed || !visible || callDetailsButton.enabled ? "" : text
         Accessible.focusable: navigationAllowed && visible && !callDetailsButton.enabled
         Accessible.ignored: !navigationAllowed || !visible || callDetailsButton.enabled
         text: qsTr("This call is not in History")
@@ -278,6 +279,8 @@ ModalSheet {
             }
             Rectangle {
                 id: row
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(row) && row.visible && row.live
                 required property int index
                 required property string key
                 required property string line
@@ -305,7 +308,7 @@ ModalSheet {
                 Accessible.ignored: !navigationAllowed || !visible || !live
                 Accessible.onPressAction: activate()
                 function activate() {
-                    if (live && Navigation.allows(row))
+                    if (live && Navigation.allows(row) && row.visible)
                         sheet.choose(key);
                 }
                 Keys.onPressed: function (event) {

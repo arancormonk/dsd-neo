@@ -7,6 +7,8 @@ import QtQuick
 // The gradient is the accent; the inside stays calm so the label carries.
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string text: ""
     signal clicked
@@ -24,7 +26,8 @@ Item {
     // hides keeps it until the focus has moved, then the gate applies again.
     activeFocusOnTab: (Navigation.allows(control) && enabled && inputValid && visible) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
+    // Named only while in the tree, from the gate itself (see OutlineButton).
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control
     // left the tree) is not a swipe stop.
@@ -33,7 +36,7 @@ Item {
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control) || !control.visible)
             return;
         // Finish the keyboard's word and the field's editing before the action
         // reads the form; the validity bindings re-evaluate on the spot.

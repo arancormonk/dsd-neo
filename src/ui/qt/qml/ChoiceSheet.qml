@@ -22,7 +22,7 @@ ModalSheet {
         // the body a management sheet disables) has lost the focus by then,
         // and the focus, TalkBack's with it, went back to the screen instead.
         var window = sheet.Window.window;
-        var opener = window ? window.activeFocusItem : null;
+        var opener = Navigation.openerIn(window);
         visible = true;
         previousFocus = opener;
     }

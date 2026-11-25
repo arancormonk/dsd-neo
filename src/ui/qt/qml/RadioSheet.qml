@@ -879,13 +879,16 @@ ModalSheet {
             spacing: 10
             Text {
                 id: squelchValueText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: squelchValueText.Accessible.focusable
                 objectName: "radioSquelchValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
                 text: sheet.squelchReading
                 // Read aloud as the terminal prints it, row note, default and floor included.
-                Accessible.role: Accessible.StaticText
+                Accessible.role: !Navigation.allows(squelchValueText) || !visible ? Accessible.Pane : Accessible.StaticText
                 Accessible.name: squelchSpeech.spoken
+                Accessible.focusable: Navigation.allows(squelchValueText) && visible
                 Accessible.ignored: !Navigation.allows(squelchValueText) || !visible
                 // The auto and noise squelch readings move every tick (issue #782): heard at
                 // once when the gate opens or closes or the setting changes, else at their pace.
@@ -1223,6 +1226,8 @@ ModalSheet {
             spacing: 10
             Text {
                 id: analogBandwidthValueText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: analogBandwidthValueText.Accessible.focusable
                 objectName: "radioAnalogBandwidthValue"
                 width: parent.width - 116
                 anchors.verticalCenter: parent.verticalCenter
@@ -1230,8 +1235,9 @@ ModalSheet {
                 wrapMode: Text.WordWrap
                 text: sheet.analogWidthReading
                 // Read aloud as the terminal prints it, row note and default included.
-                Accessible.role: Accessible.StaticText
-                Accessible.name: sheet.analogRowOverride ? metrics.analogBandwidthReading : sheet.analogWidthReading
+                Accessible.role: !Navigation.allows(analogBandwidthValueText) || !visible ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !Navigation.allows(analogBandwidthValueText) || !visible ? "" : sheet.analogRowOverride ? metrics.analogBandwidthReading : sheet.analogWidthReading
+                Accessible.focusable: Navigation.allows(analogBandwidthValueText) && visible
                 Accessible.ignored: !Navigation.allows(analogBandwidthValueText) || !visible
                 color: Theme.textPrimary
                 font.family: Theme.mono

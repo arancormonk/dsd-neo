@@ -447,7 +447,7 @@ ModalSheet {
         text: sheet.nearest >= 0 ? Util.fill(qsTr("Nearest site: %1 · %2"), [sheet.nearestSite.siteName || sheet.nearestSite.name, Util.fmtDistanceKm(sheet.nearestDistance, prefs.metricUnits).replace(" ", "\u00a0")]) : qsTr("No site can be ranked. Check the sites’ coordinates and Avoid settings below.")
         // While GPS roaming moves the distance with each fix, a screen reader
         // hears the site alone, so a focused line is not read out again.
-        Accessible.name: !navigationAllowed || !visible ? "" : sheet.liveFix && sheet.nearest >= 0 ? qsTr("Nearest site: %1").arg(sheet.nearestSite.siteName || sheet.nearestSite.name) : text
+        Accessible.name: !reachable ? "" : sheet.liveFix && sheet.nearest >= 0 ? qsTr("Nearest site: %1").arg(sheet.nearestSite.siteName || sheet.nearestSite.name) : text
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -461,7 +461,7 @@ ModalSheet {
         visible: text.length > 0 && !sheet.locationId
         readonly property string uncertainText: sheet.uncertainNearest ? qsTr(". Nearby sites may change order within this accuracy. For a better fix, enable precise location in your device settings.") : ""
         text: sheet.accuracyText + uncertainText
-        Accessible.name: navigationAllowed && visible ? sheet.spokenAccuracy + uncertainText : ""
+        Accessible.name: reachable ? sheet.spokenAccuracy + uncertainText : ""
         textFormat: Text.PlainText
         wrapMode: Text.Wrap
         font.family: Theme.sans
@@ -496,7 +496,7 @@ ModalSheet {
             // roaming can use and Settings has no extra options. While it
             // cannot be switched on, a screen reader hears why on the switch.
             enabled: siteRoaming.enabled || sheet.roamingBlockedReason.length === 0
-            Accessible.description: enabled ? "" : sheet.roamingBlockedReason
+            Accessible.description: !navigationAllowed || !visible || enabled ? "" : sheet.roamingBlockedReason
             onToggled: {
                 sheet.setRoaming(checked);
                 checked = Qt.binding(function () { return siteRoaming.enabled; });
@@ -544,7 +544,7 @@ ModalSheet {
             visible: text.length > 0
             text: sheet.roamingJudges && sheet.roamingHere && spoken.length > 0 && distanceText.length > 0
                 ? Util.fill(qsTr("%1 · %2"), [spoken, distanceText.replace(" ", "\u00a0")]) : spoken
-            Accessible.name: navigationAllowed && visible ? spoken : ""
+            Accessible.name: reachable ? spoken : ""
             wrapMode: Text.Wrap
             font.family: Theme.sans
             font.pixelSize: Theme.fontSize(14)
@@ -638,7 +638,7 @@ ModalSheet {
                 width: parent.width
                 visible: sheet.sessionState !== 0
                 text: siteRow.title
-                Accessible.name: navigationAllowed && visible ? siteRow.spokenTitle : ""
+                Accessible.name: reachable ? siteRow.spokenTitle : ""
                 textFormat: Text.PlainText
                 wrapMode: Text.Wrap
                 font.family: Theme.sans
@@ -720,7 +720,7 @@ ModalSheet {
             PlexToggle {
                 objectName: "siteAvoid" + siteRow.row
                 text: qsTr("Avoid site")
-                Accessible.name: qsTr("Avoid %1").arg(siteRow.name)
+                Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Avoid %1").arg(siteRow.name)
                 checked: !!siteRow.site.avoidSite
                 // Shows what is saved, also when the save failed.
                 onToggled: {

@@ -17,6 +17,20 @@ namespace dsd_qt {
 
 namespace {
 
+/* How deep commitComposing() calls are nested (an item's commit handling can ask again); GUI thread only. */
+int g_commit_depth = 0;
+
+/* The span in which a commit is the one asked for (InputCommit::committing()), ended on every return. */
+class CommitSpan {
+  public:
+    CommitSpan() { ++g_commit_depth; }
+
+    ~CommitSpan() { --g_commit_depth; }
+
+    CommitSpan(const CommitSpan&) = delete;
+    CommitSpan& operator=(const CommitSpan&) = delete;
+};
+
 /* TextInput, TextEdit and the Controls fields built on them all publish these. */
 bool
 is_composing(const QObject* object) {
@@ -66,8 +80,15 @@ InputCommit::updateComposing() {
     Q_EMIT composingChanged();
 }
 
+bool
+InputCommit::committing() {
+    return g_commit_depth > 0;
+}
+
 void
 InputCommit::commitComposing(bool finishEditing) {
+    const CommitSpan span;
+
     QInputMethod* method = QGuiApplication::inputMethod();
     if (method != nullptr) {
         method->commit();
@@ -93,6 +114,27 @@ InputCommit::commitComposing(bool finishEditing) {
             }
         }
     }
+    updateComposing();
+}
+
+void
+InputCommit::commitComposingOf(QObject* item) {
+    if (item == nullptr) {
+        return;
+    }
+    if (item == QGuiApplication::focusObject()) {
+        commitComposing(false);
+        return;
+    }
+    if (!is_composing(item)) {
+        return;
+    }
+    /* No longer the focus object (its window left): the platform input method is someone else's now, so the item is
+     * handed its own composing text as a commit, as a keyboard finishing the word would. */
+    const CommitSpan span;
+    QInputMethodEvent event;
+    event.setCommitString(item->property("preeditText").toString());
+    QCoreApplication::sendEvent(item, &event);
     updateComposing();
 }
 

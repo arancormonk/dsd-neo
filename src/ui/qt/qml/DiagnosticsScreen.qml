@@ -114,8 +114,10 @@ Item {
             required property string line
             width: list.width
             text: line
-            Accessible.ignored: !navigationAllowed || !visible || !diagnosticsLog.paused
-            Accessible.name: !navigationAllowed || !visible || !diagnosticsLog.paused ? "" : text
+            // Issue #902: the pause in the one predicate, so a row is no stop
+            // and offers no SetFocus while the log streams, as it is nameless
+            // and out of the tree.
+            reachable: navigationAllowed && visible && diagnosticsLog.paused
             textFormat: Text.PlainText
             wrapMode: Text.WrapAnywhere
             color: Theme.textPrimary

@@ -61,6 +61,12 @@ Item {
             item.failure = Qt.binding(function () { return root.hostFailure; });
         }
     }
+    // The app's one Escape and Back owner, as Main registers its safe area (Navigation.backTarget).
+    Item {
+        id: appBack
+        property int escapes: 0
+        Keys.onEscapePressed: escapes++
+    }
     SignalSpy { id: saved; target: loader.item; signalName: "saveDetection" }
     SignalSpy { id: back; target: loader.item; signalName: "backRequested" }
     SignalSpy { id: closed; target: loader.item; signalName: "closed" }
@@ -100,6 +106,10 @@ Item {
         function cleanup() {
             // Issue #826: no export, result line or hidden screen outlives its case, even one that failed part way.
             loader.item.visible = true;
+            Ui.Navigation.rootSurfaces = [];
+            // A case that sent the window away brings it back, even one that failed part way.
+            testContext.sendWindowFocus(loader.item, true);
+            Ui.Navigation.backTarget = null;
             var exportPicker = findChild(loader.item, "searchExportPicker");
             if (exportPicker && exportPicker.visible)
                 exportPicker.cancel();
@@ -133,6 +143,8 @@ Item {
         }
         function init() {
             verify(loader.item !== null);
+            Ui.Navigation.backTarget = appBack;
+            appBack.escapes = 0;
             loader.item.sessionActive = true;
             model.actions = [];
             model.lifted = [];
@@ -771,6 +783,53 @@ Item {
             findChild(loader.item, "searchStartPause").clicked();
             compare(model.arms, before + 1);
         }
+        // Issue #902: the Hold button has the keyboard when the detection ends and the button hides. A key queued in
+        // the same turn as the hide does nothing (no Back, no Hold); then the keyboard goes to the app's Back owner
+        // (Main's safe area), never the window root, so Escape still reaches the app's Back.
+        function test_escape_after_the_hold_button_hides() {
+            var screen = loader.item;
+            Ui.Navigation.rootSurfaces = [screen];
+            var hold = findChild(screen, "searchHold");
+            verify(hold.visible, "a detection is received");
+            hold.forceActiveFocus();
+            verify(hold.activeFocus);
+            back.clear();
+            var actions = model.actions.length;
+            model.status = {phase: 1, session: "17", owned: true, pass: 2, range: 0, rangeName: "Local UHF", hit: {}};
+            verify(!hold.visible, "the detection ended");
+            verify(hold.activeFocus, "the focus has not moved on yet");
+            for (var key of [Qt.Key_Escape, Qt.Key_Space]) {
+                testContext.sendKey(hold, key, 0, true, false);
+                testContext.sendKey(hold, key, 0, false, false);
+            }
+            compare(back.count, 0, "the queued Escape did nothing");
+            compare(model.actions.length, actions, "the queued Space held nothing");
+            tryVerify(function () { return !hold.activeFocus && !hold.focus; }, 1000, "the hidden Hold gives the keyboard up");
+            verify(appBack.activeFocus, "the app's Back owner has the keyboard");
+            keyClick(Qt.Key_Escape);
+            compare(appBack.escapes, 1, "Escape reaches the app's Back");
+        }
+        // Issue #902: the same with the window away as the detection ends: the Hold button holds only the window's
+        // stored focus then, which it gives to the app's Back owner without making anything active, so the window
+        // that comes back hands the keyboard to it, not to the window root, and Escape still reaches the app's Back.
+        function test_escape_after_the_hold_button_hides_while_away() {
+            var screen = loader.item;
+            Ui.Navigation.rootSurfaces = [screen];
+            var hold = findChild(screen, "searchHold");
+            verify(hold.visible, "a detection is received");
+            hold.forceActiveFocus();
+            testContext.sendWindowFocus(hold, false);
+            verify(hold.focus && !hold.activeFocus, "away: the Hold button holds the stored focus");
+            back.clear();
+            model.status = {phase: 1, session: "17", owned: true, pass: 2, range: 0, rangeName: "Local UHF", hit: {}};
+            verify(!hold.visible, "the detection ended");
+            tryVerify(function () { return !hold.focus; }, 1000, "the hidden Hold lets the stored focus go");
+            verify(!appBack.activeFocus, "away: nothing is made active");
+            testContext.sendWindowFocus(hold, true);
+            verify(appBack.activeFocus, "back: the app's Back owner has the keyboard");
+            keyClick(Qt.Key_Escape);
+            compare(appBack.escapes, 1, "Escape reaches the app's Back");
+        }
         // Start and Resume must leave Main's failure binding in place: a refused
         // connection, USB access or configuration failure the host reports
         // afterwards has to reach this screen, which covers Home's banner.
@@ -934,6 +993,7 @@ Item {
             verify(toggle.Accessible.checkable);
             verify(!toggle.Accessible.checked);
             compare(toggle.Accessible.role, Accessible.Button);
+            verify(toggle.Accessible.focusable, "a stop while in the tree");
             verify(toggle.height >= Ui.Theme.minimumTouchSize);
             toggle.activate();
             verify(ranges.visible);
@@ -943,6 +1003,12 @@ Item {
             verify(ranges.visible, "a status update keeps it open");
             toggle.activate();
             verify(!ranges.visible);
+            // Issue #902: while a search runs the row is a button, a screen reader's stop, and takes its keys.
+            toggle.forceActiveFocus();
+            keyClick(Qt.Key_Space);
+            verify(ranges.visible, "Space on the focused row opens the ranges");
+            keyClick(Qt.Key_Space);
+            verify(!ranges.visible, "and closes them");
             // Paused: forced open, with the edit controls, and focus stays put.
             var pause = findChild(screen, "searchStartPause");
             pause.forceActiveFocus();
@@ -953,6 +1019,8 @@ Item {
             verify(!toggle.tapEnabled);
             compare(toggle.accessibleName, "Search ranges, 1 enabled");
             compare(toggle.Accessible.role, Accessible.Heading, "paused, the row is the ranges' heading, not a button");
+            verify(toggle.Accessible.focusable, "a heading TalkBack can move to");
+            verify(!toggle.activeFocusOnTab, "and no Tab stop");
             verify(!toggle.Accessible.checkable);
             model.status = Object.assign({}, model.status, {phase: 1});
             verify(!ranges.visible, "a Resume returns to the manual state");
@@ -2168,6 +2236,27 @@ Item {
             sheet.visible = false;
             model.history = [];
         }
+        // Issue #902: a row whose recording left the list (StableRows lets go
+        // of it, still drawn until the end of the turn) takes no key from that
+        // moment: Escape queued on it in the same turn dismisses nothing, and
+        // once the row is gone the sheet takes Escape.
+        function test_departed_recording_row_takes_no_key() {
+            var sheet = openRecordings([rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            var row = recordingRow("a");
+            row.forceActiveFocus();
+            verify(row.activeFocus);
+            recordings.setDetectionRecordings("17:40", [rec("b", 1700000200, 3000)]);
+            verify(!row.live && row.visible, "the row is let go of, not yet removed");
+            testContext.sendKey(row, Qt.Key_Escape, 0, true, false);
+            testContext.sendKey(row, Qt.Key_Escape, 0, false, false);
+            verify(sheet.visible, "a queued Escape on the departed row dismisses nothing");
+            tryVerify(function () { return findChildren(sheet, "detectionRecordingRow").length === 1; }, 1000, "the row goes");
+            tryVerify(function () { return Ui.Navigation.contains(sheet, sheet.Window.activeFocusItem); }, 1000,
+                      "the sheet keeps the keyboard");
+            keyClick(Qt.Key_Escape);
+            tryVerify(function () { return !sheet.visible; }, 1000, "then Escape dismisses the sheet");
+            model.history = [];
+        }
         // The last recording gone, the sheet closes and its playback stops.
         function test_sheet_closes_when_empty() {
             var sheet = openRecordings([rec("a", 1700000100, 2000)]);
@@ -2247,6 +2336,17 @@ Item {
             verify(details.visible && !details.enabled, "no row holds it yet");
             verify(reason.opacity > 0.5 && !reason.Accessible.ignored, "and says why");
             compare(reason.text, "This call is not in History");
+            compare(details.Accessible.description, reason.text);
+            // Issue #902 B9: described only while in the tree.
+            var modals = Ui.Navigation.modals;
+            var cover = Qt.createQmlObject("import QtQuick; Item {}", sheet.parent);
+            Ui.Navigation.modals = modals.concat([cover]);
+            try {
+                compare(details.Accessible.description, "", "covered, Call details describes nothing");
+            } finally {
+                Ui.Navigation.modals = modals;
+                cover.destroy();
+            }
             compare(details.Accessible.description, reason.text);
             waitForRendering(sheet);
             var listY = list.mapToItem(sheet, 0, 0).y;
@@ -2348,6 +2448,139 @@ Item {
             var lines = mirror.lineCount;
             mirror.destroy();
             return {starts: starts, texts: texts, lines: lines};
+        }
+        // The lines a plain Text.Wrap Text in @p font draws @p words in at @p width.
+        function drawnLines(font, words, width) {
+            var drawn = Qt.createQmlObject("import QtQuick; Text { visible: false; textFormat: Text.PlainText; wrapMode: Text.Wrap }", root);
+            drawn.font = font;
+            drawn.width = width;
+            drawn.text = words;
+            var lines = drawn.lineCount;
+            drawn.destroy();
+            return lines;
+        }
+        // Issue #902 B10: the Now panel counts lines as Qt lays them out, so
+        // what it fits is what is drawn. A word exactly as wide as the line
+        // takes one line (the arithmetic counted another), and a run of
+        // glyphs wider than the line breaks where Qt breaks it (11 W at 5.6
+        // W's width draws three lines; the arithmetic said two).
+        function test_now_fitting_counts_lines_as_drawn_data() {
+            return [{tag: "default text", scale: 1.0}, {tag: "largest text", scale: 1.6}];
+        }
+        function test_now_fitting_counts_lines_as_drawn(data) {
+            Ui.Theme.fontScale = data.scale;
+            var screen = loader.item;
+            var detail = findChild(screen, "searchDetail");
+            var metrics = Qt.createQmlObject("import QtQuick; FontMetrics {}", root);
+            metrics.font = detail.font;
+            var exact = metrics.advanceWidth("12345678");
+            compare(drawnLines(detail.font, "A · 12345678", exact), 2, "Qt draws the exact-width word on one line");
+            compare(screen.wrappedLines("A · 12345678", exact, metrics), 2, "counted as drawn");
+            var glyphs = metrics.advanceWidth("W") * 5.6;
+            compare(drawnLines(detail.font, "WWWWWWWWWWW", glyphs), 3, "Qt draws 11 glyphs in three lines");
+            compare(screen.wrappedLines("WWWWWWWWWWW", glyphs, metrics), 3, "counted as drawn");
+            // Two lines hold both values, as drawn: nothing is left off.
+            var fitted = screen.fitValues(["A", "12345678"], exact, 2, metrics);
+            compare(fitted, "A\u00a0· 12345678", "both values on the two lines");
+            compare(drawnLines(detail.font, fitted, exact), 2);
+            // A value given up is given up for what is drawn: one line holds
+            // neither "A · 12345678" nor "A · …" plus the other value.
+            compare(screen.fitValues(["A", "12345678"], exact, 1, metrics), "A\u00a0· …");
+            metrics.destroy();
+        }
+        // Issue #902 B9: under a sheet the Now panel's readings are plain panes
+        // (Qt keeps a static text focusable, with SetFocus, whatever its flags).
+        function test_now_readings_leave_the_tree_under_a_sheet() {
+            var screen = loader.item;
+            model.status = Object.assign({}, model.status, {phase: 4, livePowerValid: true, livePower: -40, liveSeq: 7,
+                hit: Object.assign({}, model.status.hit, {confirmed: true, protocol: "DMR", site: "Site 3", knownNames: ["Warehouse"], knownLabel: "Warehouse"})});
+            var names = ["searchStrength", "searchIdentification", "searchDetail", "searchSaved"];
+            for (var name of names)
+                compare(findChild(screen, name).Accessible.role, Accessible.StaticText, name + " in the tree");
+            var cover = Qt.createQmlObject("import QtQuick; Item {}", root);
+            var modals = Ui.Navigation.modals;
+            Ui.Navigation.modals = modals.concat([cover]);
+            try {
+                for (var covered of names)
+                    compare(findChild(screen, covered).Accessible.role, Accessible.Pane, covered + " covered");
+            } finally {
+                Ui.Navigation.modals = modals;
+                cover.destroy();
+            }
+        }
+        // Issue #902: a first value that fits alone, but not with "· …", shows
+        // alone rather than cut by the Text's own elision.
+        function test_fit_keeps_a_first_value_that_fits_alone() {
+            var screen = loader.item;
+            var detail = findChild(screen, "searchDetail");
+            var metrics = Qt.createQmlObject("import QtQuick; FontMetrics {}", root);
+            metrics.font = detail.font;
+            var width = metrics.advanceWidth("Alpha Bravo") + 1;
+            verify(drawnLines(detail.font, "Alpha\u00a0Bravo\u00a0· …", width) > 1, "with the marker it needs a second line");
+            compare(screen.fitValues(["Alpha Bravo", "Charlie"], width, 1, metrics), "Alpha\u00a0Bravo");
+            metrics.destroy();
+        }
+        // Issue #902: a screen built while a search runs fits its status line
+        // and its detail once its measure is made. The fit read before it
+        // (every text one line) is never kept, so the channel count shows and
+        // the detail ends on a whole value, exactly as the same screen fits
+        // them after a resize.
+        function test_fits_a_screen_built_mid_search_data() {
+            return [{tag: "360", width: 360}, {tag: "410", width: 410}];
+        }
+        function test_fits_a_screen_built_mid_search(data) {
+            var long = "Northern industrial park repeater cluster by the harbour approach";
+            model.status = Object.assign({}, model.status, {phase: 4, rangeName: long,
+                hit: Object.assign({}, model.status.hit, {range: long, unresolved: false, confirmed: true, protocol: "DMR",
+                    access: "CC 15", tone: "CTCSS 250.3 Hz", targetText: "Target 1234567", sourceText: "Source 7654321",
+                    site: "Site 3 · Net 12 · Northern industrial park", slot: 2, crypt: "ALG 21 · KID 0001"})});
+            var component = Qt.createComponent(uiDir + "/SignalSearchScreen.qml");
+            compare(component.status, Component.Ready, component.errorString());
+            var screen = createTemporaryObject(component, root, {width: data.width, height: 891, searchModel: model,
+                systems: systemsStub, sessionActive: true});
+            verify(screen !== null);
+            waitForRendering(screen);
+            var status = findChild(screen, "searchStatusLine");
+            var detail = findChild(screen, "searchDetail");
+            var built = {status: status.text, detail: detail.text};
+            verify(built.status.indexOf("channel 81 of 801") >= 0, "the channel count shows: " + built.status);
+            verify(!status.truncated, "the status line shows whole, the channel count included: " + built.status);
+            verify(!detail.truncated, "the detail shows whole, no value cut: " + built.detail);
+            screen.width = data.width + 1;
+            screen.width = data.width;
+            waitForRendering(screen);
+            compare(status.text, built.status, "the status line as a resize fits it");
+            compare(detail.text, built.detail, "the detail as a resize fits it");
+        }
+        // Issue #902: a status update that changes nothing the status line or
+        // the detail shows (a live level, every 250 ms) runs no layout, with a
+        // detail of many values shown; a new channel does, and so does a
+        // changed detail value.
+        function test_live_level_updates_run_no_layout() {
+            root.width = 360;
+            Ui.Theme.fontScale = 1.6;
+            var screen = loader.item;
+            model.status = Object.assign({}, model.status, {phase: 4, rangeName: "WWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWWW",
+                rangeStartMHz: "450.000000", rangeEndMHz: "459.987500", livePowerValid: true, livePower: -40, liveSeq: 1,
+                hit: Object.assign({}, model.status.hit, {unresolved: false, confirmed: true, protocol: "DMR", access: "CC 15",
+                    tone: "CTCSS 250.3 Hz", targetText: "Target 1234567", sourceText: "Source 7654321",
+                    site: "Site 3 · Net 12", slot: 2, crypt: "ALG 21 · KID 0001"})});
+            waitForRendering(findChild(screen, "searchNowPanel"));
+            var detail = findChild(screen, "searchDetail");
+            verify(detail.text.indexOf("CC\u00a015") >= 0 && detail.text.split("·").length > 2, "a detail of many values shows: " + detail.text);
+            var layouts = screen.measureTally.layouts;
+            // As the model hands them: a new map each update, its hit a new copy too.
+            for (var seq = 2; seq < 6; ++seq)
+                model.status = Object.assign({}, model.status, {livePower: -40 - seq, liveSeq: seq, hit: Object.assign({}, model.status.hit)});
+            compare(screen.measureTally.layouts, layouts, "a live level re-lays out nothing");
+            model.status = Object.assign({}, model.status, {hit: Object.assign({}, model.status.hit, {access: "CC 14"})});
+            verify(screen.measureTally.layouts > layouts, "a changed detail value fits the detail again");
+            verify(detail.text.indexOf("CC\u00a014") >= 0, "the new value is shown: " + detail.text);
+            layouts = screen.measureTally.layouts;
+            model.status = Object.assign({}, model.status, {livePower: -47, liveSeq: 7, hit: Object.assign({}, model.status.hit)});
+            compare(screen.measureTally.layouts, layouts, "then a live level still re-lays out nothing");
+            model.status = Object.assign({}, model.status, {channel: (model.status.channel || 0) + 1});
+            verify(screen.measureTally.layouts > layouts, "a new channel fits the line again");
         }
         // A Recent detections row's details wrap only between values, at every
         // width from the narrowest row (360 dp, the largest text) up: a value that

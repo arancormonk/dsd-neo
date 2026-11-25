@@ -7,6 +7,8 @@ import QtQuick
 // when selected.
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string text: ""
     property bool selected: false
@@ -16,7 +18,7 @@ Item {
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && enabled && visible) || activeFocus
     Accessible.role: Accessible.RadioButton
-    Accessible.name: accessibleName
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control
     // left the tree) is not a swipe stop.
@@ -25,7 +27,7 @@ Item {
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control) || !control.visible)
             return;
         // Issue #718: a choice made mid-word keeps the word; focus stays put.
         Navigation.commitComposing(false);

@@ -1248,12 +1248,12 @@ Item {
                                 visible: replayFiles.copyTotal > 0
                                 color: Theme.toggleOffTrack
                                 Accessible.role: Accessible.ProgressBar
-                                Accessible.name: qsTr("Copy progress")
+                                Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Copy progress")
                                 // Gate first: see OutlineButton. File details and
                                 // the discard question can open over a copy.
                                 readonly property bool navigationAllowed: Navigation.allows(replayProgressBar)
                                 Accessible.ignored: !navigationAllowed || !visible
-                                Accessible.description: replayAmount.text
+                                Accessible.description: !navigationAllowed || !visible ? "" : replayAmount.text
                                 // How far, as the bar shows it.
                                 readonly property real fraction: replayFiles.copyTotal > 0 ? Math.min(1, replayFiles.copyBytes / replayFiles.copyTotal) : 0
                                 // Read when asked (Android polls it); a plain Item's value raises no
@@ -1530,7 +1530,7 @@ Item {
                         id: trunkSwitch
                         objectName: "wizardTrunkSwitch"
                         accessibleName: trunkTitle.text
-                        Accessible.description: trunkRule.text
+                        accessibleDescription: trunkRule.text
                         anchors.right: parent.right
                         anchors.rightMargin: Theme.cardPadding
                         anchors.verticalCenter: parent.verticalCenter
@@ -1643,7 +1643,7 @@ Item {
                             font.pixelSize: Theme.fontSize(12)
                             color: wizard.csvNoticeIsProblem ? Theme.magenta : Theme.textSubdued
                             wrapMode: Text.Wrap
-                            Accessible.role: wizard.csvNoticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText
+                            Accessible.role: !reachable ? Accessible.Pane : (wizard.csvNoticeIsProblem ? Accessible.AlertMessage : Accessible.StaticText)
                         }
 
                         ReadableText {
@@ -1676,6 +1676,8 @@ Item {
 
                     Item {
                         id: advHeader
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: Navigation.allows(advHeader) && advHeader.visible
 
                         objectName: "wizardAdvancedHeader"
                         width: parent.width
@@ -1686,8 +1688,9 @@ Item {
                         // Held while it has the focus (see OutlineButton).
                         activeFocusOnTab: (Navigation.allows(advHeader) && visible) || activeFocus
                         Accessible.role: Accessible.Button
-                        Accessible.name: advTitle.text
-                        Accessible.description: advSubtitle.text + ". " + (wizard.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
+                        Accessible.name: !navigationAllowed || !visible ? "" : advTitle.text
+                        Accessible.focusable: navigationAllowed && visible
+                        Accessible.description: !navigationAllowed || !visible ? "" : advSubtitle.text + ". " + (wizard.advancedOpen ? qsTr("Expanded") : qsTr("Collapsed"))
                         readonly property bool navigationAllowed: Navigation.allows(advHeader)
                         Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: toggle()
@@ -1699,7 +1702,7 @@ Item {
                             Navigation.activationRelease(event);
                         }
                         function toggle() {
-                            if (!enabled || !Navigation.allows(advHeader))
+                            if (!enabled || !Navigation.allows(advHeader) || !advHeader.visible)
                                 return;
                             // Issue #718: folding hides the field being typed
                             // in, which would drop its composing word; the word
@@ -2074,16 +2077,19 @@ Item {
 
                     Item {
                         id: csvChoice
+                        // Issue #902: its reach for the keyboard (PressGate).
+                        readonly property bool inReach: Navigation.allows(csvChoice) && csvChoice.visible
                         // Held while it has the focus (see OutlineButton).
-                        activeFocusOnTab: Navigation.allows(csvChoice) || activeFocus
+                        activeFocusOnTab: (Navigation.allows(csvChoice) && visible) || activeFocus
                         Accessible.role: Accessible.RadioButton
-                        Accessible.name: modelData.name
+                        Accessible.name: !navigationAllowed || !visible ? "" : modelData.name
+                        Accessible.focusable: navigationAllowed && visible
                         // The file's lines as shown (issue #782): whether it is the one selected, and what it holds.
-                        Accessible.description: Util.shownText(csvChoiceLabels)
+                        Accessible.description: !navigationAllowed || !visible ? "" : Util.shownText(csvChoiceLabels)
                         Accessible.checkable: true
                         Accessible.checked: modelData.path === csvSheet.currentPath
                         readonly property bool navigationAllowed: Navigation.allows(csvChoice)
-                        Accessible.ignored: !navigationAllowed
+                        Accessible.ignored: !navigationAllowed || !visible
                         Accessible.onPressAction: choose()
                         Keys.onPressed: function (event) {
                             if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -2094,7 +2100,7 @@ Item {
                         }
                         FocusFrame {}
                         function choose() {
-                            if (!Navigation.allows(csvChoice))
+                            if (!Navigation.allows(csvChoice) || !csvChoice.visible)
                                 return;
                             wizard.assignCsvPath(wizard.pickerTarget, modelData.path, modelData.type === "keysHex");
                             csvSheet.visible = false;

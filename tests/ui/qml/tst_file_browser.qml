@@ -1128,6 +1128,39 @@ Item {
             verify(!opener.activeFocus);
         }
 
+        // Issue #902: the keyboard given to another control in reach as the browser closes (before its deferred
+        // hand-back runs) stays there; the opener does not take it back.
+        function test_closed_browser_keeps_a_newer_focus_choice() {
+            makeScreen();
+            var opener = createTemporaryObject(openerComponent, root);
+            var other = createTemporaryObject(openerComponent, root);
+            opener.forceActiveFocus();
+            open();
+            answerRoots(standardRoots());
+            back();
+            compare(Ui.FileBrowser.request, null);
+            verify(opener.activeFocus, "Back out: the focus returns to what opened the browser");
+            other.forceActiveFocus();
+            wait(0);
+            wait(0);
+            verify(other.activeFocus, "the control given the keyboard keeps it");
+            // The hand-back left for the end of the turn (the opener disabled as the browser closes): a control given
+            // the keyboard meanwhile keeps it, though the opener is enabled again before the turn ends.
+            opener.forceActiveFocus();
+            open();
+            answerRoots(standardRoots());
+            opener.enabled = false;
+            back();
+            compare(Ui.FileBrowser.request, null);
+            verify(!opener.activeFocus, "the disabled opener gets nothing at once");
+            other.forceActiveFocus();
+            opener.enabled = true;
+            wait(0);
+            wait(0);
+            verify(other.activeFocus, "the newer choice keeps the keyboard");
+            verify(!opener.activeFocus, "the opener enabled again does not take it");
+        }
+
         function test_sheet_opened_by_the_pick_keeps_focus() {
             makeScreen();
             var opener = createTemporaryObject(openerComponent, root);

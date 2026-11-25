@@ -109,6 +109,8 @@ ModalSheet {
     // are.
     component FieldGrid: Grid {
         id: fieldGrid
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: fieldGrid.Accessible.focusable
         objectName: "siteFields"
         property var fields: []
         property bool live: true
@@ -119,10 +121,12 @@ ModalSheet {
         // and value, read where it is reached. The rows themselves are rebuilt
         // with each change and stay plain, so a rebuild tells it nothing, and
         // the name is taken once the rebuild is over (SpeechPacer), not once
-        // per row it adds or removes.
-        Accessible.role: Accessible.StaticText
+        // per row it adds or removes. Issue #902: gated as a single reading
+        // is (a plain pane out of reach, no stop, and the keyboard given back).
+        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
         readonly property bool navigationAllowed: Navigation.allows(fieldGrid)
         Accessible.ignored: !navigationAllowed || !visible
+        Accessible.focusable: navigationAllowed && visible
         Accessible.name: fieldSpeech.spoken
         SpeechPacer {
             id: fieldSpeech

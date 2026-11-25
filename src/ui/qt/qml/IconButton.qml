@@ -3,6 +3,8 @@ import QtQuick
 
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
     property string icon: "back"
     property string accessibleName: icon === "back" ? qsTr("Back") : icon === "close" ? qsTr("Close") : qsTr("More options")
     // Whether a press also finishes the field's editing (focus leaves it)
@@ -14,14 +16,17 @@ Item {
     implicitWidth: Theme.minimumTouchSize
     implicitHeight: Theme.minimumTouchSize
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
+    // Named and a stop only while in the tree, from the gate itself
+    // (docs/code_map.md, issue #830); see OutlineButton.
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
+    Accessible.focusable: navigationAllowed && visible
     readonly property bool navigationAllowed: Navigation.allows(control)
     Accessible.ignored: !navigationAllowed || !visible
     Accessible.onPressAction: activate()
     function activate() {
-        if (!enabled || !Navigation.allows(control))
+        if (!enabled || !Navigation.allows(control) || !control.visible)
             return;
         // Issue #718: finish the keyboard's word and the field's editing before
         // the action reads the form.

@@ -30,6 +30,9 @@ Rectangle {
             model: [qsTr("Listen"), qsTr("History"), qsTr("Settings")]
 
             Item {
+                id: navTab
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(navTab) && navTab.visible
                 required property int index
                 required property var modelData
 
@@ -39,14 +42,15 @@ Rectangle {
                 height: nav.vertical ? Math.max(84, Theme.fontSize(11) + 56) : nav.height
 
                 // Held while it has the focus (see OutlineButton).
-                activeFocusOnTab: (Navigation.allows(nav) && enabled) || activeFocus
+                activeFocusOnTab: (Navigation.allows(nav) && visible && enabled) || activeFocus
                 // Issue #646: a radio button, checked while its screen shows.
                 // Qt 6.11.3's Android bridge has no tab role and drops
                 // `selected`, so as a page tab TalkBack read the name alone; it
                 // passes checkable and checked on ("checked, Listen, radio
                 // button"). `selected` stays for platforms that read it.
                 Accessible.role: Accessible.RadioButton
-                Accessible.name: modelData
+                Accessible.name: !navigationAllowed || !visible ? "" : modelData
+                Accessible.focusable: navigationAllowed && visible
                 Accessible.checkable: true
                 Accessible.checked: active
                 Accessible.selected: active
@@ -54,7 +58,7 @@ Rectangle {
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: choose()
                 function choose() {
-                    if (!enabled || !Navigation.allows(nav))
+                    if (!enabled || !Navigation.allows(nav) || !nav.visible)
                         return;
                     // Issue #718: leaving a screen finishes the word being typed
                     // there, and its field's editing, first.

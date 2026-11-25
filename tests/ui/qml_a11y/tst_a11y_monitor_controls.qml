@@ -18,6 +18,15 @@ Item {
         anchors.fill: parent
         source: uiDir + "/MonitorScreen.qml"
     }
+    Loader {
+        id: siteLoader
+        anchors.fill: parent
+        source: uiDir + "/SiteSheet.qml"
+    }
+    // What a sheet over the screen leaves reachable: only itself.
+    Item {
+        id: cover
+    }
     TestCase {
         name: "A11yMonitorControls"
         when: windowShown
@@ -44,6 +53,9 @@ Item {
             wait(20);
         }
         function cleanup() {
+            if (siteLoader.item)
+                siteLoader.item.visible = false;
+            Ui.Navigation.modals = [];
             for (var key in restore)
                 testContext.setMetric(key, restore[key]);
             restore = {};
@@ -134,6 +146,8 @@ Item {
         // action (the bridge lands TalkBack's focus on it without asking Qt), and its header parts are swipe stops.
         function test_recent_calls_pane_is_no_focus_target() {
             testContext.setPrefs("monitorDetailsExpanded", true);
+            // The site row shows only with a site to name (issue #902: hidden, it is no stop).
+            set({siteLine: "P25 · NAC 293"});
             wait(50);
             var pane = findChild(monitor, "recentCallsList");
             var details = findChild(monitor, "monitorDetailsRow");
@@ -152,6 +166,136 @@ Item {
             wait(20);
             verify(details.activeFocus, "the header row keeps the keyboard focus");
             testContext.setPrefs("monitorDetailsExpanded", false);
+        }
+
+        // Issue #902: a group of readings read as one node (the Monitor's ReadingFlow and ReadingRow, the site sheet's
+        // fields) is gated as each single reading is. Qt keeps a static text a stop with SetFocus whatever its flags,
+        // so out of reach (hidden, or under a sheet) the group is a plain pane, no stop, and a group a screen reader's
+        // SetFocus gave the keyboard gives it back.
+        function groupGone(group, why) {
+            tryVerify(function () { return !group.activeFocus && !group.focus; }, 1000, why + ": the keyboard is given back");
+            var node = testContext.accessibleNode(group);
+            verify(!node.inTree, why + ": out of the tree");
+            compare(node.name, "", why + ": nameless");
+            verify(!node.focusable && node.actions.indexOf("SetFocus") < 0, why + ": no stop, " + JSON.stringify(node.actions));
+            testContext.accessibleDoAction(group, "SetFocus");
+            verify(!group.activeFocus, why + ": a cached SetFocus takes no keyboard");
+        }
+        function grouped_data() {
+            return [
+                {tag: "ReadingFlow", name: "decodeQualityRow", shown: {qualityValid: true, ccFecValid: true, ccFecOkPct: 97},
+                    hidden: {qualityValid: false}},
+                {tag: "ReadingRow", name: "encLockoutRow", shown: {encLockoutCount: 3}, hidden: {encLockoutCount: 0}}
+            ];
+        }
+        function test_grouped_readings_follow_their_gate_data() {
+            return grouped_data();
+        }
+        function test_grouped_readings_follow_their_gate(data) {
+            testContext.setPrefs("monitorDetailsExpanded", true);
+            set(data.shown);
+            var group = findChild(monitor, data.name);
+            verify(group !== null);
+            tryVerify(function () { return group.visible; });
+            wait(50);
+            for (var how of ["hidden", "covered"]) {
+                var node = testContext.accessibleNode(group);
+                verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
+                testContext.accessibleDoAction(group, "SetFocus");
+                verify(group.activeFocus, how + ": SetFocus gives the group the keyboard");
+                if (how === "hidden")
+                    set(data.hidden);
+                else
+                    Ui.Navigation.modals = [cover];
+                groupGone(group, how);
+                if (how === "hidden")
+                    set(data.shown);
+                else
+                    Ui.Navigation.modals = [];
+                wait(50);
+            }
+            testContext.setPrefs("monitorDetailsExpanded", false);
+        }
+        // Issue #902 with discussion #900 F3 and issue #901: the Tier III channels row, the NO FREQ reading and the
+        // other slot's strip line are gated as any control or reading is. Hidden or under a sheet each is nameless, out
+        // of the tree and no stop, gives the keyboard back, and a press a screen reader still holding it sends opens
+        // nothing.
+        function nodes_data() {
+            return [
+                {tag: "channelsRow", name: "monitorChannelsRow", expanded: true, shown: {dmrUserChannels: true, noFreqCount: 0},
+                    hidden: {dmrUserChannels: false}, opens: true},
+                {tag: "noFreqRow", name: "noFreqRow", expanded: true, shown: {noFreqCount: 2}, hidden: {noFreqCount: 0}, opens: true},
+                {tag: "otherSlotNode", name: "otherSlotNode", shown: {twoSlotCarrier: true}, hidden: {twoSlotCarrier: false}}
+            ];
+        }
+        function test_monitor_nodes_follow_their_gate_data() {
+            return nodes_data();
+        }
+        function test_monitor_nodes_follow_their_gate(data) {
+            testContext.setPrefs("monitorDetailsExpanded", data.expanded === true);
+            set(data.shown);
+            var item = findChild(monitor, data.name);
+            var channels = findChild(monitor, "channelsSheet");
+            verify(item !== null && channels !== null);
+            tryVerify(function () { return Ui.Navigation.presented(item); });
+            var node = null;
+            tryVerify(function () { node = testContext.accessibleNode(item); return node.name.length > 0; }, 7000);
+            for (var how of ["hidden", "covered"]) {
+                node = testContext.accessibleNode(item);
+                verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
+                testContext.accessibleDoAction(item, "SetFocus");
+                verify(item.activeFocus, how + ": SetFocus gives it the keyboard");
+                if (how === "hidden")
+                    set(data.hidden);
+                else
+                    Ui.Navigation.modals = [cover];
+                groupGone(item, how);
+                if (data.opens) {
+                    testContext.accessibleClick(item);
+                    item.activate();
+                    verify(!channels.visible, how + ": a press opens nothing");
+                }
+                if (how === "hidden")
+                    set(data.shown);
+                else
+                    Ui.Navigation.modals = [];
+                tryVerify(function () { return testContext.accessibleNode(item).name.length > 0; }, 7000);
+            }
+            testContext.setPrefs("monitorDetailsExpanded", false);
+        }
+        function test_site_fields_follow_their_gate() {
+            var sheet = siteLoader.item;
+            verify(sheet !== null);
+            set({siteLine: "Site 1", siteConfirmed: true, siteProtocol: "P25", p25NacValid: true, p25Nac: 0x291});
+            sheet.visible = true;
+            waitForRendering(sheet);
+            wait(50);
+            var fields = null;
+            (function walk(item) {
+                for (var child of item.children) {
+                    if (child.objectName === "siteFields" && child.visible && fields === null)
+                        fields = child;
+                    walk(child);
+                }
+            })(sheet);
+            verify(fields !== null, "the P25 fields are shown");
+            for (var how of ["hidden", "covered"]) {
+                var node = testContext.accessibleNode(fields);
+                verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
+                testContext.accessibleDoAction(fields, "SetFocus");
+                verify(fields.activeFocus, how + ": SetFocus gives the fields the keyboard");
+                if (how === "hidden")
+                    set({siteProtocol: "DMR"});
+                else
+                    Ui.Navigation.modals = Ui.Navigation.modals.concat([cover]);
+                groupGone(fields, how);
+                if (how === "hidden")
+                    set({siteProtocol: "P25"});
+                else
+                    Ui.Navigation.modals = Ui.Navigation.modals.filter(function (m) { return m !== cover; });
+                wait(50);
+            }
+            sheet.visible = false;
         }
     }
 }

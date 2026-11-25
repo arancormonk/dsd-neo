@@ -6,14 +6,16 @@ import QtQuick
 // "+ Add a system": a dashed outline with cyan text — an invitation, not a card.
 Item {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string text: ""
     signal clicked
 
     // Held while it has the focus (see OutlineButton).
-    activeFocusOnTab: (Navigation.allows(control) && enabled) || activeFocus
+    activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: text
+    Accessible.name: !navigationAllowed || !visible ? "" : text
     // Issue #782: focusable only while in the tree, so a copy Android still
     // holds of a covered or hidden control (no event tells it the control
     // left the tree) is not a swipe stop.

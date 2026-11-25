@@ -10,6 +10,8 @@ import QtQuick
 // no surface of its own: the zoom pair shares one frame.
 Rectangle {
     id: control
+    // Issue #902: its reach for the keyboard (PressGate).
+    readonly property bool inReach: control.Accessible.focusable
 
     property string shape: "plus"
     property string accessibleName: ""
@@ -37,8 +39,8 @@ Rectangle {
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && enabled && visible) || activeFocus
     Accessible.role: Accessible.Button
-    Accessible.name: accessibleName
-    Accessible.description: accessibleDescription
+    Accessible.name: !navigationAllowed || !visible ? "" : accessibleName
+    Accessible.description: !navigationAllowed || !visible ? "" : accessibleDescription
     Accessible.checkable: checkable
     Accessible.checked: checkable && checked
     Accessible.focusable: navigationAllowed && visible

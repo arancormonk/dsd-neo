@@ -89,7 +89,8 @@ Item {
             testContext.setMetric("scanTargetId", "target-3");
             verify(note.visible);
             verifyRead(note, "The scan has left North site. Reopen the editor before applying.", "the note");
-            // Focusing Apply says it too, so a user who swipes straight to the button hears it before applying.
+            // Focusing Apply says it too, so a user who swipes straight to the button hears it before applying. Apply
+            // shows with a profile chosen; hidden, it is out of the tree and describes nothing (issue #902 B9).
             var buttons = [];
             var walk = function (at) {
                 for (var c of at.children) {
@@ -100,7 +101,20 @@ Item {
             };
             walk(sheet);
             compare(buttons.length, 1);
-            compare(testContext.accessibleNode(buttons[0]).description, note.text, "Apply carries the note");
+            verify(!buttons[0].visible, "no profile chosen yet");
+            compare(testContext.accessibleNode(buttons[0]).description, "", "a hidden Apply describes nothing");
+            var uid = decryptionProfiles.saveProfile({label: "Scan keys", protocol: "dmr", mode: "direct", directType: "basic", directValue: "51"}).uid;
+            verify(uid.length > 0);
+            try {
+                sheet.selectedProfileUid = uid;
+                verify(buttons[0].visible, "a chosen profile shows Apply");
+                var node = testContext.accessibleNode(buttons[0]);
+                verify(node.inTree, "Apply is in the tree");
+                compare(node.description, note.text, "Apply carries the note");
+            } finally {
+                sheet.selectedProfileUid = "";
+                verify(decryptionProfiles.removeProfile(uid).ok);
+            }
         }
 
         function test_direct_override_note_is_read() {
@@ -121,8 +135,12 @@ Item {
             compare(testContext.accessibleNode(scope).description, "Session defaults");
         }
 
-        // A choice with no name of its own is read by its value already: it gains nothing twice.
+        // A choice with no name of its own is read by its value already: it gains nothing twice. It is outside the
+        // key sheet, so it is read once the sheet closes, and is nameless under it (issue #902 B9).
         function test_unnamed_choice_reads_as_before() {
+            compare(testContext.accessibleNode(unnamedChoice).name, "", "under the open sheet, nameless");
+            sheet.visible = false;
+            verify(unnamedChoice.navigationAllowed, "the sheet closed");
             var node = testContext.accessibleNode(unnamedChoice);
             verify(node.exists);
             compare(node.name, "Use received identifiers");

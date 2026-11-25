@@ -429,14 +429,17 @@ Column {
 
             Text {
                 id: recordingTimeText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: recordingTimeText.Accessible.focusable
                 objectName: "recordingTime"
                 width: parent.width
                 text: Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText])
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
-                Accessible.role: Accessible.StaticText
-                Accessible.name: player.spokenTimeText
+                Accessible.role: !Navigation.allows(recordingTimeText) || !visible ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !Navigation.allows(recordingTimeText) || !visible ? "" : player.spokenTimeText
+                Accessible.focusable: Navigation.allows(recordingTimeText) && visible
                 Accessible.ignored: !Navigation.allows(recordingTimeText) || !visible
             }
 
@@ -449,6 +452,8 @@ Column {
 
                 Item {
                     id: seekBar
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: Navigation.allows(seekBar) && seekBar.visible
                     objectName: "recordingSeekBar"
 
                     readonly property bool seekable: player.loaded && (player.playState === 2 || player.playState === 3) && player.durationMs > 0
@@ -461,10 +466,12 @@ Column {
                     y: (parent.height - height) / 2
                     enabled: seekable
                     // Held while it has the focus (see OutlineButton).
-                    activeFocusOnTab: (Navigation.allows(seekBar) && seekable) || activeFocus
+                    activeFocusOnTab: (Navigation.allows(seekBar) && visible && seekable) || activeFocus
                     Accessible.role: Accessible.Slider
-                    Accessible.name: qsTr("Position")
-                    Accessible.description: player.spokenTimeText
+                    Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Position")
+                    // Gated as the name is: covered, the pacer's reading is empty,
+                    // which reads as "0:00 of …", a position the player is not at.
+                    Accessible.description: !navigationAllowed || !visible ? "" : player.spokenTimeText
                     // Read when asked (Android polls it); a plain Item's value raises no
                     // ValueChanged, so it stays live (issue #782).
                     readonly property real value: player.positionMs / 1000
@@ -496,7 +503,11 @@ Column {
                             decoderHost.seekPlayback(player.seekTargetMs);
                         }
                     }
+                    // A step a screen reader sends a covered or hidden slider it still
+                    // holds does nothing.
                     function nudge(delta) {
+                        if (!Navigation.allows(seekBar) || !seekBar.visible)
+                            return;
                         seekTo(player.positionMs + delta);
                     }
 
@@ -568,6 +579,8 @@ Column {
             // empty line is not read.
             Text {
                 id: recordingStatusText
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: recordingStatusText.Accessible.focusable
                 objectName: "recordingStatus"
                 width: parent.width
                 height: Math.max(implicitHeight, statusLine.height)
@@ -576,8 +589,9 @@ Column {
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(12)
                 color: Theme.textSubdued
-                Accessible.role: Accessible.StaticText
-                Accessible.name: text
+                Accessible.role: !Navigation.allows(recordingStatusText) || !visible || text.length === 0 ? Accessible.Pane : Accessible.StaticText
+                Accessible.name: !Navigation.allows(recordingStatusText) || !visible || text.length === 0 ? "" : text
+                Accessible.focusable: Navigation.allows(recordingStatusText) && visible && text.length !== 0
                 Accessible.ignored: !Navigation.allows(recordingStatusText) || !visible || text.length === 0
                 FontMetrics {
                     id: statusLine
@@ -597,7 +611,7 @@ Column {
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
         color: player.playState === 4 || player.storageAway ? Theme.alert : Theme.textSecondary
-        Accessible.role: player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText
+        Accessible.role: !reachable ? Accessible.Pane : (player.playState === 4 || player.storageAway ? Accessible.AlertMessage : Accessible.StaticText)
     }
 
     // A call heard in pieces: a chip per part, the one shown checked, and Play all
@@ -672,7 +686,7 @@ Column {
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(13)
         color: player.noticeProblem ? Theme.alert : Theme.textSecondary
-        Accessible.role: player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText
+        Accessible.role: !reachable ? Accessible.Pane : (player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
     }
 
     DocumentPicker {

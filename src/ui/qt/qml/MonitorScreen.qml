@@ -649,10 +649,17 @@ Item {
     // at once. The labels and values inside stay plain.
     component ReadingFlow: Flow {
         id: readingFlow
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: readingFlow.Accessible.focusable
         property alias speechStep: readingFlowSpeech.step
-        Accessible.role: Accessible.StaticText
+        // Issue #902: gated as each single reading is: Qt keeps a static
+        // text a stop with SetFocus whatever its flags, so out of reach the
+        // group is a plain pane, and one a screen reader's SetFocus gave the
+        // keyboard gives it back.
+        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
         readonly property bool navigationAllowed: Navigation.allows(readingFlow)
         Accessible.ignored: !navigationAllowed || !visible
+        Accessible.focusable: navigationAllowed && visible
         Accessible.name: readingFlowSpeech.spoken
         SpeechPacer {
             id: readingFlowSpeech
@@ -662,10 +669,17 @@ Item {
     }
     component ReadingRow: Row {
         id: readingRow
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: readingRow.Accessible.focusable
         property alias speechStep: readingRowSpeech.step
-        Accessible.role: Accessible.StaticText
+        // Issue #902: gated as each single reading is: Qt keeps a static
+        // text a stop with SetFocus whatever its flags, so out of reach the
+        // group is a plain pane, and one a screen reader's SetFocus gave the
+        // keyboard gives it back.
+        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
         readonly property bool navigationAllowed: Navigation.allows(readingRow)
         Accessible.ignored: !navigationAllowed || !visible
+        Accessible.focusable: navigationAllowed && visible
         Accessible.name: readingRowSpeech.spoken
         SpeechPacer {
             id: readingRowSpeech
@@ -788,7 +802,7 @@ Item {
                     // the count (on the line below it in the two-line form).
                     // Speech has no width, so the name is never the elided
                     // one drawn (r2 C1).
-                    Accessible.name: navigationAllowed && visible ? screen.withOtherLists(screen.sessionLine) : ""
+                    Accessible.name: reachable ? screen.withOtherLists(screen.sessionLine) : ""
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(20)
                     font.weight: Font.DemiBold
@@ -984,9 +998,8 @@ Item {
                     // Fits its box (r5 H3): a taller script is drawn smaller.
                     fontSizeMode: Text.VerticalFit
                     minimumPixelSize: Math.max(4, Math.floor(font.pixelSize / 3))
-                    Accessible.ignored: !navigationAllowed || !visible || text.length === 0
-                    Accessible.focusable: navigationAllowed && visible && text.length > 0
-                    Accessible.name: navigationAllowed && visible && text.length > 0 ? siteRoaming.statusText : ""
+                    reachable: navigationAllowed && visible && text.length > 0
+                    Accessible.name: reachable ? siteRoaming.statusText : ""
                     font.family: Theme.mono
                     font.pixelSize: Theme.fontSize(11)
                     font.letterSpacing: 0.8
@@ -1044,12 +1057,15 @@ Item {
                 // a PCM feed or a file has nothing to draw.
                 Rectangle {
                     id: spectrumPill
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: Navigation.allows(spectrumPill) && spectrumPill.visible
 
                     objectName: "openSpectrumButton"
                     // Held while it has the focus (see OutlineButton).
-                    activeFocusOnTab: (Navigation.allows(spectrumPill) && enabled) || activeFocus
+                    activeFocusOnTab: (Navigation.allows(spectrumPill) && visible && enabled) || activeFocus
                     Accessible.role: Accessible.Button
-                    Accessible.name: qsTr("Spectrum")
+                    Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Spectrum")
+                    Accessible.focusable: navigationAllowed && visible
                     readonly property bool navigationAllowed: Navigation.allows(spectrumPill)
                     // Gate first: see OutlineButton.
                     Accessible.ignored: !navigationAllowed || !visible
@@ -1105,6 +1121,8 @@ Item {
                 // opens the receiver sheet; otherwise only an indicator.
                 Rectangle {
                     id: livePill
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: Navigation.allows(livePill) && livePill.visible
 
                     objectName: "monitorLiveStatus"
                     // Its padding and dot, also read by headerActionsWidth.
@@ -1113,16 +1131,17 @@ Item {
                     readonly property bool acts: screen.sessionReceiver.length > 0
                     readonly property bool navigationAllowed: Navigation.allows(livePill)
                     function activate() {
-                        if (acts && Navigation.allows(livePill))
+                        if (acts && Navigation.allows(livePill) && livePill.visible)
                             screen.openReceiverSheet();
                     }
                     // Not a tab stop behind a sheet; kept while focused, so a change
                     // under the focus never drops it mid-way.
-                    activeFocusOnTab: (acts && navigationAllowed) || activeFocus
-                    Accessible.role: acts ? Accessible.Button : Accessible.StaticText
-                    Accessible.name: screen.receiverLost ? receiverStatus.accessibleName : liveLabel.text
-                    Accessible.description: acts ? qsTr("Shows the receiver") : ""
-                    Accessible.ignored: !navigationAllowed
+                    activeFocusOnTab: (acts && navigationAllowed && visible) || activeFocus
+                    Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : (acts ? Accessible.Button : Accessible.StaticText)
+                    Accessible.name: !navigationAllowed || !visible ? "" : screen.receiverLost ? receiverStatus.accessibleName : liveLabel.text
+                    Accessible.focusable: navigationAllowed && visible
+                    Accessible.description: !navigationAllowed || !visible ? "" : acts ? qsTr("Shows the receiver") : ""
+                    Accessible.ignored: !navigationAllowed || !visible
                     Accessible.onPressAction: activate()
                     Keys.onPressed: function (event) {
                         if (Navigation.activationPress(event, Window.activeFocusItem))
@@ -1203,6 +1222,8 @@ Item {
         // box, so the list below never moves between them.
         UiPanel {
             id: hero
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: hero.Accessible.focusable
             objectName: "monitorHero"
             width: parent.width
             height: screen.heroCompact ? screen.heroCompactHeight : screen.heroFullHeight
@@ -1211,12 +1232,13 @@ Item {
             // the name the canvas draws, then its subline (ids, tags, algorithm,
             // channel), or what it is waiting for. The duration reads on its
             // own, so the seconds counting do not rename this.
-            Accessible.role: Accessible.StaticText
+            Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
             readonly property bool navigationAllowed: Navigation.allows(hero)
             Accessible.ignored: !navigationAllowed || !visible
             // Through a pacer (issue #782): its waiting line follows the lock, which
             // can flap; a call starting or ending is a step and heard at once.
             Accessible.name: heroSpeech.spoken
+            Accessible.focusable: navigationAllowed && visible
             SpeechPacer {
                 id: heroSpeech
                 shown: !hero.Accessible.ignored
@@ -1721,12 +1743,16 @@ Item {
                 // Unnamed while covered.
                 Item {
                     id: otherSlotLine
+                    // Issue #902: its reach for the keyboard (PressGate).
+                    readonly property bool inReach: otherSlotLine.Accessible.focusable
                     objectName: "otherSlotNode"
                     readonly property bool navigationAllowed: Navigation.allows(otherSlotLine)
                     x: 0
                     width: screen.stripIdle ? parent.width : otherSkip.x
                     height: parent.height
-                    Accessible.role: Accessible.StaticText
+                    // Issue #902: gated as a single reading is (see ReadingFlow):
+                    // out of reach the node is a plain pane.
+                    Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : Accessible.StaticText
                     Accessible.focusable: navigationAllowed && visible
                     Accessible.ignored: !navigationAllowed || !visible
                     Accessible.name: !navigationAllowed || !visible ? "" : screen.stripSpeech()
@@ -2129,12 +2155,12 @@ Item {
 
         // Scrollable by assistive technology, as the body it replaced was.
         Accessible.role: Accessible.Pane
-        Accessible.name: qsTr("Recent calls")
+        Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Recent calls")
         Accessible.focusable: false
         readonly property bool navigationAllowed: Navigation.allows(recentList)
         Accessible.ignored: !navigationAllowed || !visible
         function scrollPage(direction) {
-            if (!enabled || !Navigation.allows(recentList))
+            if (!enabled || !visible || !Navigation.allows(recentList))
                 return;
             contentY = Math.max(originY, Math.min(originY + contentHeight - height, contentY + direction * Math.max(48, height * 0.8)));
         }
@@ -2338,7 +2364,7 @@ Item {
                 accessibleDescription: screen.detailsSummary.plain
                 // The answer is said as it is while it shows. The summary's SNR
                 // moves every tick: read at the readings' pace (issue #782).
-                Accessible.description: !answering ? detailsSpeech.spoken : detailsRow.Accessible.ignored ? "" : metrics.uiMessage
+                Accessible.description: !answering ? detailsSpeech.spoken : !detailsRow.navigationAllowed || !detailsRow.visible ? "" : metrics.uiMessage
                 SpeechPacer {
                     id: detailsSpeech
                     shown: !detailsRow.Accessible.ignored
@@ -2370,6 +2396,8 @@ Item {
             // WP-F1: site identity, first of the readings.
             UiPanel {
                 id: siteRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: siteRow.Accessible.focusable
                 objectName: "siteRow"
                 width: parent.width
                 height: Math.max(48, siteLabel.implicitHeight + 20)
@@ -2378,9 +2406,10 @@ Item {
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(siteRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
-                Accessible.name: metrics.siteLine
+                Accessible.name: !navigationAllowed || !visible ? "" : metrics.siteLine
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(siteRow)
-                Accessible.ignored: !navigationAllowed
+                Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
                 function activate() {
                     if (visible && Navigation.allows(siteRow))
@@ -2420,6 +2449,8 @@ Item {
             // the way to correct a saved frequency, by tap, key or screen reader.
             UiPanel {
                 id: channelsRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(channelsRow) && channelsRow.visible
                 objectName: "monitorChannelsRow"
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, channelsLabel.implicitHeight + 20)
@@ -2427,7 +2458,8 @@ Item {
                 // Held while it has the focus (see OutlineButton).
                 activeFocusOnTab: (Navigation.allows(channelsRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Tier III channels")
+                Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Tier III channels")
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(channelsRow)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
@@ -2462,19 +2494,22 @@ Item {
 
             UiPanel {
                 id: decryptionRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(decryptionRow) && decryptionRow.visible
                 objectName: "openKeySheetButton"
                 width: parent.width
                 height: Math.max(Theme.minimumTouchSize, decryptionLabel.implicitHeight + 20)
                 enabled: decoderHost.running
                 // Held while it has the focus (see OutlineButton).
-                activeFocusOnTab: (Navigation.allows(decryptionRow) && enabled) || activeFocus
+                activeFocusOnTab: (Navigation.allows(decryptionRow) && visible && enabled) || activeFocus
                 Accessible.role: Accessible.Button
-                Accessible.name: qsTr("Decryption · %1").arg(keySheet.effectiveState)
+                Accessible.name: !navigationAllowed || !visible ? "" : qsTr("Decryption · %1").arg(keySheet.effectiveState)
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(decryptionRow)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
                 function activate() {
-                    if (enabled && Navigation.allows(decryptionRow))
+                    if (enabled && Navigation.allows(decryptionRow) && decryptionRow.visible)
                         keySheet.open();
                 }
                 Keys.onPressed: function (event) {
@@ -2943,6 +2978,8 @@ Item {
             // The tap reaches past its line, up to a full touch target.
             Item {
                 id: noFreqRow
+                // Issue #902: its reach for the keyboard (PressGate).
+                readonly property bool inReach: Navigation.allows(noFreqRow) && noFreqRow.visible
                 objectName: "noFreqRow"
                 readonly property int count: metrics.noFreqCount
                 width: noFreqLine.implicitWidth
@@ -2956,6 +2993,7 @@ Item {
                 activeFocusOnTab: (Navigation.allows(noFreqRow) && visible) || activeFocus
                 Accessible.role: Accessible.Button
                 Accessible.name: noFreqSpeech.spoken
+                Accessible.focusable: navigationAllowed && visible
                 readonly property bool navigationAllowed: Navigation.allows(noFreqRow)
                 Accessible.ignored: !navigationAllowed || !visible
                 Accessible.onPressAction: activate()
@@ -3597,6 +3635,8 @@ Item {
 
         Rectangle {
             id: lostLine
+            // Issue #902: its reach for the keyboard (PressGate).
+            readonly property bool inReach: Navigation.allows(lostLine) && lostLine.visible
             objectName: "monitorReceiverLostLine"
             visible: lostLineHost.shown
             enabled: !keySheet.visible
@@ -3605,10 +3645,11 @@ Item {
                 if (visible && enabled && Navigation.allows(lostLine))
                     screen.openReceiverSheet();
             }
-            activeFocusOnTab: (lostLineHost.shown && navigationAllowed) || activeFocus
+            activeFocusOnTab: (lostLineHost.shown && navigationAllowed && visible) || activeFocus
             Accessible.role: Accessible.Button
-            Accessible.name: receiverStatus.accessibleName
-            Accessible.description: qsTr("The session is finishing")
+            Accessible.name: !navigationAllowed || !visible ? "" : receiverStatus.accessibleName
+            Accessible.focusable: navigationAllowed && visible
+            Accessible.description: !navigationAllowed || !visible ? "" : qsTr("The session is finishing")
             Accessible.ignored: !navigationAllowed || !visible
             Accessible.onPressAction: activate()
             Keys.onPressed: function (event) {

@@ -980,6 +980,8 @@ Item {
     // default server.
     Item {
         id: attribution
+        // Issue #902: its reach for the keyboard (PressGate).
+        readonly property bool inReach: Navigation.allows(attribution) && attribution.visible
         objectName: "mapAttribution"
         visible: screen.mapShown
         z: positionSheet.visible ? 300 : 3
@@ -1008,16 +1010,16 @@ Item {
         // What the detail sheet leaves clear: the chip as drawn, not its touch area.
         readonly property real chipHeight: chip.height + chip.anchors.bottomMargin + anchors.bottomMargin
 
-        Accessible.role: screen.attributionLinked ? Accessible.Link : Accessible.StaticText
+        Accessible.role: !navigationAllowed || !visible ? Accessible.Pane : (screen.attributionLinked ? Accessible.Link : Accessible.StaticText)
         Accessible.name: navigationAllowed && visible ? screen.shownAttribution : ""
-        Accessible.description: screen.attributionLinked && navigationAllowed ? qsTr("Opens the map data copyright page") : ""
+        Accessible.description: screen.attributionLinked && navigationAllowed && visible ? qsTr("Opens the map data copyright page") : ""
         readonly property bool navigationAllowed: Navigation.allows(attribution)
         Accessible.focusable: navigationAllowed && visible
         Accessible.ignored: !navigationAllowed || !visible
         Accessible.onPressAction: activate()
         activeFocusOnTab: (navigationAllowed && visible && screen.attributionLinked) || activeFocus
         function activate() {
-            if (screen.attributionLinked && Navigation.allows(attribution))
+            if (screen.attributionLinked && Navigation.allows(attribution) && attribution.visible)
                 Qt.openUrlExternally(screen.copyrightUrl);
         }
         Keys.onPressed: function (event) {

@@ -127,6 +127,7 @@
   { include: ["@[\"<](.*/)?qqmlcontext\\.h[\">]", private, "<QQmlContext>", public] },
   { include: ["@[\"<](.*/)?qqmlapplicationengine\\.h[\">]", private, "<QQmlApplicationEngine>", public] },
   { include: ["@[\"<](.*/)?qquickwindow\\.h[\">]", private, "<QQuickWindow>", public] },
+  { include: ["@[\"<](.*/)?qquickitem\\.h[\">]", private, "<QQuickItem>", public] },
   { include: ["@[\"<](.*/)?quicktest\\.h[\">]", private, "<QtQuickTest>", public] },
 
   # Gui.
@@ -136,4 +137,13 @@
   # class header Qt documents.
   { include: ["@[\"<](.*/)?qaccessible_base\\.h[\">]", private, "<QAccessible>", public] },
   { include: ["@[\"<](.*/)?qaccessible\\.h[\">]", private, "<QAccessible>", public] },
+  # qevent.h declares every event class; each has its own documented class header, and IWYU would otherwise
+  # pick whichever one-line wrapper it met first (<QFocusEvent> for a QKeyEvent).
+  { symbol: ["QKeyEvent", private, "<QKeyEvent>", public] },
+  { symbol: ["QFocusEvent", private, "<QFocusEvent>", public] },
+  { symbol: ["QInputMethodEvent", private, "<QInputMethodEvent>", public] },
+  { symbol: ["QTouchEvent", private, "<QTouchEvent>", public] },
+  { symbol: ["QMouseEvent", private, "<QMouseEvent>", public] },
+  { symbol: ["QMetaProperty", private, "<QMetaProperty>", public] },
+  { symbol: ["QMetaMethod", private, "<QMetaMethod>", public] },
 ]

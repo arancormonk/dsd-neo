@@ -16,7 +16,7 @@ ReadableText {
     Accessible.name: pacer.spoken
     SpeechPacer {
         id: pacer
-        shown: !live.Accessible.ignored
+        shown: live.reachable
         read: function () {
             return live.speech ? live.speech() : live.text;
         }
