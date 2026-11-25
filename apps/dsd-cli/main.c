@@ -53,7 +53,7 @@ rtl_list_serial_count(const struct rtl_device_entry* list, int count, const stru
 static int
 rtl_list_print_entry(const struct rtl_device_entry* list, int count, const struct rtl_device_entry* e) {
     const int shared = e->readable && rtl_list_serial_count(list, count, e) > 1;
-    char line[3 * RTL_DEVICE_STRING_SIZE + 128];
+    char line[RTL_DEVICE_LINE_SIZE];
     rtl_device_list_line(e, shared, line, sizeof line);
     DSD_FPRINTF(stdout, "%s\n", line);
     return shared;

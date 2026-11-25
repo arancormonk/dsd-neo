@@ -205,6 +205,38 @@ rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report
     return result;
 }
 
+namespace {
+
+/* A USB string as shown: each byte at most four characters. */
+constexpr size_t kShownSize = 4U * RTL_DEVICE_STRING_SIZE;
+
+/* @p text for display, into @p out (kShownSize bytes): printable ASCII as it is, a backslash doubled, '"' escaped
+   when @p quoted, and every other byte (a control character, ESC, a newline, a byte past ASCII) as \xNN, so a string a
+   device reports can never move the cursor, colour the terminal or forge a line. The string itself is not changed: it
+   is what a serial is matched against. */
+void
+shown(const char* text, int quoted, char* out) {
+    static const char kHex[] = "0123456789ABCDEF";
+    size_t n = 0;
+    for (const unsigned char* c = reinterpret_cast<const unsigned char*>(text); *c != '\0' && n + 5U <= kShownSize;
+         c++) {
+        if (*c == '\\' || (quoted && *c == '"')) {
+            out[n++] = '\\';
+            out[n++] = (char)*c;
+        } else if (*c >= 0x20U && *c <= 0x7EU) {
+            out[n++] = (char)*c;
+        } else {
+            out[n++] = '\\';
+            out[n++] = 'x';
+            out[n++] = kHex[*c >> 4];
+            out[n++] = kHex[*c & 0x0FU];
+        }
+    }
+    out[n] = '\0';
+}
+
+} // namespace
+
 extern "C" void
 rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_t out_size) {
     if (out == nullptr || out_size == 0U) {
@@ -214,8 +246,13 @@ rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_
         DSD_SNPRINTF(out, out_size, "%s", RTL_DEVICE_UNREADABLE_TEXT);
         return;
     }
-    DSD_SNPRINTF(out, out_size, "%s, %s, SN: %s", entry->manufacturer, entry->product,
-                 entry->readable ? entry->serial : "(none)");
+    char manufacturer[kShownSize];
+    char product[kShownSize];
+    char serial[kShownSize];
+    shown(entry->manufacturer, 0, manufacturer);
+    shown(entry->product, 0, product);
+    shown(entry->readable ? entry->serial : "(none)", 0, serial);
+    DSD_SNPRINTF(out, out_size, "%s, %s, SN: %s", manufacturer, product, serial);
 }
 
 namespace {
@@ -253,7 +290,7 @@ rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out
         return;
     }
     if (!entry->readable) {
-        char text[3 * RTL_DEVICE_STRING_SIZE + 16];
+        char text[RTL_DEVICE_LINE_SIZE];
         rtl_device_entry_describe(entry, text, sizeof text);
         DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s", entry->index, text);
         return;
@@ -274,8 +311,14 @@ rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out
         spec_field(entry->serial, dev, sizeof dev);
         DSD_SNPRINTF(field, sizeof field, "  (-i rtl:%s)", dev);
     }
-    DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s, %s, SN: %s%s%s%s%s", entry->index, entry->manufacturer, entry->product,
-                 quote, entry->serial, quote, note, field);
+    char manufacturer[kShownSize];
+    char product[kShownSize];
+    char serial[kShownSize];
+    shown(entry->manufacturer, 0, manufacturer);
+    shown(entry->product, 0, product);
+    shown(entry->serial, !safe, serial);
+    DSD_SNPRINTF(out, out_size, "RTL-SDR %d: %s, %s, SN: %s%s%s%s%s", entry->index, manufacturer, product, quote,
+                 serial, quote, note, field);
 }
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS

@@ -344,7 +344,7 @@ entry_with(int index, const char* serial) {
 
 void
 expect_line(const rtl_device_entry& e, int shared, const char* want) {
-    char line[1024];
+    char line[RTL_DEVICE_LINE_SIZE];
     rtl_device_list_line(&e, shared, line, sizeof line);
     if (strcmp(line, want) != 0) {
         DSD_FPRINTF(stderr, "line \"%s\", want \"%s\"\n", line, want);
@@ -375,6 +375,36 @@ test_list_lines(void) {
     rtl_device_entry unread{};
     unread.index = 8;
     expect_line(unread, 0, "RTL-SDR 8: " RTL_DEVICE_UNREADABLE_TEXT);
+
+    /* What a device reports is shown escaped, never written to the terminal as it is: a newline, ESC or any byte past
+       printable ASCII as \xNN, a backslash doubled (and '"' escaped inside quotes), in the line that offers an -i
+       argument and in the quoted one alike, and in the startup listing's text. The strings themselves stay. */
+    rtl_device_entry ctl = entry_with(9, "00000009");
+    put(ctl.manufacturer, "Real\ntek");
+    put(ctl.product, "RTL\x1b[31m\xff");
+    expect_line(ctl, 0, "RTL-SDR 9: Real\\x0Atek, RTL\\x1B[31m\\xFF, SN: 00000009  (-i rtl:00000009)");
+    assert(strcmp(ctl.manufacturer, "Real\ntek") == 0);
+    rtl_device_entry quoted = entry_with(10, "1 East\\x");
+    put(quoted.manufacturer, "\x1b]0;title\a");
+    put(quoted.product, "two\nlines");
+    expect_line(
+        quoted, 0,
+        "RTL-SDR 10: \\x1B]0;title\\x07, two\\x0Alines, SN: \"1 East\\\\x\"  [spaces or shell characters: quote "
+        "the whole -i argument]");
+    expect_line(entry_with(11, "A\nB\x1b"), 0,
+                "RTL-SDR 11: Realtek, RTL2838UHIDIR, SN: \"A\\x0AB\\x1B\"  [this serial cannot be given in -i rtl:]");
+    char text[RTL_DEVICE_LINE_SIZE];
+    rtl_device_entry_describe(&quoted, text, sizeof text);
+    assert(strcmp(text, "\\x1B]0;title\\x07, two\\x0Alines, SN: 1 East\\\\x") == 0);
+    /* The longest strings, every byte escaped, fit the line. */
+    rtl_device_entry wide = entry_with(12, "");
+    DSD_MEMSET(wide.manufacturer, 0x1b, RTL_DEVICE_STRING_SIZE - 1);
+    DSD_MEMSET(wide.product, 0x1b, RTL_DEVICE_STRING_SIZE - 1);
+    DSD_MEMSET(wide.serial, 0x1b, RTL_DEVICE_STRING_SIZE - 1);
+    wide.readable = 1;
+    char line[RTL_DEVICE_LINE_SIZE];
+    rtl_device_list_line(&wide, 0, line, sizeof line);
+    assert(strstr(line, "[this serial cannot be given in -i rtl:]") != nullptr);
 }
 
 /* ---- Opening by serial ---- */

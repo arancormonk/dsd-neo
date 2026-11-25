@@ -29,6 +29,10 @@ extern "C" {
 /** librtlsdr's USB string buffers, in bytes. */
 #define RTL_DEVICE_STRING_SIZE     256
 
+/** Room for one line of rtl_device_entry_describe() or rtl_device_list_line(): three strings shown with every byte
+    escaped (four characters each), and the line's own text. */
+#define RTL_DEVICE_LINE_SIZE       (3 * 4 * RTL_DEVICE_STRING_SIZE + 192)
+
 /** What an unreadable device shows in place of its strings. */
 #define RTL_DEVICE_UNREADABLE_TEXT "(could not read: in use by another program, or no permission)"
 
@@ -83,6 +87,10 @@ rtl_device_find_result rtl_device_find_serial(const char* serial, struct rtl_dev
 /**
  * @brief One line's worth of @p entry: `Manufacturer, Product, SN: serial`, `Manufacturer, Product, SN: (none)` for a
  *        device that reports no serial, or RTL_DEVICE_UNREADABLE_TEXT when its strings could not be read.
+ *
+ * The strings are shown escaped: a backslash doubled and any byte other than printable ASCII as `\xNN`, so what a
+ * device reports cannot reach the terminal as a control sequence or a line of its own. @p out holds
+ * RTL_DEVICE_LINE_SIZE bytes for the whole line.
  */
 void rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, size_t out_size);
 
@@ -93,7 +101,8 @@ void rtl_device_entry_describe(const struct rtl_device_entry* entry, char* out, 
  * ones (@p shared 0) and made only of letters, digits, `.`, `_` and `-`, the `-i` argument that names it
  * (`(-i rtl:00000001)`, `(-i rtl:serial=1090)` for one that reads as an index), safe to paste into any shell. A serial
  * with other characters is shown as a quoted literal with a note to quote the whole `-i` argument, and no argument to
- * paste; a shared serial, or one a spec cannot hold, is marked so.
+ * paste; a shared serial, or one a spec cannot hold, is marked so. The strings are escaped for display as in
+ * rtl_device_entry_describe() (a quoted serial's '"' as `\"` too); @p out holds RTL_DEVICE_LINE_SIZE bytes.
  */
 void rtl_device_list_line(const struct rtl_device_entry* entry, int shared, char* out, size_t out_size);
 

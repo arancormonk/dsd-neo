@@ -993,7 +993,7 @@ static void
 dsd_engine_setup_log_rtl_devices(const dsd_opts* opts, const struct rtl_device_entry* list, int shown, int total) {
     LOG_INFO("NOTICE: RTL Input: Found %d device(s):\n", total);
     for (int i = 0; i < shown; i++) {
-        char line[3 * RTL_DEVICE_STRING_SIZE + 16];
+        char line[RTL_DEVICE_LINE_SIZE];
         rtl_device_entry_describe(&list[i], line, sizeof line);
         LOG_INFO("NOTICE:   %d:  %s\n", list[i].index, line);
     }
