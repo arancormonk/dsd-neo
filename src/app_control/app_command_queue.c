@@ -2293,24 +2293,18 @@ ui_cmd_pause_channel_scan_after_tune(dsd_opts* opts, dsd_state* state) {
 }
 
 /* A Signal search start over a -Y resume still waiting on its row (issue #671): the search takes the receiver from it,
-   as a frequency entry does, and the scan stays paused. Before the start, which captures the settings the search puts
-   back when it stops, so a typed row's staged tune and scopes never become them. A running -Y scan refuses the search
-   instead (dsd_engine_signal_search_start()), so only a pending resume is taken back, and only for a start that goes
-   on: one the engine refuses changes nothing. */
-#ifdef USE_RADIO
-static void
-ui_cmd_search_takes_back_scan_resume(dsd_opts* opts, dsd_state* state, const struct dsd_app_command* c) {
-    if (c->id != DSD_APP_CMD_SIGNAL_SEARCH_START || !state || !state->lcn_scan_resume_pending
-        || c->n != sizeof(dsd_signal_search_config)) {
-        return;
-    }
-    dsd_signal_search_config config;
-    DSD_MEMCPY(&config, c->data, sizeof(config));
-    if (dsd_engine_signal_search_start_refused(opts, state, &config, NULL, 0U) == 0) {
+   as a frequency entry does, and the scan stays paused. The start's commit hook (dsd_engine_signal_search_start_with_
+   commit()), so only a start that goes on takes it back, past every check and everything the start can fail on, and
+   before the start captures the settings the search puts back when it stops, so a typed row's staged tune and scopes
+   never become them (issue #748 B13). A running -Y scan refuses the search instead, so only a pending resume is taken
+   back. */
+void
+dsd_app_signal_search_take_back_scan_resume(dsd_opts* opts, dsd_state* state, void* user) {
+    (void)user;
+    if (opts && state && state->lcn_scan_resume_pending) {
         (void)ui_cmd_pause_channel_scan_after_tune(opts, state);
     }
 }
-#endif
 
 /* A frequency payload the tuner cannot take, toasted: 0. Every other uint32_t reaches the tuner as it is, on every
    build (issue #671). Returns 1 with the command status in *status when the payload is refused. */
@@ -10972,9 +10966,6 @@ apply_cmd_unscoped(dsd_opts* opts, dsd_state* state, const struct dsd_app_comman
         }
         return UI_CMD_APPLY_UNSUPPORTED;
     }
-#ifdef USE_RADIO // a Signal search needs a radio build
-    ui_cmd_search_takes_back_scan_resume(opts, state, c);
-#endif
     int r = ui_cmd_dispatch_available(opts, state, c);
     if (r) {
         return r;

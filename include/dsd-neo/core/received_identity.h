@@ -346,6 +346,9 @@ void dsd_rxid_note_tetra_la(dsd_state* state, uint16_t la);
 /** A checked SYSINFO named another cell of the same network and colour code (another main carrier or location area):
  * the last cell's location area and control-channel frequency are dropped, before the SYSINFO's own are noted. */
 void dsd_rxid_note_tetra_other_cell(dsd_state* state);
+/** A checked SYSINFO names no main carrier a frequency can be given for (no CA main carrier, band 0, or a band with no
+ * base frequency): the control-channel frequency the cell's last SYSINFO named is dropped, the rest kept. */
+void dsd_rxid_note_tetra_no_main_carrier(dsd_state* state);
 /** A checked direct mode burst: the carrier belongs to no trunked network, so a TETRA record is dropped. */
 void dsd_rxid_note_tetra_direct_mode(dsd_state* state);
 

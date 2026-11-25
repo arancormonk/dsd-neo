@@ -20,6 +20,7 @@
 
 #include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <stddef.h>
 #include <stdint.h>
 
 #ifdef __cplusplus
@@ -215,6 +216,8 @@ typedef struct {
     uint8_t swmi_up;       /* gateway: SwMI availability flag */
     uint8_t dmrep;         /* gateway: DM-REP function flag */
     uint8_t two_freq;      /* 1: duplex pair (type 1B / type 2, or a gateway acting as one) */
+    uint8_t rep_modes;     /* repeater operating modes (EN 300 396-4 clause 10.3.12; 00 a type 1 DM-REP), valid from a
+                              DM-REP or a gateway with the DM-REP function */
     uint8_t spacing;       /* 5-bit duplex spacing code, valid when two_freq */
     uint8_t reverse;       /* 1: uplink = downlink - spacing */
     uint8_t ms_link;       /* 0 slave link, 1 master link */
@@ -254,6 +257,10 @@ int tetra_dmo_parse_presence(const uint8_t* sch_s, const uint8_t* sch_h, tetra_d
 /* "rep=N MNI=mcc/mnc slave free ..." (or "gw=" for a gateway) and, for a duplex pair, the uplink offset. Returns the
  * length written. */
 int tetra_dmo_describe_presence(const tetra_dmo_pres_t* p, char* buf, int buf_len);
+
+/* A DMAC-SYNC's 24-bit MNI as "mcc/mnc", or "open" for the all-ones open MNI (EN 300 396-1 clause 6.2), in @p buf
+ * (always terminated when @p buf_len > 0). */
+void tetra_dmo_format_mni(uint32_t mni, char* buf, size_t buf_len);
 
 /* Read the 124 SCH/H type-1 bits of a DMAC-SYNC as if they were clear. The SCH/S communication type selects the
  * leading address field. tetra_dmo_apply_sync() then clears what the SCH/S security class encrypts. Returns 1. */

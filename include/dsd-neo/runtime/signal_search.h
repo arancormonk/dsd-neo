@@ -25,6 +25,10 @@ enum {
     DSD_SEARCH_MAX_FFT = 65536
 };
 
+/** dsd_signal_search_range.digital: TETRA identification (issue #748), for NFM ranges only. Mapped explicitly, never as
+ * a scan class plus one. */
+enum { DSD_SEARCH_DIGITAL_TETRA = 10 };
+
 typedef enum {
     DSD_SEARCH_STOPPED,
     DSD_SEARCH_SEARCHING,
@@ -44,7 +48,8 @@ typedef struct {
     uint32_t bandwidth_hz;
     int enabled;
     int am;
-    /** 0: analog only; 1: explicit Auto; 2..9: scan_mode's P25..M17 plus one. */
+    /** 0: analog only; 1: explicit Auto; 2..9: scan_mode's P25..M17 plus one; 10 (DSD_SEARCH_DIGITAL_TETRA): TETRA,
+     * NFM ranges only. Auto never includes TETRA. */
     int digital;
     int gain_set, gain_tenth_db, gain_auto;
     int airspy_gain_set;
@@ -80,6 +85,12 @@ typedef struct {
      * "Encrypted" when only a checked encryption indication was, "" otherwise. Persisted in history (journal
      * version 2). */
     char crypt[48];
+    /** The access code the visit's latest checked access note carried for the hit's protocol (issue #748 B14,
+     * dsd_signal_search_note_access_code()): with access_noted 1, access_kind (dsd_access_code_kind) and access_value
+     * are what the observer formats into access at every publication, live and ended; DSD_ACCESS_CODE_NONE withdraws
+     * the code. 0 when no note named one: access is read as before. Not persisted; access is. */
+    uint8_t access_noted, access_kind;
+    uint16_t access_value;
     /** Applied source settings, copied at detection time for history and save-as-system. */
     char input_spec[1024];
     int ppm, bias_tee;
@@ -161,13 +172,16 @@ enum {
     DSD_SEARCH_SITE_SYSID = 1U << 1,
     DSD_SEARCH_SITE_RFSS_SITE = 1U << 2,
     DSD_SEARCH_SITE_TEXT = 1U << 3,
-    DSD_SEARCH_SITE_NXDN = 1U << 4
+    DSD_SEARCH_SITE_NXDN = 1U << 4,
+    /** tetra holds a TETRA note's identity (issue #748). */
+    DSD_SEARCH_SITE_TETRA = 1U << 5
 };
 
 /** The checked site identity of one visit, built only from site notes (dsd_signal_search_note_site()). It is separate
  * from decoder state, which keeps its own caches and seeds. */
 typedef struct {
-    /** "P25", "DMR", "NXDN" or "" for none. */
+    /** "P25", "DMR", "NXDN", "TETRA" or "" for none. A TETRA record says its mode in tetra.mode, never in this
+     * name: "TETRA DMO" is no prefix match of "TETRA". */
     char protocol[8];
     unsigned valid;
     uint32_t wacn;
@@ -176,15 +190,35 @@ typedef struct {
     char text[64];
     uint32_t nxdn_sys;
     uint16_t nxdn_site;
+    /** TETRA (issue #748): the latest note's identity, only the fields its mode shows (TMO: MCC, MNC, the LA when
+     * la_valid, main_hz when main_state is DSD_SEARCH_TETRA_MAIN_HZ; DMO: the route or presence_only). */
+    dsd_signal_search_tetra_note tetra;
+    /** TETRA: a withdrawal (DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW) emptied the record, and no later TETRA note of the
+     * visit fills it again; only a clear (the next landing) or another protocol's note replaces it. */
+    int withdrawn;
 } dsd_signal_search_site;
 
 void dsd_signal_search_site_clear(dsd_signal_search_site* record);
 /** Join @p note to @p record; 1 when the record changed. A P25 site note joins only a record with no SYSID or the same
  * one, giving it that SYSID; a P25 network note naming another WACN or SYSID, a note of another protocol, and every
- * DMR or NXDN note replace the record whole. */
+ * DMR, NXDN or TETRA note replace the record whole. A TETRA note with no known mode is no note; a TETRA withdrawal
+ * empties the record and latches (dsd_signal_search_site::withdrawn), so a TETRA note after it changes nothing. */
 int dsd_signal_search_site_apply(dsd_signal_search_site* record, const dsd_signal_search_site_note* note);
-/** Format @p record for display ("" for an empty record); returns the length written. */
+/** Format @p record for display ("" for an empty or withdrawn record); returns the length written. TETRA TMO:
+ * "Main carrier 426.70625 MHz · MCC 228 · MNC 8889 · LA 12", the main carrier first and only when shown ("No main
+ * carrier", without the LA, for a cell with none), the LA only when known; DMO: "Direct", "Via repeater", "Via gateway",
+ * "Via repeater/gateway", or "presence signal". Every TETRA text fits the hit's site field. */
 size_t dsd_signal_search_site_format(const dsd_signal_search_site* record, char* out, size_t capacity);
+
+/** The revision of a new status publication (dsd_signal_search_status::revision), from the one source every publisher
+ * takes it from: the coordinator, a refused start and the session's end (issue #748 B11). Each call returns a value no
+ * earlier call returned, so a frontend that skips a status whose revision and session it has read skips no new one.
+ * Any thread. */
+uint64_t dsd_signal_search_status_revision_next(void);
+/** Whether @p range identifies TETRA (digital DSD_SEARCH_DIGITAL_TETRA on an NFM range). */
+int dsd_signal_search_range_is_tetra(const dsd_signal_search_range* range);
+/** Whether any enabled range of @p config identifies TETRA: the search session then needs a TETRA DSP rate. */
+int dsd_signal_search_config_needs_tetra(const dsd_signal_search_config* config);
 
 void dsd_signal_search_range_default(dsd_signal_search_range* range);
 int dsd_signal_search_validate(const dsd_signal_search_range* range, char* error, size_t capacity);

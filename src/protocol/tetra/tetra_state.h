@@ -16,6 +16,7 @@
 #include <stdint.h>
 #include <time.h>
 
+#include "tetra_search.h"
 #include "tetra_voice_state.h"
 
 #ifdef __cplusplus
@@ -163,6 +164,8 @@ typedef struct {
     uint32_t rx_qual_start;
     uint32_t burst_carrier_seq; /* dsd_state::carrier_seq as the open burst began: a read that crossed a carrier
                                    boundary or an input interruption is lost (dsd_state_frame_read_lost()) */
+    uint32_t burst_epoch;       /* dsd_state::symbol_clock_epoch as the open burst began: a read a stream flush crossed
+                                   (which moves neither the carrier count nor the interruption flag) is lost too */
     uint8_t burst_open;         /* a burst is being decoded (tetra_confirm_burst_begin() to _end()) */
     uint8_t burst_stale;        /* the carrier was reset while the burst was open: its blocks are the last carrier's */
     uint8_t burst_proven;       /* the open (or last) burst decoded a block whose CRC passed */
@@ -463,6 +466,10 @@ typedef struct tetra_state {
     tetra_sm_t sm;
     tetra_confirm_t confirm;
 
+    /* What a Signal search visit's own bursts proved (tetra_search.c, issue #748): kept across the hunt's no-carrier
+     * passes, cleared by tetra_scan_visit_reset(). */
+    tetra_search_t search;
+
     /* The calls the decoder tracks, follows and publishes (tetra_calls.c). */
     tetra_calls_t calls;
 
@@ -477,11 +484,16 @@ typedef struct tetra_state {
     struct tetra_sds_concat_store* sds_concat;
 
     /* The cell's SYSINFO (EN 300 392-2 table 21.65, tetra_mac.c): the downlink frequency in Hz of its main carrier (0
-     * while unknown) and that carrier's number; the frequency band and offset of the last SYSINFO with a valid main
+     * while unknown, or since a SYSINFO named none a frequency can be given for) and that carrier's number (0 then
+     * too); the frequency band and offset of the last SYSINFO with a valid main
      * carrier, which a channel allocation without extended carrier numbering uses (clause 21.5.2; freq_band 0 while
      * none is known); and the location area of its D-MLE-SYSINFO (clause 18.4.2.2), sysinfo_known once one was
-     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier once there was one. */
+     * decoded. frames_sysinfo counts SYSINFO PDUs: the publication shows the main carrier while dl_carrier_hz names
+     * one. cell_main_hz is the frequency of the main carrier the cell's SYSINFO named last, kept across one naming none,
+     * which tells cells sharing the network, colour code and location area apart (tetra_bsch_sysinfo_cell()); 0 until
+     * one named a frequency, and once another cell was taken on (bsch_forget_cell()). */
     long dl_carrier_hz;
+    long cell_main_hz;
     uint32_t frames_sysinfo;
     uint16_t sysinfo_main_carrier;
     /* The cell's broadcast security: sec from the last SYSINFO with the extended services broadcast (sec_valid once

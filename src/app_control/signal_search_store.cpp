@@ -1067,7 +1067,7 @@ dsd_app_signal_search_session_ended(void) {
         ended.owned = 0;
         ended.identifying = 0;
         ended.live_power_valid = 0;
-        ++ended.revision;
+        ended.revision = dsd_signal_search_status_revision_next();
         status_set_locked(ended);
     }
 }

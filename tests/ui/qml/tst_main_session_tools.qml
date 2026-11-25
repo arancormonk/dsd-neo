@@ -24,6 +24,7 @@ Item {
         property int cancels: 0
         function control(action, session, hit) { lastAction = action; }
         function arm() { return armError; }
+        function searchBandwidthKhz() { return 48; }
         function cancelArm() { cancels++; }
         function systemForHit(hit, source) {
             return Object.assign({}, source, {freqMhz: hit.freqMHz, decodeFlag: "-fA", gainDb: 21, trunking: false,

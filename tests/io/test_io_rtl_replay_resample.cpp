@@ -23,6 +23,7 @@
  * and every pass hands the demodulator the same blocks.
  */
 
+#include <algorithm>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
@@ -372,6 +373,25 @@ segment_starts(const std::vector<Block>& native) {
     return starts;
 }
 
+/* The capture keys up on its carrier at the start and resumes on it after every event: the resampler starts segment
+ * @p s from that carrier, not from silence, so each of its first @p head outputs (a whole filter length) sits at the
+ * carrier's level. A step from silence starts near zero and rings (issue #748). */
+int
+expect_carrier_start(size_t s, const std::vector<float>& in, const std::vector<float>& got, size_t head) {
+    head = std::min(got.size() / 2U, head);
+    const double level = in.size() >= 2U ? std::hypot((double)in[0], (double)in[1]) : 0.0;
+    double quietest = level;
+    for (size_t i = 0; i < head; i++) {
+        quietest = std::min(quietest, std::hypot((double)got[2U * i], (double)got[2U * i + 1U]));
+    }
+    if (head == 0U || !(quietest >= 0.5 * level)) {
+        DSD_FPRINTF(stderr, "FAIL: segment %zu starts at %.3f, its carrier at %.3f: a start from silence\n", s,
+                    quietest, level);
+        return 1;
+    }
+    return 0;
+}
+
 int
 test_resampled_events(void) {
     int rc = 0;
@@ -462,6 +482,7 @@ test_resampled_events(void) {
         }
         std::vector<float> want(2U * dsd_iq_resampler_max_out(&r, in.size() / 2U));
         const int n = dsd_iq_resampler_process(&r, in.data(), in.size() / 2U, want.data(), want.size() / 2U);
+        rc |= expect_carrier_start(s, in, got, dsd_iq_resampler_max_out(&r, (size_t)r.taps_per_phase));
         dsd_iq_resampler_free(&r);
         want.resize(n > 0 ? 2U * (size_t)n : 0U);
         if (got.size() != want.size() || std::memcmp(got.data(), want.data(), got.size() * sizeof(float)) != 0) {

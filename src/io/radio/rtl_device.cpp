@@ -2781,7 +2781,8 @@ replay_event_is_stream_gap(const dsd_iq_event* event) {
 }
 
 /* A resampled replay's signal is discontinuous here (a retune, a reset, samples a MUTE omitted, a loop rewind): its
- * resampler starts over from silence, as the demod's filters do. */
+ * resampler starts over, as the demod's filters do, from the first sample after the cut (a replay that resumes on a
+ * carrier is no step from silence). */
 static void
 replay_clear_resampler(struct rtl_device* s) {
     if (s && s->replay_resampler) {

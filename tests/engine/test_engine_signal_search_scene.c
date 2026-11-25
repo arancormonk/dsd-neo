@@ -29,8 +29,10 @@
 #include <dsd-neo/engine/manual_tune.h>
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
+#include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <math.h>
@@ -131,6 +133,12 @@ rtl_stream_get_gain(int* gain, int* automatic) {
 int
 rtl_stream_get_tuner_autogain(void) {
     return autogain;
+}
+
+/* No TED override on this front end. */
+int
+rtl_stream_get_ted_sps_override(void) {
+    return 0;
 }
 
 void
@@ -239,6 +247,39 @@ dsd_frame_sync_reset_acquisition(const dsd_opts* opts, dsd_state* state, int cle
     (void)opts;
     (void)state;
     (void)clear;
+}
+
+/* The TETRA decoder and the engine's DSP rate readers, which these analog scenes never reach (issue #748). */
+void
+tetra_scan_visit_reset(dsd_opts* opts, dsd_state* state) {
+    (void)opts;
+    (void)state;
+}
+
+int
+dsd_engine_scan_dsp_rate_hz(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
+}
+
+void
+dsd_engine_scan_tetra_ted_sps(const dsd_opts* opts, const dsd_state* state, int* override_sps, int* applied_sps) {
+    (void)opts;
+    (void)state;
+    if (override_sps) {
+        *override_sps = 0;
+    }
+    if (applied_sps) {
+        *applied_sps = 0;
+    }
+}
+
+int
+dsd_engine_scan_tetra_chain_settled_other(const dsd_opts* opts, const dsd_state* state) {
+    (void)opts;
+    (void)state;
+    return 0;
 }
 
 /* One block of the scene as the current capture sees it: the transmitter (2.5 kHz deviation, 1 kHz tone, amplitude

@@ -35,11 +35,14 @@ confirm_raise_proof(tetra_confirm_t* c, dsd_tetra_burst_proof proof) {
 }
 
 /* The open burst's read is lost: the carrier was reset since it began (a trunking retune, the settle at its entry, a
- * replay retune or a carrier boundary inside its read), or the read crossed a carrier boundary or an input
- * interruption cut it (dsd_state_frame_read_lost() against the carrier count the burst began on). */
+ * replay retune or a carrier boundary inside its read), the read crossed a carrier boundary or an input interruption
+ * cut it (dsd_state_frame_read_lost() against the carrier count the burst began on), or a stream flush came inside it
+ * (the symbol clock's epoch moved): the symbols after the flush are not the same transmission's as those before. */
 static int
 confirm_burst_lost(const dsd_state* state, const tetra_confirm_t* c) {
-    return c->burst_open && (c->burst_stale || dsd_state_frame_read_lost(state, c->burst_carrier_seq));
+    return c->burst_open
+           && (c->burst_stale || c->burst_epoch != state->symbol_clock_epoch
+               || dsd_state_frame_read_lost(state, c->burst_carrier_seq));
 }
 
 /* Receive permission and the AACH run behind it go with the followed call's proof: they are about that call on this
@@ -86,6 +89,7 @@ tetra_confirm_burst_begin(dsd_state* state) {
     ts->confirm.burst_proven = 0;
     ts->confirm.burst_proof = (uint8_t)DSD_TETRA_BURST_PROOF_NONE;
     ts->confirm.burst_carrier_seq = state->carrier_seq;
+    ts->confirm.burst_epoch = state->symbol_clock_epoch;
 }
 
 void

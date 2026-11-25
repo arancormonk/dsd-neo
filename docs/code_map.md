@@ -67,10 +67,21 @@ Generated (do not edit/commit):
     capture measurement, tagged asynchronous tuning, identification and listening on
     the decoder thread. Its private owner shares the stable trunk-scan extension slot
     through `scan_owner.h`; extension IDs are unchanged. Search excludes other tuner
-    owners, suppresses visited frequencies per pass and keeps two avoid lists (below).
+    owners, suppresses visited frequencies per pass and keeps two avoid lists (below). A visit suppresses its frequency
+    for its range's identification kind only, TETRA or other (`search_suppress()`, `SEARCH_SUPPRESS_*`, issue #748),
+    so an overlapping range of the other kind still visits it in the same pass; Skip suppresses it for every kind for
+    the rest of the pass, and both avoid lists apply to both kinds.
     Start needs a running radio DSD-neo tunes (`dsd_opts_radio_can_tune()`) on the system's
     decode clock, so an I/Q replay restarted onto the system clock, or an I/Q stream, is
     refused before the search takes the tuner or runs a carrier boundary (issue #743).
+    Start is validate-then-commit (issue #748 B13, `ENGINE_SIGNAL_SEARCH`): every check runs first, then a fresh start
+    reserves everything it can fail on (the coordinator, the session's P25 site with its channel map's storage, the scan
+    scope's storage through `dsd_scan_mode_reserve()`, and the scan owner last), and only then commits: the caller's
+    commit hook (`dsd_engine_signal_search_start_with_commit()`; app-control's takes back a `-Y` resume still waiting on
+    its row), the scan-quiet invalidation, the settings capture, the Auto preset, and the scope's baseline
+    (`dsd_scan_mode_begin_reserved()`, so the baseline is still the Auto one, never the session's decoder). A start that
+    fails has changed nothing, a scan owner it would have made included; a paused session's edited Resume reserves
+    nothing and runs the same hook.
     Its decoder baseline is the CONFIG-profile Auto preset, which leaves the DMR dispatch
     flags as the session had them; when a mono preset (`-f1`) has turned both off, the
     baseline takes dual-slot dispatch (`dmr_stereo`), since with both off no direct-mode
@@ -96,6 +107,30 @@ Generated (do not edit/commit):
     profile for the ordinary dwell (`test_probe_hook_answer`). The engine writes nothing of the hunt's state. A new
     range probes for 3 s (`dsd_signal_search_range_default()`), the measured time for Auto to reach P25 Phase 2 and
     recover and confirm its code (`DECODE_IQ_SEARCH_SCHEDULE_*`).
+    TETRA ranges (issue #748, digital `DSD_SEARCH_DIGITAL_TETRA`, NFM only): a visit enters the TETRA preset through
+    the scan scope (the tetra-dmo class, which decodes trunked and direct mode alike; `search_tune_mode()`), runs CQPSK
+    whatever a `-m` lock names (`search_tetra_modulation()`), and its retune queues the 18000/4 profile with TETRA's
+    filter and the TED at the DSP rate over 18000 symbols/s (`search_retune_ted_sps()`); its span tunes, a span return
+    and the next Auto visit run the baseline, and so does a TETRA visit a Pause or a search error leaves: its closed
+    reception puts the span tune's decoder profile back before the paused snapshot, the search keeping the tuner and
+    staging nothing over a visit tune the controller still owns (`search_leave_tetra_visit()`). A search with a TETRA
+    range (`needs_tetra`) holds the TETRA state across
+    its landings and starts it cold at every departure, after the boundary and before the session's P25 site returns
+    (`dsd_engine_scan_tetra_landing()`), and lets it go at the end (`dsd_engine_scan_tetra_release()`). A start with an
+    enabled TETRA range is refused, before anything changes, for a published DSP rate TETRA cannot run at, the channel
+    filter forced off, `--tetra-uplink` or a TED that is not the rate's (#890's landed row check: a published TETRA
+    profile's override, or with none its applied timing; another profile's timing is not read); a paused 48 kHz search
+    whose Resume adds one is told to stop and start again; and any fresh start on a session that decodes TETRA is
+    refused.
+    The first TETRA mode a visit confirms names its detection ("TETRA" or "TETRA DMO"): a later report of the other
+    mode changes nothing (`search_tetra_mode_latched()`). Its access code is the coordinator's, from the TETRA gate's
+    evidence, which the app-control observer neither reads nor copies back; a withdrawal clears site and access
+    together, publishes at once and latches for the visit (`search_tetra_withdrawn()`). TETRA site notes are judged by
+    a TETRA burst (`search_site_sync()`), so no receive filter hides or admits them. A confirmed TETRA visit goes quiet
+    2.1 s after its last activity (`SEARCH_TETRA_QUIET_MS`, one multiframe and a lost frame 18, above five 340 ms DSB
+    gaps), other protocols 500 ms, and the runtime activity hook (`dsd_engine_signal_search_activity()`, installed at
+    Start) refreshes a confirmed visit's activity time on the decode clock and nothing else (`ENGINE_SIGNAL_SEARCH`,
+    `TETRA_SEARCH`).
     Runtime frame/symbol hooks service cancellation and deadlines inside long protocol
     loops; the in-frame yield check also services live strength, since a continuous
     digital transmission keeps the decoder in its synced-frame loop. A live strength that no
@@ -197,7 +232,8 @@ Generated (do not edit/commit):
     the return to the session puts it back with the site (`search_return_site()`).
     `dsd_engine_signal_search_shutdown()` restores both once a boundary has closed the reception; a decoder session
     that ends during a visit keeps the visit's code and proof for the final call snapshots that follow, and
-    `dsd_engine_cleanup()` then puts the session's back, unproven, through `dsd_engine_signal_search_release_site()`,
+    `dsd_engine_cleanup()` then puts the session's back, unproven, through `dsd_engine_signal_search_release_site()`
+    (it takes the options: a search with a TETRA range first lets the last visit's TETRA state go there),
     before the `--p25-bandplan-export` write, so no visited system's IDEN tables reach the exported band plan. A
     session site that cannot be saved whole (its channel map's storage) refuses the start. The coordinator also keeps
     the session's P25 Phase 2 code list (`p2_codes`, 16, most
@@ -211,7 +247,9 @@ Generated (do not edit/commit):
     ACTIVE, CRC-clean (`crc_invalid == 0`) and of a protocol the search names (DMR, P25, NXDN,
     dPMR, M17, YSF, D-STAR: `dsd_engine_signal_search_sync_protocol()` in
     `signal_search_protocol.c`, public and in radio-off builds, gives a sync type's name, NULL
-    for ProVoice, EDACS, X2-TDMA, TETRA, analog and none; `ENGINE_SIGNAL_SEARCH_PROTOCOL`).
+    for ProVoice, EDACS, X2-TDMA, analog and none; it names TETRA's sync types "TETRA", whose family matches "TETRA"
+    exactly, never "TETRA DMO", and a TETRA detection shows no call details, so no TETRA record fills the tuple;
+    `ENGINE_SIGNAL_SEARCH_PROTOCOL`).
     The tuple is the most recent call on the hit: a note for the tuple's own call
     (slot and epoch) updates it, a call that began no earlier (`started_m`) replaces it whole
     on either slot, and an older call still running on the other slot leaves it, so two DMR
@@ -235,7 +273,18 @@ Generated (do not edit/commit):
     decision `search_access_note_applies()` makes. It confirms nothing
     and changes no phase or activity, so the visit's quiet timing still runs from its last
     evidence; the observer then reads the code through its usual family gate. It exists for a
-    P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols).
+    P25 Phase 2 NAC proven after the transmission's last evidence (below, Protocols). A producer can carry the code
+    itself (`dsd_signal_search_note_access_code()`, a `dsd_signal_search_access_note` of sync type, kind and value;
+    issue #748 B14): a CRC-checked M17 LSF does, since one of stream data type 0 opens no call whose service options
+    hold the CAN. While a visit receives and the policy admits the carried value (`search_note_rejected()`), it becomes
+    the visit's noted code, cleared at each landing and when the hit's protocol changes to another family (so a later
+    transmission of the note's family that carries none shows none; one noted for the incoming family stays), which
+    the hit carries (`access_noted`, `access_kind`,
+    `access_value`, not persisted) while it is confirmed as a protocol of the note's family, publishing when that
+    changes; a note before confirmation waits for it, as a site note does. The observer formats a carried code into
+    `access` over the access it copied back and over an older call record's CAN (for M17, only while the received
+    identity holds it; see the observer below); a carried `DSD_ACCESS_CODE_NONE` withdraws it (`ENGINE_SIGNAL_SEARCH`, `APP_SIGNAL_SEARCH_PROVENANCE`,
+    `M17_STATE_DISPATCH`).
     A site note applies only when the policy does not reject the code of the note's family either
     (`search_site_sync()`: the current sync type when it is of that family, else one of it), before confirmation as
     after, so a rejected code's site never joins a later admitted identity. Both judge by the code alone
@@ -249,11 +298,17 @@ Generated (do not edit/commit):
     under its tag as at any return to the span. A held probe keeps the NFM fallback, and a probe with CHECKING-only or
     no evidence falls back as before (`ENGINE_SIGNAL_SEARCH`).
     Published status carries `owned` (a coordinator holds the tuner) and
-    the landed channel's live RF level. Receive profiles, gain and frequency are restored on
+    the landed channel's live RF level. Every status publication, the coordinator's, a refused start's
+    (`actions_signal_search.c`) and the session end's (`dsd_app_signal_search_session_ended()`), takes its revision from
+    one source, `dsd_signal_search_status_revision_next()` (Runtime), so a frontend that skips a status whose revision
+    and session it has read never skips a new one (issue #748 B11, `ENGINE_SIGNAL_SEARCH`). Receive profiles, gain and frequency are restored on
     exit: a search Stop tunes back, running the carrier boundary and acquisition reset as each
     visit's tune does, and its retune carries the session's receive family
     (`rtl_stream_prepare_retune_analog_profile_for_target()`), since a retune landing first
-    retires the older live family request the restore also makes. The engine loop runs no
+    retires the older live family request the restore also makes. Its symbol profile is the one the restored decoder
+    runs (`search_session_profile()`: an Auto or custom session's hunt profile, a `-m2` pin's 6000/4, else its preset's,
+    so a `-m2` session no longer queues its Auto preset's 4800/4), with the front end's TED override from Start put back
+    as one, since every visit's retune replaced it (issue #748 B16, `ENGINE_SIGNAL_SEARCH`). The engine loop runs no
     `noCarrier()`
     while a search is paused or failed, so the first tick that finds it PAUSED or ERROR runs
     them too, once per landing (`search_end_reception()`, re-armed by `search_queue_tune()`):
@@ -830,8 +885,8 @@ Generated (do not edit/commit):
       which holds the row
       only while such frames keep coming, so the default set's -Y row on NXDN48 or dPMR noise leaves like a typed
       one; a TETRA burst is no unchecked frame since issue #890: its decoder notes PROVEN content for checked content
-      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a soft-only DSB, a DSB whose
-      SCH/H failed and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
+      alone, `tetra_burst_proof_is_content()` in `tetra_frame_leave()`, so failed bursts, a DSB whose SCH/H failed
+      (whichever decision decoded its SCH/S) and DM-RESERVED hold nothing: `ENGINE_NO_CARRIER_RESET`
       `test_y_tetra_holds_only_on_checked_content()`, real bursts through the real decoder), nothing keeps the row
       (`live_scanner_y_frame_step_may_decide()`: hold, awaited tune, typed step in flight, avoided row, no other row),
       and it has not yielded for this stay and anchor yet (`dsd_engine_scan_owner::y_frame_yield_epoch`,
@@ -5204,8 +5259,9 @@ suite runs under this compiler.
   Capacity Plus, Connect Plus, Hytera XPT), named by a brand, a site text prefix, a rest LSN, a system code or a free
   LCN; the colour code stays. The TETRA cell keeps its colour (`tetra_colour`) apart from the displayed access code, so
   after a trunk tune another colour is still another cell; a SYSINFO of another cell with the same network and colour
-  (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`). A
-  note that invalidates parts because it names another system, site, cell or subtype (another access code on the
+  (`tetra_bsch_sysinfo_cell()`) drops the last cell's area and control channel (`dsd_rxid_note_tetra_other_cell()`),
+  and one that names no main carrier a frequency can be given for drops the control channel alone
+  (`dsd_rxid_note_tetra_no_main_carrier()`). A note that invalidates parts because it names another system, site, cell or subtype (another access code on the
   carrier, another P25 network or site, a Capacity Plus site change, which also drops the old site's rest LSN and free
   LCN, an IDAS area) moves the record's epoch (`rxid_invalidate()`; another access code moves it even when the record
   held nothing else), so a call's history row, which takes the record only under the epoch it was heard on, keeps that
@@ -5276,8 +5332,10 @@ suite runs under this compiler.
     (`dsd_signal_search_note_site()`), call notes (`dsd_signal_search_note_call()`: a slot whose
     canonical call record a protocol just published after its check; the engine reads the record),
     access notes (`dsd_signal_search_note_access()`: a checked proof gave the current protocol's
-    access code a new value; the engine reads the code, issue #802) and the decoder-thread active
-    query, with no-op defaults. P25 Phase 2 scrambling codes (issue #804): code recovery
+    access code a new value; the engine reads the code, issue #802), activity notes
+    (`dsd_signal_search_note_activity()`, issue #748: content of a transmission already reported as evidence keeps
+    the visit listening) and the decoder-thread active query, with no-op defaults. P25 Phase 2 scrambling codes
+    (issue #804): code recovery
     asks `dsd_signal_search_p25p2_codes()` once per window for the session's learned codes (at most what it asked for;
     0 without a provider), and the protocol reports each complete code checked content gave it through
     `dsd_signal_search_note_p25p2_code()` with its `dsd_p25p2_code_source` (`p25_search_site.h`, below). It also holds
@@ -5289,7 +5347,15 @@ suite runs under this compiler.
     (`RUNTIME_SIGNAL_SEARCH_VISIT_INIT_FAILURE`). The engine sets and clears it (Engine, Signal search). The checked
     site record (`dsd_signal_search_site`, `dsd_signal_search_site_apply()`, `dsd_signal_search_site_format()`) is
     runtime's: a P25 site note joins only a record with no SYSID or the same one, and a network note naming another
-    WACN or SYSID, another protocol's note, or a DMR or NXDN note replaces it whole. P25 reports evidence from a
+    WACN or SYSID, another protocol's note, or a DMR, NXDN or TETRA note replaces it whole. A TETRA note
+    (`DSD_SEARCH_SITE_NOTE_TETRA`, issue #748) names its mode, so a "TETRA DMO" detection never takes a trunked
+    record by a name prefix: a trunked cell keeps MCC, MNC, the location area when known and its main carrier, shown
+    main carrier first ("Main carrier 426.70625 MHz · MCC 228 · MNC 8889 · LA 12", "No main carrier · MCC 228 ·
+    MNC 8889" without the LA, the identity alone for colour code 0), and direct mode its route ("Direct",
+    "Via repeater", "Via gateway", "Via repeater/gateway") or "presence signal". A withdrawal
+    (`DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW`) empties the record and latches (`withdrawn`) until the next landing's clear
+    or another protocol's note; every TETRA text fits the hit's 96-byte site field (`RUNTIME_SIGNAL_SEARCH_TETRA`).
+    P25 reports evidence from a
     control block whose CRC passes (`p25_sm_note_cc_activity()`), from conventional calls whose identity resolves, and
     from any Phase 2 FACCH or SACCH whose real MAC checksum passed, whatever MAC it carries
     (`p25_sm_note_traffic_activity()` in `include/dsd-neo/protocol/p25/p25_traffic_activity.h`, issue #804: traffic,
@@ -6618,7 +6684,7 @@ the implementations from `dsd_engine_trunk_scan_init()` and clears them again on
   396-3 clause 9.3.29, shown and recorded as a call but the profile only for the scan); the circuit mode classifies
   data only for its defined values (EN 300 396-3 clause 9.6.3: 0 and 8 speech, 1 to 7 data; 9 to 15 reserved, left
   unknown), SDS after its FCS check and before the notice dedupe (DM-SDS DATA, the acknowledged service, is private,
-  clauses 6.3 and 6.3.1.1.2; DM-SDS UDATA's party stays unknown), and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, soft-only DSBs,
+  clauses 6.3 and 6.3.1.1.2; DM-SDS UDATA's party stays unknown), and DMO speech through `tetra_calls_dmo_speech_activity()`; never TMO, DSBs whose SCH/H failed,
   DM-RESERVED, DM-SETUP PRES or gateway set-up).
   Tests: `RUNTIME_TRUNK_SCAN_HOOKS`, `YSF_DCH_DECODE`, `DSTAR_PROCESS`, `DSTAR_DPRS`, `DPMR_REFERENCE_VECTORS`,
   `M17_FRAME_CUT`, `TETRA_CALLS`, `TETRA_BURST_VERDICT` (recorded through
@@ -7115,7 +7181,14 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     publishes the hit as changed too, and then the code the hit carries stays (issue #802
     B1). Nor is it read while the receive policy rejects the code the decoder holds for that sync type
     (`dsd_receive_code_rejects()`, the code alone: a slot filter never applies, and a code still CHECKING passes), so
-    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). M17's CAN read at the link setup
+    co-channel traffic on a blocked code never names the hit's code (issue #802 B11). An M17 hit's CAN, from any
+    source (the text copied back, a call record's service options, the carried note), shows only while the received
+    identity holds that same M17 CAN (`judge_m17_can()`, issue #748): only a checked LSF notes it there (before its
+    search note and its call), and another family's sync drops it, so neither a call left active or reacquired
+    through another protocol's traffic nor a note from before it names a CAN. It is judged on live publications made
+    while the decoder is on M17; the ended one and one made on another protocol keep the text last shown. The other
+    families' codes are read from decoder state as before, so after another family's traffic on the carrier one can
+    still show the value it last decoded there. M17's CAN read at the link setup
     frame is carried through the stream frames after it, whose sync type the LSF's call record does not answer. The
     received tone (issue #802 B3) is read from the rx tone view on every live publication of the hit: the latest
     lock shows at once until some lock has been seen held 1 s (`SEARCH_TONE_HELD_MS`, decode
@@ -8780,7 +8853,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   offset walked it off the symbols until a sync was lost. `dsd_symbol_note_sync_anchor()` names a sync word the grid
   just read; one symbol later the samples it decided those symbols on are correlated against the word at every
   sub-symbol shift (coarse), refined by a least-squares fit of the word's zero crossings, and the grid moves up to two
-  samples (a positive offset consumes extra samples) at the next symbol start, whatever `have_sync` says. State lives in
+  samples at 48 kHz, and the same time on a faster radio stream (`anchor_slip_cap()`: three samples at 72 kHz, four at
+  96, from the decoder's active symbol rate on the radio's stream; two on any other input), at the next symbol start (a
+  positive offset consumes extra samples), whatever `have_sync` says. A cap fixed at two samples left M17 LSFs at
+  72 kHz (15 samples per symbol) two or three samples off and failing their CRC; the cap is in time so that no
+  48 kHz stream, 2400 sym/s at 20 samples per symbol included, changes. State lives in
   state-ext slot 12 (borrowed from the io range), allocated by the first note; samples are recorded only on the live
   multi-sample path and only while a caller keeps it armed (DMR BS around a sync, M17 across a preamble).
   A stream flush, an RTL FSK timing reset, a switch to another
@@ -9548,7 +9625,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   which keeps the crossing loop off the word a hunt-read recording holds. Issue #444 documents how
   sensitive that is; the comment above `symbol_adjust_timing_nxdn()` records the five ways of damping it that were
   A/B'd on real captures and measured worse, so change it only with `tools/replay_ab.sh` evidence
-  (`docs/testing.md`). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
+  (`docs/testing.md`). The 2400 sym/s rules (NXDN48, dPMR: the averaging window and the slip bands) are written in
+  twentieths of a symbol and follow the active profile above 10 samples per symbol (`symbol_uses_2400_grid()`), so a
+  2400 sym/s stream at 72 kHz (30) or 36 kHz (15) is timed as at 48 kHz (20). The bands compare a crossing index's
+  endpoint J (the crossing came after sample J - 1 and by J): back in (6/20, 10/20], forward in (10/20, 14/20]. Where
+  the edges fall on whole samples that equals taking J's whole interval; at an odd span an interval across an edge
+  goes with its endpoint (15: back 5..7, forward 8..10, pinned by DSP_SYMBOL_REPLAY
+  `test_2400_grid_rules_scale_by_time()`). Reading those intervals as across the edge was measured no better on real
+  NXDN48 at 36 kHz and lost 2 of 29 synthetic dPMR headers, and with the middle edge left still it parks the grid
+  mid-symbol (comment on `symbol_adjust_timing_nxdn()`). Keyed on exactly 20 samples per symbol
+  before, the grid at 30 never slipped out of a bad starting phase (dPMR headers at 1 of 6 timing shifts). 20 samples
+  per symbol keeps the rules whatever the symbol rate (4800 sym/s at 96 kHz measured better with them), and 10 and
+  below keep the 4800 sym/s rules, which already serve that span. Test: `FRAME_SYNC_NXDN_FSK_PHASE` (every starting
+  phase at 24, 36, 48, 60 and 72 kHz). The CQPSK path does not use any of this: it has a real timing loop in `costas.cpp`.
 - The analog monitor's audible output leaves `dsd_symbol.c` in `symbol_output_unsynced_analog()`, after the audio
   chain (`symbol_run_unsynced_chain()`, below) and only while the gate is open; for `audio_out_type == 8` it goes
   through `dsd_udp_audio_hook_blast_analog()` with a byte count of int16 mono samples.
@@ -9611,10 +9700,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   into the protected band at the output rate (or at the input's own first image, upsampling), at least 60 dB down with
   at most 0.1 dB of ripple; taps per phase from the Kaiser estimate rounded up to a multiple of 4, refused past 256 per
   phase or 4096 x 256 in the bank. I and Q share one phase and one set of taps; the output depends only on the samples
-  fed since the last `dsd_iq_resampler_clear()`, never on how calls cut them. `dsd_iq_resampler_group_delay_seconds()`
+  fed since the last `dsd_iq_resampler_clear()`, never on how calls cut them. After a configure or a clear the first
+  input fills the history (the stream reads as having held that sample), so a stream that starts or resumes on a carrier
+  is no step from silence into the causal filter, whose ringing the FM discriminator hears as a click (issue #748); one
+  that starts in silence sees the zero history it always did, and the delay and output count do not change.
+  `dsd_iq_resampler_clear_silent()` keeps the zero state for measuring the step as a linear system (the squelch step
+  model's impulse responses and the stepped noise calibration). `dsd_iq_resampler_group_delay_seconds()`
   reports the delay, which replay does not compensate (0.41 ms for 48,254 Hz to 72 kHz, about 2.5 ms for 8 to 72 kHz).
-  Only the replay reader thread touches it (`rtl_device.cpp`: configured before the thread starts, cleared at a RETUNE,
-  RESET, MUTE and loop rewind, freed after the join); live paths never run it. Test: `DSP_IQ_RESAMPLER`.
+  Each instance has one thread: I/Q replay's on its reader thread (`rtl_device.cpp`: configured before the thread
+  starts, cleared at a RETUNE, RESET, MUTE and loop rewind, freed after the join), the raw I/Q network input's on its
+  reader (`rtl_net_iq.cpp`, issue #743) and the live rate step's on the demodulator (`live_iq_step.c`, below).
+  Test: `DSP_IQ_RESAMPLER`.
   - Rational entry point for the live rate step (issue #806): `dsd_iq_resampler_configure_ratio()` takes an L/M the
     caller chose (lowest terms, each at most 4096), the input rate as an exact fraction (a whole-Hz numerator over
     2^shift, kept in lowest terms in `in_rate_num`/`in_rate_shift`, so 2.5 MS/s after six half-band passes is
@@ -11413,9 +11509,12 @@ Key public headers:
     2) for the active profile: the Gardner period is clamped around the rounded SPS and slips symbols, so the warning
     says it cannot, with the DSP bandwidths that give that symbol rate a whole number (P25 Phase 2 at 12 kHz has 2 and
     is not warned; TETRA's rate has its own warnings). The FSK decoder is judged at the rate digital_resample hands it
-    (`rtl_demod_digital_resample_target_for()`). The CQPSK stream gets neither the low-DSP-bandwidth warnings nor the
-    rate-chain log's 48 kHz resampler advice, which its symbols bypass. Test: `IO_RTL_DEMOD_CONFIG`
-    (`expect_symbol_timing_warnings()`, `expect_timing_warning_names_planned_rate()`, `expect_low_dsp_bw_warnings()`).
+    (`rtl_demod_digital_resample_target_for()`). The CQPSK stream gets no low-DSP-bandwidth warnings. The rate-chain
+    log's derived-SPS line (`stream_open_log_sps_line()`) is information only: its old "Output rate ... implies
+    atypical SPS" warning, fixed 48 kHz-era windows that fired for every FSK session at 72 kHz, is gone, since the
+    symbol timing scales to any whole number of samples per symbol and this warning covers a fractional one. Test:
+    `IO_RTL_DEMOD_CONFIG` (`expect_symbol_timing_warnings()`, `expect_timing_warning_names_planned_rate()`,
+    `expect_low_dsp_bw_warnings()`, `expect_rate_chain_sps_lines()`).
   - Frontend telemetry is value-only: frontends poll the metrics getter (`src/app_control/frontend.c`) from their own
     threads while the decoder thread soft-stops the stream or replaces the input, which frees the device, the stream
     internals (`g_stream`) and the stream context a UI snapshot copied the pointer of. So every getter on that path
@@ -15788,7 +15887,9 @@ Private per-protocol modules worth knowing about:
   their channel decoders; see "this site" under Protocols) once `nxdn_confirm_is_confirmed()`, so a single short SACCH
   CRC does not show a site; a CCH_INFO or another site's broadcast notes nothing; adjacent sites, the reserved
   category, reserved system and site codes and the Type-D site identity (`nxdn_idas_*`) are not notes
-  (`NXDN_SEARCH_SITE_NOTES`).
+  (`NXDN_SEARCH_SITE_NOTES`). TETRA (issue #748): `src/protocol/tetra/tetra_search.c` (see "Signal search" in the TETRA
+  module) builds its `DSD_SEARCH_SITE_NOTE_TETRA` note from the visit's own gate bursts only, never decoder state, and
+  sends `DSD_SEARCH_SITE_NOTE_TETRA_WITHDRAW` once when the identity turns ambiguous (`TETRA_SEARCH`).
 - Signal search call notes (`dsd_signal_search_note_call()` in `<dsd-neo/runtime/signal_search_hooks.h>`): each
   writer passes the slot of a canonical call record it just published after its check, and the engine reads that
   record (see Signal search under Engine). DMR: `dmr_flco_publish_voice()` (a CRC-checked voice LC, after the call and
@@ -15814,7 +15915,7 @@ Private per-protocol modules worth knowing about:
   speech; see TETRA below. The engine clears it with the carrier through `tetra_confirm_reset()`, exported in
   `<dsd-neo/protocol/tetra/tetra.h>`. Burst proof (issue #890): each burst closes with what it proved of the channel,
   `tetra_burst_proof()` (`dsd_tetra_burst_proof` in `<dsd-neo/protocol/tetra/tetra.h>`): NONE, PROFILE (a CRC passed on
-  nothing below: a DSB of which only SCH/S decoded, soft-only or with its SCH/H failed, a presence signal, a direct
+  nothing below: a DSB of which only SCH/S decoded (its SCH/H failed), a presence signal, a direct
   mode PDU that sets up no call, DM-RESERVED included), TMO (any trunked CRC-16 block, a foreign cell's BSCH and
   trunked speech included), DMO_OPAQUE (a DM-2-C DMAC-SYNC: transmission or reservation, no one can tell), DMO_SERVICE
   (a clear DMO call PDU or short data whose FCS did not fail, from `tetra_calls_dmo_pdu()`) or DMO_SPEECH (direct
@@ -15947,7 +16048,9 @@ when that SYSINFO set it, so an allocation decoded before the new cell's SYSINFO
 is followed until it names its control channel; `tetra_forget_carrier()` keeps it, since another carrier of the same
 cell shares it. The cells of a network may share a colour code, so a SYSINFO naming another main carrier (the cell's,
 clause 21.4.4.1) or another location area than the cell's known one is another cell too, which forgets the same before
-the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). While the trunking state
+the SYSINFO is taken (`tetra_bsch_sysinfo_cell()`, from `apply_sysinfo()` in `tetra_mac.c`). The main carrier
+compared is the last one the cell's SYSINFO named (`cell_main_hz`), which a SYSINFO naming none keeps while it
+withdraws the published one, so carrier A, then none, then B is still another cell. While the trunking state
 machine guards a follow, neither BSCH nor SYSINFO of another cell is taken on from the followed carrier, and they forget
 nothing (Trunking, "Another cell on the followed carrier"). Another cell is also another carrier, whatever the engine
 saw (a radio retuned outside the decoder), so what the last carrier's speech left goes as at a carrier boundary: its
@@ -16182,8 +16285,8 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
     burst's slot as for a failed BSCH, counts the burst for its verdict only (no signalling evidence, no polarity, no
     home evidence) and leaves block 2, which is that cell's, undecoded. The home's seed stays, so the other cell's
     CRC-protected blocks and speech fail as they would for an MS, and its grants, allocations and releases do nothing.
-  - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_soft_dsb()`),
-    is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
+  - Direct mode. A DSB, read by the hard decision (`tetra_sb_try_dmo()`) or only the soft one (`tetra_sb_bsch()`),
+    both through `tetra_sb_dsb()`, is consumed (`tetra_dmo_guarded()`): it does not enter direct mode, forget what the trunked carrier proved, set the
     polarity or publish, since a trunked call's carrier is no direct mode channel; it logs (`opts->verbose > 0`, the
     default) `[TETRA DMO DSB] sys=... comm=...: direct mode on the followed carrier; not taken on`.
   - SYSINFO. `sysinfo_applies()` in `tetra_mac.c` applies one only when its main carrier is a valid frequency equal to
@@ -16308,9 +16411,10 @@ it, and nothing in it is global. TETRA is not a trunk-scan target type; trunk sc
   `tetra_process_sb()`). A tune completed inside a burst (a grant in its first block) leaves the rest of that
   burst on the carrier left: `tetra_confirm_burst_current()` turns 0, the MAC stops parsing the block and the
   normal-burst decoder skips the second half, and nothing the burst decoded counts for the new carrier, though the
-  burst's verdict still does. A synchronisation burst reads its tail before it acts (the DSB's SCH/H and the 15 dibits
-  after it, an SB's broadcast block and block 2 before its BSCH is parsed), so `tetra_dmo_process_dsb()` and
-  `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
+  burst's verdict still does. A synchronisation burst reads its whole tail, hard and soft, before it acts (123
+  dibits: a DSB's SCH/H at its start, EN 300 396-2 table 16, and the 15 after it; an SB's broadcast block and block 2
+  before its BSCH is parsed), so a DSB whose SCH/S only the soft decision decoded reads its SCH/H as a hard-decoded one
+  does, and `tetra_dmo_process_dsb()` and `tetra_process_sb()` check `tetra_confirm_burst_current()` after the read: a replay retune or an input interruption
   inside it leaves the mode, DM colour code, protection, call, network, received identity and polarity of the burst
   off the carrier the receiver is on now. The DSB takes direct mode on (`tetra_enter_dmo()`, which ends what the
   trunked carrier left: its calls, fragments and uplink protection) only after that check, so an interrupted DSB on
@@ -16731,6 +16835,11 @@ single "current call".
   The event history names the network (`TETRA_<mcc>_<mnc>_CC_<cc>` or `TETRA_DMO`,
   `dsd_events.c`), the access code is the colour code (`access_code.c`), and `call_state.c` gives TETRA its own call
   family.
+- The DM colour code (`dmo_learn_dcc()`, `dmo_source_seed()`, `dmo_dcc_net_id()` in `tetra_dmo.c`) is six network bits
+  and the source address of the DMAC-SYNC that set the transmission up: the MNI's for a direct call (EN 300 396-3
+  clause 8.2.4), the repeater address's through a DM-REP on both links (EN 300 396-4 clause 8.2.4, which replaces that
+  clause there), the gateway address's through a DM-GATE or a DM-REP/GATE (EN 300 396-5 clause 8.2.4). Test:
+  `TETRA_SEARCH` `test_relayed_colour_code()`.
 - Direct mode protection (`tetra_dmo.c`, `tetra_state_t::dmo_crypt`, `tetra_dmo_call_crypt()`) is that of the traffic
   on the channel, which the DMAC-SYNC carrying a DM-SETUP, DM-CONNECT ACK or DM-OCCUPIED sets (EN 300 396-3 clause
   8.5.3); any other message's security class is its own. There is no direct mode decryption, so only CLEAR speech is
@@ -16811,6 +16920,36 @@ grant), `TETRA_AACH` (the Reed-Muller code and table 21.82 against AACH words re
 `DECODE_IQ_TETRA_REAL_AIR_CALL_AACH`, `DECODE_IQ_TETRA_REAL_AIR_GAP_AACH_GATE`, `TETRA_AIR`, `TETRA_CRYPTO` (TB5),
 `TETRA_MLE_CMCE`, `CORE_ACCESS_CODE`.
 
+#### Signal search (issue #748)
+
+`src/protocol/tetra/tetra_search.{c,h}` reports what a Signal search visit's own TETRA bursts prove, through the runtime
+Signal search hooks and only while a search runs (`dsd_signal_search_is_running()`); the rules and their sources are in
+`tetra_search.h`. The decoder calls it at fixed points only: `tetra_burst_enter()` and `tetra_frame_leave()` open and
+close its burst (after the burst's proof is in), `tetra_sb_bsch()` hands it every BSCH `tetra_bsch_parse()` read,
+`tetra_nb_signalling()` every trunked downlink block after the MAC acted on it, with the seed it was descrambled with,
+`tetra_dmo_process_dsb()` every DSB it took with its SCH/H when that passed, and the direct mode normal burst and speech
+paths their checked content. It re-reads the SYNC (`tetra_bsch_read_sync()`, with the sharing mode the parser skipped),
+the SYSINFO (`tetra_mac_broadcast_decode()`) and the SCH/S (`tetra_dmo_parse_sync_s()`, `tetra_dmo_parse_presence()`)
+itself, so the decoder's own handling stays as it was.
+- Gate A (trunked mode): an observed BSCH (CRC, system code 0xxx, TN/FN/MN in range, once per burst by the symbol clock)
+  and, for a colour code not 0, a CRC-16 downlink block under exactly its seed from its burst or later, or, for colour
+  code 0, a second observed BSCH of the identity from a later burst. Evidence `"TETRA"`, the burst's sync type, access
+  `CC n` (none, and no site, when a second cell was observed in the visit before the gate opened: the withdrawal
+  follows at once, but the first publication must not carry what is already ambiguous). Site: MCC, MNC and, for a colour code not 0, the location area and advertised main carrier of a half-slot
+  SYSINFO under the seed (the one in the opening block supplies it); none while the gate cell's sharing mode is not 00.
+- Gate D (direct mode): one DSB with SCH/S and SCH/H CRCs, system code 1100/1101, a parsed DMAC-SYNC or DPRES-SYNC,
+  frame 1-18 and a valid A/B channel usage; a presence signal's channel usage and repeater operating modes valid for the
+  equipment that sends it (no reserved operating modes 11; 01 or 10 only from a type 2 repeater function). Evidence
+  `"TETRA DMO"`, no access; note: the latest checked DMAC-SYNC's route, or presence only.
+- A latched withdrawal (sent once) on a second BSCH identity, another main carrier (none and one included; two that
+  name no frequency by their band, carrier number and offset) or, beside
+  a CA main carrier, another location area under the gate seed, sharing seen after the site, or the other mode's
+  gate. Every burst of the naming gate's mode content calls
+  `dsd_signal_search_note_activity()` (the other mode's never does, nor, for a colour code 0 gate cell, a block after
+  a checked BSCH of another cell until the gate cell's next BSCH: every such cell shares the seed); evidence and notes go only on change. Test: `TETRA_SEARCH`.
+- Decided limit: the decoder's MAC still applies a SYSINFO from an SCH/F (EN 300 392-2 clause 21.4.4.1 names the
+  half-slot channels), as osmo-tetra, tetra-kit and tetra-bluestation all do; only the search refuses it.
+
 #### State and its boundaries
 
 What each part of the TETRA decoder state belongs to, what sets it, and what forgets it. A boundary the engine sees (a
@@ -16832,13 +16971,14 @@ decoded, so the decoder forgets the same whatever moved the receiver.
 | Encrypted signalling evidence (`air_evidence`) | the carrier | encrypted TM-SDUs a key could decrypt | `TETRA_AIR_EVIDENCE_S`, eviction, a carrier boundary, another cell or network |
 | Cell key epoch (`air_epoch`, the SCK-VN / CCK-id, SCKN, GCK support and parity seen) | the cell | SYSINFO, encrypted MAC headers | moves at another key announced or a parity switch; another cell, location area or network |
 | A record's key (`tetra_call_t::air_key`, a key copy) | the call record | an allocation in signalling it decrypted | the record ending, a clear allocation; applies only under its epoch and parity, the key still loaded |
-| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`, security `sec`/`sec_valid` and `aie_known`/`aie_available`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel and security published only on a trunked carrier | SYSINFO (the security from one with the extended services broadcast, the AIE bit from one with its D-MLE-SYSINFO), addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`) |
+| Cell (SYSINFO: main carrier, band, offset, location area, `sysinfo_known`, security `sec`/`sec_valid` and `aie_known`/`aie_available`; `trunk_cc_freq` it set; `enc_mode`, `frames_resource`) | the cell; its control channel and security published only on a trunked carrier | SYSINFO (the security from one with the extended services broadcast, the AIE bit from one with its D-MLE-SYSINFO), addressed MAC-RESOURCEs | a BSCH of another cell or network (`bsch_forget_cell()`), a SYSINFO of another main carrier or location area (`tetra_bsch_sysinfo_cell()`); the main carrier (its frequency and carrier number), band, offset and the control channel they set (not one set otherwise) also a SYSINFO that names none a frequency can be given for: band 0 (EN 300 392-2 table 21.65 note 3) or a band with no base frequency (`sysinfo_no_main_carrier()` in `tetra_mac.c`, with the received identity's control channel; the publication then shows no control channel, `cc_known` 0, until a SYSINFO names one again) |
 | TDMA clock (`tdma_valid`, `tn`, `fn`, `mn`, `hyperframe_valid`); a burst it places in frame 18 is no speech | the carrier | a CRC-passed BSCH, run by every downlink burst | a DSB, another cell, a gap longer than a multiframe, a carrier boundary |
 | Partial TM-SDUs (`mac_frag`) | a timeslot of one cell's control channel | a first fragment on a timeslot the clock places | N.203, a failed block of the timeslot, another cell, entering direct mode, a carrier boundary |
 | Call records, the follow of their identifiers, SDS reassembly | the network (records: and location area) | D-SETUP; reassembly parts | release, reuse, ageing, eviction; a BSCH of another network; a SYSINFO of another location area (records) |
 | A record's channel allocation and event label (`alloc`, `alloc_m`, `event_label`, `label_chan`, `usage_marker`) | the cell (a label: one channel of it, the allocated one or the one its assignment came on; Calls, "Event labels") | an allocation (`call_attach()`), an SSI + event label assignment at its PDU's delivery, a usage marker assignment with the downlink allocation of its own PDU; a label's channel also a KEEP with an allocation | a "go to the MCCH" allocation, the record ending, another cell (`tetra_calls_forget_cell()`); the usage marker also any other allocation of the downlink; the allocation also another call's allocation of a timeslot of its downlink (`calls_take_channel()`: one call per traffic channel, EN 300 392-2 clauses 23.5.5, 23.5.6.1.1); a label also its assignment to another party on a channel that meets its own, its withdrawal (label 0), an assignment or KEEP to a channel the decoder cannot tell, and, assigned without an allocation, a carrier boundary or retune (it applies there no more) |
 | D-MM STATUS shown (`mm_status_valid`, `mm_status_code`) | the network; published only on a trunked carrier | D-MM STATUS | a BSCH of another network |
 | Timeslot speech context (`calls.slot_enc`, the heard timeslot) and the heard or anonymous canonical call | the carrier (the anonymous call: one timeslot of it) | addressed MAC-RESOURCEs; heard speech | the heard speech stopping, another cell, entering direct mode, a carrier boundary, another network; the anonymous call also speech of another timeslot or of a call record |
+| Signal search evidence (`search`: the observed BSCH, gate A's cell and first SYSINFO, gate D, the first mode, the withdrawal, the last site note) | one Signal search visit | the visit's own checked bursts while a search runs (`tetra_search.c`) | `tetra_scan_visit_reset()` (every landing and departure); the observed BSCH also at a carrier boundary, a stream flush (a burst whose read crossed either proves nothing) and an input interruption (one standing, one that cut a burst, or one the engine loop took up between two bursts, `dsd_state::input_interrupt_seq`), never at the hunt's no-carrier pass |
 | Carrier evidence (`confirm`: `carrier_blocks` for publication, `signalling_blocks`, downlink only, for grants) | the carrier | CRC-passed blocks (an uplink SCH/HU or MAC block counts for publication only) | a carrier boundary and a trunking retune (`tetra_confirm_reset()`); the followed call's proof also at another cell, entering direct mode and every change of follow |
 | The followed call's receive permission and AACH counts (`confirm.rx_perm`, `rx_run`, `rx_adverse`, `rx_chan_bad`, `rx_qual_start`) | the followed call on the carrier | its U-plane switching, N.213 qualifying ACCESS-ASSIGN PDUs | its U-plane switching off, N.212, T.212, with its proof (carrier boundary, follow change, retirement); a failed tune puts the permission back, the counts start over |
 | Follow (`sm`) | the session | a grant | release, hangtime, grant timeout, abandon at a carrier boundary, an external return, its channel allocated to a call it does not follow (it moves to one it does); a decode-mode change disowns its tune in flight; trunking off lets go of its call but keeps the channel and asks for no return; trunking on again returns home at once |
@@ -17147,7 +17287,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   a suffixed type (`dpmr-conventional`) is its protocol's and a type is never split at its
   first hyphen. A match's `protocolLabel` is the catalog label of its entry's protocol, its
   system's decode flag or its row's type (`scan_entry_type_label()`), empty for one the catalog
-  does not have. Only the width option of the channel's own
+  does not have; a saved `-fT` system on its own, which decodes trunked and direct mode TETRA alike, is `TETRA`, and an
+  unnamed one is named so (`scan_entry_system_label()`, issue #748), while a scan list's TETRA rows, its entries for
+  such a system included, stay `TETRA DMO`, since the list scans direct mode only. Only the width option of the channel's own
   analog kind applies (`--am-bandwidth-hz` for AM, `--nfm-bandwidth-hz` for NFM, either as
   `--name value` or `--name=value`), so an NFM system that also sets an AM width keeps its
   NFM channels' width, and its mode-less map rows inherit that. A saved system's mode is its decode
@@ -17177,6 +17319,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   Airspy's `gainDb` is -1, its gains being in its map. The start path has no tenth-dB or manual-0 gain; the tuner runs
   its nearest step. `WizardScreen.openForFound()` copies them into the draft only for a detection; the Spectrum's save
   passes none and keeps the app defaults its session ran on (`tst_wizard_search_save.qml`, `UI_QT_SIGNAL_SEARCH`).
+  The receiver comes from the recorded input spec by the engine's own checks (`dsd_opts_audio_in_dev_is_*_spec()`:
+  RTL-SDR as `usb`, rtl_tcp, Airspy); a spec the app cannot open (SoapySDR, which the backend searches with, or any
+  other input), or a confirmed protocol this build does not decode ("This version cannot decode <protocol>", e.g. a
+  newer build's history), gives `systemForHit()` only `{handoffRefusal}`, the reason `hitMap()` also puts on the row,
+  and SignalSearchScreen disables Explore here and Save as system with it while Main hands off nothing for it (issue
+  #748 B18 and B6, `UI_QT_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH`, `UI_QT_QML_SIGNAL_SEARCH_HANDOFF`). The found
+  system's `bandwidthKhz` is set on both branches, the recorded receiver's and the session source's: 72 for a TETRA or
+  TETRA DMO detection (`-fT`), else 48, so a detection from a 72 kHz search (`searchBandwidthKhz()`: 72 while an enabled
+  range identifies TETRA, else 48; Main starts the search with it) never inherits that rate (issue #748).
   Export (#826): `SignalSearchModel::prepareExport(kind)` builds the whole file on the GUI thread when the button is
   pressed, from the store's snapshots, and keeps it as the one pending export (a new prepare drops the one before it):
   `"detections"` is every stored detection, newest first; `"avoids"` is the permanent list in saved order, then the

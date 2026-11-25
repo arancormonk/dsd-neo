@@ -16,6 +16,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
 #include <dsd-neo/core/synctype_ids.h>
+#include <dsd-neo/dsp/frame_sync.h>
 #include <dsd-neo/dsp/symbol_anchor.h>
 #include <dsd-neo/dsp/symbol_timing_debug.h>
 #include "dsd-neo/core/state_fwd.h"
@@ -53,6 +54,9 @@ struct dsd_symbol_anchor {
     int holds_grid;    /* the hunt reads the word: its crossing loop keeps off the grid while recording */
     int placed;        /* the last recording measured its word: the grid is where a sync word put it */
     int hold_family;   /* the protocol whose frame armed the hold (anchor_sync_family()); 0 none */
+    /* The radio stream's symbol rate when the word was named, 0 off the radio: the move's cap is timed for it
+       (anchor_slip_cap()). */
+    int sync_symbol_rate_hz;
 };
 
 /* Symbols an armed anchor records before giving up on a sync word that was not named: a DMR burst's sync field ends
@@ -322,22 +326,38 @@ anchor_nominal_centres(const dsd_symbol_anchor* anchor, int count, uint64_t* abs
     return 1;
 }
 
-/* The whole samples the grid moves for a measured offset: to the nearest, at most two, none within half a sample. */
+/* The symbol rate a move on @p state's stream is capped for (anchor_slip_cap()): the decoder's active profile on the
+   radio's stream, whose span it times from (dsd_symbol.c); 0 on any other input, which keeps the 48 kHz cap. */
 static int
-anchor_slip_for(double offset) {
-    if (offset > 1.5) {
+anchor_stream_symbol_rate_hz(const dsd_state* state) {
+    return (state != NULL && state->rtl_ctx != NULL) ? dsd_frame_sync_active_profile_symbol_rate_hz(state) : 0;
+}
+
+/* The most whole samples one measured move takes the grid at @p sps samples per symbol of @p symbol_rate_hz: two at
+   48 kHz and below, whatever the symbol rate, and the same time at a faster stream, to the nearest sample (three at
+   72 kHz, four at 96). A cap of two samples at 72 kHz left an M17 LSF at 15 samples per symbol two or three samples off
+   where the switch-on measured four or five, and those LSFs failed their CRC. With no symbol rate (off the radio) the
+   cap is two. */
+static int
+anchor_slip_cap(int sps, int symbol_rate_hz) {
+    const long rate_hz = (long)sps * (long)symbol_rate_hz;
+    if (sps <= 0 || symbol_rate_hz <= 0 || rate_hz <= 48000L) {
         return 2;
     }
-    if (offset > 0.5) {
-        return 1;
+    return (int)(((2L * rate_hz) + 24000L) / 48000L);
+}
+
+/* The whole samples the grid moves for a measured offset: to the nearest (a half rounds down), at most @p cap, none
+   within half a sample. */
+static int
+anchor_slip_for(double offset, int cap) {
+    const double magnitude = fabs(offset);
+    if (!(magnitude > 0.5)) {
+        return 0;
     }
-    if (offset < -1.5) {
-        return -2;
-    }
-    if (offset < -0.5) {
-        return -1;
-    }
-    return 0;
+    const double rounded = ceil(magnitude - 0.5);
+    const int slip = rounded >= (double)cap ? cap : (int)rounded;
+    return offset < 0.0 ? -slip : slip;
 }
 
 /* Measures the named sync word with @p margin_before / @p margin_after samples around its first / last centre, and
@@ -382,7 +402,7 @@ anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t 
     if (!dsd_symbol_anchor_measure_offset(window, (int)span, centres, anchor->sync, count, sps, &offset)) {
         return 0;
     }
-    *out_slip = anchor_slip_for(offset);
+    *out_slip = anchor_slip_for(offset, anchor_slip_cap(sps, anchor->sync_symbol_rate_hz));
     return 1;
 }
 
@@ -641,7 +661,7 @@ anchor_note_hunt_word(dsd_state* state, const anchor_hunt_word* word, const char
     if (fabs(offset) < ANCHOR_HUNT_DEAD_ZONE) {
         return 1;
     }
-    const int slip = anchor_slip_for(offset);
+    const int slip = anchor_slip_for(offset, anchor_slip_cap(word->sps, anchor_stream_symbol_rate_hz(state)));
     dsd_symbol_anchor* anchor = dsd_symbol_anchor_get(state);
     if (anchor == NULL) {
         return 1;
@@ -671,6 +691,7 @@ anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int
     DSD_MEMCPY(anchor->sync, sync_dibits, (size_t)count);
     anchor->sync_count = count;
     anchor->sync_nominal = nominal;
+    anchor->sync_symbol_rate_hz = anchor_stream_symbol_rate_hz(state);
     anchor->sync_end_symbol = anchor->symbol_total;
     anchor->sync_pending = 1;
 }
@@ -717,8 +738,8 @@ dsd_symbol_mark_p25p1_sync_anchor(const dsd_state* state, int count, dsd_matched
 
 /*
  * The marked word, behind every sample the seam took since the mark. The write index's move is that count while it is
- * under the ring's size: a symbol takes at most its span and two (the crossing loop's slip, a queued move) and a filter
- * switching on its group delay more, and the frame being read on the stream the word was accepted on makes no other
+ * under the ring's size: a symbol takes at most its span and the slip cap (the crossing loop's one sample, or a queued
+ * move, never both: anchor_slip_cap()) and a filter switching on its group delay more, and the frame being read on the stream the word was accepted on makes no other
  * switch. The count held then grew by the same, short of the ring's size: a seam forgotten since (a stream flush)
  * holds fewer, and the word is gone with it.
  */
@@ -734,7 +755,8 @@ anchor_hunt_word_find_marked(const dsd_state* state, const dsd_matched_filter_se
     const uint64_t symbols = state->symbol_clock - mark->symbol_clock;
     const uint64_t most = (uint64_t)then.read_back + (uint64_t)seam->delay;
     if (symbols > (uint64_t)DSD_MATCHED_FILTER_HISTORY
-        || most + (symbols * (uint64_t)(mark->sps + 2)) >= (uint64_t)DSD_MATCHED_FILTER_HISTORY) {
+        || most + (symbols * (uint64_t)(mark->sps + anchor_slip_cap(mark->sps, anchor_stream_symbol_rate_hz(state))))
+               >= (uint64_t)DSD_MATCHED_FILTER_HISTORY) {
         return 0;
     }
     const int taken = (seam->raw_head - mark->raw_head + DSD_MATCHED_FILTER_HISTORY) % DSD_MATCHED_FILTER_HISTORY;

@@ -95,13 +95,18 @@ matchValue(const QString& name, qint64 hz, const QVariant& systemUid, const QVar
     return value;
 }
 
-/* @p identity with the label of @p protocol (a scan-list protocol id), which tells two matches of one name apart;
-   none for no protocol (a saved system that auto-detects). */
+/* @p identity with protocol label @p label, which tells two matches of one name apart; none for no protocol (a saved
+   system that auto-detects). */
+QVariantMap
+withLabel(QVariantMap identity, const QString& label) {
+    identity.insert(QStringLiteral("protocolLabel"), label);
+    return identity;
+}
+
+/* @p identity with the label of @p protocol (a scan-list protocol id). */
 QVariantMap
 withProtocol(QVariantMap identity, const QString& protocol) {
-    identity.insert(QStringLiteral("protocolLabel"),
-                    protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
-    return identity;
+    return withLabel(std::move(identity), protocol.isEmpty() ? QString() : scan_entry_protocol_label(protocol));
 }
 
 /* A channel map's row under @p identity's list, if any: it names the channel and starts nothing. */
@@ -785,13 +790,13 @@ KnownFrequencyIndex::rebuild() {
     if (m_systems) {
         for (int i = 0; i < m_systems->count(); ++i) {
             auto s = m_systems->get(i);
-            // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it.
+            // Issue #782: an unnamed system by its protocol and frequency, as the scan list and its targets name it;
+            // a -fT system is TETRA, trunked or direct mode (issue #748, scan_entry_system_label()).
+            const QString label = scan_entry_system_label(s.value(QStringLiteral("decodeFlag")).toString());
             add(s,
-                scan_entry_name(s.value(QStringLiteral("name")).toString(),
-                                scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString()),
-                                s.value(QStringLiteral("freqMhz")).toString()),
-                withProtocol(matchIdentity(QStringLiteral("system"), QString(), QString(), true),
-                             scan_entry_protocol_for_flag(s.value(QStringLiteral("decodeFlag")).toString())));
+                scan_entry_labelled_name(s.value(QStringLiteral("name")).toString(), label,
+                                         s.value(QStringLiteral("freqMhz")).toString()),
+                withLabel(matchIdentity(QStringLiteral("system"), QString(), QString(), true), label));
         }
     }
     if (m_lists) {

@@ -45,20 +45,34 @@ scan_entry_type_label(const QString& type) {
     return found ? QString::fromLatin1(found->label) : QString();
 }
 
-/** @p name when it has one, else @p protocol (a scan-list protocol id) and @p freqMhz as the scan list shows them. */
+/** The label a saved system's decode flag @p decodeFlag goes by (issue #748): the scan list's for the protocol it runs,
+    except TETRA's -fT, which decodes trunked and direct mode cells alike and so is "TETRA". Only a scan list's own TETRA
+    rows, which scan direct mode alone (issue #890), are "TETRA DMO". Empty for a flag the catalog does not map. */
 inline QString
-scan_entry_name(const QString& name, const QString& protocol, const QString& freqMhz) {
+scan_entry_system_label(const QString& decodeFlag) {
+    const QString protocol = scan_entry_protocol_for_flag(decodeFlag);
+    return protocol == QLatin1String("tetra_dmo") ? QStringLiteral("TETRA") : scan_entry_protocol_label(protocol);
+}
+
+/** @p name when it has one, else @p label (a protocol label) and @p freqMhz: "DMR · 455.5000 MHz". */
+inline QString
+scan_entry_labelled_name(const QString& name, const QString& label, const QString& freqMhz) {
     QString named = name.trimmed();
     if (!named.isEmpty()) {
         return named;
     }
     const QString mhz = freqMhz.trimmed();
-    QString label = scan_entry_protocol_label(protocol);
     if (mhz.isEmpty()) {
         return label;
     }
     return label.isEmpty() ? mhz + QStringLiteral(" MHz")
                            : label + QStringLiteral(" · ") + mhz + QStringLiteral(" MHz");
+}
+
+/** @p name when it has one, else @p protocol (a scan-list protocol id) and @p freqMhz as the scan list shows them. */
+inline QString
+scan_entry_name(const QString& name, const QString& protocol, const QString& freqMhz) {
+    return scan_entry_labelled_name(name, scan_entry_protocol_label(protocol), freqMhz);
 }
 
 } // namespace dsd_qt
