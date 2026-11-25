@@ -9315,6 +9315,89 @@ rtl_usb_fd_reset(int fd, const char* before) {
     return RTL_USB_FD_RESET_REFUSED;
 }
 
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+/* String descriptor @p index in language @p langid of the device behind usbfs descriptor @p fd, through its control
+ * endpoint (no interface claimed, nothing open on it), into @p buf: the bytes read, or a negative errno. */
+static int
+rtl_usb_fd_string_descriptor(int fd, uint8_t index, uint16_t langid, unsigned char* buf, uint16_t size) {
+    struct usbdevfs_ctrltransfer ct;
+    DSD_MEMSET(&ct, 0, sizeof ct);
+    ct.bRequestType = 0x80; /* device to host, standard, device */
+    ct.bRequest = 0x06;     /* GET_DESCRIPTOR */
+    ct.wValue = (uint16_t)((0x03U << 8) | index);
+    ct.wIndex = langid;
+    ct.wLength = size;
+    ct.timeout = 1000;
+    ct.data = buf;
+    const int n = ioctl(fd, USBDEVFS_CONTROL, &ct);
+    return n < 0 ? -errno : n;
+}
+
+/* The serial string's index in the device descriptor usbfs returns at the start of @p fd: > 0, 0 for none, or a
+ * negative errno. */
+static int
+rtl_usb_fd_serial_index(int fd) {
+    uint8_t desc[18];
+    const ssize_t got = pread(fd, desc, sizeof desc, 0);
+    if (got < 0) {
+        return -errno;
+    }
+    if (got != (ssize_t)sizeof desc || desc[1] != 0x01U) {
+        return -EIO;
+    }
+    return desc[16];
+}
+
+/* The serial through usbfs: rtl_usb_fd_serial_read() on the device. */
+static int
+rtl_usb_fd_serial_read_usbfs(int fd, char* serial) {
+    const int index = rtl_usb_fd_serial_index(fd);
+    if (index <= 0) {
+        return index == 0 ? -ENOENT : index;
+    }
+    unsigned char buf[255];
+    int n = rtl_usb_fd_string_descriptor(fd, 0U, 0U, buf, (uint16_t)sizeof buf);
+    if (n < 4) {
+        return n < 0 ? n : -EIO;
+    }
+    const uint16_t langid = (uint16_t)(buf[2] | (buf[3] << 8));
+    n = rtl_usb_fd_string_descriptor(fd, (uint8_t)index, langid, buf, (uint16_t)sizeof buf);
+    if (n < 2 || buf[1] != 0x03U || (int)buf[0] > n) {
+        return n < 0 ? n : -EIO;
+    }
+    size_t out = 0;
+    for (int i = 2; i + 1 < (int)buf[0] && out < RTL_DEVICE_STRING_SIZE - 1U; i += 2) {
+        serial[out++] = buf[i + 1] != 0U ? '?' : (char)buf[i];
+    }
+    return 0;
+}
+#endif
+
+/* The serial of the dongle behind Android descriptor @p fd, read through the descriptor before anything opens it, as
+ * librtlsdr reads it on a handle (libusb_get_string_descriptor_ascii(): the device's first language, '?' for a
+ * character outside one byte), into @p serial (RTL_DEVICE_STRING_SIZE bytes, zeroed first): 0, or a negative errno
+ * when it cannot be read (-ENOENT: the device has no serial string). */
+static int
+rtl_usb_fd_serial_read(int fd, char* serial) {
+    DSD_MEMSET(serial, 0, RTL_DEVICE_STRING_SIZE);
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const auto hook = g_fd_identity_hook.load(std::memory_order_acquire)) {
+        struct rtl_usb_identity id{};
+        const int rc = hook(fd, &id);
+        if (rc == 0) {
+            DSD_SNPRINTF(serial, RTL_DEVICE_STRING_SIZE, "%s", id.serial);
+        }
+        return rc;
+    }
+#endif
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return rtl_usb_fd_serial_read_usbfs(fd, serial);
+#else
+    (void)fd;
+    return -ENOTSUP;
+#endif
+}
+
 /* What identifies the dongle behind Android descriptor @p fd (#782): its VID:PID, from the device descriptor usbfs
  * returns at the start of the file, and the strings read on its opened @p handle. The descriptor names the one device,
  * so the strings only confirm it. 0 or a negative errno. */
@@ -9465,12 +9548,14 @@ rtl_preopened_fd_take_supported(void) {
 #endif
 }
 
-/* A dongle chosen by @p serial that the descriptor @p fd does not lead to: its handle @p handle, which nothing has
- * configured, is closed as it is (no bias tee or FIFO write reaches it) and the descriptor handed back; the session
- * fails with RTL_DEVICE_ESERIAL. */
+/* A dongle chosen by @p serial that the descriptor @p fd does not lead to: its handle @p handle (NULL when it was never
+ * opened), which nothing has configured, is closed as it is (no bias tee or FIFO write reaches it) and the descriptor
+ * handed back; the session fails with RTL_DEVICE_ESERIAL. */
 static int
 rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, const char* got) {
-    (void)rtl_usb_ctl_close(handle);
+    if (handle != nullptr) {
+        (void)rtl_usb_ctl_close(handle);
+    }
     g_preopened_usb_fd_held.store(-1, std::memory_order_release);
     g_last_usb_open_error.store(RTL_DEVICE_ESERIAL, std::memory_order_release);
     dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, RTL_DEVICE_ESERIAL);
@@ -9485,6 +9570,32 @@ rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, co
     return RTL_DEVICE_ESERIAL;
 }
 
+/* The reset the dongle behind descriptor @p fd owes, before it is opened. A dongle a stall wedged streams nothing after
+ * a plain reopen; the reset through this descriptor clears it (#782). A refused reset opens without one and keeps the
+ * obligation, and one that left the descriptor unusable lets the open fail with its own error. With @p serial
+ * non-empty the reset is paid only on the dongle with that serial, read through the descriptor first: another dongle
+ * is refused untouched (RTL_DEVICE_ESERIAL, the descriptor handed back, the obligation kept), and one whose serial
+ * cannot be read that way is opened without the reset, keeping the obligation, for the handle check after the open.
+ * 0 to go on to the open. */
+static int
+rtl_device_preopened_pay_reset(int fd, const char* serial) {
+    if (serial[0] != '\0') {
+        char before[RTL_DEVICE_STRING_SIZE];
+        const int rc = rtl_usb_fd_serial_read(fd, before);
+        if (rc == 0 && strcmp(before, serial) != 0) {
+            return rtl_device_refuse_preopened(nullptr, fd, serial, before);
+        }
+        if (rc != 0) {
+            LOG_WARN("RTL-SDR: could not read the serial through descriptor %d before its owed USB reset (errno %d); "
+                     "opening it without the reset\n",
+                     fd, -rc);
+            return 0;
+        }
+    }
+    (void)rtl_usb_fd_reset(fd, "before opening it");
+    return 0;
+}
+
 /* Open @p dev from the descriptor @p taken from the slot: 0, or the open's negative error, reported as the session's
  * failure with the descriptor released (the caller frees @p dev). With @p serial non-empty the dongle behind the
  * descriptor must report exactly that serial before anything else touches it; nothing is enumerated (USB discovery is
@@ -9496,11 +9607,8 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
      * descriptor is free while libusb is part way through taking it. libusb's own
      * error text reaches the diagnostics from here on (#782). */
     rtl_usb_log_install();
-    /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
-     * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
-     * unusable lets the open below fail with its own error. */
-    if (taken->reset_first) {
-        (void)rtl_usb_fd_reset(preopened_fd, "before opening it");
+    if (taken->reset_first && rtl_device_preopened_pay_reset(preopened_fd, serial) != 0) {
+        return RTL_DEVICE_ESERIAL;
     }
     const int r = rtl_usb_open_preopened_fd(&dev->dev, preopened_fd);
     if (r < 0) {
@@ -9529,6 +9637,10 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
      * stall recovery reopened it. */
     const int id_rc = rtl_usb_fd_identity_read(preopened_fd, dev->dev, &dev->identity);
     if (id_rc == 0) {
+        /* The serial read on the handle, as an index open records the verified identity's. */
+        if (dev->opened_serial[0] == '\0') {
+            DSD_SNPRINTF(dev->opened_serial, sizeof dev->opened_serial, "%s", dev->identity.serial);
+        }
         dev->usb_recovery_on.store(1, std::memory_order_release);
     } else {
         char reason[96];

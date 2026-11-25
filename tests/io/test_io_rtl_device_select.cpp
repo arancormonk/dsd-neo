@@ -29,6 +29,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
+#include <errno.h>
 #include <initializer_list>
 #include <memory>
 #include <stdint.h>
@@ -41,6 +42,8 @@
 #include "test_support.h"
 
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
+extern "C" void rtl_device_test_set_fd_reset_hook(int (*hook)(int));
+extern "C" void rtl_device_test_set_fd_identity_hook(int (*hook)(int, struct rtl_usb_identity*));
 
 // LLVM 22+ misclassifies these runtime test oracles as compile-time assertions.
 // NOLINTBEGIN(cert-dcl03-c,misc-static-assert)
@@ -639,6 +642,104 @@ test_stream_looks_the_serial_up_at_every_start(void) {
     assert(dsd_test_rmdir(dir) == 0);
 }
 
+/* The descriptor's USB reset and identity (the strings of the dongle behind it, readable before and after the open). */
+int g_fd_resets = 0;
+const char* g_fd_serial = "";
+int g_fd_identity_rc = 0;
+
+int
+fd_reset_counts(int fd) {
+    (void)fd;
+    g_fd_resets++;
+    return 0;
+}
+
+int
+fd_identity(int fd, rtl_usb_identity* out) {
+    (void)fd;
+    if (g_fd_identity_rc != 0) {
+        return g_fd_identity_rc;
+    }
+    out->vid = 0x0bda;
+    out->pid = 0x2838;
+    put(out->manufacturer, "Realtek");
+    put(out->product, "RTL2838UHIDIR");
+    put(out->serial, g_fd_serial);
+    return 0;
+}
+
+/* A descriptor whose dongle owes a USB reset (#782): with a serial, the reset is paid only on the dongle with that
+   serial, read through the descriptor before anything opens it. Another dongle is refused untouched and keeps its
+   obligation; one whose serial cannot be read that way is opened without the reset, the handle check deciding. */
+void
+test_preopened_owed_reset_paid_only_on_the_requested_dongle(void) {
+    rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
+    rtl_device_test_set_fd_reset_hook(fd_reset_counts);
+    rtl_device_test_set_fd_identity_hook(fd_identity);
+    set_devs({});
+    {
+        rig r;
+        g_fd_serial = "00000001";
+        g_fd_identity_rc = 0;
+        g_fd_resets = 0;
+        g_world.handle_serials[0] = "00000001";
+        g_world.handle_serial_count = 1;
+        dsd_input_failure_clear();
+        rtl_device_publish_preopened_fd(9, 1);
+        assert(rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr) == nullptr);
+        assert(g_fd_resets == 0 && rtl_device_preopened_fd_reset_owed() == 9);
+        assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == 0 && rtl_device_preopened_fd_held() == -1);
+        assert(reported_serial_failure());
+    }
+    {
+        rig r;
+        g_fd_serial = "00000002";
+        g_world.handle_serials[0] = "00000002";
+        rtl_device_publish_preopened_fd(9, 1);
+        rtl_device* dev = rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr);
+        assert(dev != nullptr && g_fd_resets == 1 && rtl_device_preopened_fd_reset_owed() == -1);
+        rtl_device_destroy(dev);
+    }
+    {
+        rig r;
+        g_fd_identity_rc = -EIO;
+        g_fd_resets = 0;
+        rtl_device_publish_preopened_fd(9, 1);
+        rtl_device* dev = rtl_device_create_selected(0, "00000002", r.ring.get(), nullptr);
+        assert(dev != nullptr && g_fd_resets == 0 && rtl_device_preopened_fd_reset_owed() == 9);
+        rtl_device_destroy(dev);
+        g_fd_identity_rc = 0;
+    }
+    rtl_device_publish_preopened_fd(-1, 0);
+    rtl_device_test_set_fd_identity_hook(nullptr);
+    rtl_device_test_set_fd_reset_hook(nullptr);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
+    dsd_input_failure_clear();
+}
+
+/* A descriptor opened by index (rtl:0 on Android): the serial its identity read on the handle is the opened dongle's,
+   as an index open over USB records its verified identity's, so a capture names it. */
+void
+test_preopened_by_index_records_its_serial(void) {
+    rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
+    rtl_device_test_set_fd_identity_hook(fd_identity);
+    set_devs({});
+    g_fd_serial = "A1B2";
+    g_fd_identity_rc = 0;
+    {
+        rig r;
+        rtl_device_set_preopened_fd(9);
+        rtl_device* dev = rtl_device_create_selected(0, nullptr, r.ring.get(), nullptr);
+        assert(dev != nullptr);
+        char sn[64];
+        assert(rtl_device_usb_serial(dev, sn, sizeof sn) == 0 && strcmp(sn, "A1B2") == 0);
+        rtl_device_destroy(dev);
+    }
+    rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_fd_identity_hook(nullptr);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
+}
+
 /* ---- What an I/Q capture records ---- */
 
 void
@@ -674,6 +775,8 @@ main(void) {
     test_open_not_found_or_duplicate_opens_nothing();
     test_open_by_index_unchanged();
     test_preopened_serial_checked_on_its_dongle();
+    test_preopened_owed_reset_paid_only_on_the_requested_dongle();
+    test_preopened_by_index_records_its_serial();
     test_capture_names_the_dongle();
     test_stream_looks_the_serial_up_at_every_start();
 

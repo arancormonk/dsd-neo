@@ -11719,8 +11719,12 @@ Key public headers:
     write, as `rtl_device_destroy()` would make) and looks the serial up once more, then the open fails with
     `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the session's device failure. A pre-opened descriptor
     (`rtl_device_open_preopened()`) is never enumerated: with a serial, the dongle behind it must report it or the
-    handle is closed and the descriptor handed back (`g_preopened_usb_fd_held` -1), with the same error. The stream
-    (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index` and its options, and
+    handle is closed and the descriptor handed back (`g_preopened_usb_fd_held` -1), with the same error. A descriptor
+    that owes a reset (`rtl_device_preopened_pay_reset()`) with a serial has its serial read through the descriptor
+    first (`rtl_usb_fd_serial_read()`: usbfs `GET_DESCRIPTOR` on ep0, as `libusb_get_string_descriptor_ascii()`);
+    another dongle is refused before the reset or the open, its obligation kept, and one unreadable that way opens
+    without the reset (obligation kept) for the handle check. Without a serial, the descriptor identity's serial is
+    the opened one. The stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index` and its options, and
     `RtlSdrOrchestrator::start()` hands it to the caller's (decoder-owned) options, as it does `airspy_info`; the log
     line is `Using RTLSDR Device Index: N (SN <sn>)`. `rtl_device_usb_serial()` is the serial verified on the handle
     (the one chosen by, or for an index the stall recovery identity's), which an I/Q capture's `source_args` records as
