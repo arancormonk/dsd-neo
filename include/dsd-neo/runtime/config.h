@@ -713,13 +713,13 @@ typedef struct dsdneoUserConfig {
     char static_wav_path[1024];
     char raw_wav_path[1024];
     int rdio_mode;
-    int rdio_system_id;
+    int rdio_system_id; /* 0..2147483647; the loader refuses a value outside it and keeps the one it had (issue #931) */
     char rdio_api_url[1024];
     char rdio_api_key[256];
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; /* bool */
-    /* Analog calls' rdio-scanner system, 0..65535 (0: rdio_system_id), and the talkgroup of one with no frequency,
+    /* Analog calls' rdio-scanner system, 0..2147483647 (0: rdio_system_id), and the talkgroup of one with no frequency,
        0..2147483647 (0: not exported) (issue #668). The loader refuses a value outside the range and keeps the one it
        had. */
     int rdio_analog_system_id;

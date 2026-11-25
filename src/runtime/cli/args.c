@@ -828,6 +828,21 @@ cli_parse_int_range_option(const char* option_name, const char* in, int min_valu
     return 1;
 }
 
+/* --rdio-system-id and --rdio-analog-system-id (issue #931): an rdio-scanner system ID is a whole number
+   0..2147483647, the largest one every server's database holds. Anything else is refused with that range named, a value
+   past a 32-bit long's range included, never clamped. */
+static int
+cli_parse_rdio_system_id_option(const char* option_name, const char* in, int* out, int* out_exit_rc) {
+    int parsed = 0;
+    if (dsd_parse_int_strict(in, 10, 0, 2147483647, &parsed) != 0) {
+        LOG_ERROR("Invalid %s value \"%s\" (expected 0..2147483647)\n", option_name, in ? in : "");
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out = parsed;
+    return 1;
+}
+
 static int
 cli_parse_ms_range_option(const char* option_name, const char* in, int min_ms, int max_ms, int* out, int* out_exit_rc) {
     return cli_parse_int_range_option(option_name, in, min_ms, max_ms, out, out_exit_rc);
@@ -2277,6 +2292,10 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             rdio_system_id_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
+            if (!cli_parse_rdio_system_id_option("--rdio-system-id", rdio_system_id_cli, &opts->rdio_system_id,        \
+                                                 out_exit_rc)) {                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-url") == 0) {                                                                  \
@@ -2313,8 +2332,8 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-analog-system-id") == 0) {                                                         \
             if (!cli_has_value("--rdio-analog-system-id", i, argc, out_exit_rc)                                        \
-                || !cli_parse_int_range_option("--rdio-analog-system-id", DSD_PARSE_ARGS_NEXT_ARG(), 0, 65535,         \
-                                               &opts->rdio_analog_system_id, out_exit_rc)) {                           \
+                || !cli_parse_rdio_system_id_option("--rdio-analog-system-id", DSD_PARSE_ARGS_NEXT_ARG(),              \
+                                                    &opts->rdio_analog_system_id, out_exit_rc)) {                      \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -2946,13 +2965,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
             LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);            \
         }                                                                                                              \
     }                                                                                                                  \
-    if (rdio_system_id_cli) {                                                                                          \
-        long parsed_sid = 0;                                                                                           \
-        if (!cli_parse_long_option("--rdio-system-id", rdio_system_id_cli, 10, &parsed_sid, out_exit_rc)) {            \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-        const int sid = cli_clamp_long_to_int(parsed_sid, 0, 65535);                                                   \
-        opts->rdio_system_id = sid;                                                                                    \
+    if (rdio_system_id_cli) { /* read and checked where each occurrence stands */                                      \
         LOG_INFO("NOTICE: Rdio system ID: %d\n", opts->rdio_system_id);                                                \
     }                                                                                                                  \
     if (rdio_api_url_cli) {                                                                                            \

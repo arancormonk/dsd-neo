@@ -8376,9 +8376,9 @@ test_analog_record_preroll_option(void) {
     return test_rc;
 }
 
-/* Issue #668: --rdio-analog-system-id (0..65535) and --rdio-analog-talkgroup (0..2147483647) take a whole number in
- * range, 0 included to reset; anything else, past the range or past int's, is refused, never clamped. Left out, both
- * are 0. */
+/* Issue #668: --rdio-analog-system-id and --rdio-analog-talkgroup (0..2147483647, the system ID since issue #931) take
+ * a whole number in range, 0 included to reset; anything else, past the range or past int's, is refused, never
+ * clamped. Left out, both are 0. */
 static int
 test_rdio_analog_options(void) {
     static const struct {
@@ -8393,13 +8393,15 @@ test_rdio_analog_options(void) {
         {"--rdio-analog-system-id", "9", DSD_PARSE_CONTINUE, 9, 0, NULL},
         {"--rdio-analog-system-id", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
         {"--rdio-analog-system-id", "65535", DSD_PARSE_CONTINUE, 65535, 0, NULL},
+        {"--rdio-analog-system-id", "65536", DSD_PARSE_CONTINUE, 65536, 0, NULL},
+        {"--rdio-analog-system-id", "2147483647", DSD_PARSE_CONTINUE, 2147483647, 0, NULL},
         {
             "--rdio-analog-system-id",
-            "65536",
+            "2147483648",
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"65536\" (expected 0..65535)",
+            "Invalid --rdio-analog-system-id value \"2147483648\" (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8407,7 +8409,7 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..65535)",
+            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8619,11 +8621,6 @@ wide_input_volume(const dsd_opts* opts) {
 }
 
 static int
-wide_rdio_system_id(const dsd_opts* opts) {
-    return opts->rdio_system_id;
-}
-
-static int
 wide_rdio_timeout(const dsd_opts* opts) {
     return opts->rdio_upload_timeout_ms;
 }
@@ -8662,8 +8659,6 @@ test_wide_values_clamp_before_narrowing(void) {
     } cases[] = {
         {"--input-volume", "4294967300", wide_input_volume, 16},
         {"--input-volume", "-4294967292", wide_input_volume, 1},
-        {"--rdio-system-id", "4294967301", wide_rdio_system_id, 65535},
-        {"--rdio-system-id", "-4294967291", wide_rdio_system_id, 0},
         {"--rdio-upload-timeout-ms", "4294967796", wide_rdio_timeout, 120000},
         {"--rdio-upload-timeout-ms", "-4294966796", wide_rdio_timeout, 100},
         {"--rdio-upload-retries", "4294967299", wide_rdio_retries, 10},
@@ -8691,6 +8686,113 @@ test_wide_values_clamp_before_narrowing(void) {
             DSD_FPRINTF(stderr, "%s %s (long %s): rc=%d exit_rc=%d value=%d, want %d\n%s\n", cases[i].option,
                         cases[i].value, long_is_wide ? "64-bit" : "32-bit", run.rc, run.exit_rc, got, cases[i].want,
                         run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* Issue #931 (B3): --rdio-system-id and --rdio-analog-system-id take 0..2147483647 and refuse anything else with exit 1
+ * and the range named, never clamped (154437 used to become 65535). Each occurrence is checked as it is read: a later
+ * valid one does not hide an earlier invalid one. */
+static int
+test_rdio_system_id_range(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        const char* d;
+        int want_rc;
+        int want_system;
+        const char* want_text;
+    } cases[] = {
+        {"--rdio-system-id", "65536", NULL, NULL, DSD_PARSE_CONTINUE, 65536, "NOTICE: Rdio system ID: 65536"},
+        {"--rdio-system-id", "154437", NULL, NULL, DSD_PARSE_CONTINUE, 154437, "NOTICE: Rdio system ID: 154437"},
+        {"--rdio-system-id", "2147483647", NULL, NULL, DSD_PARSE_CONTINUE, 2147483647, NULL},
+        {"--rdio-system-id", "0", NULL, NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {
+            "--rdio-system-id",
+            "2147483648",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"2147483648\" (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "4294967301",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"4294967301\" (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "-1",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"-1\" (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "48x",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"48x\" (expected 0..2147483647)",
+        },
+        {"--rdio-system-id", "", NULL, NULL, DSD_PARSE_ERROR, 0, "Invalid --rdio-system-id value \"\""},
+        {
+            "--rdio-system-id",
+            "2147483648",
+            "--rdio-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"2147483648\" (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "48x",
+            "--rdio-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value \"48x\"",
+        },
+        {"--rdio-system-id", "7", "--rdio-system-id", "154437", DSD_PARSE_CONTINUE, 154437, NULL},
+        {
+            "--rdio-analog-system-id",
+            "-1",
+            "--rdio-analog-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            -1,
+            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..2147483647)",
+        },
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, cases[i].d, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int got =
+            strcmp(cases[i].a, "--rdio-system-id") == 0 ? run.opts->rdio_system_id : run.opts->rdio_analog_system_id;
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        const int value_ok = cases[i].want_system < 0 || got == cases[i].want_system;
+        if (run.rc != cases[i].want_rc || !value_ok || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s %s: rc=%d system=%d exit_rc=%d\n%s\n", cases[i].a, cases[i].b,
+                        cases[i].c ? cases[i].c : "", cases[i].d ? cases[i].d : "", run.rc, got, run.exit_rc, run.err);
             test_rc = 1;
         }
         am_cli_free(&run);
@@ -14348,6 +14450,7 @@ main(void) {
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();
+    rc |= test_rdio_system_id_range();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

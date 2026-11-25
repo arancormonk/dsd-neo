@@ -58,9 +58,9 @@ dsd_cli_usage_section_intro(void) {
 static void
 dsd_cli_usage_rdio_options(void) {
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
-    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
+    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID, 0 to 2147483647 (required for API uploads)\n");
     printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for analog calls\n");
-    printf("                 (0 to 65535; 0 = use --rdio-system-id, the default)\n");
+    printf("                 (0 to 2147483647; 0 = use --rdio-system-id, the default)\n");
     printf("      --rdio-system-by-frequency  Export each call with a known frequency to the rdio-scanner system\n");
     printf(
         "                 numbered by that frequency in kHz (an analog call with --rdio-analog-system-id keeps it)\n");

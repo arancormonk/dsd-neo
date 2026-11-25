@@ -5668,9 +5668,11 @@ suite runs under this compiler.
     creates folders (`-Q`, `-d`), imports CSVs and key files, reads token files, prints usage and leaves getopt's
     globals behind. A pre-scan long option that takes the next argument, given last without it, is refused (exit code
     1), never dropped: the options that used to drop it say `<option> requires a value` (issue #756,
-    `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
-    numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
-    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping.
+    `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`,
+    `--rdio-upload-timeout-ms`, `--rdio-upload-retries`, `-z`, `-V`, `-s`) clamp while it is still the parsed `long`
+    and only then narrow (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead
+    of wrapping. The rdio-scanner system IDs (`--rdio-system-id`, `--rdio-analog-system-id`) are refused outside
+    0..2147483647 instead, each occurrence as it is read (`cli_parse_rdio_system_id_option()`, issue #931).
     A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path is
     too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-w`, `-6`,
     `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`, and `-i`/`-o`, which also

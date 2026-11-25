@@ -919,9 +919,9 @@ apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     cfg->analog_max_gap_ms = ms;
 }
 
-/* Issue #668: the NFM pre-roll and rdio-scanner settings are refused, never clamped: a value outside
-   @p min_value..@p max_value, or not a whole number, is reported under @p name and the one already loaded stays.
-   --validate-config reports it as an error. */
+/* Issue #668: the NFM pre-roll and rdio-scanner settings (the system IDs too, issue #931) are refused, never clamped:
+   a value outside @p min_value..@p max_value, or not a whole number, is reported under @p name and the one already
+   loaded stays. --validate-config reports it as an error. */
 namespace {
 void
 apply_recording_refused_range(const char* name, const char* val, int min_value, int max_value, int* out_value) {
@@ -972,7 +972,7 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
             cfg->rdio_mode = mode;
         }
     } else if (strcmp(key_lc, "rdio_system_id") == 0) {
-        apply_recording_rdio_range_value(val, 0, 0, 65535, &cfg->rdio_system_id);
+        apply_recording_refused_range("rdio_system_id", val, 0, 2147483647, &cfg->rdio_system_id);
     } else if (strcmp(key_lc, "rdio_api_url") == 0) {
         copy_text_value(cfg->rdio_api_url, sizeof cfg->rdio_api_url, val);
     } else if (strcmp(key_lc, "rdio_api_key") == 0) {
@@ -987,7 +987,7 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
             cfg->rdio_api_delete_after_upload = b;
         }
     } else if (strcmp(key_lc, "rdio_analog_system_id") == 0) {
-        apply_recording_refused_range("rdio_analog_system_id", val, 0, 65535, &cfg->rdio_analog_system_id);
+        apply_recording_refused_range("rdio_analog_system_id", val, 0, 2147483647, &cfg->rdio_analog_system_id);
     } else if (strcmp(key_lc, "rdio_analog_talkgroup") == 0) {
         apply_recording_refused_range("rdio_analog_talkgroup", val, 0, 2147483647, &cfg->rdio_analog_talkgroup);
     } else if (strcmp(key_lc, "rdio_unknown_talkgroup") == 0) {

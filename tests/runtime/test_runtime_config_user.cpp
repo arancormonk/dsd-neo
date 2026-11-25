@@ -5612,7 +5612,7 @@ test_recording_rdio_analog_roundtrip(void) {
         const char* key;
         const char* value;
     } refused[] = {
-        {"rdio_analog_system_id", "-1"},         {"rdio_analog_system_id", "65536"},
+        {"rdio_analog_system_id", "-1"},         {"rdio_analog_system_id", "2147483648"},
         {"rdio_analog_system_id", "9x"},         {"rdio_analog_talkgroup", "-1"},
         {"rdio_analog_talkgroup", "2147483648"}, {"rdio_analog_talkgroup", "99999999999"},
         {"rdio_analog_talkgroup", "1e3"},
@@ -5628,6 +5628,115 @@ test_recording_rdio_analog_roundtrip(void) {
         if (loaded != 0 || kept != 77 || strstr(g_log_text, c.key) == nullptr) {
             DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", c.key, c.value, kept,
                         g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+static int
+load_profile_text(const char* ini, const char* profile, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int load_rc = dsd_user_config_load_profile(path, profile, cfg);
+    (void)remove(path);
+    return load_rc;
+}
+
+static int*
+rdio_system_field(dsdneoUserConfig* cfg, const char* key) {
+    return strcmp(key, "rdio_system_id") == 0 ? &cfg->rdio_system_id : &cfg->rdio_analog_system_id;
+}
+
+/* One rdio-scanner system ID key (issue #931): a value up to 2147483647 (154437, a kHz-sized one) loads, reaches
+   dsd_opts and survives a save and a reload; 0 is not written. */
+static int
+rdio_system_id_key_roundtrip(const char* key) {
+    int rc = 0;
+    char ini[160];
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 154437\n", key);
+    dsdneoUserConfig cfg{};
+    if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 154437 did not load (%d)\n", key, *rdio_system_field(&cfg, key));
+        return 1;
+    }
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    const int applied = strcmp(key, "rdio_system_id") == 0 ? opts.rdio_system_id : opts.rdio_analog_system_id;
+    if (applied != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: %s did not reach dsd_opts (%d)\n", key, applied);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\n%s = 154437\n", key);
+    rc |= expect_contains_quiet("rdio system ID saved", rendered, want);
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || *rdio_system_field(&reloaded, key) != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load %s back\n", key);
+        rc |= 1;
+    }
+
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 154437\n%s = 0\n", key, key);
+    if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 0 did not reset it\n", key);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(want, sizeof want, "\n%s =", key);
+    if (strstr(rendered, want) != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 0 was written to the saved config\n", key);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #931 (B3): [recording] rdio_system_id and rdio_analog_system_id take 0..2147483647. A value outside it, or not
+   a whole number, is refused with a warning naming the key, and the value already loaded stays: rdio_system_id used to
+   clamp to 65535 and turn text into 0, silently, so a bad profile value wiped the base file's. */
+static int
+test_recording_rdio_system_id_range(void) {
+    int rc = rdio_system_id_key_roundtrip("rdio_system_id") | rdio_system_id_key_roundtrip("rdio_analog_system_id");
+    for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
+        for (const char* value : {"48x", "-1", "2147483648", "99999999999", "1e3", "\"\""}) {
+            char ini[160];
+            DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 77\n%s = %s\n", key, key, value);
+            dsdneoUserConfig cfg{};
+            g_log_text[0] = '\0';
+            if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 77
+                || strstr(g_log_text, key) == nullptr) {
+                DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", key, value,
+                            *rdio_system_field(&cfg, key), g_log_text);
+                rc |= 1;
+            }
+            /* A profile's bad value over a nonzero base value keeps the base value. */
+            DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 12\n\n[profile.p]\nrecording.%s = %s\n", key, key, value);
+            dsdneoUserConfig prof{};
+            if (load_profile_text(ini, "p", &prof) != 0 || *rdio_system_field(&prof, key) != 12) {
+                DSD_FPRINTF(stderr, "FAIL: profile %s = %s over base 12 left %d\n", key, value,
+                            *rdio_system_field(&prof, key));
+                rc |= 1;
+            }
+        }
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 12\n\n[profile.p]\nrecording.%s = 2147483647\n", key, key);
+        dsdneoUserConfig prof{};
+        if (load_profile_text(ini, "p", &prof) != 0 || *rdio_system_field(&prof, key) != 2147483647) {
+            DSD_FPRINTF(stderr, "FAIL: profile %s = 2147483647 did not load (%d)\n", key,
+                        *rdio_system_field(&prof, key));
             rc |= 1;
         }
     }
@@ -7306,6 +7415,7 @@ main(void) {
     rc |= test_recording_analog_max_gap_roundtrip();
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
+    rc |= test_recording_rdio_system_id_range();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();

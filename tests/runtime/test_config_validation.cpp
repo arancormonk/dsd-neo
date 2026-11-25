@@ -1780,18 +1780,22 @@ test_rdio_system_by_frequency_validation(void) {
     return rc;
 }
 
-/* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
- * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
+/* Issue #668: [recording] rdio_analog_system_id and rdio_analog_talkgroup (0..2147483647, the system ID since issue
+ * #931) are refused outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning.
+ * Issue #931: rdio_system_id is refused the same way. */
 int
 test_rdio_analog_validation(void) {
     int rc = 0;
-    rc |= run_recording_key_case("rdio_analog_system_id", "0", -1, NULL);
-    rc |= run_recording_key_case("rdio_analog_system_id", "65535", -1, NULL);
-    rc |= run_recording_key_case("rdio_analog_system_id", "65536", DSDCFG_DIAG_ERROR,
-                                 "Value 65536 is out of range [0, 65535] and is refused");
-    rc |= run_recording_key_case("rdio_analog_system_id", "-1", DSDCFG_DIAG_ERROR,
-                                 "Value -1 is out of range [0, 65535] and is refused");
-    rc |= run_recording_key_case("rdio_analog_system_id", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
+        rc |= run_recording_key_case(key, "0", -1, NULL);
+        rc |= run_recording_key_case(key, "65536", -1, NULL);
+        rc |= run_recording_key_case(key, "154437", -1, NULL);
+        rc |= run_recording_key_case(key, "2147483647", -1, NULL);
+        rc |= run_recording_key_case(key, "-1", DSDCFG_DIAG_ERROR,
+                                     "Value -1 is out of range [0, 2147483647] and is refused");
+        rc |= run_recording_key_case(key, "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value '2147483648'");
+        rc |= run_recording_key_case(key, "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    }
     rc |= run_recording_key_case("rdio_analog_talkgroup", "0", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483647", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "-1", DSDCFG_DIAG_ERROR,

@@ -242,11 +242,11 @@ struct dsd_opts {
     int dmr_stereo_wav;  //per-call wav file use (rename later)
     int static_wav_file; //single static wav file for decoding duration
     int rdio_mode;       //0=off, 1=dirwatch, 2=api, 3=both
-    int rdio_system_id;  //rdio-scanner system id used for API upload
+    int rdio_system_id;  //rdio-scanner system id used for API upload, 0..2147483647 (issue #931; refused outside)
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
-    /* The rdio-scanner system an analog call (any DSD_SYNC_ANALOG row: NFM, AM, audio input) is exported to, 0..65535
+    /* The rdio-scanner system an analog call (any DSD_SYNC_ANALOG row: NFM, AM, audio input) is exported to, 0..2147483647
        (issue #668); 0 uses rdio_system_id. */
     int rdio_analog_system_id;
     /* The rdio-scanner talkgroup of an analog call heard with no frequency (audio input), 0..2147483647 (issue #668); 0

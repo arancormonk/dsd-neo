@@ -517,13 +517,13 @@ audio input) sound no alert.
 | `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
 | `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
-| `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
+| `rdio_system_id` | INT | rdio-scanner numeric system ID, 0 to 2147483647 (`--rdio-system-id`) | `0` |
 | `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
 | `rdio_api_key` | STRING | rdio API key | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
-| `rdio_analog_system_id` | INT | rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls; EDACS analog and ProVoice calls follow the digital rule), 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
+| `rdio_analog_system_id` | INT | rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls; EDACS analog and ProVoice calls follow the digital rule), 0 to 2147483647; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
 | `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for analog calls with no known frequency (audio input with no `-Y` or `--trunk-scan` landing), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
 | `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
 | `rdio_system_by_frequency` | BOOL | Export each call whose frequency is known to the rdio-scanner system numbered by that frequency in kHz, rounded down, with the `short_name` `System <kHz>`; a call with no known frequency keeps `rdio_system_id`, and an analog call keeps `rdio_analog_system_id` when that is set (`--rdio-system-by-frequency`, `--no-rdio-system-by-frequency`) | `false` |
@@ -544,8 +544,9 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
-`rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges, or not whole
-numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them as errors.
+`rdio_system_id`, `rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges,
+or not whole numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them
+as errors.
 An analog call with a frequency is exported under it in kHz; how analog calls are exported, and the limits, are in
 `docs/cli.md`, "Analog calls in rdio-scanner". A digital call with no talkgroup is exported under its frequency in kHz
 too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in

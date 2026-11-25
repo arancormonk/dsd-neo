@@ -410,9 +410,11 @@ Windows console runs:
     queued, and the call is not logged as an export failure. The first such call of a run logs
     `Rdio API upload skipped: no system ID (set --rdio-system-id); later calls without one are skipped silently`;
     each new run (each Android session too) logs it again. A missing API key is still an export failure on every call.
-- `--rdio-system-id <N>` Set rdio-scanner system ID (required for API upload mode)
+- `--rdio-system-id <N>` Set rdio-scanner system ID, 0 to 2147483647. API uploads need it for every call that
+  `--rdio-analog-system-id` or `--rdio-system-by-frequency` does not number. A value outside that range, or not a
+  whole number, is refused, never clamped. INI: `[recording] rdio_system_id`.
 - `--rdio-analog-system-id <N>` rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls),
-  0 to 65535. 0, the default, uses `--rdio-system-id`. EDACS analog calls and ProVoice calls follow the digital rule
+  0 to 2147483647. 0, the default, uses `--rdio-system-id`. EDACS analog calls and ProVoice calls follow the digital rule
   instead. With it set, API uploads of analog calls work even when `--rdio-system-id` is not set. INI: `[recording]
   rdio_analog_system_id`.
 - `--rdio-analog-talkgroup <N>` rdio-scanner talkgroup for analog calls heard with no known frequency (an audio input

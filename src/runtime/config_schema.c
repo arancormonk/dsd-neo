@@ -214,7 +214,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
         DSD_ANALOG_RECORD_PREROLL_MAX_MS,
     },
     {"recording", "rdio_mode", "rdio-scanner export mode", "off", "off|dirwatch|api|both", DSDCFG_TYPE_ENUM, 0, 0},
-    {"recording", "rdio_system_id", "rdio-scanner numeric system ID", "0", NULL, DSDCFG_TYPE_INT, 0, 65535},
+    {"recording", "rdio_system_id", "rdio-scanner numeric system ID", "0", NULL, DSDCFG_TYPE_INT, 0, 2147483647},
     {"recording", "rdio_api_url", "rdio-scanner API base URL", "http://127.0.0.1:3000", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"recording", "rdio_api_key", "rdio-scanner API key", "", NULL, DSDCFG_TYPE_STRING, 0, 0},
     {"recording", "rdio_upload_timeout_ms", "rdio API upload timeout in milliseconds", "5000", NULL, DSDCFG_TYPE_INT,
@@ -230,7 +230,7 @@ static const dsdcfg_schema_entry_t s_schema[] = {
         NULL,
         DSDCFG_TYPE_INT,
         0,
-        65535,
+        2147483647,
     },
     {
         "recording",

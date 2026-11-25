@@ -232,8 +232,10 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing analog_preroll_ms range hint, default or off value\n");
         rc = 1;
     }
-    /* [recording] (issue #668): the NFM rdio-scanner keys, their ranges and their 0 defaults. */
-    if (strstr(content, "# Range: 0 to 65535\n# rdio_analog_system_id = 0\n") == nullptr
+    /* [recording] (issues #668, #931): the rdio-scanner system IDs and the NFM talkgroup, their ranges and their 0
+     * defaults. */
+    if (strstr(content, "# Range: 0 to 2147483647\n# rdio_system_id = 0\n") == nullptr
+        || strstr(content, "# Range: 0 to 2147483647\n# rdio_analog_system_id = 0\n") == nullptr
         || strstr(content, "# Range: 0 to 2147483647\n# rdio_analog_talkgroup = 0\n") == nullptr) {
         DSD_FPRINTF(stderr, "FAIL: template missing the rdio_analog_* range hints or defaults\n");
         rc = 1;
