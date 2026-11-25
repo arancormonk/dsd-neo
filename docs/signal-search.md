@@ -145,7 +145,14 @@ While a search runs, the screen is laid out for what is on the air now:
   the warning at once as it appears or clears; a new range name in it is read at
   most every five seconds, so two ranges that take turns clipping do not
   interrupt every pass.
-- **Recent detections** shows the five newest; **Show more** adds 25. Under its
+- **Recent detections** shows the five newest; **Show more** adds 25. A row's
+  verdict line starts with when the search found the signal: the time
+  (**14:32:05 · P25 Phase 1 · confirmed · ended**) when that was today, and the
+  date and time (**2026-11-20 22:15:03 · RF only · ended**) on any other day,
+  including a later one after the phone's clock was corrected. It is the
+  moment the search picked the signal to listen to, not when a call began; a
+  detection saved by an older release with no time shows none. The time is in
+  the phone's time zone, and a row of today takes its date at midnight. Under its
   verdict a row shows the site, access code, tone and encryption the detection
   last had, in the Now panel's order without the call
   (**TIII Small · Net 13 · Site 4 · SYS 1183 · CC 1 · Encrypted**;
@@ -155,11 +162,16 @@ While a search runs, the screen is laid out for what is on the air now:
   paragraph under [Ranges and reception](#ranges-and-reception) says which tone
   a detection keeps). These are the detection's last values, not a lasting list
   of each frequency's codes. Each row's actions button
-  (**Actions for 463.5521 MHz**) opens what can be done with that
+  (**Actions for 463.5521 MHz, 14:32:05**, with the row's time, so two visits to
+  one frequency are told apart) opens a menu titled with the frequency and that
+  time (**463.5521 MHz · 14:32:05**) listing what can be done with that
   detection: **Explore here**, **Start “<saved system>”** for each saved system
   it matched, **Save as system**, **Avoid this session** (while a search runs,
   unless the frequency is a permanent avoid or the search failed), and **Avoid
-  permanently**, or **Remove permanent avoid** when it already is.
+  permanently**, or **Remove permanent avoid** when it already is. **Avoid this
+  session** is for the search running when the menu opened: if that search ends,
+  fails or another starts while the menu is open, it is disabled and says **That
+  search session has ended.**
   A matched system whose site is avoided is listed but cannot start: remove the
   avoid in its site list first. **Export detections…** at the end of the section
   saves the whole detection history as a CSV file (see [Exporting detections and
@@ -444,7 +456,9 @@ beside the earlier releases' `signal-search-history.v1`. The first time no
 version 2 journal exists, the earlier journal's detections load without those
 details and the next save writes them to the version 2 journal (both versions
 keep the access code and tone, so those detections still show theirs); from then
-on only the version 2 journal is read. The earlier journal is never changed, so
+on only the version 2 journal is read. Both versions keep when the search found
+each detection and when its visit ended, so a restart shows the same found
+times. The earlier journal is never changed, so
 an earlier release still shows its own history, and detections it records later
 do not reach this one. A detection republished with nothing new is not written
 again. Detection history is not part of a backup. History and permanent avoids

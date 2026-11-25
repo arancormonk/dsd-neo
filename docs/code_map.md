@@ -5312,7 +5312,8 @@ suite runs under this compiler.
     input-level warning's toast included) and terminal status toasts, the audible-audio stamp and its age, UI frame and
     publish throttles, the `.bin` symbol-file pacing (`dsd_dibit.c`), the received-tone input-pause check, the Qt
     sync-label hold, import stamps and the Qt frontend's own clock (`src/ui/qt/realtime_clock.h`: last-listened stamps
-    and their ages, location fix and diagnostics-tail ages, the history's day sections and midnight timer), the one
+    and their ages, location fix and diagnostics-tail ages, and the local-day watch the history's day sections and every
+    "today" the frontend draws come from, `local_day_watch.{h,cpp}`), the one
     frontend file that reads Qt's clock directly (see "Two clocks" under Qt, which also names the one sanctioned mixed
     comparison, `day_label()`). Two sources below runtime in the link order keep the platform clocks for their real-time
     reads: `src/io/iq/iq_capture.c` (`dsd-neo_io_iq`) and `src/io/radio/tcp_quality_metrics.cpp` (built into
@@ -16167,7 +16168,16 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   two-line detail (`detailText()`) reads site, access, tone, `Slot N`, target, source,
   then crypt, eliding within the two lines with the whole text as its accessible name, and a
   history row shows site, access, tone and crypt under its verdict
-  (`detailText()`'s order without the call, empty values left out; issue #802). The tone
+  (`detailText()`'s order without the call, empty values left out; issue #802). Issue #902: the verdict line leads
+  with the detection's found time, `hitMap()`'s numeric `started` (ms, stamped as the search picked the candidate),
+  as `Util.clockText(started, screen.shownDay)` and one `keepValues()` value; none for a missing, non-positive or
+  non-finite time, so such a row's text is as before. The detail's gated name carries it, the row's actions button is
+  "Actions for %1 MHz, %2" with it, and the detection menu's `title` is a binding on its copied `target` and
+  `shownDay` (`detectionName()`: "462.5625 MHz · 14:32:05"), also for the Now panel's More on the live hit, so a
+  midnight while it is open dates it. `(session, hit)` stays the action identity, as two visits can share a spoken
+  time. The menu also keeps the running session as it opened (`detectionMenu.session`): Avoid this session acts on
+  it, and its function-valued `enabled`/`description` disable it with "That search session has ended." once that
+  session ends, fails or gives way to another (B8). The tone
   is what the analog monitor heard, not checked signalling. Each Now line is named once:
   Android reads a node's name, then its description (`descriptionForInterface()`), so no
   description repeats its name (the identification's name is its full phrase, the level's
@@ -16186,8 +16196,9 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   detection and moves `revision` with `revisionChanged()`; `CallLogStore` has
   `uidForFragment()`, `setFragmentRow()` and `trimRow()`), and `tst_context_fixture.qml` checks
   the screen's and `DetectionRecordingsSheet.qml`'s reads. A history row's detail adds "N
-  recordings" (`recordingCount()`, which reads `recordings.revision` so the row follows the
-  store) to its text and accessible name, and its actions start with "Recordings (N)"
+  recordings" (`recordingCount()`, which reads the screen's `shownRecordingsRevision`, the store's `revision`
+  while the screen shows, so the row follows the store) to its text and accessible name, and its actions start with
+  "Recordings (N)"
   (`recordingsAction()`, rows only, not the Now panel's More; it opens the recordings and plays
   nothing, so TalkBack announcing the sheet is not talked over); with none kept and
   `prefs.recordCalls` off a disabled "Recordings" ends the actions with the Settings hint as its
@@ -16436,7 +16447,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
   press. A count of 0 says "No detections to export." / "No avoids to export." and any other 0 token "The avoid lists
   were changing. Try again.", with no picker; otherwise one screen-level `DocumentPicker` (`searchExportPicker`: save,
   `text/csv`, "CSV files (*.csv)", suffix `csv`) asks under "Signal search detections yyyy-MM-dd.csv" / "Signal search
-  avoids yyyy-MM-dd.csv" (the local date from `savedSystems.realtimeNowMs()`; always a lowercase `.csv`, since
+  avoids yyyy-MM-dd.csv" (the local date from `savedSystems.realtimeNowMs()`, read before `prepareExport()` so a
+  failure there holds no rows (issue #902 B5); always a lowercase `.csv`, since
   Android's save picker appends the type's extension to `x.CSV`). Both buttons are disabled while an export is pending
   (`exportToken`, from the press until the pick backs out or the file is written). An accepted pick goes to
   `saveExport(token, reference)`; a refusal (false) has already let the Download-folder row go in C++, so the screen
@@ -17541,8 +17553,40 @@ Qt Quick frontend (`src/ui/qt`):
   the Android notification record, `app_control/notification_status.c`) and the received-tone input-pause check use
   `dsd_realtime_mono_s()`, and the audible-audio stamp that record carries (`src/core/audio/audio_activity.c`) and its
   age use `dsd_realtime_mono_ms()`. One sanctioned exception compares a decoded stamp with real time: `day_label()` in
-  `call_history_model.cpp` labels history sections "TODAY"/"YESTERDAY" against the viewer's real calendar day, paired
-  with the real midnight rollover timer, because the log spans sessions and a replay's calls keep their own dates.
+  `call_history_model.cpp` labels history sections "TODAY"/"YESTERDAY" against the viewer's real calendar day,
+  because the log spans sessions and a replay's calls keep their own dates; a date outside the current year carries
+  it ("SAT 21 NOV 2015"), since the label is the section key (issue #902 B3).
+  The viewer's calendar day is one source (issue #902): `LocalDayWatch` (`local_day_watch.{h,cpp}`, private to
+  `src/ui/qt`, `shared()` created on first use once a `QCoreApplication` exists and parented to it; null before, when it
+  could arm no timer and follow no application state, so `current()` then samples the clock itself at revision 0, and
+  the models connect only to a watch that exists). Each `check()` takes one sample of
+  the real clock (`realtimeMSecsSinceEpoch()`), publishes its local date (`today()`) and that date's `startOfDay()`
+  instant (`dayStartMs()`), and when either differs bumps `revision()` and emits `dayChanged()` once, however many
+  days passed. It re-checks from a single-shot `Qt::VeryCoarseTimer` armed for `min(next midnight − now + 1.5 s, 60
+  s)`, or 60 s when the next date has no start (a zone skipped it: Pacific/Apia 2011-12-30) or its start is not after
+  the sample (a clock moved back across midnight: America/St_Johns 2010-11-07); an early tick only re-checks. The
+  monotonic timer runs late by any deep sleep, so it also checks on `QGuiApplication::applicationStateChanged(
+  Qt::ApplicationActive)` (connected only under a `QGuiApplication`; Android delivers it on resume), and the 60 s cap
+  bounds a desktop suspend. Time zone, a decided limit: the process's zone throughout, the one JavaScript `Date`,
+  `Qt.formatDateTime()` and `QDateTime` local conversions use, and no watch for a zone change while the app runs. A
+  change that moves today's midnight is picked up by the next check (the start instant differs); one that keeps the same
+  midnight instant, and absolute times already drawn elsewhere (History and Activity clock text, map pins), follow at
+  their next redraw, the next day change or a restart. `CallHistoryModel` reads `LocalDayWatch::current()` in `day_label()`
+  and re-reads `DayLabelRole` and `TimeTextRole` for every row on `dayChanged()` (no timer of its own; B2: a phone that
+  slept through midnight kept yesterday's rows under TODAY; the time too, since a day change can be a zone change that
+  moved midnight, and a row's section and clock text must come from one zone). QML gets the day as `savedSystems.localDay` (`SavedSystemsModel`,
+  `{startMs, revision}`, `localDayChanged`, a new map per change) and says a moment the app saw with
+  `Util.clockText(ms, day)`: "" for a missing, non-positive or non-finite `ms`, `hh:mm:ss` on the local date of
+  `day.startMs`, else `yyyy-MM-dd hh:mm:ss`, and the full form with no day. `MapText.clockText(seconds, day)` checks
+  its numeric seconds and calls it (`.import "Util.js"`). An instant is formatted with `Qt.formatDateTime()`, even for
+  a date-only pattern: `Qt.formatDate()` prints the UTC date for an instant at exactly 00:00 UTC (B11). Tests:
+  `UI_QT_LOCAL_DAY_WATCH` (a fake clock through `setClockForTest()`/`resetClockForTest()`, a named zone per case
+  through `setZoneForTest()` rather than the process's `TZ`, and the timer through `timerForTest()`: test hooks
+  compiled only with `DSD_NEO_TEST_HOOKS`; a case whose named zone the host's data lacks is skipped, saying so), the QML
+  harness's `testContext.setLocalNowMs()` (also `savedSystems.realtimeNowMs()`) and `resetLocalDay()` (reset for every
+  engine); QML's JavaScript dates need the process zone, so CTest starts the QML runs with `TZ=America/Los_Angeles` (off
+  Windows) and a case asks `testContext.localTimeZoneIs()`, which checks the native and JavaScript offsets, and skips
+  when it is false (`docs/testing.md`); `tst_util_clock_text.qml`.
   Tests: `UI_QT_METRICS_MODEL`, `UI_QT_QML_CALL_LISTS` (`tst_monitor_recent_calls.qml`),
   `APP_CONTROL_NOTIFICATION_STATUS`.
 - Call history identity, and order across sessions (`call_history_model.{h,cpp}`), never come from the rows'
@@ -17706,7 +17750,7 @@ Qt Quick frontend (`src/ui/qt`):
     `historyExport.prepare(historyView)`. A count of 0 says "No entries to export." and a token of 0 otherwise "The
     export couldn't be written. Try another location."; neither opens the picker. Otherwise a screen-level
     `DocumentPicker` (`exportPicker`: save, `text/csv`, suffix `csv`) asks under "Call history yyyy-MM-dd.csv" (local
-    date from `savedSystems.realtimeNowMs()`). `exportPicked()` calls `historyExport.save()`; a refusal releases the
+    date from `savedSystems.realtimeNowMs()`, through `Qt.formatDateTime()`). `exportPicked()` calls `historyExport.save()`; a refusal releases the
     token and shows the failure at once; a cancelled pick calls `discard()`; hiding the screen cancels the picker.
     `exportFinished(token, ok)` ignores a token the screen does not hold, so the other History screen's result never
     clears or replaces this one's message. The line is an `ExportMessage` ({text, error, heard}) read once through
@@ -17903,7 +17947,8 @@ Qt Quick frontend (`src/ui/qt`):
     (storage away, low space while recording, recordings the limit removed, failed deletes), then Manage call recordings
     (usage, or "Counting recordings..." until `indexed`). The limit's removals and failed deletes count until the Call
     recordings screen shows them: it takes them and calls `RecordingStore::acknowledgeNotices()`, which starts both
-    counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with recordings,
+    counts again. `CallRecordingsScreen.qml` (Main's `callRecordingsOpen` layer): one row per owner with recordings
+    (its span "24 Oct – 27 Oct", with the year outside that of `savedSystems.localDay`, issue #902 B1),
     Unfinished recordings, Export as zip by date preset (the selection first, then the picker; a dismissed picker
     releases it; the owner's name made file-safe by the store's folder rule), progress with Cancel, the result of its
     own selection only, deletes with confirmations, and the limit's removals and failed deletes since the screen opened,
@@ -19114,14 +19159,19 @@ Qt Quick frontend (`src/ui/qt`):
   an empty one. Its lists are Repeaters in a `Column` inside one Flickable, so emptying them would shorten the page and
   `setContentHeight()` would clamp `contentY` at once, losing the reader's place. Only the rows freeze: each list's
   delegates keep their last model, so no row is built or destroyed while hidden, and they follow the store again on
-  show, where the shrink `resetView()` made on hide (Show more back to five) lands. The section headings ("Avoided this
+  show, where the shrink `resetView()` made on hide (Show more back to five) lands. Everything else a row's height
+  reads freezes with it, through the same kind of `Binding` (issue #902): `shownDay` follows `savedSystems.localDay`
+  (its value guards a null `systems`, as Qt evaluates it while `when` is false; no systems is `null`, a full date) and
+  `shownRecordingsRevision` follows `recordings.revision`, so a midnight or a recording kept or deleted while hidden
+  (B7: three recordings to none shrank a hidden row) lands on show. Neither is read in the `history.slice()` model
+  binding, so a day change re-texts rows in place. The section headings ("Avoided this
   session", "Permanent avoids"), the empty hint, **Show more** and both export Columns still bind the live lists, as
   before #826, so their `visible` can flip while hidden and change the Column's height; that brings no accessibility
   churn, since nothing under a hidden parent is effectively visible. `listsLive` is set first thing in
   `onVisibleChanged`, before `resetView()`: a `when` bound to `visible` itself could be told after the handler and
   rebuild the rows while hidden. A detections Loader item made while hidden starts with no rows and fills on show
   (`tst_signal_search.qml` `test_hidden_screen_builds_no_rows`, `test_hidden_screen_keeps_the_readers_place`,
-  `test_hidden_screen_shrinks_on_return`).
+  `test_hidden_screen_shrinks_on_return`, `test_hidden_screen_freezes_the_day_and_counts`).
   Tests: `UI_QT_QML_A11Y_CHURN` (`test_e_calls_leave_hidden_lists_quiet`,
   `tst_a11y_talkgroups.qml` `test_hidden_screen_keeps_the_readers_place`), `UI_QT_QML_CALL_LISTS`
   (`tst_call_log_follow.qml` `test_00`, `test_08` to `test_12`; `tst_call_recording_rows.qml`
@@ -20127,7 +20177,8 @@ Qt Quick frontend (`src/ui/qt`):
   names, the Signal search files, a scratch and an in-memory settings file), `tst_home_store_notices.qml` (labels per
   store, kept name after the move, dismissal and announcements across a rebuilt Home, gating, both scratch-settings and
   both default-settings sentences, 360 px at the largest text).
-- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`) writes save-first (issue #801): `add`, `addAll`,
+- `saved_systems_model.{h,cpp}` (`savedSystems`, `saved_systems.json`; also `localDay`, the shared `LocalDayWatch`'s day
+  for QML, issue #902) writes save-first (issue #801): `add`, `addAll`,
   `update`, `remove`, `setAvoidSite`, `clearCsvPath`, `invalidatePathProvenance`, `applyPlaceNames` and `touch` build
   the next rows, save them, and only then change the model and signal. A failed save changes nothing in memory, sends no
   signal and returns false (`touch` stays `void`: recency is advisory, and an unsaved stamp stays out of memory too).
@@ -21123,7 +21174,8 @@ Qt Quick frontend (`src/ui/qt`):
     anonymous report is a single point no later report moves; Show on map and starting a Follow only while the map draws
     a mark for the track, with a line saying the age filter hides it; a satellite count of 0 is said, unlike none; an
     evicted track's last details say their times, the frozen ages dropped; "Measured at" carries its date when not today
-    (`MapText.clockText()` on `savedSystems.realtimeNowMs()`); a History pin's target follows the row's `gi`
+    (`MapText.clockText()` on `savedSystems.localDay`, so a time of today takes its date at midnight, as the List's
+    row and gap times do); a History pin's target follows the row's `gi`
     (`Util.targetLine()`: "Talkgroup N", "Sent to radio N", "Sent to N"), the saved position's `targetGroup` only when
     `gi` is not known), `MapSettingsSheet.qml` (tile source form), `MapLocator.qml` (Locate me and Follow my position),
     `MapViewKeeper.qml` (the saved view and filter, below), `MapControlButton.qml` and `MapGlyph.qml` (drawn glyphs, no
@@ -21449,7 +21501,8 @@ Qt Quick frontend (`src/ui/qt`):
   Back, so the folder keeps room for its rows. Folder rows (`StableRows` keyed by path, Saved rows by reference; a
   listing's `hiddenByName` items, whose names are not valid UTF-8, have no row, and a line says how many) are named
   "Lists, folder" / "dmr.csv, file, 4.2 MB, Nov 9" (`Util.sizeText`; "MMM d", with ", yyyy" when the year is not that of
-  `savedSystems.realtimeNowMs()`; a `modifiedMs` of 0 shows no date). Show all files (`showAll`) and Show more
+  `savedSystems.localDay`; a `modifiedMs` of 0 shows no date). The subtitle re-reads on a day change, and the folder
+  resyncs its `StableRows` on `localDayChanged`, since a row's spoken name is taken once per listing (issue #902 B1). Show all files (`showAll`) and Show more
   (`requestMorePage(session, snapshot, entries.length)`, appended) sit below. "Reading folder…" shows 250 ms after a
   request; problems are `AlertMessage`s read out once through `Navigation.announce()` (`announcements` counts them).
   Focus: the opener is kept, the first row of each answer takes the focus, and on the end the opener gets it back when

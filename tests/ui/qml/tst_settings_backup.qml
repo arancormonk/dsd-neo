@@ -86,6 +86,7 @@ Item {
             flow = null;
             settings = null;
             testContext.setDocumentPickerSupported(true);
+            testContext.resetLocalDay();
             if (Ui.FileBrowser.request)
                 Ui.FileBrowser.dismiss(Ui.FileBrowser.request.token);
             testContext.setFileBrowserSupported(false);
@@ -1401,7 +1402,7 @@ Item {
         }
 
         function test_confirm_message_data() {
-            var day = Qt.formatDate(new Date(1760000000 * 1000), "MMM d, yyyy");
+            var day = Qt.formatDateTime(new Date(1760000000 * 1000), "MMM d, yyyy");
             var head = "Replace this phone's saved systems (3), scan lists (2), imported files (5), decryption profiles (1), search ranges and settings with the backup from " + day + " (DSD-neo 1.4.0)? Call history and replay recordings on this phone are kept. Call recordings are kept up to the backup's Storage limit; oldest recordings are removed first.";
             var close = "DSD-neo will close; open it again to finish.";
             return [
@@ -1432,6 +1433,15 @@ Item {
             compare(confirm.message.lastIndexOf("DSD-neo will close; open it again to finish."), confirm.message.length - "DSD-neo will close; open it again to finish.".length);
             compare(calls("commitRestore").length, 0);
             verify(backup.flowActive);
+        }
+
+        // Issue #902 B11: the backup's day is its local date, also for a
+        // backup made at 00:00 UTC, which is the day before west of UTC.
+        function test_confirm_message_says_the_local_date() {
+            if (!testContext.localTimeZoneIs("America/Los_Angeles"))
+                skip("this run is not in America/Los_Angeles (CTest starts it with TZ set; Windows reads no IANA name in TZ)");
+            var confirm = toConfirm(Object.assign({}, fullSummary, {createdAt: Date.UTC(2026, 0, 1) / 1000}));
+            verify(confirm.message.indexOf("with the backup from Dec 31, 2025 (DSD-neo 1.4.0)?") >= 0, confirm.message);
         }
 
         function test_backup_text_stays_plain() {

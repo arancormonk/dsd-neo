@@ -5296,6 +5296,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5328,6 +5329,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_decryption_profiles.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_targets.cpp
@@ -5424,12 +5426,46 @@ if(DSD_ENABLE_QT_UI)
         PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
     )
 
+    # Issue #902: the frontend's one local-day source, on a fake real clock, across midnight, sleeps, the app coming
+    # back on screen and the days time zones reshape (each case names its zone through the test hooks, not TZ). A
+    # QGuiApplication, so the real applicationStateChanged signal reaches it.
+    add_executable(
+        dsd-neo_test_ui_qt_local_day_watch
+        ui/test_ui_qt_local_day_watch.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE Qt6::Core Qt6::Gui
+    )
+    target_compile_definitions(
+        dsd-neo_test_ui_qt_local_day_watch
+        PRIVATE QT_NO_KEYWORDS DSD_NEO_TEST_HOOKS
+    )
+    set_target_properties(
+        dsd-neo_test_ui_qt_local_day_watch
+        PROPERTIES AUTOMOC ON
+    )
+    add_test(
+        NAME UI_QT_LOCAL_DAY_WATCH
+        COMMAND dsd-neo_test_ui_qt_local_day_watch
+    )
+    set_tests_properties(
+        UI_QT_LOCAL_DAY_WATCH
+        PROPERTIES ENVIRONMENT "QT_QPA_PLATFORM=offscreen"
+    )
+
     # WP-D4 site grouping and saved-row provenance.
     add_executable(
         dsd-neo_test_ui_qt_site_groups
         ui/test_ui_qt_site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5465,6 +5501,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -5599,6 +5636,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_filter_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5644,6 +5682,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_model
         ui/test_ui_qt_call_history_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
@@ -5686,6 +5725,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_session_args.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5723,6 +5763,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -5947,6 +5988,7 @@ if(DSD_ENABLE_QT_UI)
         # An update lets the saved systems naming the file go of their site first.
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
     )
     target_include_directories(
@@ -6179,6 +6221,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_rr_place_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/rr_place_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/radio_reference_model.cpp
@@ -6365,6 +6408,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
     )
     target_include_directories(
@@ -6567,6 +6611,7 @@ if(DSD_ENABLE_QT_UI)
             ${PROJECT_SOURCE_DIR}/src/ui/qt/location_feed.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/location_requests.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+            ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
             ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
             # WP-S1: production persistence/generator and starter.
             ${PROJECT_SOURCE_DIR}/src/ui/qt/decryption_profiles_model.cpp
@@ -6615,6 +6660,8 @@ if(DSD_ENABLE_QT_UI)
             dsd-neo_test_ui_qt_qml
             PRIVATE
                 QT_NO_KEYWORDS
+                # Issue #902: the local-day watch's clock and zone, which the harness's day control drives.
+                DSD_NEO_TEST_HOOKS
                 QUICK_TEST_SOURCE_DIR="${CMAKE_CURRENT_SOURCE_DIR}/ui/qml"
                 DSD_QML_UI_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/qml"
                 DSD_QML_FONT_DIR="${PROJECT_SOURCE_DIR}/src/ui/qt/fonts"
@@ -6631,6 +6678,16 @@ if(DSD_ENABLE_QT_UI)
             target_compile_options(dsd-neo_test_ui_qt_qml PRIVATE /fp:precise)
         endif()
         set_target_properties(dsd-neo_test_ui_qt_qml PROPERTIES AUTOMOC ON)
+        # Every run of the QML executable: headless, and (issue #902) in America/Los_Angeles, a zone west of UTC with
+        # daylight saving, so the date cases can assert literal local dates. TZ is set here, before the process starts,
+        # never by the running suite (docs/testing.md, "Environment variables in tests"). Not on Windows, whose C
+        # runtime reads no IANA name in TZ: there testContext.localTimeZoneIs() is false and those cases skip.
+        set(_dsd_qml_test_env
+            "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+        )
+        if(NOT WIN32)
+            list(APPEND _dsd_qml_test_env "TZ=America/Los_Angeles")
+        endif()
         add_test(NAME UI_QT_QML_CALL_LISTS COMMAND dsd-neo_test_ui_qt_qml)
         add_test(
             NAME UI_QT_QML_ACTION_MENU
@@ -6640,9 +6697,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_ACTION_MENU
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_MODAL_INPUT
@@ -6652,9 +6707,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_MODAL_INPUT
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_CSV_IMPORT_FLOW
@@ -6664,9 +6717,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_CSV_IMPORT_FLOW
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_BACK_MODALS
@@ -6676,9 +6727,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_BACK_MODALS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         add_test(
             NAME UI_QT_QML_SESSION_TOOLS
@@ -6688,9 +6737,7 @@ if(DSD_ENABLE_QT_UI)
         )
         set_tests_properties(
             UI_QT_QML_SESSION_TOOLS
-            PROPERTIES
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+            PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
         )
         foreach(
             _case
@@ -6719,9 +6766,7 @@ if(DSD_ENABLE_QT_UI)
             )
             set_tests_properties(
                 UI_QT_QML_${_case_upper}
-                PROPERTIES
-                    ENVIRONMENT
-                        "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software"
+                PROPERTIES ENVIRONMENT "${_dsd_qml_test_env}"
             )
         endforeach()
         # Issue #782: accessibility event churn. Its own directory and run,
@@ -6738,8 +6783,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_A11Y_CHURN
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;DSD_QML_TEST_ACCESSIBILITY=1"
+                ENVIRONMENT "${_dsd_qml_test_env};DSD_QML_TEST_ACCESSIBILITY=1"
         )
         # The lifecycle host's notice folder (qml_test_context.h): the project's LICENSE and
         # an index naming it and a file the folder lacks, as the APK staging writes one.
@@ -6776,8 +6820,7 @@ if(DSD_ENABLE_QT_UI)
             UI_QT_QML_CALL_LISTS
             PROPERTIES
                 LABELS qml
-                ENVIRONMENT
-                    "QT_QPA_PLATFORM=offscreen;QT_QUICK_BACKEND=software;QT_FORCE_STDERR_LOGGING=1"
+                ENVIRONMENT "${_dsd_qml_test_env};QT_FORCE_STDERR_LOGGING=1"
         )
     endif()
 endif()
@@ -27218,6 +27261,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_avoid_list_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_list_toggle_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/talkgroup_list_model.cpp
@@ -27273,6 +27317,7 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_call_history_tap
         ui/test_ui_qt_call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -27312,6 +27357,7 @@ if(DSD_ENABLE_QT_UI)
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_tap.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/decoder_host.cpp
@@ -28312,6 +28358,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/scan_lists_model.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp
@@ -28369,6 +28416,7 @@ if(DSD_ENABLE_QT_UI)
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_names.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/site_groups.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/saved_systems_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/replay_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/import_service.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/json_store.cpp

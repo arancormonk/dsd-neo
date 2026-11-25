@@ -16,6 +16,8 @@
 #include <QFile>
 #include <QFileInfo>
 #include <QIODevice>
+#include <QJSEngine>
+#include <QJSValue>
 #include <QJsonArray>
 #include <QJsonObject>
 #include <QJsonValue>
@@ -691,6 +693,34 @@ testRecordingKey() {
                .value(QStringLiteral("recordingKey"))
                .toString()
                .isEmpty());
+}
+
+/* Issue #902: a detection's found time reaches QML as the same millisecond number the search stamped, on the live hit
+   and in history, so a row's clock text and the CSV agree to the second. */
+static void
+testStartedReachesQmlInMilliseconds() {
+    const qint64 started = 1763764325987LL; /* nonzero milliseconds */
+    dsd_qt::SignalSearchModel search(nullptr, nullptr);
+    dsd_signal_search_status status{};
+    status.session_id = 1730000000000001ULL;
+    status.revision = 9200;
+    status.phase = DSD_SEARCH_LISTENING;
+    status.hit.session_id = status.session_id;
+    status.hit.hit_id = 3;
+    status.hit.frequency_hz = 463552100;
+    status.hit.bandwidth_hz = 12500;
+    status.hit.started_ms = static_cast<uint64_t>(started);
+    dsd_app_signal_search_publish(&status, &status.hit, nullptr);
+    search.refresh();
+    QJSEngine js;
+    const QJSValue live =
+        js.toScriptValue(search.status()).property(QStringLiteral("hit")).property(QStringLiteral("started"));
+    assert(live.isNumber());
+    assert(static_cast<qint64>(live.toNumber()) == started);
+    assert(!search.history().isEmpty());
+    const QJSValue row = js.toScriptValue(search.history().front()).property(QStringLiteral("started"));
+    assert(row.isNumber());
+    assert(static_cast<qint64>(row.toNumber()) == started);
 }
 
 /* Issue #644: two lists under one name, each with a target on one frequency, are two Listen choices, each starting its
@@ -3134,6 +3164,7 @@ main(int argc, char** argv) {
     testKnownFrequencyChannelParity(temp.path());
     testKnownFrequencyNonAsciiPaths(temp.path());
     testRecordingKey();
+    testStartedReachesQmlInMilliseconds();
     testOverloadMapped();
     test_export_detection_rows();
     test_export_avoid_rows();

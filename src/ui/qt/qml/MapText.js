@@ -7,6 +7,7 @@
 // them on the clock each fix was stamped on; nothing here reads a clock.
 
 .pragma library
+.import "Util.js" as Util
 
 // "now", "45 s", "12 min", "2 h 5 min", "3 d": how long ago, for a row's end.
 // Empty when not known (-1, or a stopped replay's fix).
@@ -158,15 +159,12 @@ function headingText(ddeg, ambiguous) {
 }
 
 // A report's own time (Unix seconds) as a clock time, with its date when it
-// is not on the day of @p nowMs (the app's real clock, Unix ms): a fix
-// measured yesterday, or a replay's, is never read as today's.
-function clockText(seconds, nowMs) {
+// is not on the local day @p day names (savedSystems.localDay; Util.clockText()):
+// a fix measured yesterday, or a replay's, is never read as today's.
+function clockText(seconds, day) {
     if (typeof seconds !== "number" || !isFinite(seconds) || seconds <= 0)
         return ""
-    var at = new Date(seconds * 1000)
-    var now = new Date(nowMs)
-    var sameDay = at.getFullYear() === now.getFullYear() && at.getMonth() === now.getMonth() && at.getDate() === now.getDate()
-    return Qt.formatDateTime(at, sameDay ? "hh:mm:ss" : "yyyy-MM-dd hh:mm:ss")
+    return Util.clockText(seconds * 1000, day)
 }
 
 // LIP's time elapsed, for a report with no time of its own: the most the
