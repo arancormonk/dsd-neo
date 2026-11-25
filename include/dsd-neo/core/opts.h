@@ -38,6 +38,10 @@
 #include <string.h>
 #include <time.h>
 
+/* The longest RTL-SDR USB serial an input can name (dsd_rtl_serial_is_valid()), in bytes. An RTL2832U's EEPROM holds
+   its three USB strings in far less; this bound keeps `index=N,serial=...` inside the 256-byte I/Q metadata field. */
+#define DSD_RTL_SERIAL_MAX            127
+
 /* Extra UDP ports a site can route onto the LRRP decoder with --lrrp-extra-port or the
    mode.dmr_lrrp_ports config key; see core/lrrp_ports.h for the shared helpers. */
 #define DSD_LRRP_EXTRA_PORT_MAX       8
@@ -297,6 +301,9 @@ struct dsd_opts {
     // User override for undeciphered P25 audio; crypto resolution must not mutate it.
     int unmute_encrypted_p25;
     int rtl_dev_index;
+    /* The RTL-SDR's USB serial when the input names its dongle by serial (dsd_rtl_device_field_parse()), "" when it
+       names it by rtl_dev_index. A serial is looked up again at every open; rtl_dev_index then holds the index found. */
+    char rtl_dev_serial[DSD_RTL_SERIAL_MAX + 1];
     int rtl_gain_value;
     int rtl_volume_multiplier;
     /* Generic input volume multiplier for non-RTL inputs (Pulse/WAV/TCP/UDP). */
@@ -572,6 +579,7 @@ struct dsd_opts {
     dsd_airspy_config airspy;
     dsd_airspy_info airspy_info; /* Decoder-owned value snapshot. */
     int airspy_list;
+    int rtl_list;            /* --rtl-list: list the RTL-SDR dongles and exit */
     int airspy_config_error; /* Invalid INI airspy_serial; cleared only by a valid serial override. */
     char soapy_profile[32];
     char soapy_stream_format[16];

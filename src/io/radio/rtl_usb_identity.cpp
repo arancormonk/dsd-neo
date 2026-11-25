@@ -26,8 +26,8 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <libusb.h>
 #include <new>
-#include <rtl-sdr.h>
 #include <sys/types.h>
+#include "rtl_select_driver.h"
 #else
 #define RTL_USB_IDENTITY_REAL 0
 #endif
@@ -66,9 +66,12 @@ struct real_session {
     int count = 0;
 };
 
+/* librtlsdr's calls go through the selection's guarded reads (rtl_select_driver.h): an exception a mismatched libusb
+ * DLL raises inside one reads as no device, or as a failed read. */
 uint32_t
 real_rtl_get_device_count(void) {
-    return rtlsdr_get_device_count();
+    uint32_t count = 0U;
+    return rtl_select_guarded_device_count(&count) == 0 ? count : 0U;
 }
 
 /* librtlsdr's read of index @p index's strings, as an RTL_USB_OP_* result. librtlsdr (2.0.x: the system library and
@@ -78,13 +81,13 @@ real_rtl_get_device_count(void) {
  * be read; both map to ERROR. */
 int
 real_rtl_get_device_usb_strings(uint32_t index, char* manufacturer, char* product, char* serial) {
-    const int rc = rtlsdr_get_device_usb_strings(index, manufacturer, product, serial);
+    const int rc = rtl_select_guarded_device_usb_strings(index, manufacturer, product, serial);
     return rc == 0 ? RTL_USB_OP_OK : map_libusb(rc);
 }
 
 int
 real_rtl_get_usb_strings(rtlsdr_dev_t* dev, char* manufacturer, char* product, char* serial) {
-    return rtlsdr_get_usb_strings(dev, manufacturer, product, serial);
+    return rtl_select_guarded_usb_strings(dev, manufacturer, product, serial);
 }
 
 int

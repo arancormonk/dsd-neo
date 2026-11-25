@@ -202,6 +202,10 @@ struct UiCtx;
    goes to cb_rtl_freq_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too,
    so that callback links in every build. */
 void ui_open_freq_prompt(struct UiCtx* c, const char* prefill);
+/* The RTL-SDR device prompt, "Device (index or serial)", prefilled with prefill (NULL for none). Its answer goes to
+   cb_rtl_dev_text(), which reopens it here with the text kept after a refusal. Built without USE_RADIO too, so that
+   callback links in every build. */
+void ui_open_rtl_device_prompt(struct UiCtx* c, const char* prefill);
 /* Input > Frequency...: the prompt, empty. On a radio input, or on any input but a replay with a rigctl peer. */
 void act_set_freq(void* v);
 /* The '=' key's opener for the prompt-only overlay (issue #671): the prompt where the row is offered, judged on the
@@ -213,6 +217,8 @@ void act_freq_key(void* v);
 bool is_airspy_input(const void* v);
 bool is_non_airspy_input(const void* v);
 bool tuner_rows_offered(const void* v);
+/* The Device... row: the tuner rows' rule, and not on a running rtl_tcp input, which has no local dongle to select. */
+bool rtl_device_row_offered(const void* v);
 void ui_airspy_set_serial(void* v);
 void ui_airspy_set_sample_rate(void* v);
 void ui_airspy_set_gain_mode(void* v);

@@ -97,6 +97,19 @@ radio_source_rtltcp_name(const dsd_opts* opts, int running, const char* dev, cha
     }
 }
 
+/* A local RTL-SDR: the one running by its USB serial when the input names it by one (as an Airspy is named), else by
+   its index; one not running is "RTL-SDR". */
+static void
+radio_source_rtl_name(const dsd_opts* opts, int running, char* out, size_t out_size) {
+    if (running && opts->rtl_dev_serial[0] != '\0') {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR SN %s", opts->rtl_dev_serial);
+    } else if (running) {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR dev %d", opts->rtl_dev_index);
+    } else {
+        DSD_SNPRINTF(out, out_size, "RTL-SDR");
+    }
+}
+
 void
 dsd_app_radio_source_name(const dsd_opts* opts, const char* dev, char* out, size_t out_size) {
     if (!out || out_size == 0U) {
@@ -124,11 +137,25 @@ dsd_app_radio_source_name(const dsd_opts* opts, const char* dev, char* out, size
         } else {
             DSD_SNPRINTF(out, out_size, "SoapySDR");
         }
-    } else if (running) {
-        DSD_SNPRINTF(out, out_size, "RTL-SDR dev %d", opts->rtl_dev_index);
     } else {
-        DSD_SNPRINTF(out, out_size, "RTL-SDR");
+        radio_source_rtl_name(opts, running, out, out_size);
     }
+}
+
+dsd_app_radio_row_field
+dsd_app_radio_row_source_field(const dsd_opts* opts) {
+    if (!opts) {
+        return DSD_APP_RADIO_ROW_DEFAULT;
+    }
+    if (dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)
+        && !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
+        return DSD_APP_RADIO_ROW_AUDIO_IN_DEV;
+    }
+    if (dsd_opts_audio_in_dev_is_radio_spec(opts->radio_in_dev)
+        && !dsd_opts_audio_in_dev_is_airspy_spec(opts->radio_in_dev)) {
+        return DSD_APP_RADIO_ROW_RADIO_IN_DEV;
+    }
+    return DSD_APP_RADIO_ROW_DEFAULT;
 }
 
 void
@@ -137,12 +164,11 @@ dsd_app_radio_row_destination(const dsd_opts* opts, char* out, size_t out_size) 
         return;
     }
     const char* dev = "rtl";
-    if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->audio_in_dev)
-        && !dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)) {
-        dev = opts->audio_in_dev;
-    } else if (opts && dsd_opts_audio_in_dev_is_radio_spec(opts->radio_in_dev)
-               && !dsd_opts_audio_in_dev_is_airspy_spec(opts->radio_in_dev)) {
-        dev = opts->radio_in_dev;
+    switch (dsd_app_radio_row_source_field(opts)) {
+        case DSD_APP_RADIO_ROW_AUDIO_IN_DEV: dev = opts->audio_in_dev; break;
+        case DSD_APP_RADIO_ROW_RADIO_IN_DEV: dev = opts->radio_in_dev; break;
+        case DSD_APP_RADIO_ROW_DEFAULT:
+        default: break;
     }
     DSD_SNPRINTF(out, out_size, "%s", dev);
 }

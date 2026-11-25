@@ -13,6 +13,7 @@
 #include <dsd-neo/runtime/cli.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_options.h>
 #include <stdio.h>
@@ -49,11 +50,27 @@ trim_newline(char* s) {
     }
 }
 
+/* One answer: the line read into @p buf (at most @p size - 1 bytes, its newline dropped), NULL at end of input. Whatever
+   is left of a line longer than @p buf is read and dropped, so the next question never takes the rest of this answer
+   as its own (a pasted line of 1023 X's then `1` was refused, then read again as index 1). */
+static char*
+read_answer_line(char* buf, int size) {
+    if (!fgets(buf, size, stdin)) {
+        return NULL;
+    }
+    if (!strchr(buf, '\n')) {
+        int ch = 0;
+        while ((ch = getchar()) != EOF && ch != '\n') {}
+    }
+    trim_newline(buf);
+    return buf;
+}
+
 static int
 prompt_yes_no(const char* q, int def_yes) {
     char buf[32];
     DSD_FPRINTF(stderr, "%s [%c/%c]: ", q, def_yes ? 'Y' : 'y', def_yes ? 'n' : 'N');
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         return def_yes;
     }
     trim_newline(buf);
@@ -73,7 +90,7 @@ static int
 prompt_int(const char* q, int def_val, int min_val, int max_val) {
     char buf[64];
     DSD_FPRINTF(stderr, "%s [%d]: ", q, def_val);
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         return def_val;
     }
     trim_newline(buf);
@@ -101,7 +118,7 @@ prompt_string(const char* q, const char* def_val, char* out, size_t out_sz) {
         return;
     }
     DSD_FPRINTF(stderr, "%s [%s]: ", q, (def_val && *def_val) ? def_val : "");
-    if (!fgets(buf, sizeof buf, stdin)) {
+    if (!read_answer_line(buf, (int)sizeof buf)) {
         if (def_val) {
             DSD_SNPRINTF(out, out_sz, "%s", def_val);
         } else {
@@ -151,6 +168,30 @@ prompt_dsp_bw_khz(void) {
     return prompt_int(question, DSD_ANALOG_RTL_DSP_BW_DEFAULT_KHZ, 4, DSD_ANALOG_RTL_DSP_BW_MAX_KHZ);
 }
 
+#ifdef USE_RTLSDR
+/* The RTL-SDR question: an index or a USB serial, read as `-i rtl:<dev>` reads its device field
+   (dsd_rtl_device_field_parse()), written to @p out as that field (dsd_rtl_device_field_format(): `serial=<sn>` for a
+   serial, so one of digits stays a serial). Enter answers index 0; an answer that names neither says what to enter and
+   is asked again (end of input answers with the default). The answer field holds `serial=` and the longest serial, so
+   a longer one is refused, never cut into another serial. */
+static void
+prompt_rtl_device(char* out, size_t out_size) {
+    for (;;) {
+        char answer[DSD_RTL_SERIAL_MAX + 9];
+        prompt_string("RTL device (index or serial)", "0", answer, sizeof answer);
+        int index = 0;
+        char serial[DSD_RTL_SERIAL_MAX + 1];
+        serial[0] = '\0';
+        const dsd_rtl_dev_kind kind = dsd_rtl_device_field_parse(answer, &index, serial, sizeof serial);
+        if (kind != DSD_RTL_DEV_INVALID
+            && dsd_rtl_device_field_format(index, kind == DSD_RTL_DEV_SERIAL ? serial : NULL, out, out_size) == 0) {
+            return;
+        }
+        DSD_FPRINTF(stderr, "Enter an index like 0 or a serial like 00000001.\n");
+    }
+}
+#endif
+
 static void
 interactive_configure_rtl_input(dsd_opts* opts, int* src) {
 #ifdef USE_RTLSDR
@@ -161,13 +202,14 @@ interactive_configure_rtl_input(dsd_opts* opts, int* src) {
         *src = 1;
         return;
     }
-    int dev = prompt_int("RTL device index", 0, 0, 255);
+    char dev[DSD_RTL_SERIAL_MAX + 16];
+    prompt_rtl_device(dev, sizeof dev);
     int gain = prompt_int("RTL gain (dB)", 22, 0, 60);
     int ppm = prompt_int("PPM error", 0, -200, 200);
     int bw = prompt_dsp_bw_khz();
     int sql = prompt_int("Squelch (0=off; negative dB ok via CLI later)", 0, -1000, 100000);
     int vol = prompt_int("Monitor gain multiplier (1..3)", 1, 1, 3);
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%d:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "rtl:%s:%s:%d:%d:%d:%d:%d", dev, freq, gain, ppm, bw,
                  sql, vol);
     dsd_opts_set_rtl_dsp_bw(opts, interactive_dsp_bw_khz(bw), DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
 #else

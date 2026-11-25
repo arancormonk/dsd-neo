@@ -13,6 +13,7 @@
 #include <dsd-neo/app_control/commands.h>
 #include <dsd-neo/app_control/config_files.h>
 #include <dsd-neo/app_control/frontend.h>
+#include <dsd-neo/app_control/rtl_device_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/app_control/rx_tone_view.h>
 #include <dsd-neo/app_control/scan_avoid_view.h>
@@ -1856,6 +1857,15 @@ ui_open_freq_prompt(UiCtx* c, const char* prefill) {
     ui_prompt_open_string_async(k_freq_prompt_title, prefill, UI_FREQ_PROMPT_CAP, cb_rtl_freq_text, c);
 }
 
+/* Room for `serial=` and the longest serial, so a paste past it is cut to text the parser refuses, never another
+   serial it accepts. */
+#define UI_RTL_DEVICE_PROMPT_CAP (DSD_RTL_SERIAL_MAX + 9U)
+
+void
+ui_open_rtl_device_prompt(UiCtx* c, const char* prefill) {
+    ui_prompt_open_string_async("Device (index or serial)", prefill, UI_RTL_DEVICE_PROMPT_CAP, cb_rtl_dev_text, c);
+}
+
 void
 act_set_freq(void* v) {
     ui_open_freq_prompt((UiCtx*)v, NULL);
@@ -1923,6 +1933,18 @@ tuner_rows_offered(const void* v) {
         return false;
     }
     return !c || !c->opts || !dsd_opts_input_is_radio(c->opts) || dsd_opts_radio_can_tune(c->opts);
+}
+
+/* Device...: a tuner row (tuner_rows_offered()), but not on a running rtl_tcp input, whose server chose its dongle:
+   every answer there is refused (svc_rtl_set_device()). Its gain and PPM rows stay. */
+bool
+rtl_device_row_offered(const void* v) {
+    const UiCtx* c = (const UiCtx*)v;
+    if (c && c->opts && c->opts->audio_in_type == AUDIO_IN_RTL
+        && dsd_opts_audio_in_dev_is_rtltcp_spec(c->opts->audio_in_dev)) {
+        return false;
+    }
+    return tuner_rows_offered(v);
 }
 
 // NcMenuItem action callbacks require a mutable context signature.
@@ -2031,10 +2053,15 @@ rtl_restart(void* v) {
     (void)dsd_app_command_action(DSD_APP_CMD_RTL_RESTART);
 }
 
+/* The prompt opens on the device the spec the next RTL-SDR open reads names (dsd_app_rtl_device_prefill(), the rule
+   the change itself writes by): its index, or its serial in the explicit serial=<sn> form, so a serial of digits
+   submitted again stays a serial; never the device the options last opened, so Enter confirms what would open. */
 void
 rtl_set_dev(void* v) {
     UiCtx* c = (UiCtx*)v;
-    ui_prompt_open_int_async("Device index", c->opts->rtl_dev_index, cb_rtl_dev, c);
+    char current[DSD_RTL_SERIAL_MAX + 16];
+    (void)dsd_app_rtl_device_prefill(c->opts, current, sizeof current);
+    ui_open_rtl_device_prompt(c, current);
 }
 
 static void

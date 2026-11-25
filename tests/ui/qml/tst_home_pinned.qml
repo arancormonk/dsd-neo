@@ -82,6 +82,7 @@ Item {
             app.dismissedFailure = "";
             testContext.setScanTestUsb(false, false);
             testContext.setLocalDeviceRecord("usb", false, "");
+            testContext.setLocalDeviceSerial("");
             testContext.setScanTestAcceptStart(true);
             testContext.setTerminalReason(0);
             app.completionMessage = "";
@@ -218,6 +219,75 @@ Item {
             verify(app.awaitingUsbAccess);
             compare(app.pendingStart.airspy.serial, "BBBB2222");
             compare(app.attemptedSource.system.airspy.serial, "BBBB2222");
+        }
+
+        // A USB dongle chosen by serial: the start waits until the connected
+        // dongle is that one, compared exactly (the decoder matches it with
+        // case), and asks for it by that serial. With no serial any dongle does.
+        function test_usb_start_waits_for_rtl_serial_data() {
+            return [
+                {tag: "same serial", serial: "abc", connected: "abc", waits: false},
+                {tag: "other case", serial: "abc", connected: "ABC", waits: true},
+                {tag: "unread serial", serial: "abc", connected: "", waits: true},
+                {tag: "other dongle", serial: "00000001", connected: "00000002", waits: true},
+                {tag: "no serial", serial: "", connected: "00000002", waits: false}
+            ];
+        }
+        function test_usb_start_waits_for_rtl_serial(data) {
+            var uid = addSystem("Dongle site", "usb", {rtlSerial: data.serial});
+            testContext.setLocalDeviceSerial(data.connected);
+            testContext.setScanTestUsb(true, true);
+            app.startSystem(savedSystems.rowForUid(uid));
+            compare(app.awaitingUsbAccess, data.waits);
+            if (!data.waits) {
+                compare(decoderHost.sessionState, 1, "the dongle connected is the one asked for");
+                compare(testContext.lastDeviceAccess().count, 0);
+                return;
+            }
+            compare(decoderHost.sessionState, 0);
+            compare(testContext.lastDeviceAccess().source, "usb");
+            compare(testContext.lastDeviceAccess().serial, data.serial, "the request names the saved serial as typed");
+            // The grant connects the dongle asked for: the start goes on.
+            testContext.setLocalDeviceSerial(data.serial);
+            verify(!app.awaitingUsbAccess);
+            compare(decoderHost.sessionState, 1);
+            compare(sessionUid(), uid);
+        }
+
+        // A saved serial no rtl:serial= spec can carry (an import, a restored
+        // backup) asks Android for no dongle: the start is refused at once
+        // with the serial's reason, brokered or not, never the decryption one.
+        function test_invalid_rtl_serial_refuses_before_usb_access_data() {
+            return [{tag: "brokered", brokered: true}, {tag: "desktop", brokered: false}];
+        }
+        function test_invalid_rtl_serial_refuses_before_usb_access(data) {
+            var uid = addSystem("Imported", "usb", {rtlSerial: "A:B"});
+            testContext.setScanTestUsb(data.brokered, false);
+            app.startSystem(savedSystems.rowForUid(uid));
+            verify(!app.awaitingUsbAccess, "no wait on a dongle the session could never open");
+            compare(testContext.lastDeviceAccess().count, 0, "no device is asked for");
+            compare(decoderHost.sessionState, 0);
+            compare(app.startError, "Enter an RTL-SDR serial of up to 127 printable ASCII characters, with no : or \" and no space at either end.");
+        }
+
+        // An Airspy's serial is still compared without case.
+        function test_airspy_start_serial_ignores_case() {
+            var uid = addSystem("Airspy site", "airspy", {airspy: {serial: "a74068c82f531693"}});
+            testContext.setLocalDeviceRecord("airspy", false, "");
+            testContext.setLocalDeviceSerial("A74068C82F531693");
+            testContext.setScanTestUsb(true, true);
+            app.startSystem(savedSystems.rowForUid(uid));
+            verify(!app.awaitingUsbAccess);
+            compare(decoderHost.sessionState, 1);
+        }
+
+        // An RTL-SDR serial goes only with a USB dongle, as an Airspy's settings go only with an Airspy.
+        function test_receiver_switch_drops_rtl_serial() {
+            var usb = {sourceType: "usb", rtlSerial: "00000001", freqMhz: "851.5"};
+            compare(app.onReceiver(usb, "usb").rtlSerial, "00000001");
+            verify(app.onReceiver(usb, "airspy").rtlSerial === undefined);
+            verify(app.onReceiver(usb, "rtltcp").rtlSerial === undefined);
+            compare(usb.rtlSerial, "00000001", "the copy leaves the system as it was");
         }
 
         // [r2-3] A refused start replaces a start still waiting on USB access: a late grant starts nothing.

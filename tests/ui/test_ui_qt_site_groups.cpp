@@ -87,6 +87,48 @@ check_receiver_groups() {
     while (model.count() > 0 && model.remove(0)) {}
 }
 
+/* An RTL-SDR chosen by serial is a receiver of its own: matched exactly (case kept, as the decoder opens it), while a
+ * dongle with no serial keeps the plain "usb" key every group and pin saved before the field existed has. */
+void
+check_rtl_serial_groups() {
+    using dsd_qt::receiver_identity;
+    check(receiver_identity({{"sourceType", "usb"}, {"rtlSerial", ""}}) == "usb", "receiver: USB with no serial");
+    check(receiver_identity({{"sourceType", "usb"}, {"rtlSerial", "00000001"}}) == "usb|00000001",
+          "receiver: USB by serial");
+    check(receiver_identity({{"sourceType", "usb"}, {"rtlSerial", "abc"}})
+              != receiver_identity({{"sourceType", "usb"}, {"rtlSerial", "ABC"}}),
+          "receiver: RTL-SDR serials differ by case");
+    check(receiver_identity({{"sourceType", "usb"}, {"rtlSerial", " A"}}) == "usb| A",
+          "receiver: an RTL-SDR serial is never trimmed");
+    check(receiver_identity({{"sourceType", "rtltcp"}, {"host", "h"}, {"port", 1}, {"rtlSerial", "abc"}})
+              == "rtltcp|h:1",
+          "receiver: rtl_tcp ignores an RTL-SDR serial");
+
+    dsd_qt::SavedSystemsModel model;
+    while (model.count() > 0 && model.remove(0)) {}
+    const auto site = [&model](int siteId, const QVariantMap& receiver) {
+        QVariantMap row{
+            {"name", "SARA"}, {"rrSid", 20}, {"rrSiteId", siteId}, {"freqMhz", QString::number(850 + siteId)}};
+        for (auto it = receiver.cbegin(); it != receiver.cend(); ++it) {
+            row.insert(it.key(), it.value());
+        }
+        return model.add(row);
+    };
+    // Rows 0..4: no serial, "abc", "ABC", "abc" again, and a row saved before the field existed.
+    check(site(1, {{"sourceType", "usb"}, {"rtlSerial", ""}}) && site(2, {{"sourceType", "usb"}, {"rtlSerial", "abc"}})
+              && site(3, {{"sourceType", "usb"}, {"rtlSerial", "ABC"}})
+              && site(4, {{"sourceType", "usb"}, {"rtlSerial", "abc"}}) && site(5, {{"sourceType", "usb"}}),
+          "rtl serial: add the sites");
+    check(model.groupKey(0) == "20|usb" && model.groupKey(4) == "20|usb",
+          "rtl serial: no serial keeps the legacy group key");
+    check(model.groupKey(1) == "20|usb|abc" && model.groupKey(2) == "20|usb|ABC", "rtl serial: the key names it");
+    check(model.siblingRows(0) == QVariantList({0, 4}) && model.siblingRows(1) == QVariantList({1, 3})
+              && model.siblingRows(2) == QVariantList{2},
+          "rtl serial: each serial is a group of its own, case-distinct");
+    check(model.get(1).value("rtlSerial").toString() == "abc", "rtl serial: the model keeps it as stored");
+    while (model.count() > 0 && model.remove(0)) {}
+}
+
 /* The receiver and group keys as written, and a group's title. */
 void
 check_keys_and_titles() {
@@ -296,6 +338,7 @@ main(int argc, char** argv) {
 
     check_receiver_groups();
     check_keys_and_titles();
+    check_rtl_serial_groups();
     check_roamable();
     QDir(dir).removeRecursively();
     return g_failures ? 1 : 0;

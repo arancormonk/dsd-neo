@@ -634,7 +634,7 @@ avoids and call skips, as an import does.
 | `udp_input_cfg` | `{bind,port}` |
 | `rtl_enable_input` | – |
 | `rtl_restart` | – |
-| `rtl_set_dev` | `{value:device index}` |
+| `rtl_set_dev` | `{value:device index}\|{serial:USB serial}` |
 | `rtl_set_freq` | `{value:Hz}` |
 | `rtl_set_gain` | `{value:int}` |
 | `rtl_set_ppm` | `{value:int}` |
@@ -727,6 +727,19 @@ avoids and call skips, as an import does.
 
 ### Structured command details
 
+* **`rtl_set_dev`**: selects the local RTL-SDR by index (`{"value":1}`) or by
+  USB serial (`{"serial":"00000001"}`), exactly one of the two. A serial is
+  matched exactly, and a serial made of digits (`"1090"`) stays a serial. It
+  must be up to 127 printable characters with no `:` or `"` and no space at
+  either end, or the command is `invalid_params`, never cut. An index drops a
+  serial selection. With the RTL-SDR running, the stream reopens on the new
+  dongle; when that dongle does not start, the one that ran is put back and the
+  status message says `Failed: RTL device -> serial ...`. The spec a config save
+  writes names the new dongle. With an audio input running, the selection is
+  written into the RTL-SDR spec the next switch to the radio opens; it is
+  refused (`Unsupported: ...`) when that switch would open another radio, such
+  as a remembered rtl_tcp server. An `rtltcp` input has no local dongle to select:
+  the decoder refuses it (`Unsupported: ...`) and does not reconnect the server.
 * **`airspy_set`**: `key` is the full canonical config key, such as
   `airspy_lna_gain` (see [docs/config-system.md](config-system.md)), and `value`
   its text.

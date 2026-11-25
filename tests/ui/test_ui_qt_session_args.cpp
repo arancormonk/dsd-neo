@@ -955,6 +955,106 @@ test_freq_validation(void) {
  * would take the tuner straight back from the user who came here to drive it,
  * and no decode flag, because the point is to hear whatever it lands on.
  */
+/*
+ * A USB dongle chosen by serial: the spec names it in the explicit `serial=` form (so "1090" is never read as an
+ * index), the value as stored, case and inner spaces kept; none keeps `rtl:0`. A serial no spec can carry is refused
+ * with a reason, whatever saved it: a map from an import or a restored backup never passed the editor's check, and a
+ * ':' would otherwise split the spec into fields of its own, a trimmed " A" open the dongle named "A".
+ */
+void
+test_rtl_serial(void) {
+    SessionArgsError error = SessionArgsError::None;
+    QVariantMap sys = usb_system();
+    expect("no serial opens the first device", input_spec(session_args_build(sys, SessionArgPrefs(), &error))
+                                                   == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+    sys.insert(QStringLiteral("rtlSerial"), QString());
+    expect("an empty serial opens the first device", input_spec(session_args_build(sys, SessionArgPrefs(), &error))
+                                                         == QStringLiteral("rtl:0:851.375M:30:0:48:0:2"));
+
+    const struct {
+        const char* serial;
+        const char* spec;
+    } named[] = {
+        {"00000001", "rtl:serial=00000001:851.375M:30:0:48:0:2"},
+        {"1090", "rtl:serial=1090:851.375M:30:0:48:0:2"},
+        {"AbC 1", "rtl:serial=AbC 1:851.375M:30:0:48:0:2"},
+        {"serial=x", "rtl:serial=serial=x:851.375M:30:0:48:0:2"},
+    };
+
+    for (const auto& c : named) {
+        sys.insert(QStringLiteral("rtlSerial"), QString::fromLatin1(c.serial));
+        const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+        if (error != SessionArgsError::None || input_spec(args) != QLatin1String(c.spec)) {
+            DSD_FPRINTF(stderr, "FAIL: serial '%s' gave '%s'\n", c.serial, qPrintable(input_spec(args)));
+            g_failures++;
+        }
+    }
+    sys.insert(QStringLiteral("rtlSerial"), QStringLiteral("00000001"));
+    sys.insert(QStringLiteral("biasTee"), 1);
+    expect("the bias token still ends a serial's spec",
+           input_spec(session_args_build(sys, SessionArgPrefs(), &error))
+               == QStringLiteral("rtl:serial=00000001:851.375M:30:0:48:0:2:bias"));
+    sys.remove(QStringLiteral("biasTee"));
+
+    const QString refused[] = {
+        QStringLiteral("A:B"),
+        QStringLiteral(" A"),
+        QStringLiteral("A "),
+        QStringLiteral("say \"hi\""),
+        QStringLiteral("tab\there"),
+        QStringLiteral("caf\u00e9"),
+        QString(QStringLiteral("A")) + QChar(u'\0') + QStringLiteral("B"),
+        QString(128, QLatin1Char('x')),
+    };
+    for (const QString& serial : refused) {
+        sys.insert(QStringLiteral("rtlSerial"), serial);
+        const QStringList args = session_args_build(sys, SessionArgPrefs(), &error);
+        if (!args.isEmpty() || error != SessionArgsError::RtlSerial) {
+            DSD_FPRINTF(stderr, "FAIL: serial '%s' (%d chars) was not refused\n", qPrintable(serial),
+                        static_cast<int>(serial.size()));
+            g_failures++;
+        }
+    }
+    expect("the refusal says what a serial may hold",
+           dsd_qt::session_args_error_text(SessionArgsError::RtlSerial).contains(QStringLiteral("RTL-SDR serial")));
+    /* The start check QML reads names the serial, not the decryption configuration every unnamed error once fell to. */
+    {
+        dsd_qt::AppPrefs appPrefs;
+        const dsd_qt::SessionArgsBuilder builder(&appPrefs);
+        QVariantMap bad = usb_system();
+        bad.insert(QStringLiteral("rtlSerial"), QStringLiteral("A:B"));
+        const QVariantMap result = builder.build(bad);
+        expect("the start check refuses an RTL-SDR serial as one",
+               !result.value(QStringLiteral("ok")).toBool()
+                   && result.value(QStringLiteral("error")).toString() == QStringLiteral("rtl-serial")
+                   && result.value(QStringLiteral("errorText")).toString()
+                          == dsd_qt::session_args_error_text(SessionArgsError::RtlSerial));
+    }
+    sys.insert(QStringLiteral("rtlSerial"), QString(127, QLatin1Char('x')));
+    expect("127 characters fit",
+           !session_args_build(sys, SessionArgPrefs(), &error).isEmpty() && error == SessionArgsError::None);
+
+    /* Only a USB dongle opens by it: rtl_tcp and an Airspy keep their own specs, whatever the map still holds. */
+    sys.insert(QStringLiteral("rtlSerial"), QStringLiteral("A:B"));
+    sys.insert(QStringLiteral("sourceType"), QStringLiteral("rtltcp"));
+    sys.insert(QStringLiteral("host"), QStringLiteral("10.0.2.2"));
+    sys.insert(QStringLiteral("port"), 1234);
+    expect("rtl_tcp ignores an RTL-SDR serial", input_spec(session_args_build(sys, SessionArgPrefs(), &error))
+                                                    == QStringLiteral("rtltcp:10.0.2.2:1234:851.375M:30:0:48:0:2"));
+
+    /* A scan list's tuner carries it to the session, and an invalid one refuses the scan with the same reason. */
+    QVariantMap list{{"sourceType", "usb"}, {"rtlSerial", "00000003"}};
+    QString scanError;
+    const QStringList scan =
+        dsd_qt::session_args_scan_build_lists(list, "851.375", {"/a.csv"}, SessionArgPrefs(), &scanError);
+    expect("a scan list opens its dongle by serial",
+           scanError.isEmpty() && input_spec(scan).startsWith(QStringLiteral("rtl:serial=00000003:851.375M:")));
+    list.insert("rtlSerial", "00000003 ");
+    expect("a scan list with a serial no spec can carry is refused",
+           dsd_qt::session_args_scan_build_lists(list, "851.375", {"/a.csv"}, SessionArgPrefs(), &scanError).isEmpty()
+               && scanError == dsd_qt::session_args_error_text(SessionArgsError::RtlSerial));
+}
+
 void
 test_explore_system(void) {
     QVariantMap sys;
@@ -1930,8 +2030,8 @@ test_every_error_has_text() {
             g_failures++;
         }
     }
-    expect("the last error value is an extra-options field that hides what follows it",
-           dsd_qt::SessionArgsErrorLast == SessionArgsError::ExtraIncomplete);
+    expect("the last error value is an RTL-SDR serial no spec can carry",
+           dsd_qt::SessionArgsErrorLast == SessionArgsError::RtlSerial);
     expect("a value past the last one has no text",
            dsd_qt::session_args_error_text(static_cast<SessionArgsError>(last + 1)).isEmpty());
 }
@@ -1949,6 +2049,9 @@ test_iq_stream_extra_refused() {
         "-i iqtcp:127.0.0.1:1234:240k:cs16",
         "-iiqudp:0.0.0.0:7355:48k:cu8",
         "-f1 -i iqudp:0.0.0.0:7355:48k:cu8:426.7M",
+        /* The decoder lower-cases a known scheme at -i, so these open the same streams. */
+        "-i IQTCP:127.0.0.1:1234:240k:cs16",
+        "-iIqUdp:0.0.0.0:7355:48k:cu8",
     };
     for (const char* extra : k_extras) {
         auto sys = usb_system();
@@ -2199,6 +2302,10 @@ test_scan_join_conflict(void) {
     QVariantMap unset = base;
     unset.remove("skipSilent");
     expect("a list saved before skip-silent existed joins one with it off", conflict(base, unset).isEmpty());
+    expect("a list saved before the RTL-SDR serial existed joins one with none",
+           conflict(base, with({{"rtlSerial", ""}})).isEmpty());
+    expect("the same RTL-SDR serial joins",
+           conflict(with({{"rtlSerial", "00000001"}}), with({{"rtlSerial", "00000001"}})).isEmpty());
 
     /* Every setting, each alone. */
     const struct {
@@ -2213,6 +2320,10 @@ test_scan_join_conflict(void) {
          with({{"sourceType", "rtltcp"}, {"host", "a"}, {"port", 1235}}), "Different radio source"},
         {with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "A1"}}}}),
          with({{"sourceType", "airspy"}, {"airspy", QVariantMap{{"serial", "B2"}}}}), "Different radio source"},
+        /* An RTL-SDR by its serial, matched exactly as the decoder opens it; none is the first device. */
+        {base, with({{"rtlSerial", "00000001"}}), "Different radio source"},
+        {with({{"rtlSerial", "00000001"}}), with({{"rtlSerial", "00000002"}}), "Different radio source"},
+        {with({{"rtlSerial", "abc"}}), with({{"rtlSerial", "ABC"}}), "Different radio source"},
         {base, with({{"gainDb", 31}}), "Different gain"},
         {base, with({{"gainDb", 0}}), "Different gain"},
         {base, with({{"ppm", "3"}}), "Different PPM correction"},
@@ -3171,6 +3282,7 @@ main(int argc, char** argv) {
     test_desktop_browse_stores_a_plain_path();
     test_past_int_range();
     test_explore_system();
+    test_rtl_serial();
     test_radio_settings_args();
     test_iq_stream_extra_refused();
     test_grouped_hex_keys();

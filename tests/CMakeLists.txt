@@ -1888,6 +1888,18 @@ dsd_neo_add_public_header_smoke_test(
   C
 )
 dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rtl_device_select
+  HEADERS_PUBLIC_IO_RTL_DEVICE_SELECT
+  dsd-neo/io/rtl_device_select.h
+  C
+)
+dsd_neo_add_public_header_smoke_test(
+  dsd-neo_test_headers_public_io_rtl_device_select_cxx
+  HEADERS_PUBLIC_IO_RTL_DEVICE_SELECT_CXX
+  dsd-neo/io/rtl_device_select.h
+  CXX
+)
+dsd_neo_add_public_header_smoke_test(
   dsd-neo_test_headers_public_io_iq_types
   HEADERS_PUBLIC_IO_IQ_TYPES
   dsd-neo/io/iq_types.h
@@ -3444,6 +3456,7 @@ add_executable(
     ${PROJECT_SOURCE_DIR}/src/core/util/bit_packing.c
     ${PROJECT_SOURCE_DIR}/src/app_control/analog_width_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/menu_services.c
+    ${PROJECT_SOURCE_DIR}/src/app_control/rtl_device_view.c
     ${PROJECT_SOURCE_DIR}/src/app_control/next_start_check.c
     # chan_map_adopt()/svc_clear_channel_map() note the DMR rows' origins (discussion #900).
     ${PROJECT_SOURCE_DIR}/src/protocol/dmr/dmr_t3_channels.c
@@ -4420,6 +4433,9 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_callbacks
         ui/test_ui_menu_callbacks.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_callbacks.c
+        # The RTL-SDR device prompt reads its answer with the input spec's device-field parser.
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
         ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
         ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
@@ -4447,6 +4463,11 @@ if(DSD_ENABLE_TERMINAL_UI)
         dsd-neo_test_ui_menu_actions
         ui/test_ui_menu_actions.c
         ${PROJECT_SOURCE_DIR}/src/ui/terminal/menu_actions.c
+        # The RTL-SDR device prompt opens on the device field of the spec the next open reads.
+        ${PROJECT_SOURCE_DIR}/src/app_control/radio_source_view.c
+        ${PROJECT_SOURCE_DIR}/src/app_control/rtl_device_view.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+        ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_avoid_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_state_view.c
         ${PROJECT_SOURCE_DIR}/src/app_control/scan_row_view.c
@@ -7448,10 +7469,24 @@ add_executable(
     runtime/test_runtime_bootstrap_interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/bootstrap/interactive.c
     ${PROJECT_SOURCE_DIR}/src/runtime/analog_channel.c
+    # The RTL-SDR question reads its answer with the input spec's device-field parser.
+    ${PROJECT_SOURCE_DIR}/src/runtime/input_spec.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/spec_fields.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/squelch.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/freq_parse.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/analog_tones.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/number_text.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_io_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/rtl_stream_metrics_hooks.c
+    ${PROJECT_SOURCE_DIR}/src/runtime/decode_clock.c
 )
 target_include_directories(
     dsd-neo_test_runtime_bootstrap_interactive
     PRIVATE ${PROJECT_SOURCE_DIR}/include
+)
+target_link_libraries(
+    dsd-neo_test_runtime_bootstrap_interactive
+    PRIVATE dsd-neo_platform ${DSD_NEO_TEST_MATH_LIB}
 )
 target_compile_definitions(
     dsd-neo_test_runtime_bootstrap_interactive
@@ -10307,8 +10342,8 @@ add_test(
     NAME ENGINE_RELEASE_OUTPUTS
     COMMAND dsd-neo_test_engine_release_outputs
 )
-# The CLI's own ways of stopping before the engine runs: a parse error after -P, and --airspy-list.
-foreach(_mode PARSE_ERROR AIRSPY_LIST)
+# The CLI's own ways of stopping before the engine runs: a parse error after -P, --airspy-list and --rtl-list.
+foreach(_mode PARSE_ERROR AIRSPY_LIST RTL_LIST)
     add_test(
         NAME CLI_UNRUN_OUTPUTS_${_mode}
         COMMAND
@@ -10386,6 +10421,37 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
     add_test(
         NAME ENGINE_RTL_PREOPENED_FD
         COMMAND dsd-neo_test_engine_rtl_preopened_fd
+    )
+
+    # The engine's choice of a local RTL-SDR by serial, and of an index past the
+    # devices found, over a wrapped librtlsdr enumeration.
+    add_executable(
+        dsd-neo_test_engine_rtl_serial_select
+        engine/test_engine_rtl_serial_select.c
+    )
+    target_include_directories(
+        dsd-neo_test_engine_rtl_serial_select
+        PRIVATE ${PROJECT_SOURCE_DIR}/include
+    )
+    target_link_libraries(
+        dsd-neo_test_engine_rtl_serial_select
+        PRIVATE
+            "-Wl,--start-group"
+            dsd-neo_engine
+            dsd-neo_io_radio
+            "-Wl,--end-group"
+            "-Wl,--wrap=rtlsdr_get_device_count"
+            "-Wl,--wrap=rtlsdr_get_device_usb_strings"
+            "-Wl,--wrap=rtl_device_find_serial"
+            "-Wl,--wrap=rtl_stream_create"
+            "-Wl,--wrap=rtl_stream_start_gated"
+            "-Wl,--wrap=rtl_stream_destroy"
+            ${LIBS}
+            dsd-neo_test_support
+    )
+    add_test(
+        NAME ENGINE_RTL_SERIAL_SELECT
+        COMMAND dsd-neo_test_engine_rtl_serial_select
     )
 endif()
 
@@ -21472,6 +21538,37 @@ if(DSD_HAS_RADIO)
         PRIVATE dsd-neo_io_radio_private_test_support dsd-neo_core ${LIBS}
     )
     add_test(NAME IO_RTL_FD_FAILURE COMMAND dsd-neo_test_io_rtl_fd_failure)
+
+    # Choosing an RTL-SDR by USB serial: the lookup and listing over a fake
+    # enumeration, and the open that checks the handle (and an Android
+    # descriptor's dongle) reports the serial before anything configures it.
+    add_executable(
+        dsd-neo_test_io_rtl_device_select
+        io/test_io_rtl_device_select.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE
+            ${PROJECT_SOURCE_DIR}/src/io/radio
+            ${PROJECT_SOURCE_DIR}/tests/test_support
+    )
+    target_compile_definitions(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    )
+    target_link_libraries(
+        dsd-neo_test_io_rtl_device_select
+        PRIVATE
+            dsd-neo_io_radio_private_test_support
+            dsd-neo_io_iq
+            dsd-neo_core
+            dsd-neo_test_support
+            ${LIBS}
+    )
+    add_test(
+        NAME IO_RTL_DEVICE_SELECT
+        COMMAND dsd-neo_test_io_rtl_device_select
+    )
 
     # #782: which Android descriptor the engine holds, through the open, a
     # replacement in the slot and the close; and the "reset first" request.

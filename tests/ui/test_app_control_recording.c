@@ -2012,6 +2012,30 @@ test_config_recording_reports_its_outcome(void) {
     rc |=
         expect_int("a config whose recording fails reads as failed", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
     rc |= expect_int("the failed config is the command shown", v.command_id, DSD_APP_CMD_CONFIG_APPLY);
+
+    /* A config refused before it runs (a Pulse [input] while the radio runs) reads as failed, not as the outcome the
+       config before it left: one whose recording applied comes first. */
+    rc |= apply_recording_config_in(&r, 1, NULL, r.dir);
+    rc |= expect_int("a recording config applied again", view_now().command_state, DSD_APP_RECORDING_COMMAND_APPLIED);
+    static void* fake_ctx[2];
+    const int input_type = r.opts->audio_in_type;
+    r.opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(r.opts->audio_in_dev, sizeof r.opts->audio_in_dev, "%s", "rtl:0:851.375M");
+    r.state->rtl_ctx = (struct RtlSdrContext*)fake_ctx;
+    DSD_MEMSET(&cfg, 0, sizeof cfg);
+    cfg.has_recording = 1;
+    cfg.per_call_wav = 1;
+    DSD_SNPRINTF(cfg.per_call_wav_dir, sizeof cfg.per_call_wav_dir, "%s", r.dir);
+    cfg.has_input = 1;
+    cfg.input_source = DSDCFG_INPUT_PULSE;
+    rc |= expect_int("a Pulse config queued", dsd_app_command_apply_config(&cfg), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    (void)drain(&r);
+    v = view_now();
+    rc |= expect_true("the Pulse config was refused", strstr(r.state->ui_msg, "Refused: this config selects") != NULL);
+    rc |= expect_int("the refused config reads as failed", v.command_state, DSD_APP_RECORDING_COMMAND_FAILED);
+    rc |= expect_int("the refused config is the command shown", v.command_id, DSD_APP_CMD_CONFIG_APPLY);
+    r.state->rtl_ctx = NULL;
+    r.opts->audio_in_type = input_type;
     rig_close(&r);
     remove_folder(other);
     return rc;

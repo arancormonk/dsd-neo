@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/env.h>
 #include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/log.h>
 #include <errno.h>
 #include <math.h>
 #include <stdarg.h>
@@ -265,6 +266,24 @@ answer_owned_chooser(ui_chooser_done_fn cb, void* user, ui_context_dispose_fn di
     dispose(user);
 }
 
+/* The input spec parser the device prompt reads its answer with logs through this; nothing here reads the log. */
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)level;
+    (void)format;
+}
+
+/* menu_actions.c owns the RTL-SDR device prompt too (UI_MENU_ACTIONS pins its title and capacity). */
+static char g_dev_prompt_prefill[160];
+static int g_dev_prompt_calls;
+
+void
+ui_open_rtl_device_prompt(UiCtx* c, const char* prefill) {
+    (void)c;
+    DSD_SNPRINTF(g_dev_prompt_prefill, sizeof g_dev_prompt_prefill, "%s", prefill ? prefill : "(null)");
+    g_dev_prompt_calls++;
+}
+
 /* menu_actions.c owns the frequency prompt (UI_MENU_ACTIONS pins its title and capacity); a refusal reopens it. */
 void
 ui_open_freq_prompt(UiCtx* c, const char* prefill) {
@@ -382,6 +401,8 @@ reset_capture(void) {
     g_status_calls = 0;
     g_freq_prompt_calls = 0;
     DSD_MEMSET(g_freq_prompt_prefill, 0, sizeof g_freq_prompt_prefill);
+    g_dev_prompt_calls = 0;
+    DSD_MEMSET(g_dev_prompt_prefill, 0, sizeof g_dev_prompt_prefill);
     DSD_MEMSET(g_env_name, 0, sizeof g_env_name);
     DSD_MEMSET(g_env_value, 0, sizeof g_env_value);
     g_env_set_calls = 0;
@@ -1094,10 +1115,44 @@ test_gain_rtl_and_env_callbacks(void) {
     rc |= expect_int("input volume command", g_cmd.id, DSD_APP_CMD_INPUT_VOL_SET);
     rc |= expect_int("input volume upper clamp", cmd_i32(), 16);
 
-    reset_capture();
-    cb_rtl_dev(&ctx, 1, 2);
-    rc |= expect_int("rtl dev command", g_cmd.id, DSD_APP_CMD_RTL_SET_DEV);
-    rc |= expect_int("rtl dev value", cmd_i32(), 2);
+    /* The RTL-SDR as typed: an index, a serial (a serial of digits through serial=), or the hint and the prompt again
+       with the text kept. A blank field or a cancel sends nothing. */
+    {
+        reset_capture();
+        g_dev_prompt_calls = 0;
+        cb_rtl_dev_text(&ctx, "2");
+        rc |= expect_int("rtl dev index command", g_cmd.id, DSD_APP_CMD_RTL_SET_DEV);
+        rc |= expect_int("rtl dev index value", cmd_i32(), 2);
+
+        static const struct {
+            const char* typed;
+            const char* serial;
+        } k_serials[] = {{"00000001", "00000001"}, {"serial=1090", "1090"}, {"A1B2", "A1B2"}, {"SN 1#", "SN 1#"}};
+
+        for (size_t i = 0; i < sizeof k_serials / sizeof k_serials[0]; i++) {
+            reset_capture();
+            cb_rtl_dev_text(&ctx, k_serials[i].typed);
+            rc |= expect_int("rtl dev serial command", g_cmd.id, DSD_APP_CMD_RTL_SET_DEV_SERIAL);
+            rc |= expect_str("rtl dev serial value", (const char*)g_cmd.data, k_serials[i].serial);
+        }
+        static const char* const blanks[] = {NULL, ""};
+        for (size_t i = 0; i < sizeof blanks / sizeof blanks[0]; i++) {
+            reset_capture();
+            cb_rtl_dev_text(&ctx, blanks[i]);
+            rc |= expect_int("rtl dev blank sends nothing", g_cmd.calls + g_status_calls + g_dev_prompt_calls, 0);
+        }
+        static const char* const refused[] = {"A:B", "serial=", " A", "A\"B"};
+        for (size_t i = 0; i < sizeof refused / sizeof refused[0]; i++) {
+            reset_capture();
+            g_dev_prompt_calls = 0;
+            cb_rtl_dev_text(&ctx, refused[i]);
+            rc |= expect_int("rtl dev refused sends nothing", g_cmd.calls, 0);
+            rc |= expect_str("rtl dev refused says what to enter", g_status,
+                             "Enter an index like 0 or a serial like 00000001");
+            rc |= expect_int("rtl dev refused reopens", g_dev_prompt_calls, 1);
+            rc |= expect_str("rtl dev refused keeps the text", g_dev_prompt_prefill, refused[i]);
+        }
+    }
 
     /* The frequency as typed (issue #670): MHz, or Hz from 1000000 up. A blank field cancels silently; a refusal says
        why and reopens the prompt with the text kept, so a typo is fixed in place. */

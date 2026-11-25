@@ -1103,6 +1103,7 @@ int svc_describe_start_failure(const dsd_opts* opts, char* why, size_t why_size)
  * @return 0 when the stream takes it; -1 when it refuses it (reason in @p why, may be NULL).
  */
 int svc_check_started_stream_analog(const dsd_opts* opts, int kind, int width_hz, char* why, size_t why_size);
+
 /** @brief Restart the RTL stream if active, tearing down any existing context. */
 int svc_rtl_restart(dsd_opts* opts, dsd_state* state);
 /** Restart without acquiring; caller holds the P25 SM tick guard. */
@@ -1274,9 +1275,26 @@ int svc_airspy_apply_config(dsd_opts* opts, dsd_state* state, const dsd_airspy_c
 /** Apply and roll back without acquiring; caller holds the P25 SM tick guard. */
 int svc_airspy_apply_config_locked(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* config,
                                    const svc_airspy_tuning* previous_tuning);
-/** @brief Set RTL device index and mark stream for restart (applied immediately if active). DSD_ERR_NOT_SUPPORTED, with
- * nothing changed, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
-int svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index);
+/**
+ * @brief Select the RTL-SDR the input opens: by @p serial when it is non-NULL and non-empty (exact, as
+ *        dsd_rtl_serial_is_valid() allows), else by @p index (a negative one reads as 0).
+ *
+ * The spec alone names the dongle: the device field of the spec the next open reads is rewritten with it
+ * (dsd_app_rtl_device_spec_field(), dsd_rtl_spec_set_device()): the running spec when the RTL-SDR runs, else the one
+ * the RTL-SDR row opens, keeping its tuning, created when none is remembered. Everything is checked and the new spec
+ * built before anything changes. With the RTL-SDR running, the stream restarts on the new dongle (the open selects it
+ * from the spec); a start that fails puts the spec that ran back and starts that dongle again
+ * (svc_rtl_restart_recovery_locked(), without the I/Q capture, which a stream that ran recorded), all inside one hold
+ * of the P25 SM tick guard, as the Airspy reopen does. Otherwise the spec waits for the next start.
+ *
+ * @param out_capture_stopped Set to 1 when the restart of the dongle that ran turned the I/Q capture off, else 0 (may
+ *                            be NULL).
+ * @return 0 when the new dongle runs (or waits for the next start); DSD_ERR_NOT_SUPPORTED, with nothing changed, on an
+ *         input that has no local RTL-SDR to select (an rtl_tcp server, SoapySDR, an Airspy, an input with fixed
+ *         tuning, a next open that is another radio); -1 on a refused serial or a spec the field does not fit,
+ *         nothing changed; else the failed start's code, the previous dongle put back.
+ */
+int svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* serial, int* out_capture_stopped);
 /** @brief Set RTL manual gain (0–49), clamping and restarting if needed. DSD_ERR_NOT_SUPPORTED, with nothing changed and
  * no restart, on an input with fixed tuning (dsd_opts_input_has_fixed_tuning()). */
 int svc_rtl_set_gain(dsd_opts* opts, dsd_state* state, int value);

@@ -323,6 +323,62 @@ test_tetra_entry_selects_tetra(void) {
     return rc;
 }
 
+/* Run the wizard on @p script with heap options and state, and check the input spec it wrote. */
+static int
+run_rtl_device_script(const char* tag, const char* script, const char* want_spec) {
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    int rc = 1;
+    if (opts && state) {
+        reset_harness();
+        rc = with_stdin_text(script, dsd_bootstrap_interactive, opts, state);
+        rc |= expect_str(tag, opts->audio_in_dev, want_spec);
+        rc |= expect_int(tag, g_last_decode_mode, DSDCFG_MODE_DMR);
+    }
+    free(state);
+    free(opts);
+    return rc;
+}
+
+/* The RTL-SDR question takes an index or a USB serial, read as `-i rtl:<dev>` reads it: a serial goes into the spec in
+ * the explicit serial=<sn> form (so one of digits stays a serial), Enter is index 0, and an answer that names neither
+ * (a ':' in it, a space at either end) says what to enter and asks again, never opening index 0 in its place. */
+static int
+test_rtl_device_takes_an_index_or_a_serial(void) {
+    static const struct {
+        const char* answers;
+        const char* spec;
+    } k_cases[] = {
+        {"2\n", "rtl:2:851.375M:22:0:48:0:1"},
+        {"\n", "rtl:0:851.375M:22:0:48:0:1"},
+        {"00000001\n", "rtl:serial=00000001:851.375M:22:0:48:0:1"},
+        {"serial=1090\n", "rtl:serial=1090:851.375M:22:0:48:0:1"},
+        {"A:B\n SN\nSN 1\n", "rtl:serial=SN 1:851.375M:22:0:48:0:1"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof k_cases / sizeof k_cases[0]; i++) {
+        char script[256];
+        DSD_SNPRINTF(script, sizeof script, "2\n851.375M\n%s22\n0\n48\n0\n1\n4\nn\nn\nn\n", k_cases[i].answers);
+        rc |= run_rtl_device_script(k_cases[i].answers, script, k_cases[i].spec);
+    }
+    /* A pasted line longer than the wizard reads at once is one answer, refused whole: its tail (`1`) is dropped with
+       it, never read as the next answer, and the question is asked again. */
+    static const char k_head[] = "2\n851.375M\n";
+    static const char k_tail[] = "1\n2\n22\n0\n48\n0\n1\n4\nn\nn\nn\n";
+    const size_t long_len = 1023U;
+    char* script = (char*)calloc(1U, sizeof k_head + long_len + sizeof k_tail);
+    if (!script) {
+        return 1;
+    }
+    DSD_MEMCPY(script, k_head, sizeof k_head - 1U);
+    DSD_MEMSET(script + sizeof k_head - 1U, 'X', long_len);
+    DSD_MEMCPY(script + sizeof k_head - 1U + long_len, k_tail, sizeof k_tail);
+    rc |= run_rtl_device_script("overlong device answer", script, "rtl:2:851.375M:22:0:48:0:1");
+    free(script);
+    return rc;
+}
+
 /* TETRA is a trunked system (TMO) as well as direct mode (DMO): on an RTL-SDR or rtl_tcp source the wizard asks
  * whether it is trunked, as for the other trunk-capable entries, with No the default for direct mode; a Yes turns call
  * following on and takes the group list the follow policy reads. */
@@ -656,7 +712,9 @@ test_rtl_input_formats_clamped_radio_options(void) {
     DSD_MEMSET(&state, 0, sizeof state);
 
     rc |= with_stdin_text(input, dsd_bootstrap_interactive, &opts, &state);
-    rc |= expect_str("rtl-clamped-audio-in", opts.audio_in_dev, "rtl:255:851.375M:0:200:4:-1000:3");
+    /* The device answer reads as -i reads its device field, never clamped: 999 is index 999, which the start judges
+       against the dongles it finds (the index used to be clamped to 255, opening another dongle than the one named). */
+    rc |= expect_str("rtl-clamped-audio-in", opts.audio_in_dev, "rtl:999:851.375M:0:200:4:-1000:3");
     rc |= expect_int("rtl-clamped-dsp-bw", opts.rtl_dsp_bw_khz, 4);
     rc |= expect_int("rtl-decode-mode", g_last_decode_mode, DSDCFG_MODE_ANALOG);
     rc |= expect_str("rtl-output-left-empty", opts.audio_out_dev, "");
@@ -781,6 +839,7 @@ main(void) {
 #if !defined(_WIN32)
     rc |= test_pulse_defaults_apply_decode_and_ncurses();
     rc |= test_tetra_entry_selects_tetra();
+    rc |= test_rtl_device_takes_an_index_or_a_serial();
     rc |= test_tetra_entry_asks_about_trunking();
     rc |= test_rtltcp_trunking_imports_group_allow_list_and_null_output();
     rc |= test_tcp_trunking_enables_default_rigctl_and_skips_missing_csv();

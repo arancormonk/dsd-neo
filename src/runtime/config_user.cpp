@@ -35,6 +35,7 @@
 #include <dsd-neo/runtime/config_schema.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/freq_parse.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/path_policy.h>
 #include <dsd-neo/runtime/rdio_export.h>
@@ -566,6 +567,27 @@ snapshot_apply_live_soapy_values(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     }
 }
 
+/* The dongle an rtl: spec's device field @p field names (dsd_rtl_device_field_parse()), as rtl_serial or rtl_device,
+   the other cleared. The spec alone names it: a bare `rtl` or an empty field is index 0 with no serial, as a start of
+   the same spec opens (dsd_rtl_spec_select_device()), whatever device the options last held. A field the parser
+   refuses stays refused (rtl_serial_invalid): a save never turns it into an index. */
+static void
+snapshot_rtl_device_field(const char* field, dsdneoUserConfig* cfg) {
+    int index = 0;
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    serial[0] = '\0';
+    if (dsd_rtl_device_field_parse(field, &index, serial, sizeof serial) == DSD_RTL_DEV_INVALID) {
+        cfg->rtl_serial_invalid = 1;
+    }
+    /* A dongle named by serial names no index: the one it opened at is where the serial resolved this time, not an
+       index the config chose, so none is saved beside it. */
+    const int by_index = serial[0] == '\0' && !cfg->rtl_serial_invalid;
+    cfg->rtl_device = by_index ? index : 0;
+    DSD_SNPRINTF(cfg->rtl_serial, sizeof cfg->rtl_serial, "%s", serial);
+    cfg->rtl_device_is_set = by_index;
+    cfg->rtl_serial_is_set = 1;
+}
+
 static void
 snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     if (!opts || !cfg) {
@@ -575,12 +597,7 @@ snapshot_parse_rtl_device_spec(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     char buf[sizeof opts->audio_in_dev];
     char* tok[9] = {0};
     size_t n = split_colon_tokens(buf, sizeof buf, opts->audio_in_dev, tok, sizeof(tok) / sizeof(tok[0]));
-    /* An empty device field is the device the session opens, its default. */
-    if (n > 1 && tok[1][0] == '\0') {
-        cfg->rtl_device = opts->rtl_dev_index;
-    } else {
-        snapshot_parse_optional_int_token(tok, n, 1, &cfg->rtl_device, NULL);
-    }
+    snapshot_rtl_device_field(n > 1 ? tok[1] : NULL, cfg);
     snapshot_copy_optional_token(tok, n, 2, cfg->rtl_freq, sizeof cfg->rtl_freq);
     snapshot_parse_rtl_tuning_tokens(tok, n, 3, cfg);
 }
@@ -971,9 +988,36 @@ render_input_pulse(FILE* out, const dsdneoUserConfig* cfg) {
     }
 }
 
+/* An rtl_serial the loader refused, saved as a value it refuses again: the input it named stays refused on the next
+   start instead of opening rtl_device's index. */
+static const char kRtlSerialRefused[] = ":";
+
+/* The dongle the input opens: its serial, quoted (a valid serial holds no '"', so the reader gives back every
+   character, spaces, '#', ';' and '=' included), or its index. */
+static void
+render_input_rtl_selector(FILE* out, const dsdneoUserConfig* cfg) {
+    /* The index beside a serial is kept when the config names one (a retained [input] that had both): a patch clearing
+       the serial after a reload falls back on it, as before the save. A serial-only config gets none. */
+    const int names_device = cfg->rtl_device_is_set || cfg->rtl_device != 0;
+    if ((cfg->rtl_serial_invalid || cfg->rtl_serial[0]) && names_device) {
+        DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    }
+    if (cfg->rtl_serial_invalid) {
+        LOG_WARN(
+            "WARNING: rtl_serial was refused when the config was loaded; it is saved as rtl_serial = \"%s\", which "
+            "keeps the RTL-SDR input refused until it names the dongle's serial.\n",
+            kRtlSerialRefused);
+        DSD_FPRINTF(out, "rtl_serial = \"%s\"\n", kRtlSerialRefused);
+    } else if (cfg->rtl_serial[0]) {
+        DSD_FPRINTF(out, "rtl_serial = \"%s\"\n", cfg->rtl_serial);
+    } else {
+        DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    }
+}
+
 static void
 render_input_rtl(FILE* out, const dsdneoUserConfig* cfg) {
-    DSD_FPRINTF(out, "rtl_device = %d\n", cfg->rtl_device);
+    render_input_rtl_selector(out, cfg);
     render_input_rtl_common(out, cfg, 1);
 }
 
@@ -1488,6 +1532,19 @@ apply_input_source_pulse(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     }
 }
 
+/* The device field of the spec an RTL-SDR [input] builds: `serial=<sn>` for rtl_serial, which wins, else rtl_device's
+   index (a negative one, which the key's range refuses, reads as 0, as the device command takes it). A refused
+   rtl_serial writes `serial=`, a field the spec parser refuses (dsd_rtl_input_spec_apply()), so the start refuses the
+   input rather than open another dongle. */
+static void
+format_rtl_device_field(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
+    if (cfg->rtl_serial_invalid
+        || dsd_rtl_device_field_format(cfg->rtl_device < 0 ? 0 : cfg->rtl_device, cfg->rtl_serial, out, out_size)
+               != 0) {
+        DSD_SNPRINTF(out, out_size, "%s", "serial=");
+    }
+}
+
 static int
 format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
     if (!cfg->rtl_freq[0]) {
@@ -1499,7 +1556,14 @@ format_rtl_input_spec(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* o
     char sql[16];
     int vol = 0;
     resolve_rtl_spec_values(cfg, opts, &gain, &ppm, &bw, sql, sizeof sql, &vol);
-    DSD_SNPRINTF(out, out_size, "rtl:%d:%s:%d:%d:%d:%s:%d", cfg->rtl_device, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    char dev[DSD_RTL_SERIAL_MAX + 8];
+    format_rtl_device_field(cfg, dev, sizeof dev);
+    /* The whole spec or none: one cut to fit would end inside the serial and name another dongle. */
+    const int n = DSD_SNPRINTF(out, out_size, "rtl:%s:%s:%d:%d:%d:%s:%d", dev, cfg->rtl_freq, gain, ppm, bw, sql, vol);
+    if (n < 0 || (size_t)n >= out_size) {
+        out[0] = '\0';
+        return -1;
+    }
     return 0;
 }
 
@@ -2370,7 +2434,8 @@ snapshot_pcm_input_config(const dsd_opts* opts, const dsd_state* state, dsdneoUs
         snapshot_tcp_input_config(opts, state, cfg);
     } else if (dsd_opts_audio_in_dev_is_udp_spec(opts->audio_in_dev)) {
         snapshot_udp_input_config(opts, state, cfg);
-    } else if (strncmp(opts->audio_in_dev, "pulse", 5) == 0) {
+    } else if (dsd_opts_audio_in_dev_is_pulse_spec(opts->audio_in_dev)) {
+        /* `pulse` or `pulse:<dev>`, as startup reads it: a file named `pulse.wav` is a file. */
         cfg->input_source = DSDCFG_INPUT_PULSE;
         const char* dev = NULL;
         if (opts->audio_in_dev[5] == ':') {

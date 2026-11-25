@@ -60,6 +60,43 @@ struct rtl_soapy_config {
  */
 struct rtl_device* rtl_device_create(int dev_index, struct input_ring_state* input_ring);
 
+/** The open error of a dongle chosen by serial that could not be opened: none, or more than one readable device,
+ * carries the serial, or the device opened (or handed over as a descriptor) reports another
+ * (rtl_device_last_open_error()). LIBUSB_ERROR_NOT_FOUND's value. */
+#define RTL_DEVICE_ESERIAL (-5)
+
+/**
+ * @brief rtl_device_create(), choosing the dongle by USB serial when @p serial is non-empty.
+ *
+ * The serial is looked up at this open (librtlsdr's indexes change between opens; rtl_device_find_serial()), the
+ * device found is opened, and its handle is kept only when it reports exactly @p serial. A handle that reports
+ * another is refused and never streamed: closed with no setting of this project's written to it (no tuning, gain,
+ * bias tee or FIFO reset), and the serial looked up once more; then the open fails with RTL_DEVICE_ESERIAL, as it does
+ * when no single readable device carries the serial. librtlsdr's own open (rtlsdr_open()) has by then claimed and
+ * initialised that dongle, which cannot be avoided: its serial can only be read on the opened handle (a dongle
+ * plugged into the looked-up index in that instant is initialised, never streamed). With a pre-opened descriptor
+ * (rtl_device_set_preopened_fd()) nothing is enumerated, and the dongle behind it must report @p serial through the
+ * descriptor before anything opens or initialises it, and again on the opened handle, or the open fails with
+ * RTL_DEVICE_ESERIAL and the descriptor is handed back. An empty or NULL @p serial opens @p dev_index
+ * as rtl_device_create() does.
+ *
+ * @param dev_index Device index to open when @p serial is empty.
+ * @param serial The USB serial to open, or NULL / "".
+ * @param input_ring Pointer to input ring for incoming I/Q data.
+ * @param out_dev_index Receives the index opened (may be NULL): for a serial, the index it was found at.
+ * @return Pointer to rtl_device handle, or NULL on failure.
+ */
+struct rtl_device* rtl_device_create_selected(int dev_index, const char* serial, struct input_ring_state* input_ring,
+                                              int* out_dev_index);
+
+/**
+ * @brief The USB serial of the dongle @p dev opened, as verified on its handle: the serial it was chosen by, or for
+ *        one chosen by index the serial of its verified USB identity (stall recovery's; not known without libusb).
+ *
+ * @return 0 with the serial in @p out, or -1 when not known, @p dev is no USB device, or it does not fit.
+ */
+int rtl_device_usb_serial(const struct rtl_device* dev, char* out, size_t out_size);
+
 /** Last local USB open/claim error, preserving librtlsdr/libusb's negative code
  * (including LIBUSB_ERROR_BUSY). Atomic, safe to read after engine cleanup.
  * Clear at session start so a non-USB run cannot inherit a previous USB failure. */

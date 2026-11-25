@@ -183,6 +183,40 @@ private fun aRunsEndIsReportedToTheBroker() {
     check(UsbSourceManager.sessionEnds == 1) { "the run's end is reported once: ${UsbSourceManager.sessionEnds}" }
 }
 
+// The take is asked for the RTL-SDR serial the final arguments name (an Advanced -i wins over the saved system's), its
+// scheme in any case as the engine reads it; a failed take's own message is what the UI shows.
+private fun theTakeNamesTheArgumentsSerial() {
+    val cases = listOf(
+        RTL to "",
+        arrayOf("-i", "rtl:serial=00000002:851.0125M:0:0:24") to "00000002",
+        arrayOf("-i", "RTL:AbC:851.0125M") to "AbC",
+        arrayOf("-i", "rtl:serial=00000001:851M", "-i", "rtl:serial=1090:851M") to "1090",
+    )
+    for ((args, serial) in cases) {
+        val service = newService()
+        UsbSourceManager.answer = { UsbSessionTake(device = "/dev/bus/usb/001/007", connection = 1L) }
+        val (_, intent) = hostStart(service, args)
+        deliver(service, intent)
+        await(DsdNative.enteredRun)
+        check(UsbSourceManager.takes.toList() == listOf("usb") && UsbSourceManager.takeSerials.toList() == listOf(serial)) {
+            "${args.toList()}: the take asks for '$serial': ${UsbSourceManager.takeSerials}"
+        }
+        finish(service)
+    }
+    val service = newService()
+    val text = "No RTL-SDR with serial 00000009 is plugged in. Plug it in, or change the serial in the source's settings."
+    UsbSourceManager.answer = {
+        UsbSessionTake.failed(UsbSessionTake.USB_SERIAL_MISSING, "usb: not connected", message = text)
+    }
+    val (_, intent) = hostStart(service, arrayOf("-i", "rtl:serial=00000009:851M"))
+    val id = deliver(service, intent)
+    val failed = record()
+    check(failed.optString("failureKind") == "usb_serial_missing" && failed.optString("lastError") == text) {
+        "the take's own kind and message reach the record: $failed"
+    }
+    endsQuietly(service, id, "a dongle by serial not connected")
+}
+
 fun main(args: Array<String>) {
     val tests = linkedMapOf<String, () -> Unit>(
         "take_before_configure" to ::theReceiverIsTakenBeforeConfigure,
@@ -190,6 +224,7 @@ fun main(args: Array<String>) {
         "take_failure" to ::aFailedTakeFailsTheAttempt,
         "retire_before_take" to ::aRetirementBeforeTheTakeOpensNothing,
         "retire_during_take" to ::aRetirementDuringTheTakeConfiguresNothing,
+        "take_serial" to ::theTakeNamesTheArgumentsSerial,
     )
     for ((name, test) in tests) {
         if (args.isNotEmpty() && name !in args) continue

@@ -388,19 +388,54 @@ switch_open(dsd_opts* opts, const dsd_audio_input_request* req, const char* path
     }
 }
 
+/* 1 when a file input named @p path would read as another kind of input once it is the input's name
+   (dsd_opts::audio_in_dev): stdin (a leading '-'), a radio spec (`rtl`, `airspy:...`) or a Pulse, TCP or UDP one. A
+   saved config, the radio rows and a restart read the name that way, so a file named `airspy` would come back as an
+   Airspy. */
+static int
+switch_path_reads_as_input_spec(const char* path) {
+    return path[0] == '-' || dsd_opts_audio_in_dev_is_radio_spec(path) || dsd_opts_audio_in_dev_is_pulse_spec(path)
+           || dsd_opts_audio_in_dev_is_tcp_spec(path) || dsd_opts_audio_in_dev_is_udp_spec(path)
+           || dsd_opts_audio_in_dev_is_m17udp_spec(path);
+}
+
+static int
+switch_kind_is_file(dsd_audio_input_kind kind) {
+    return kind == DSD_AUDIO_INPUT_PCM_FILE || kind == DSD_AUDIO_INPUT_SYMBOL_FLT || kind == DSD_AUDIO_INPUT_SYMBOL_BIN;
+}
+
+/* Copy a file or Pulse request's path into @p path (a network request names its input by host and port, so a path
+   left in it is not read). A file's name must not read as another kind of input (switch_path_reads_as_input_spec()),
+   or a saved config and a restart would open that input instead. Returns 0, or -1 when it does not fit or is
+   refused. */
+static int
+switch_copy_request_path(const dsd_audio_input_request* req, char* path, size_t path_size) {
+    const int file_kind = switch_kind_is_file(req->kind);
+    if (!req->path || (!file_kind && req->kind != DSD_AUDIO_INPUT_PULSE)) {
+        return 0;
+    }
+    if (strlen(req->path) >= path_size) {
+        LOG_ERROR("Input switch: the path is longer than %zu characters\n", path_size - 1U);
+        return -1;
+    }
+    if (file_kind && switch_path_reads_as_input_spec(req->path)) {
+        LOG_ERROR("Input switch: the file name \"%s\" reads as an input type; give it as ./%s\n", req->path, req->path);
+        return -1;
+    }
+    DSD_SNPRINTF(path, path_size, "%s", req->path);
+    return 0;
+}
+
 /* Copy the request's path and host, which may name the options' own strings (Replay last names a path in them): the
-   switch rewrites those. A UDP request with no host binds 127.0.0.1. Returns 0, or -1 when one does not fit. */
+   switch rewrites those. A UDP request with no host binds 127.0.0.1. Returns 0, or -1 when one does not fit or the
+   path is refused (switch_copy_request_path()). */
 static int
 switch_copy_request_strings(const dsd_audio_input_request* req, char* path, size_t path_size, char* host,
                             size_t host_size) {
     path[0] = '\0';
     host[0] = '\0';
-    if (req->path) {
-        if (strlen(req->path) >= path_size) {
-            LOG_ERROR("Input switch: the path is longer than %zu characters\n", path_size - 1U);
-            return -1;
-        }
-        DSD_SNPRINTF(path, path_size, "%s", req->path);
+    if (switch_copy_request_path(req, path, path_size) != 0) {
+        return -1;
     }
     if (req->host && req->host[0] != '\0') {
         if (strlen(req->host) >= host_size) {

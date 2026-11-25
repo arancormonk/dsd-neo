@@ -81,7 +81,10 @@ void cb_gain_ana(void* u, int ok, double g);
 void cb_input_vol(void* u, int ok, int m);
 
 // ---- RTL callbacks ----
-void cb_rtl_dev(void* u, int ok, int i);
+/* The RTL-SDR as typed (dsd_rtl_device_field_parse()): an index (DSD_APP_CMD_RTL_SET_DEV) or a USB serial, explicit as
+   serial=<sn> or not (DSD_APP_CMD_RTL_SET_DEV_SERIAL); a blank field cancels silently; anything else says what to enter
+   on the status line and reopens the prompt with the text kept. */
+void cb_rtl_dev_text(void* u, const char* text);
 /* The frequency as typed (dsd_parse_freq_entry_hz(): MHz, or a unit): DSD_APP_CMD_RTL_SET_FREQ; a blank field cancels
    silently; a refusal puts the reason on the status line and reopens the prompt with the text kept. */
 void cb_rtl_freq_text(void* u, const char* text);

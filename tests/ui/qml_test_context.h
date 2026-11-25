@@ -948,7 +948,14 @@ class ImportOnlyHost : public dsd_qt::DecoderHost {
         return health;
     }
 
+    // The connected receiver's USB serial, as Android reads it; empty, as the base host answers, until a case sets it.
+    QString
+    localDeviceSerial() const override {
+        return usbSerial;
+    }
+
     QString usbSource = QStringLiteral("usb");
+    QString usbSerial;
     bool usbPending = false;
     QString usbRequestedSource;
     QVariantMap health = healthyReceiver();
@@ -6625,6 +6632,13 @@ class Setup : public QObject {
         m_lifecycle_host->usbSource = source;
         m_lifecycle_host->usbPending = pending;
         m_lifecycle_host->usbRequestedSource = requestedSource;
+        Q_EMIT m_lifecycle_host->localDeviceChanged();
+    }
+
+    /** @brief The connected receiver's USB serial the lifecycle host reports (empty: none read). */
+    Q_INVOKABLE void
+    setLocalDeviceSerial(const QString& serial) {
+        m_lifecycle_host->usbSerial = serial;
         Q_EMIT m_lifecycle_host->localDeviceChanged();
     }
 

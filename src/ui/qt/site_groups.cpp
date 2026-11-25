@@ -142,9 +142,14 @@ site_distance_km(double lat, double lon, double siteLat, double siteLon) {
 
 QString
 receiver_identity(const QString& source, const QString& host, int port, const QString& airspySerial,
-                  const QString& filePath) {
+                  const QString& rtlSerial, const QString& filePath) {
     if (source == QLatin1String("airspy")) {
         return source + QLatin1Char('|') + airspySerial.toUpper();
+    }
+    // An RTL-SDR's serial is matched exactly, as the decoder opens it; none keeps the plain "usb" every group key and
+    // pin saved before a serial could be set was made with.
+    if (source == QLatin1String("usb") && !rtlSerial.isEmpty()) {
+        return source + QLatin1Char('|') + rtlSerial;
     }
     if (source == QLatin1String("rtltcp") || source == QLatin1String("tcp")) {
         return source + QLatin1Char('|') + host.trimmed().toLower() + QLatin1Char(':') + QString::number(port);
@@ -157,11 +162,11 @@ receiver_identity(const QString& source, const QString& host, int port, const QS
 
 QString
 receiver_identity(const QVariantMap& system) {
-    return receiver_identity(system.value(QStringLiteral("sourceType")).toString(),
-                             system.value(QStringLiteral("host")).toString(),
-                             stored_int_or(system.value(QStringLiteral("port")), 0),
-                             system.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString(),
-                             system.value(QStringLiteral("filePath")).toString());
+    return receiver_identity(
+        system.value(QStringLiteral("sourceType")).toString(), system.value(QStringLiteral("host")).toString(),
+        stored_int_or(system.value(QStringLiteral("port")), 0),
+        system.value(QStringLiteral("airspy")).toMap().value(QStringLiteral("serial")).toString(),
+        system.value(QStringLiteral("rtlSerial")).toString(), system.value(QStringLiteral("filePath")).toString());
 }
 
 bool

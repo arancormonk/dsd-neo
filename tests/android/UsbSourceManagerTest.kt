@@ -89,8 +89,11 @@ private class Rig(
         check(record().optBoolean("ready")) { "the receiver connects: ${record()}" }
     }
 
-    /** The service's take of [source] for a new session, as DecoderService.startDecoding() makes it. */
-    fun take(source: String = "usb") = UsbSourceManager.takeForSession(context, source)
+    /**
+     * The service's take of [source] for a new session, as DecoderService.startDecoding() makes it, with the RTL-SDR
+     * [serial] its arguments name.
+     */
+    fun take(source: String = "usb", serial: String = "") = UsbSourceManager.takeForSession(context, source, serial)
 
     /** Runs what other threads posted to the main thread. */
     fun drain() = Handler.drain()
@@ -1033,6 +1036,109 @@ private fun inNewProcess(case: String) {
     }
 }
 
+private fun rtlWith(name: String, serial: String) = UsbDevice(name, 0x0bda, 0x2838, serial, "RTL2838UHIDIR")
+
+private const val RTL_C = "/dev/bus/usb/001/006"
+
+// An RTL-SDR request by serial: matched exactly and whole (B5), and one not attached says so as an RTL-SDR's (B4).
+private fun anRtlSerialRequestMatchesExactly() {
+    val rig = Rig()
+    val long = "RTL-SDR-BLOG-V4-0000000000000001"
+    rig.plug(rtlWith(RTL_A, "abc"))
+    rig.plug(rtlWith(RTL_B, long))
+    rig.usb.granted += RTL_A
+    rig.usb.granted += RTL_B
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "ABC")
+    check(!rig.record().optBoolean("ready") && rig.text() == "Requested RTL-SDR serial not found" && rig.kind() == "detached") {
+        "another case is another dongle, and the text names an RTL-SDR: ${rig.record()}"
+    }
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "abc")
+    check(rig.record().optBoolean("ready") && rig.record().optString("serial") == "abc") { "the exact serial: ${rig.record()}" }
+    UsbSourceManager.release()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", long)
+    val record = rig.record()
+    check(record.optBoolean("ready") && record.optString("serial") == long) { "a long serial is matched whole: $record" }
+    UsbSourceManager.release()
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", long.takeLast(16))
+    check(!rig.record().optBoolean("ready") && rig.text() == "Requested RTL-SDR serial not found") {
+        "its last 16 characters are not its serial"
+    }
+}
+
+// D2: two dongles this app may read with the serial asked for are refused, whether found by the request, already the
+// ready connection, or made readable by the grant that completes a prompt. One it may not read never counts.
+private fun twinRtlSerialsAreRefused() {
+    val rig = Rig()
+    rig.plug(rtlWith(RTL_A, "00000001"))
+    rig.plug(rtlWith(RTL_B, "00000001"))
+    rig.usb.granted += RTL_A
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "00000001")
+    check(rig.record().optBoolean("ready")) { "one readable dongle with it, one not readable: it connects ${rig.record()}" }
+    rig.usb.granted += RTL_B
+    UsbSourceManager.requestAccessForSource(rig.context, "usb", "00000001")
+    check(rig.text() == "2 RTL-SDRs carry serial 00000001; give each its own with rtl_eeprom -s" &&
+        rig.kind() == UsbRequestState.REFUSED) { "a ready twin is refused: ${rig.record()}" }
+    val take = rig.take("usb", "00000001")
+    check(take.failureKind == UsbSessionTake.USB_SERIAL_DUPLICATE &&
+        take.message == "2 RTL-SDRs have serial 00000001, so the app cannot tell which one to open. Unplug the extra " +
+        "one, or give each its own serial with rtl_eeprom -s on a computer.") {
+        "and a session's take of it, with its own kind and the fix: $take"
+    }
+}
+
+// D2 at the grant: a grant that completes a prompt while another dongle with the serial has become readable.
+private fun aGrantThatMakesATwinReadableIsRefused() {
+    val prompted = Rig()
+    prompted.plug(rtlWith(RTL_A, "00000001"))
+    prompted.plug(rtlWith(RTL_B, "00000001"))
+    UsbSourceManager.requestAccessForSource(prompted.context, "usb", "00000001")
+    check(prompted.prompt(0).first.deviceName == RTL_A) { "the first dongle not readable yet is asked for" }
+    prompted.usb.granted += RTL_B
+    prompted.answer(0, granted = true)
+    check(!prompted.record().optBoolean("ready") && prompted.kind() == UsbRequestState.REFUSED) {
+        "a grant that makes a twin readable is refused: ${prompted.record()}"
+    }
+}
+
+// The take follows the serial the start's own arguments name: another dongle connected is switched for it at once
+// while permission holds; one not attached, or not readable yet, fails the start with the broker's reason.
+private fun theTakeFollowsTheArgumentsSerial() {
+    val rig = Rig()
+    rig.connect(rtl())
+    rig.plug(rtlB())
+    rig.usb.granted += RTL_B
+    val taken = rig.take("usb", RTL_SERIAL_B)
+    check(taken.failureKind == "" && taken.device == RTL_B) { "the named dongle is taken: $taken" }
+    check(rig.record().optString("serial") == RTL_SERIAL_B && DsdNative.usbFd == rig.usb.opened.last().fileDescriptor) {
+        "its descriptor is the one published: ${rig.record()}"
+    }
+    check(rig.usb.opened.first().closed) { "the other dongle's connection is closed" }
+    check(rig.usb.prompts.isEmpty()) { "no prompt while permission holds" }
+    val same = rig.take("usb", RTL_SERIAL_B)
+    check(same.failureKind == "" && same.device == RTL_B) { "a later session reopens it as before: $same" }
+
+    val missing = rig.take("usb", "00000009")
+    check(missing.failureKind == UsbSessionTake.USB_SERIAL_MISSING && missing.message == "No RTL-SDR with serial " +
+        "00000009 is plugged in. Plug it in, or change the serial in the source's settings.") {
+        "a serial not attached fails the start with its own kind and the fix: $missing"
+    }
+    check(rig.text() == "Requested RTL-SDR serial not found") { "the broker's own line says it too: ${rig.text()}" }
+}
+
+// A dongle the arguments name that is not readable yet is prompted for, and the start fails until it is granted.
+private fun theTakeAsksForADongleNotReadableYet() {
+    val unread = Rig()
+    unread.connect(rtl())
+    unread.plug(rtlWith(RTL_C, "00000003"))
+    val waiting = unread.take("usb", "00000003")
+    check(waiting.failureKind == UsbSessionTake.USB_PERMISSION) { "a dongle not readable yet is asked for: $waiting" }
+    check(unread.usb.prompts.size == 1 && unread.prompt(0).first.deviceName == RTL_C) { "with a prompt" }
+    unread.answer(0, granted = true)
+    check(unread.record().optString("serial") == "00000003" && unread.take("usb", "00000003").failureKind == "") {
+        "once granted, the start takes it"
+    }
+}
+
 private val CASES = linkedMapOf<String, () -> Unit>(
     "identity" to ::eachPromptHasItsOwnIdentity,
     "expiry" to ::anUnansweredPromptExpiresOnThePoll,
@@ -1064,6 +1170,11 @@ private val CASES = linkedMapOf<String, () -> Unit>(
     "swap_previous_descriptor" to { aStartWhileThePreviousSessionHoldsTheReceiverIsRefused("descriptor") },
     "swap_airspy" to ::anAirspySessionGetsAFreshDescriptor,
     "swap_serial" to ::aSerialRequestKeepsItsSerial,
+    "rtl_serial_exact" to ::anRtlSerialRequestMatchesExactly,
+    "rtl_serial_twins" to ::twinRtlSerialsAreRefused,
+    "rtl_serial_twins_grant" to ::aGrantThatMakesATwinReadableIsRefused,
+    "rtl_serial_take" to ::theTakeFollowsTheArgumentsSerial,
+    "rtl_serial_take_prompt" to ::theTakeAsksForADongleNotReadableYet,
     "switch_configured" to { aConfiguredSessionRefusesASwitch("session") },
     "switch_descriptor" to { aConfiguredSessionRefusesASwitch("descriptor") },
     "switch_concurrent" to ::concurrentSwitchesAreSerialized,

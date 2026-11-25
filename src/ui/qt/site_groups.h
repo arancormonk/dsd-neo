@@ -28,13 +28,16 @@ bool site_position_valid(double lat, double lon);
 double site_distance_km(double lat, double lon, double siteLat, double siteLon);
 /*
  * The receiver a saved system or scan list runs on, as its argv names it: the source, then the device the source opens
- * (an Airspy by its serial, rtl_tcp and TCP audio by host and port, UDP audio by its port, a file by its path). A host
- * is matched without case or the blanks the argv trims. Scan lists join on it, and site groups split by it.
+ * (an Airspy by its serial, an RTL-SDR by its serial when it names one, rtl_tcp and TCP audio by host and port, UDP
+ * audio by its port, a file by its path). A host is matched without case or the blanks the argv trims, an Airspy serial
+ * without case, an RTL-SDR serial exactly ("usb|<serial>"; plain "usb" without one, the key rows saved before a serial
+ * could be set still have). Scan lists join on it, and site groups split by it.
  */
 QString receiver_identity(const QVariantMap& system);
-// The same from the fields themselves (sourceType, host, port, the Airspy serial, filePath), for a caller holding them.
+// The same from the fields themselves (sourceType, host, port, the Airspy serial, rtlSerial, filePath), for a caller
+// holding them.
 QString receiver_identity(const QString& source, const QString& host, int port, const QString& airspySerial,
-                          const QString& filePath);
+                          const QString& rtlSerial, const QString& filePath);
 // Whether a row with these ids is a RadioReference site, and so in a site group.
 bool site_grouped(int rrSid, int rrSiteId);
 /*

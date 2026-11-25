@@ -122,6 +122,7 @@
 #include <dsd-neo/core/file_io.h>
 
 #include <dsd-neo/core/audio_input_switch.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/protocol/tetra/tetra_confirm.h"
 #include "../../src/protocol/tetra/tetra_state.h"
@@ -11669,6 +11670,8 @@ static int g_config_rtl_create_frame_p25p1 = -1;
 static int g_config_rtl_open_ok;
 static void* g_config_rtl_ctx[2];
 static char g_config_rtl_create_dev[64];
+/* The RTL-SDR serial the last create was handed ("" when it opens by index). */
+static char g_config_rtl_create_serial[DSD_RTL_SERIAL_MAX + 1];
 static int g_config_rtl_create_analog_only = -1;
 static int g_config_rtl_create_kind = -1;
 static int g_config_rtl_create_width_hz = -1;
@@ -11833,6 +11836,11 @@ __wrap_rtl_stream_create(dsd_opts* opts, RtlSdrContext** out_ctx) {
     g_config_rtl_create_squelch_margin = opts ? opts->rtl_squelch_margin_db : -1;
     g_config_rtl_create_frame_p25p1 = opts ? opts->frame_p25p1 : -1;
     DSD_SNPRINTF(g_config_rtl_create_dev, sizeof g_config_rtl_create_dev, "%s", opts ? opts->audio_in_dev : "");
+    /* The dongle the open selects is the one its spec names, handed back to the options (dsd_rtl_spec_select_device()). */
+    if (opts && g_config_rtl_open_ok) {
+        (void)dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
+    }
+    DSD_SNPRINTF(g_config_rtl_create_serial, sizeof g_config_rtl_create_serial, "%s", opts ? opts->rtl_dev_serial : "");
     g_config_rtl_create_analog_only = opts ? dsd_opts_is_analog_family(opts) : -1;
     g_config_rtl_create_kind = opts ? opts->analog_demod : -1;
     g_config_rtl_create_width_hz = opts ? dsd_opts_analog_width_hz(opts) : -1;
@@ -18652,6 +18660,50 @@ test_nfm_width_edit_keeps_live_acquisition(void) {
     opts.trunk_is_tuned = 0;
     state.rtl_ctx = NULL;
     freeState(&state);
+    return rc;
+}
+
+/*
+ * A Pulse config loaded while the radio runs is refused before the command changes anything: on a P25 scan row
+ * following a call, the row's scope is never suspended and resumed around the refusal, so the detected Phase 2
+ * polarity, the followed call and its voice channel stay. A refusal found after the suspend put the preset polarity
+ * back on resume, which read as an acquisition change and ended the call.
+ */
+static int
+test_pcm_config_refused_over_a_radio_keeps_the_scan_row(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1, sizeof *state);
+    dsdneoUserConfig* cfg = (dsdneoUserConfig*)calloc(1, sizeof *cfg);
+    static void* fake_ctx[2];
+    if (!opts || !state || !cfg) {
+        free(opts);
+        free(state);
+        free(cfg);
+        return expect_true("refused config fixture", 0);
+    }
+    init_nfm_session(opts, state, (RtlSdrContext*)fake_ctx);
+    int rc = expect_int("refused config: p25 row entered", dsd_scan_mode_enter(opts, state, DSD_SCAN_MODE_P25), 0);
+    rc |= expect_int("refused config: p25 row options", dsd_scan_mode_options(opts, state, NULL), 0);
+    opts->inverted_p2 = 1;
+    opts->trunk_is_tuned = 1;
+    state->trunk_vc_freq[0] = 851012500;
+    cfg->has_input = 1;
+    cfg->input_source = DSDCFG_INPUT_PULSE;
+    rc |= expect_true("refused config: queued", dsd_app_command_apply_config(cfg) > 0);
+    rc |= expect_int("refused config: drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("refused config: says why", strstr(state->ui_msg, "Refused: this config selects") != NULL);
+    rc |= expect_true("refused config: the input is kept", strcmp(opts->audio_in_dev, "rtl:0:851.375M:0:0:24") == 0);
+    rc |= expect_int("refused config: keeps the detected polarity", opts->inverted_p2, 1);
+    rc |= expect_int("refused config: keeps the followed call", opts->trunk_is_tuned, 1);
+    rc |= expect_true("refused config: keeps the voice channel", state->trunk_vc_freq[0] == 851012500);
+    rc |= expect_int("refused config: row still P25", dsd_scan_mode_active(state), DSD_SCAN_MODE_P25);
+    dsd_scan_mode_leave(opts, state);
+    opts->trunk_is_tuned = 0;
+    state->rtl_ctx = NULL;
+    freeState(state);
+    free(cfg);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -26954,7 +27006,8 @@ test_restart_under_a_scan_row_republishes_the_row(void) {
         {"airspy setting", "airspy", "airspy", DSD_APP_CMD_AIRSPY_SET, 24, 1},
         {"explicit restart", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_RESTART, 24, 1},
         {"gain", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_GAIN, 24, 1},
-        {"device index", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_DEV, 24, 1},
+        /* The device index reopens on device 1, which the spec names (B2). */
+        {"device index", "rtl:0:851.375M:0:0:24", "rtl:1:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_DEV, 24, 1},
         {"dsp bw 48, no scan row", "rtl:0:851.375M:0:0:24", "rtl:0:851.375M:0:0:24", DSD_APP_CMD_RTL_SET_BW, 48, 0},
     };
 
@@ -31888,6 +31941,22 @@ test_restart_stops_the_iq_capture(void) {
     rc |= expect_str("failed restart: the rollback toast stays", state.ui_msg, rollback_toast);
     end_running_radio(&state);
 
+    /* A device change that fails puts the device that ran back the same way. */
+    init_running_radio(&opts, &state, "rtl:0:851375000:22:0:48:0:2");
+    opts.iq_capture_requested = 1;
+    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_fail_starts = 1;
+    rc |=
+        expect_int("failed device change queued", post_i32(DSD_APP_CMD_RTL_SET_DEV, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    state.ui_msg[0] = '\0';
+    rc |= expect_int("failed device change drained", dsd_app_drain_cmds(&opts, &state), 1);
+    rc |= expect_true("failed device change: the device that ran is back",
+                      g_config_rtl_creates == 2 && g_config_rtl_captures == 0 && state.rtl_ctx != NULL
+                          && opts.rtl_dev_index == 0 && strcmp(opts.audio_in_dev, "rtl:0:851375000:22:0:48:0:2") == 0);
+    rc |= expect_str("failed device change: the rollback says so", state.ui_msg,
+                     "Failed: RTL device -> index 1 (see log); I/Q capture stopped");
+    end_running_radio(&state);
+
     /* A restart with no rollback after it fails: no stream restarted, so no toast says one did. The failure toast says
        the capture stopped, and the next drain leaves it showing. */
     static const struct {
@@ -31897,7 +31966,6 @@ test_restart_stops_the_iq_capture(void) {
     } k_failed[] = {
         {DSD_APP_CMD_RTL_RESTART, 0, "Failed: RTL stream restart; I/Q capture stopped"},
         {DSD_APP_CMD_RTL_SET_GAIN, 20, "Failed: RTL gain -> 20; I/Q capture stopped"},
-        {DSD_APP_CMD_RTL_SET_DEV, 1, "Failed: RTL device index -> 1; I/Q capture stopped"},
     };
 
     for (size_t i = 0; i < sizeof k_failed / sizeof k_failed[0]; i++) {
@@ -31921,6 +31989,139 @@ test_restart_stops_the_iq_capture(void) {
         rc |= expect_str(tag, state.ui_msg, k_failed[i].toast);
         end_running_radio(&state);
     }
+    return rc;
+}
+
+/* What a save of the session writes for its RTL-SDR, through the real snapshot. */
+static int
+expect_saved_rtl_device(const char* tag, const dsd_opts* opts, const dsd_state* state, int index, const char* serial) {
+    static dsdneoUserConfig saved;
+    dsd_snapshot_opts_to_user_config(opts, state, &saved);
+    const int ok = saved.input_source == DSDCFG_INPUT_RTL && !saved.rtl_serial_invalid
+                   && strcmp(saved.rtl_serial, serial) == 0 && (serial[0] != '\0' || saved.rtl_device == index);
+    if (!ok) {
+        DSD_FPRINTF(stderr, "  %s: saved source %d serial '%s' device %d invalid %d (spec '%s')\n", tag,
+                    saved.input_source, saved.rtl_serial, saved.rtl_device, saved.rtl_serial_invalid,
+                    opts->audio_in_dev);
+    }
+    return expect_true(tag, ok);
+}
+
+/*
+ * RTL_SET_DEV (an index) and RTL_SET_DEV_SERIAL (a USB serial) select the RTL-SDR the stream reopens on, and the spec a
+ * save writes names it (B2: the index command left the old device in the spec, which a save wrote). A serial of digits
+ * stays a serial; an index drops a serial. A serial the rule refuses changes nothing; one whose dongle does not start
+ * puts the dongle that ran back. An rtl_tcp source has no local dongle: refused, and the server is not reconnected. A
+ * change staged while PCM runs rewrites the spec the RTL-SDR row opens, so the switch back opens the staged dongle.
+ */
+static int
+test_rtl_device_commands(void) {
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
+    int rc = 0;
+    init_running_radio(opts, state, "rtl:0:851375000:22:0:48:0:2");
+
+    rc |= expect_int("serial command queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "00000001"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("serial command drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("serial command toast", state->ui_msg, "Applied: RTL device -> serial 00000001");
+    rc |= expect_true("serial command reopened on the serial",
+                      g_config_rtl_creates == 1 && strcmp(g_config_rtl_create_serial, "00000001") == 0
+                          && strcmp(opts->audio_in_dev, "rtl:serial=00000001:851375000:22:0:48:0:2") == 0);
+    rc |= expect_saved_rtl_device("a save writes the serial (B2)", opts, state, 0, "00000001");
+
+    rc |= expect_int("index command queued", post_i32(DSD_APP_CMD_RTL_SET_DEV, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("index command drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("index command toast", state->ui_msg, "Applied: RTL device -> index 1");
+    rc |= expect_true("index command drops the serial", opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index == 1
+                                                            && g_config_rtl_create_serial[0] == '\0');
+    rc |= expect_saved_rtl_device("a save writes index 1, not the index that ran (B2)", opts, state, 1, "");
+
+    rc |= expect_int("numeric serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "1090"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("numeric serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("numeric serial toast", state->ui_msg, "Applied: RTL device -> serial 1090");
+    rc |= expect_saved_rtl_device("a numeric serial stays a serial", opts, state, 1, "1090");
+
+    /* A payload framed without its NUL (the first 4 bytes of "ABCDE") is refused, never completed as "ABCD". */
+    rc |= expect_int("unterminated serial queued", dsd_app_command_submit(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "ABCDE", 4U),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    const int creates_before_framing = g_config_rtl_creates;
+    rc |= expect_int("unterminated serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("unterminated serial toast", state->ui_msg, "Refused: not an RTL-SDR serial");
+    rc |= expect_true("unterminated serial changes nothing",
+                      g_config_rtl_creates == creates_before_framing && strcmp(opts->rtl_dev_serial, "1090") == 0);
+    const int creates = g_config_rtl_creates;
+    rc |= expect_int("refused serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "A:B"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("refused serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_contains("refused serial toast", state->ui_msg, "Refused: not an RTL-SDR serial");
+    rc |= expect_true("refused serial changes nothing",
+                      g_config_rtl_creates == creates && strcmp(opts->rtl_dev_serial, "1090") == 0);
+
+    g_config_rtl_fail_starts = 1;
+    rc |= expect_int("missing serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("missing serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("missing serial toast", state->ui_msg, "Failed: RTL device -> serial BBBB (see log)");
+    rc |= expect_true("missing serial puts 1090 back and runs it",
+                      g_config_rtl_creates == creates + 2 && state->rtl_ctx != NULL
+                          && strcmp(g_config_rtl_create_serial, "1090") == 0);
+    rc |= expect_saved_rtl_device("a save after the rollback writes 1090", opts, state, 1, "1090");
+
+    /* The longest serial: the failure toast shows it cut, so the note of the I/Q capture its rollback stopped stays. */
+    char longest[DSD_RTL_SERIAL_MAX + 1];
+    DSD_MEMSET(longest, 'L', DSD_RTL_SERIAL_MAX);
+    longest[DSD_RTL_SERIAL_MAX] = '\0';
+    opts->iq_capture_requested = 1;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", "cap.iq");
+    g_config_rtl_fail_starts = 1;
+    rc |= expect_int("longest serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, longest),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("longest serial drained", dsd_app_drain_cmds(opts, state), 1);
+    const char* note = "; I/Q capture stopped";
+    const size_t len = strlen(state->ui_msg);
+    rc |= expect_true("longest serial: the capture note survives",
+                      len > strlen(note) && strcmp(state->ui_msg + len - strlen(note), note) == 0);
+    rc |= expect_contains("longest serial: shown cut", state->ui_msg, "Failed: RTL device -> serial LLLL");
+    rc |= expect_contains("longest serial: marked cut", state->ui_msg, "... (see log)");
+    end_running_radio(state);
+
+    init_running_radio(opts, state, "rtltcp:127.0.0.1:1234:851375000");
+    rc |=
+        expect_int("rtl_tcp device change queued", post_i32(DSD_APP_CMD_RTL_SET_DEV, 1), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("rtl_tcp device change drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_str("rtl_tcp device change toast", state->ui_msg,
+                     "Unsupported: this radio source has no RTL-SDR device to select");
+    rc |= expect_true("rtl_tcp keeps its connection", g_config_rtl_creates == 0 && opts->rtl_dev_index == 0);
+    end_running_radio(state);
+
+    /* Staged while PCM runs, then the RTL-SDR row: it opens the staged serial on the tuning it ran. */
+    init_running_radio(opts, state, "pulse");
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    state->rtl_ctx = NULL;
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:48:0:2");
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "AAAA");
+    rc |= expect_int("staged serial queued", post_string(DSD_APP_CMD_RTL_SET_DEV_SERIAL, "BBBB"),
+                     DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("staged serial drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |=
+        expect_true("staged serial starts nothing", g_config_rtl_creates == 0 && opts->audio_in_type == AUDIO_IN_PULSE);
+    rc |= expect_int("RTL-SDR row queued", post_empty(DSD_APP_CMD_RTL_ENABLE_INPUT), DSD_APP_COMMAND_SUBMIT_QUEUED);
+    rc |= expect_int("RTL-SDR row drained", dsd_app_drain_cmds(opts, state), 1);
+    rc |= expect_true("the switch back opens the staged serial",
+                      opts->audio_in_type == AUDIO_IN_RTL && strcmp(g_config_rtl_create_serial, "BBBB") == 0
+                          && strcmp(opts->audio_in_dev, "rtl:serial=BBBB:851375000:22:0:48:0:2") == 0);
+    rc |= expect_saved_rtl_device("a save after the switch writes the staged serial", opts, state, 0, "BBBB");
+    end_running_radio(state);
+    free(state);
+    free(opts);
     return rc;
 }
 
@@ -34025,6 +34226,7 @@ cmd_queue_behaviour_cases(void) {
     rc |= test_iq_stream_refuses_tuner_controls();
     rc |= test_iq_stream_refuses_signal_search();
     rc |= test_restart_stops_the_iq_capture();
+    rc |= test_rtl_device_commands();
     rc |= test_recovery_without_a_report_notes_the_capture();
     rc |= test_same_source_restart_takes_a_stream_gap();
 #endif
@@ -34115,6 +34317,7 @@ cmd_queue_behaviour_cases(void) {
     rc |= test_nfm_bandwidth_set_after_a_queued_switch_from_cqpsk();
     rc |= test_nfm_bandwidth_set_under_scan_rows();
     rc |= test_nfm_width_edit_keeps_live_acquisition();
+    rc |= test_pcm_config_refused_over_a_radio_keeps_the_scan_row();
     rc |= test_nfm_bandwidth_set_under_a_width_row();
     rc |= test_refused_width_under_a_scan_row_keeps_the_configured_width();
     rc |= test_refused_row_width_request_puts_the_edit_back();

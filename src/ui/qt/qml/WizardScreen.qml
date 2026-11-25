@@ -36,7 +36,7 @@ Item {
         // The Airspy fields' typing counts before it commits (they commit on
         // editingFinished, and an emptied gain index never does). The gain
         // text counts only under Set, the one mode that saves it.
-        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), hostText, portText, fileText, freqText, decodeFlag, trunking, gainMode, gainMode === 2 ? gainText : "", ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, rememberTalkgroups, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
+        return JSON.stringify([sourceType, airspySettings, wizardAirspy.pendingText(), rtlSerialText, hostText, portText, fileText, freqText, decodeFlag, trunking, gainMode, gainMode === 2 ? gainText : "", ppmText, hangtimeText, bwText, biasTee, extraText, nameText, chanCsvPath, groupCsvPath, rememberTalkgroups, keyCsvPath, keyCsvHex, encKeyType, encForceKey, p25BandplanCsvPath, srcCsvPath, decryptionProfileUid]);
     }
     // Whether leaving now would lose something typed or picked.
     function hasUnsavedDraft() {
@@ -111,6 +111,9 @@ Item {
     // on. An explicit Off must survive a global On — it means this dongle or
     // antenna must not be fed the tee's 4.5 V.
     property int biasTee: -1
+    // The RTL-SDR the system opens by USB serial, exactly as typed (empty
+    // opens the first device); saved for a USB dongle only.
+    property alias rtlSerialText: rtlSerialField.text
     property alias extraText: extraField.text
     // Imported trunking-data files; stored library paths, empty = none.
     property string chanCsvPath: ""
@@ -377,6 +380,7 @@ Item {
         bwText = "";
         airspySettings = ({});
         biasTee = -1;
+        rtlSerialField.text = "";
         extraField.text = "";
         nameField.text = "";
         chanCsvPath = "";
@@ -430,6 +434,11 @@ Item {
         bwText = "";
         airspySettings = ({});
         biasTee = -1;
+        // The dongle the found session ran on, when it named one by serial
+        // (Explore here on a Signal search hit carries the hit's): a system
+        // for the first device could open another dongle. A detection, below,
+        // names its own.
+        rtlSerialField.text = sourceType === "usb" && sys && sys.rtlSerial ? String(sys.rtlSerial) : "";
         extraField.text = "";
         nameField.text = "";
         chanCsvPath = "";
@@ -456,6 +465,7 @@ Item {
             airspySettings = detection.airspy || ({});
             ppmField.text = detection.ppm !== undefined ? String(detection.ppm) : "";
             biasTee = detection.biasTee !== undefined ? detection.biasTee : -1;
+            rtlSerialField.text = detection.rtlSerial || "";
             extraField.text = detection.extraArgs || "";
             csvNotice = detection.searchUnresolved ? qsTr("Digital identification is unresolved. NFM monitoring does not confirm an analog transmission.") : "";
         }
@@ -489,6 +499,7 @@ Item {
         hangtimeField.text = sys.hangtime || "";
         bwText = sys.bandwidthKhz > 0 ? String(sys.bandwidthKhz) : "";
         biasTee = sys.biasTee;
+        rtlSerialField.text = sys.rtlSerial || "";
         extraField.text = sys.extraArgs;
         nameField.text = sys.name;
         editOpenedName = sys.name;
@@ -650,12 +661,18 @@ Item {
         return !rtlTuner || ppmInRange();
     }
 
+    // A local dongle's serial, which the decoder matches exactly (see
+    // Util.rtlSerialValid()); other sources save none.
+    function rtlSerialValid() {
+        return sourceType !== "usb" || Util.rtlSerialValid(rtlSerialText);
+    }
+
     // A value the editor refuses (an older build took PPM up to +-999), loaded
     // or brought into view by a source change: the Advanced pane opens on its
     // error at load and on reaching the tune step, rather than holding
     // Continue with nothing shown.
     function revealRefusedTuning() {
-        if (!gainValid() || !ppmValid())
+        if (!gainValid() || !ppmValid() || !rtlSerialValid())
             advancedOpen = true;
     }
 
@@ -678,9 +695,9 @@ Item {
         // capture can: not until another chip is picked. Nor on a radio whose
         // bandwidth cannot filter the AM channel, or that cannot decode TETRA.
         if (step === 1)
-            return hangtimeValid() && gainValid() && ppmValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
+            return hangtimeValid() && gainValid() && ppmValid() && rtlSerialValid() && encryptionValid && (!radioSource || sessionArgs.freqValid(freqText))
                 && decodeFlagRunsHere(decodeFlag) && amBandwidthError().length === 0 && tetraRateError().length === 0;
-        return hangtimeValid() && gainValid() && ppmValid() && encryptionValid && nameText.trim().length > 0;
+        return hangtimeValid() && gainValid() && ppmValid() && rtlSerialValid() && encryptionValid && nameText.trim().length > 0;
     }
 
     // Whether @a sys still tunes what the import answered (@a imported): only
@@ -728,7 +745,7 @@ Item {
     }
 
     function commit() {
-        if (!hangtimeValid() || !gainValid() || !ppmValid() || !encryptionValid || replayPending)
+        if (!hangtimeValid() || !gainValid() || !ppmValid() || !rtlSerialValid() || !encryptionValid || replayPending)
             return;
         var sys = {
             name: nameText.trim(),
@@ -744,6 +761,7 @@ Item {
             hangtime: hangtimeText,
             bandwidthKhz: bwText.length > 0 ? intOr(bwText, -1) : -1,
             biasTee: biasTee,
+            rtlSerial: sourceType === "usb" ? rtlSerialText : "",
             extraArgs: extraText.trim(),
             filePath: fileText,
             decryptionProfileUid: decryptionProfileUid,
@@ -1809,6 +1827,20 @@ Item {
                                 copy[key] = value;
                                 wizard.airspySettings = copy;
                             }
+                        }
+                        // The local dongle's serial, as the Airspy's above: for
+                        // several dongles, whose indexes can change between boots.
+                        // Kept exactly (the decoder matches it with case), so
+                        // the keyboard neither capitalizes nor predicts.
+                        PlexTextField {
+                            id: rtlSerialField
+                            objectName: "systemRtlSerialField"
+                            label: qsTr("Serial (empty selects first device)")
+                            width: parent.width
+                            visible: wizard.sourceType === "usb"
+                            mono: true
+                            inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhPreferLatin
+                            error: Util.rtlSerialError(text)
                         }
                         // Gain and PPM are an RTL tuner's (an Airspy's gains are
                         // its own controls above, and it takes no PPM); the DSP

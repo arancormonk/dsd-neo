@@ -5,6 +5,7 @@
 
 #include <dsd-neo/app_control/analog_width_view.h>
 #include <dsd-neo/app_control/radio_source_view.h>
+#include <dsd-neo/app_control/rtl_device_view.h>
 #include <dsd-neo/app_control/rtl_gain_view.h>
 #include <dsd-neo/core/airspy_config.h>
 #include <dsd-neo/core/audio.h>
@@ -55,6 +56,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/input_failure.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -2555,26 +2557,125 @@ svc_airspy_apply(dsd_opts* opts, dsd_state* state, const dsd_airspy_config* conf
     return svc_airspy_apply_config_impl(opts, state, config, &tuning, 0, out_capture_stopped);
 }
 
+/* The spec that names the RTL-SDR, in the field the next open reads, as the change found it or makes it. The spec alone
+   names the dongle: the open selects it from there (dsd_rtl_spec_select_device()) and hands the selection back. */
+typedef struct {
+    dsd_app_radio_row_field field;
+    char spec[sizeof(((dsd_opts*)0)->audio_in_dev)];
+} svc_rtl_device_choice;
+
+/* The spec is the one record of the dongle an input opens, so a device change writes its selector where the next open
+   reads the spec (dsd_app_rtl_device_spec_field(), the rule the Device prompt's prefill reads it by), creating
+   `rtl:<dev>` when no RTL-SDR spec is remembered. DSD_ERR_NOT_SUPPORTED when that open is no local RTL-SDR (another
+   radio, or another input staged in place of a running one). */
+static int
+svc_rtl_device_spec_field(const dsd_opts* opts, dsd_app_radio_row_field* out) {
+    return dsd_app_rtl_device_spec_field(opts, out) == 0 ? 0 : DSD_ERR_NOT_SUPPORTED;
+}
+
+static const char*
+svc_rtl_device_field_text(const dsd_opts* opts, dsd_app_radio_row_field field) {
+    return field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV ? opts->audio_in_dev : opts->radio_in_dev;
+}
+
+static void
+svc_rtl_device_select(dsd_opts* opts, const svc_rtl_device_choice* choice) {
+    if (choice->field == DSD_APP_RADIO_ROW_AUDIO_IN_DEV) {
+        DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", choice->spec);
+    } else {
+        DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", choice->spec);
+    }
+}
+
+/* Restart the stream on @p next, and on a failed start put @p previous back and start it again, inside one hold of the
+   P25 SM tick guard, which the watchdog reads the input under (svc_airspy_reopen_impl()). With no stream running
+   before (an RTL-SDR input whose last start failed), the failed start puts back only the options: there is no receiver
+   to bring back, and starting the previous selector would open a dongle nobody asked for. */
+static int
+svc_rtl_device_reopen(dsd_opts* opts, dsd_state* state, const svc_rtl_device_choice* next,
+                      const svc_rtl_device_choice* previous, int* out_capture_stopped) {
+    p25_sm_tick_guard_enter();
+    dsd_input_failure failure_before;
+    dsd_input_failure_get(&failure_before);
+    const int stream_stopped = state->rtl_ctx != NULL;
+    const int capture_before = opts->iq_capture_requested;
+    svc_rtl_device_select(opts, next);
+    const int rc = svc_rtl_restart_locked(opts, state);
+    if (rc != 0) {
+        svc_rtl_device_select(opts, previous);
+        if (stream_stopped) {
+            (void)svc_rtl_restart_recovery_locked(opts, state, stream_stopped, capture_before, &failure_before,
+                                                  out_capture_stopped);
+        } else if (out_capture_stopped) {
+            *out_capture_stopped = capture_before && !opts->iq_capture_requested;
+        }
+    }
+    p25_sm_tick_guard_leave();
+    return rc;
+}
+
+/* An input with no local RTL-SDR to select. A fixed source (an I/Q replay) has no device to change: the restart would
+   only rewind it (issue #743 B2). An rtl_tcp server opens the dongle the server chose: a restart would only reconnect
+   it. */
+static int
+svc_rtl_device_not_selectable(const dsd_opts* opts) {
+    return svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+           || dsd_opts_input_has_fixed_tuning(opts)
+           || (opts->audio_in_type == AUDIO_IN_RTL && dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev));
+}
+
+/* The spec in force (@p previous) and the one the change makes (@p next), built before anything changes:
+   DSD_ERR_NOT_SUPPORTED when the next open is no local RTL-SDR (svc_rtl_device_spec_field()), -1 for a serial the rule
+   refuses or a spec the new device field does not fit. */
+static int
+svc_rtl_device_stage(const dsd_opts* opts, int index, const char* serial, svc_rtl_device_choice* previous,
+                     svc_rtl_device_choice* next) {
+    const int by_serial = serial && serial[0] != '\0';
+    if (by_serial && !dsd_rtl_serial_is_valid(serial)) {
+        return -1;
+    }
+    dsd_app_radio_row_field field = DSD_APP_RADIO_ROW_DEFAULT;
+    const int where = svc_rtl_device_spec_field(opts, &field);
+    if (where != 0) {
+        return where;
+    }
+    const char* spec = svc_rtl_device_field_text(opts, field);
+    previous->field = field;
+    DSD_SNPRINTF(previous->spec, sizeof previous->spec, "%s", spec);
+    next->field = field;
+    /* The spec names the new dongle (B2: a change used to leave the old one in it, which a save wrote), or is created
+       for it when no RTL-SDR spec was there. */
+    DSD_SNPRINTF(next->spec, sizeof next->spec, "%s", dsd_opts_audio_in_dev_is_rtl_spec(spec) ? spec : "rtl");
+    return dsd_rtl_spec_set_device(next->spec, sizeof next->spec, by_serial ? 0 : (index < 0 ? 0 : index),
+                                   by_serial ? serial : NULL)
+                   == 0
+               ? 0
+               : -1;
+}
+
 int
-svc_rtl_set_dev_index(dsd_opts* opts, dsd_state* state, int index) {
+svc_rtl_set_device(dsd_opts* opts, dsd_state* state, int index, const char* serial, int* out_capture_stopped) {
+    if (out_capture_stopped) {
+        *out_capture_stopped = 0;
+    }
     if (!opts || !state) {
         return -1;
     }
-    /* A fixed source (an I/Q replay) has no device to change: the restart would only rewind it (issue #743 B2). */
-    if (svc_radio_source_is_soapy(opts) || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
-        || dsd_opts_input_has_fixed_tuning(opts)) {
+    if (svc_rtl_device_not_selectable(opts)) {
         return DSD_ERR_NOT_SUPPORTED;
     }
-    if (index < 0) {
-        index = 0;
+    svc_rtl_device_choice previous;
+    svc_rtl_device_choice next;
+    const int staged = svc_rtl_device_stage(opts, index, serial, &previous, &next);
+    if (staged != 0) {
+        return staged;
     }
-    opts->rtl_dev_index = index;
-    /* Changing device requires reopen */
-    opts->rtl_needs_restart = 1;
-    if (opts->audio_in_type == AUDIO_IN_RTL) {
-        return svc_rtl_restart(opts, state);
+    if (opts->audio_in_type != AUDIO_IN_RTL) {
+        svc_rtl_device_select(opts, &next);
+        opts->rtl_needs_restart = 1;
+        return 0;
     }
-    return 0;
+    return svc_rtl_device_reopen(opts, state, &next, &previous, out_capture_stopped);
 }
 
 int

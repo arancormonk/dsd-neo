@@ -28,6 +28,7 @@
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/decode_mode.h>
 #include <dsd-neo/runtime/fp_mode.h>
+#include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/number_text.h>
 #include <math.h>
 #include <sndfile.h>
@@ -672,13 +673,19 @@ dsd_audio_enumerate_devices(dsd_audio_device* inputs, dsd_audio_device* outputs,
     return 0;
 }
 
+/* The input spec formatter the device prompt opens with logs through this; nothing here reads the log. */
+void
+dsd_neo_log_write(dsd_neo_log_level_t level, const char* format, ...) {
+    (void)level;
+    (void)format;
+}
+
 /* The RTL rows hand their prompt results to these; the rows themselves are what
  * is under test, so the callbacks only have to exist. */
 void
-cb_rtl_dev(void* u, int ok, int i) {
+cb_rtl_dev_text(void* u, const char* text) {
     (void)u;
-    (void)ok;
-    (void)i;
+    (void)text;
 }
 
 void
@@ -1741,6 +1748,43 @@ test_additional_prompt_and_toggle_actions(void) {
     rc |= expect_str("rtl freq reopen keeps the text", g_prompt.prefill, "146,52");
     rc |= expect_int("rtl freq reopen cap", (int)g_prompt.cap, 34);
     rc |= expect_int("rtl freq reopen callback", g_prompt.str_cb == cb_rtl_freq_text, 1);
+
+    /* Device... opens a string prompt on the device the spec the next RTL-SDR open reads names, never the device the
+       options last opened: an index, or a serial in the explicit serial=<sn> form, so a serial of digits submitted
+       again stays a serial; room for the longest serial with its prefix. */
+    const int saved_type = opts.audio_in_type;
+    reset_capture();
+    opts.audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:3:851.375M");
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "CACHED");
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt title", g_prompt.title, "Device (index or serial)");
+    rc |= expect_str("rtl device prompt shows the spec's index", g_prompt.prefill, "3");
+    rc |= expect_int("rtl device prompt cap", (int)g_prompt.cap, DSD_RTL_SERIAL_MAX + 9);
+    rc |= expect_int("rtl device prompt callback", g_prompt.str_cb == cb_rtl_dev_text, 1);
+    rc |= expect_int("rtl device prompt user", g_prompt.user == (void*)&ctx, 1);
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:serial=1090:851.375M");
+    reset_capture();
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt shows a serial explicitly", g_prompt.prefill, "serial=1090");
+    /* Serial A ran, then an Airspy, then PCM: the RTL-SDR row would open a bare rtl (the Airspy spec is passed over),
+       index 0, so the prompt shows 0, not the cached serial A, and Enter confirms what would open. */
+    opts.audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "airspy");
+    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "A");
+    reset_capture();
+    rtl_set_dev(&ctx);
+    rc |= expect_str("rtl device prompt on a bare rtl shows 0", g_prompt.prefill, "0");
+    opts.audio_in_type = saved_type;
+    opts.audio_in_dev[0] = '\0';
+    opts.radio_in_dev[0] = '\0';
+    opts.rtl_dev_serial[0] = '\0';
+    opts.rtl_dev_index = 0;
+    reset_capture();
+    ui_open_rtl_device_prompt(&ctx, "A:B");
+    rc |= expect_str("rtl device reopen keeps the text", g_prompt.prefill, "A:B");
+    rc |= expect_str("rtl device reopen title", g_prompt.title, "Device (index or serial)");
 
     /* '=' (issue #671) opens the same empty prompt where the row is offered, deciding on the frame's published options
        (the menu's context, issue #672 B9). */
@@ -3408,18 +3452,22 @@ test_scan_lists_action(void) {
    does an audio input, whose rows set up the RTL-SDR a switch opens. */
 static int
 test_tuner_rows_follow_tunability(void) {
+    /* The Device... row follows the same rule, except on a running rtl_tcp input: the server chose its dongle, and the
+       row's every answer would be refused there. A PCM session staging an rtl_tcp spec keeps it. */
     static const struct {
         const char* dev;
         int type;
         bool offered;
+        bool device_offered;
     } rows[] = {
-        {"rtl:0:851.0125M", AUDIO_IN_RTL, true},
-        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true},
-        {"airspy", AUDIO_IN_RTL, false},
-        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, false},
-        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, false},
-        {"iqudp:0.0.0.0:7355:48000:cu8", AUDIO_IN_RTL, false},
-        {"pulse", AUDIO_IN_PULSE, true},
+        {"rtl:0:851.0125M", AUDIO_IN_RTL, true, true},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_RTL, true, false},
+        {"airspy", AUDIO_IN_RTL, false, false},
+        {"iqreplay:capture.iq.json", AUDIO_IN_RTL, false, false},
+        {"iqtcp:127.0.0.1:1234:240000:cs16", AUDIO_IN_RTL, false, false},
+        {"iqudp:0.0.0.0:7355:48000:cu8", AUDIO_IN_RTL, false, false},
+        {"pulse", AUDIO_IN_PULSE, true, true},
+        {"rtltcp:127.0.0.1:1234", AUDIO_IN_PULSE, true, true},
     };
 
     int rc = 0;
@@ -3430,6 +3478,7 @@ test_tuner_rows_follow_tunability(void) {
         opts.audio_in_type = rows[i].type;
         DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", rows[i].dev);
         rc |= expect_int(rows[i].dev, tuner_rows_offered(&ctx), rows[i].offered);
+        rc |= expect_int(rows[i].dev, rtl_device_row_offered(&ctx), rows[i].device_offered);
     }
     opts.audio_in_dev[0] = '\0';
     opts.audio_in_type = 0;

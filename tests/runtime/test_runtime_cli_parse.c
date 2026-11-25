@@ -143,6 +143,37 @@ parse_args_capture_stderr(int argc, char** argv, dsd_opts* opts, dsd_state* stat
     return rc;
 }
 
+/* --rtl-list asks the CLI to list the RTL-SDR dongles (apps/dsd-cli/main.c) and takes no value. */
+static int
+test_rtl_list_flag(void) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        DSD_FPRINTF(stderr, "out of memory\n");
+        return 1;
+    }
+    initOpts(opts);
+    initState(state);
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rtl-list";
+    char arg2[] = "-fi";
+    char* argv[] = {arg0, arg1, arg2, NULL};
+    int argc_effective = 0;
+    int exit_rc = -1;
+    int fail = opts->rtl_list != 0;
+    const int rc = dsd_parse_args(3, argv, opts, state, &argc_effective, &exit_rc);
+    fail |= rc != DSD_PARSE_CONTINUE || opts->rtl_list != 1;
+    if (fail) {
+        DSD_FPRINTF(stderr, "--rtl-list: rc=%d rtl_list=%d\n", rc, opts->rtl_list);
+    }
+    freeState(state);
+    free(opts);
+    free(state);
+    return fail;
+}
+
 static int
 test_help_returns_one_shot_and_does_not_exit(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -14255,6 +14286,7 @@ main(void) {
     rc |= test_F_relaxes_crc_and_notice_omits_nxdn();
     rc |= test_X_seed_is_hand_set();
     rc |= test_tg_lockout_persistence_flags();
+    rc |= test_rtl_list_flag();
     return rc;
 }
 

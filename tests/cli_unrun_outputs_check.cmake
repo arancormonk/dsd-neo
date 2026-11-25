@@ -3,8 +3,9 @@
 # A dsd-neo run that stops before decoding leaves no per-call recording behind (#782 gate r2 H3). The -P option once
 # opened each slot's WAV under a TEMP_ name while the options were parsed, and only the engine's cleanup closed it; it
 # now opens them at the run's start (issue #708), and the CLI still releases what a stopped parse opened. MODE names
-# how the run stops before the engine: PARSE_ERROR (an unknown option after -P) or AIRSPY_LIST (--airspy-list, which
-# lists and exits).
+# how the run stops before the engine: PARSE_ERROR (an unknown option after -P), AIRSPY_LIST (--airspy-list, which
+# lists and exits) or RTL_LIST (--rtl-list, the same for RTL-SDR dongles: exit 0 with a list or "No RTL-SDR devices
+# found.", exit 1 only without RTL-SDR support).
 #
 # Expected -D inputs: DSD_BIN, MODE, WORK_DIR.
 foreach(_var DSD_BIN MODE WORK_DIR)
@@ -34,6 +35,16 @@ elseif(MODE STREQUAL "AIRSPY_LIST")
         "${WORK_DIR}/wav"
         -P
         --airspy-list
+    )
+    set(_want_rc_nonzero FALSE)
+elseif(MODE STREQUAL "RTL_LIST")
+    set(_args
+        -i
+        -
+        -7
+        "${WORK_DIR}/wav"
+        -P
+        --rtl-list
     )
     set(_want_rc_nonzero FALSE)
 else()
@@ -69,6 +80,27 @@ if(_want_rc_nonzero AND _rc EQUAL 0)
         FATAL_ERROR
         "cli_unrun_outputs_check ${MODE}: the unknown option was accepted\n${_err}"
     )
+endif()
+if(MODE STREQUAL "RTL_LIST")
+    # The list, an empty one (exit 0), or no RTL-SDR support in this build (exit 1); never the decoder running.
+    if("${_err}" MATCHES "RTL-SDR support unavailable")
+        set(_rtl_list_rc_ok 1)
+    elseif(
+        "${_err}${_out}" MATCHES "No RTL-SDR devices found\\.|RTL-SDR [0-9]+: "
+    )
+        set(_rtl_list_rc_ok 0)
+    else()
+        message(
+            FATAL_ERROR
+            "cli_unrun_outputs_check RTL_LIST: no list and no reason\n${_out}\n${_err}"
+        )
+    endif()
+    if(NOT _rc EQUAL _rtl_list_rc_ok)
+        message(
+            FATAL_ERROR
+            "cli_unrun_outputs_check RTL_LIST: exit ${_rc}, expected ${_rtl_list_rc_ok}\n${_err}"
+        )
+    endif()
 endif()
 if(NOT "${_err}${_out}" MATCHES "Per Call Wav File Enabled")
     message(

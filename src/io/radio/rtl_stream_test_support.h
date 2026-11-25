@@ -1910,6 +1910,9 @@ int rtl_stream_test_squelch_plumbing(void);
  * (issue #899 B12). */
 uint32_t rtl_stream_test_squelch_device_hash(const char* spec);
 
+/* The I/Q capture's source_args for a local dongle at @p index whose verified serial is @p serial (NULL: not known). */
+void rtl_stream_test_capture_rtl_usb_args(int index, const char* serial, char* out, size_t out_size);
+
 /* Open @p opts at 48 kHz, leave @p preset_scale as the output scale an I/Q replay finds (0 in a process that never ran
  * a live stream, or what an earlier session set), and apply a replay capture's settings (1.536 Msps, base decimation
  * 32, 48 kHz demod rate) as a replay open does: @p out_scale receives the output scale the replay then runs. */

@@ -67,6 +67,9 @@ Window {
             return qsTr("The previous session is still stopping. Tap Retry to start this one once it has stopped.");
         if (kind === 9)
             return qsTr("The decoder did not respond in time, so the session was not started. Tap Retry, or open Details if this keeps happening.");
+        var serialFailure = serialStartFailure(false);
+        if (serialFailure.length)
+            return serialFailure;
         var receiverFailure = receiverStartFailure(false);
         if (receiverFailure.length)
             return receiverFailure;
@@ -100,7 +103,22 @@ Window {
         return qsTr("%1 is no longer connected, so the session was not started. Plug it back in, then tap Retry.").arg(receiver);
     }
     /**
-     * A start attempt's own failure (kinds 8-12, android/run_status.h) worded
+     * A start that named an RTL-SDR serial no single dongle carries (kinds 13
+     * and 14, android/run_status.h): two readable dongles carry it, or none
+     * attached does. The service's own text leads, since only it knows which
+     * serial the session asked for and what to change; the card adds its
+     * Retry, Signal search's screen (@p search) its own restart. Empty for any
+     * other failure.
+     */
+    function serialStartFailure(search) {
+        var kind = decoderHost ? decoderHost.inputFailureKind || 0 : 0;
+        if (kind !== 13 && kind !== 14)
+            return "";
+        var reason = decoderHost.failureText;
+        return search ? qsTr("%1 Then start the search again.").arg(reason) : qsTr("%1 Then tap Retry.").arg(reason);
+    }
+    /**
+     * A start attempt's own failure (kinds 8-14, android/run_status.h) worded
      * for Signal search's screen, which has no Retry or Details: the search is
      * started again from its controls. Empty for any other failure.
      */
@@ -110,7 +128,8 @@ Window {
             return qsTr("The previous session is still stopping, so Signal search was not started. Start the search again once it has stopped.");
         if (kind === 9)
             return qsTr("The decoder did not respond in time, so Signal search was not started. Start the search again, or open Diagnostics in Settings if this keeps happening.");
-        return receiverStartFailure(true);
+        var serialFailure = serialStartFailure(true);
+        return serialFailure.length ? serialFailure : receiverStartFailure(true);
     }
     // #647 D2a: the host's word on the last session's receiver, scoped to that
     // session. Listen gives it a notice once the session is over; while it
@@ -673,8 +692,9 @@ Window {
     /**
      * A copy of @p system on receiver kind @p kind, keeping the settings that
      * kind takes. An Airspy's own settings (its serial among them) only go
-     * with an Airspy; a switch to one drops an RTL's PPM, bias tee and tuner
-     * gain, since an Airspy takes its gains and tee from its own map.
+     * with an Airspy, and an RTL-SDR's serial only with a USB dongle; a switch
+     * to an Airspy drops an RTL's PPM, bias tee and tuner gain, since an
+     * Airspy takes its gains and tee from its own map.
      */
     function onReceiver(system, kind) {
         var moved = Object.assign({}, system);
@@ -688,7 +708,25 @@ Window {
         }
         if (moved.sourceType !== "airspy")
             delete moved.airspy;
+        if (moved.sourceType !== "usb")
+            delete moved.rtlSerial;
         return moved;
+    }
+    /** The USB serial a start of @p system asks for: its Airspy's or its RTL-SDR's, or empty for any device. */
+    function wantedDeviceSerial(system) {
+        if (system.sourceType === "airspy")
+            return String((system.airspy || {}).serial || "");
+        return system.sourceType === "usb" ? String(system.rtlSerial || "") : "";
+    }
+    /**
+     * Whether the connected device's serial @p connected is the @p wanted one
+     * of receiver kind @p kind: an Airspy's without case (its hex serial), an
+     * RTL-SDR's exactly, as the decoder matches it.
+     */
+    function sameDeviceSerial(kind, connected, wanted) {
+        if (kind === "airspy")
+            return String(connected).toUpperCase() === String(wanted).toUpperCase();
+        return String(connected) === String(wanted);
     }
     /** A copy of @p system on the receiver attached now, as every Explore start resolves it (rtl_tcp stays). */
     function onAttachedReceiver(system) {
@@ -1901,8 +1939,13 @@ Window {
             remember: remember
         };
         completionMessage = "";
-        var wantedSerial = sys.sourceType === "airspy" ? String((sys.airspy || {}).serial || "").toUpperCase() : "";
-        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && String(decoderHost.localDeviceSerial).toUpperCase() !== wantedSerial))) {
+        var wantedSerial = mainRoot.wantedDeviceSerial(sys);
+        // A saved serial no spec can carry (an import or a restored backup
+        // never passed the editor) asks for no device: the start below
+        // refuses it with the reason, rather than wait on a dongle that the
+        // session could never open.
+        var deviceNamed = sys.sourceType !== "usb" || Util.rtlSerialValid(wantedSerial);
+        if ((sys.sourceType === "usb" || sys.sourceType === "airspy") && deviceNamed && decoderHost.localDeviceBrokered && (!decoderHost.localDeviceReady || decoderHost.localDeviceSource !== sys.sourceType || (wantedSerial.length > 0 && !mainRoot.sameDeviceSerial(sys.sourceType, decoderHost.localDeviceSerial, wantedSerial)))) {
             // Not a silent return: the platform's status line is the only thing
             // that can say why ("USB permission denied", "No RTL-SDR attached"),
             // and it keeps updating as the permission dialog resolves. When the
@@ -1919,7 +1962,7 @@ Window {
             mainRoot.pendingStartRoam = roam;
             if (roam)
                 siteRoaming.noteWaitingForUsb(roam.roamId);
-            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, String((sys.airspy || {}).serial || ""));
+            decoderHost.requestLocalDeviceAccessForSource(sys.sourceType, wantedSerial);
             return;
         }
         mainRoot.dismissedFailure = "";
@@ -1968,7 +2011,8 @@ Window {
             } else if (built.error === "am-needs-radio") {
                 mainRoot.startError = qsTr("“%1” decodes AM, which needs a radio source: network and file audio arrives already demodulated. Edit the source to correct it.").arg(sys.name);
             } else if (built.error === "call-recording-option" || built.error === "call-recording-static-wav"
-                       || built.error === "iq-stream-extra" || built.error === "extra-incomplete") {
+                       || built.error === "iq-stream-extra" || built.error === "extra-incomplete"
+                       || built.error === "rtl-serial") {
                 mainRoot.startError = built.errorText;
             } else if (built.error === "recording-missing") {
                 mainRoot.startError = qsTr("The recording for “%1” is missing. Edit the system and choose its recording again.").arg(sys.name);

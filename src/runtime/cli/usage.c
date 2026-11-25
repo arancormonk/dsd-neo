@@ -177,7 +177,9 @@ dsd_cli_usage_section_radio(void) {
     printf("RTL-SDR options:\n");
     printf(" Usage: rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]\n");
     printf("  NOTE: all arguments after rtl are optional now for trunking, but user configuration is recommended\n");
-    printf("  dev  <num>    RTL-SDR Device Index Number (default 0)\n");
+    printf(
+        "  dev  <num|serial>  RTL-SDR device: index (0, 1, ...) or USB serial; serial=<sn> for a serial that is a\n");
+    printf("                     plain number (default 0; dsd-neo --rtl-list shows them)\n");
     printf("  freq <num>    RTL-SDR Frequency (851800000 or 851.8M)\n");
     printf("  gain <num>    RTL-SDR Device Gain (0-49)(default = 0; Hardware AGC recommended)\n");
     printf("  ppm  <num>    RTL-SDR PPM Error (default = 0)\n");
@@ -194,6 +196,8 @@ dsd_cli_usage_section_radio(void) {
     printf("  bias[=on|off] Enable 5V bias tee on compatible dongles (default off)\n");
     printf(" Example: dsd-neo -fs -i rtl -C cap_plus_channel.csv -T\n");
     printf(" Example: dsd-neo -fp -i rtl:0:851.375M:22:-2:24:0:2\n");
+    printf(" Example: dsd-neo -fp -i rtl:00000001:851.375M:22:-2:24:0:2\n");
+    printf("  --rtl-list                           List RTL-SDR devices (index, serial)\n");
     printf("\n");
     printf("RTL-TCP options:\n");
     printf(" Usage: rtltcp[:host:port[:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]]]\n");

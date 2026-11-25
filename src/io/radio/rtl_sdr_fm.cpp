@@ -45,6 +45,7 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_device_select.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/io/udp_control.h>
@@ -62,6 +63,7 @@
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/input_ring_watermark.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/log.h>
 #include <dsd-neo/runtime/mem.h>
 #include <dsd-neo/runtime/ring.h>
@@ -9021,6 +9023,17 @@ capture_backend_name(RadioSourceKind source_kind) {
     return "rtl_usb";
 }
 
+/* A local dongle's source_args: its index, and @p serial, verified on its handle (whether it was chosen by serial or by
+   index), when known and one a spec can name, so a replay says which dongle recorded it. */
+static void
+capture_rtl_usb_args(int index, const char* serial, char* out_args, size_t out_args_size) {
+    if (serial != NULL && dsd_rtl_serial_is_valid(serial)) {
+        DSD_SNPRINTF(out_args, out_args_size, "index=%d,serial=%s", index, serial);
+    } else {
+        DSD_SNPRINTF(out_args, out_args_size, "index=%d", index);
+    }
+}
+
 static void
 capture_backend_args(const dsd_opts* opts, RadioSourceKind source_kind, char* out_args, size_t out_args_size) {
     if (!out_args || out_args_size == 0) {
@@ -9063,7 +9076,9 @@ capture_backend_args(const dsd_opts* opts, RadioSourceKind source_kind, char* ou
         DSD_SNPRINTF(out_args, out_args_size, "%s", soapy_args ? soapy_args : "");
         return;
     }
-    DSD_SNPRINTF(out_args, out_args_size, "index=%d", opts->rtl_dev_index);
+    char serial[RTL_DEVICE_STRING_SIZE];
+    const int known = rtl_device_usb_serial(rtl_device_handle, serial, sizeof serial) == 0;
+    capture_rtl_usb_args(opts->rtl_dev_index, known ? serial : NULL, out_args, out_args_size);
 }
 
 static int
@@ -9716,15 +9731,46 @@ squelch_device_spec_unkeyed_fields(const char* spec, int* skip) {
     return 1;
 }
 
+/* An rtl spec whose device field names a serial, rewritten with the field in its one form, `serial=<sn>`
+   (dsd_rtl_spec_set_device()), into @p out: `rtl:00000001:...` and `rtl:serial=00000001:...` name one dongle. 0 for
+   any other spec, an index among them, which is keyed as written. */
+static int
+squelch_device_spec_canonical_serial(const char* spec, char* out, size_t out_size) {
+    if (strncmp(spec, "rtl:", 4) != 0 || strlen(spec) >= out_size) {
+        return 0;
+    }
+    const char* field = spec + 4;
+    const char* end = strchr(field, ':');
+    const size_t len = end ? (size_t)(end - field) : strlen(field);
+    char dev[DSD_RTL_SERIAL_MAX + 16];
+    if (len >= sizeof dev) {
+        return 0;
+    }
+    DSD_MEMCPY(dev, field, len);
+    dev[len] = '\0';
+    char serial[DSD_RTL_SERIAL_MAX + 1];
+    if (dsd_rtl_device_field_parse(dev, NULL, serial, sizeof serial) != DSD_RTL_DEV_SERIAL) {
+        return 0;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", spec);
+    return dsd_rtl_spec_set_device(out, out_size, 0, serial) == 0;
+}
+
 /* FNV-1a of the input spec: the device part of the auto squelch's floor context. In an rtl, rtltcp or Airspy spec the
    start frequency, the squelch field and the volume are left out (the key has the applied frequency, and the other two
    set no noise), and so are empty fields at its end, so a start at another frequency, squelch or volume finds the
-   floors learned before; every other field counts as written, and any other spec counts whole. (A parsed Airspy spec
+   floors learned before; every other field counts as written, and any other spec counts whole. An rtl spec's serial
+   counts in its one form, serial=<sn>, however the spec spells it; an index counts as written. (A parsed Airspy spec
    is already rewritten to its device alone, airspy[:serial=...], before a stream opens.) */
 static uint32_t
 squelch_device_hash(const char* spec) {
     uint32_t h = 2166136261U;
+    /* An input spec holds up to 2047 characters; its serial form adds `serial=`. */
+    char canonical[2048 + 8];
     const char* text = spec ? spec : "";
+    if (squelch_device_spec_canonical_serial(text, canonical, sizeof canonical)) {
+        text = canonical;
+    }
     int skip[3] = {-1, -1, -1};
     const int layout = squelch_device_spec_unkeyed_fields(text, skip);
     int field = 0;
@@ -9957,14 +10003,27 @@ stream_open_open_device_soapy(const dsd_opts* opts) {
     return 0;
 }
 
+/* The local dongle: by index, or by the serial an rtl: spec names, which is looked up again at every open (the index it
+   was found at goes to dongle.dev_index). */
 static int
-stream_open_open_device_usb(void) {
-    rtl_device_handle = rtl_device_create(dongle.dev_index, &input_ring);
+stream_open_open_device_usb(const dsd_opts* opts) {
+    const char* serial = opts->rtl_dev_serial;
+    int opened_index = dongle.dev_index;
+    rtl_device_handle = rtl_device_create_selected(dongle.dev_index, serial, &input_ring, &opened_index);
     if (!rtl_device_handle) {
-        LOG_ERROR("Failed to open rtlsdr device %d.\n", dongle.dev_index);
+        if (serial[0] != '\0') {
+            LOG_ERROR("Failed to open the RTL-SDR with serial \"%s\".\n", serial);
+        } else {
+            LOG_ERROR("Failed to open rtlsdr device %d.\n", dongle.dev_index);
+        }
         return -1;
     }
-    LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
+    dongle.dev_index = opened_index;
+    if (serial[0] != '\0') {
+        LOG_INFO("Using RTLSDR Device Index: %d (SN %s). \n", dongle.dev_index, serial);
+    } else {
+        LOG_INFO("Using RTLSDR Device Index: %d. \n", dongle.dev_index);
+    }
     rtl_device_print_offset_capability(rtl_device_handle);
     return 0;
 }
@@ -9988,7 +10047,7 @@ stream_open_open_device(RadioSourceKind source_kind, const dsd_opts* opts, const
     } else if (source_kind == RADIO_SOURCE_SOAPY) {
         rc = stream_open_open_device_soapy(opts);
     } else {
-        rc = stream_open_open_device_usb();
+        rc = stream_open_open_device_usb(opts);
     }
     if (rc != 0) {
         return rc;
@@ -10804,6 +10863,16 @@ stream_open_apply_initial_gain(RadioSourceKind source_kind) {
     }
 }
 
+/* What the device just opened tells the options: an Airspy's info, and the index a local dongle chosen by serial was
+   found at (for the decoder's options, RtlSdrOrchestrator::start()). 0, or -1 when the Airspy's input cannot run. */
+static int
+stream_open_note_opened_device(dsd_opts* opts, RadioSourceKind source_kind) {
+    if (source_kind == RADIO_SOURCE_RTL_USB) {
+        opts->rtl_dev_index = dongle.dev_index;
+    }
+    return source_kind == RADIO_SOURCE_AIRSPY ? stream_open_init_airspy_input(opts) : 0;
+}
+
 static int
 stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind,
                                      const dsd_iq_replay_config* replay_cfg, int replay_cfg_loaded,
@@ -10834,7 +10903,7 @@ stream_open_configure_pipeline_state(dsd_opts* opts, RadioSourceKind source_kind
     if (stream_open_open_device(source_kind, opts, replay_cfg, replay_cfg_loaded) != 0) {
         return -1;
     }
-    if (source_kind == RADIO_SOURCE_AIRSPY && stream_open_init_airspy_input(opts) != 0) {
+    if (stream_open_note_opened_device(opts, source_kind) != 0) {
         return -1;
     }
     if (source_kind == RADIO_SOURCE_NET_IQ
@@ -10882,6 +10951,35 @@ stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind)
 
 extern "C" int dsd_rtl_stream_soft_stop(void);
 
+/* The dongle a local RTL-SDR start opens, from its spec: the spec is the one record of it, so whatever the options held
+   before (a cached index or serial from another spec) the device field selects it here (dsd_rtl_spec_select_device()),
+   and a field the grammar refuses fails the start before anything opens. With an Android descriptor, which is the one
+   device there is, an index names it as 0, the spec rewritten so the options, the spec and a capture agree (as the
+   engine's startup does); a serial is checked on the descriptor's dongle at the open. A spec that is no rtl one opens
+   nothing. 0, or -1 when refused. */
+static int
+stream_open_select_local_rtl(dsd_opts* opts) {
+    /* Only an rtl spec opens a local dongle: any other name the source detection reads as one by default (a staged
+       "pulse", say) opens nothing, rather than whatever dongle the options last selected. */
+    const int selected = dsd_rtl_spec_select_device(opts, opts->audio_in_dev);
+    if (selected == 0) {
+        LOG_ERROR("RTL-SDR: the input \"%s\" is no RTL-SDR spec (rtl or rtl:<dev>:...); no local dongle opens.\n",
+                  opts->audio_in_dev);
+        return -1;
+    }
+    if (selected < 0) {
+        LOG_ERROR("RTL-SDR: the input \"%s\" names no device that can be opened.\n", opts->audio_in_dev);
+        return -1;
+    }
+    if (rtl_device_preopened_fd_is_set() && opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index != 0) {
+        LOG_WARN("WARNING: Requested RTL device index %d out of range (found 1 device(s)); using 0\n",
+                 opts->rtl_dev_index);
+        opts->rtl_dev_index = 0;
+        (void)dsd_rtl_spec_set_device(opts->audio_in_dev, sizeof opts->audio_in_dev, 0, NULL);
+    }
+    return 0;
+}
+
 /**
  * @brief Initialize and open the RTL-SDR streaming pipeline, threads, and buffers.
  *
@@ -10904,6 +11002,9 @@ dsd_rtl_stream_open(dsd_opts* opts, const rtl_stream_start_gate* start_gate) {
 
     RadioSourceKind source_kind = detect_radio_source(opts);
     if (stream_open_validate_source_selection(opts, source_kind) != 0) {
+        return -1;
+    }
+    if (source_kind == RADIO_SOURCE_RTL_USB && stream_open_select_local_rtl(opts) != 0) {
         return -1;
     }
 
@@ -20367,6 +20468,11 @@ rtl_stream_test_squelch_plumbing(void) {
 extern "C" uint32_t
 rtl_stream_test_squelch_device_hash(const char* spec) {
     return squelch_device_hash(spec);
+}
+
+extern "C" void
+rtl_stream_test_capture_rtl_usb_args(int index, const char* serial, char* out, size_t out_size) {
+    capture_rtl_usb_args(index, serial, out, out_size);
 }
 
 extern "C" int

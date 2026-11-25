@@ -123,7 +123,7 @@ Main Menu
 │       ├── Tuner autogain [On]                      (not on an Airspy)
 │       ├── Bias tee [Off]                           (not on an Airspy)
 │       ├── ─────
-│       ├── Device index...                          (not on an Airspy)
+│       ├── Device...                                (not on an Airspy or rtl_tcp)
 │       ├── Restart stream
 │       ├── Auto-PPM & rtl_tcp                       (not on an Airspy)
 │       │   ├── Auto-PPM [On]
@@ -366,8 +366,8 @@ stop, and the message says so). From an audio input, a radio that does not start
   it goes back to the radio an audio switch left, else to an RTL-SDR. `Airspy R2 / Mini` always opens the Airspy.
 - A switch names the input it opened (`udp:127.0.0.1:7355`, `tcp:host:port`, `pulse:<device>`, the file), so a saved
   config reopens the same input. Startup tells a file's kind by its extension, so a symbol capture reopens as one only
-  when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream); a capture recorded under another name
-  reopens as PCM audio.
+  when its name ends in `.bin` (`.raw` or `.sym` for a float symbol stream), in lower case; a capture recorded under
+  another name (`.SYM` included) reopens as PCM audio.
 
 While a `-Y` scan with rows runs, or a `--trunk-scan` has targets (running or paused), every switch (the audio inputs,
 the radio rows `RTL-SDR` and `Airspy R2 / Mini`, and `Stop replay`) is refused with `Unsupported: stop the scan first`:
@@ -379,6 +379,42 @@ While a UDP sender is silent, a menu command is applied once the silence has las
 that went away is noticed when a read times out (the socket's receive timeout, 1.5 seconds by default); an M17
 session's reconnect then gives way to a menu command between its attempts. A sender that stops in the middle of a
 frame is waited for, as before.
+
+### RTL-SDR device
+
+Input > RTL-SDR > `Device...` chooses the local RTL-SDR the input opens. Its prompt, `Device (index or serial)`, opens
+on the device the RTL-SDR spec that would open names: its index (`0`; `0` too for a bare `rtl`), or its USB serial in
+the explicit form (`serial=00000001`), never a device an earlier input opened, so Enter confirms what would open. It reads
+the answer the way `-i rtl:<dev>:...` reads its device field:
+
+- A plain number with no leading zero (`0`, `1`, `12`) is an index. Indexes follow USB enumeration and can change
+  between boots.
+- Any other text is a serial, matched exactly (case and spaces count): `00000001`, `A1B2`. Write `serial=1090` for a
+  serial that is a plain number.
+- Anything a serial cannot be (a `:` or `"`, a space at either end, more than 127 characters) shows
+  `Enter an index like 0 or a serial like 00000001` and reopens the prompt with the text kept. An empty answer changes
+  nothing.
+
+With the RTL-SDR running, the stream reopens on the new dongle (`Applied: RTL device -> serial 00000001`); when it
+does not start (not plugged in, or held by another program), the dongle that ran runs again and the toast says
+`Failed: RTL device -> serial 00000001 (see log)`. With audio input running, the choice is written into the RTL-SDR spec
+the switch back opens (created when none is remembered), which opens it on the tuning it had; when that switch would
+open another radio (an rtl_tcp server, say), the choice is refused. Whatever opens, the switch opens the dongle its
+spec names. A save writes the dongle chosen (`rtl_serial` or `rtl_device`). Over
+rtl_tcp the server chooses its dongle, so the row is hidden there (the API answers `Unsupported`). A serial too long
+for the toast is shown cut with `...`; the log names it whole. The I/O pane names a dongle chosen by serial on
+a row of its own (`| RTL: SN 00000001;`), and the Source row reads `Source: RTL-SDR SN 00000001`.
+
+While a radio runs (an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay), Config > Load
+refuses a config whose `[input]` selects Pulse, file, TCP or UDP audio, and changes nothing:
+`Refused: this config selects Pulse audio while the radio runs; use Switch source, or stop the receiver first`. Open
+that input with Input > `Switch source`, or stop the receiver, then load the config. A config for the running radio
+(the same device, or settings only, such as an RTL-SDR `[input]` without `rtl_freq`) applies live, and one naming
+another radio input reopens the receiver on it. With audio input running, a config naming a radio input writes its
+spec for the switch back to the radio, as before.
+
+Switch source refuses a file whose name reads as another input (`rtl`, `airspy`, `pulse`, `udp`, ...): a saved config
+and the radio rows read the input's name, so it would come back as that input. Give such a file a path, like `./rtl`.
 
 ### Frequency entry
 
@@ -611,7 +647,8 @@ The squelch readout keeps the room of the longest status its setting can show, s
 from `(learning)` to `(quieting   23 dB)`. The UDP counters take six places each: up to 999999 as digits, then tenths
 of a unit (`1.2M`, `4.2G`). `FRQ:` is the tuned frequency in MHz to the Hz, in the eleven places the highest
 frequency takes (`FRQ: 4294.967295 MHz;`), and `FRQ:           - MHz;` while none is known. An Airspy names itself on a
-row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`), and so do an rtl_tcp
+row of its own (`| Airspy: <serial>; <rate> samples/s;`) above its receiver row (`| G: ...`), and so do an RTL-SDR
+chosen by USB serial (`| RTL: SN 00000001;`; one chosen by index stays `| RTL: 0; G: ...`), an rtl_tcp
 server (`| rtl_tcp: <host>:<port>;`), an I/Q replay (`| I/Q replay: <file>;`) and an I/Q stream
 (`| I/Q stream: 127.0.0.1:1234; cs16, 48 kHz; connected`, over UDP `| I/Q stream: UDP 127.0.0.1:7355; ...`, or
 `UDP :7355` when it binds every address, its state last: `connecting`, `reconnecting` or `connected` over TCP,

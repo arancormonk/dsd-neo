@@ -552,7 +552,16 @@ typedef struct dsdneoUserConfig {
     int has_input;
     dsdneoUserInputSource input_source;
     char pulse_input[256];
+    /* The RTL-SDR the input opens: rtl_serial, a USB serial (dsd_rtl_serial_is_valid(); DSD_RTL_SERIAL_MAX + 1 bytes),
+       wins over rtl_device, the index, which names it only while rtl_serial is "". rtl_device_is_set and
+       rtl_serial_is_set say the config names the key: a patch merges the two into a retained [input] as one choice
+       (dsd_user_config_retained_input_patched()). rtl_serial_invalid says it named a serial the rule refuses, which
+       refuses the input too: its spec carries a device field the start refuses, never index 0. */
     int rtl_device;
+    char rtl_serial[128];
+    int rtl_device_is_set;
+    int rtl_serial_is_set;
+    int rtl_serial_invalid;
     char rtl_freq[64];
     int rtl_gain;
     int rtl_gain_is_set; /* distinguish explicit 0 (AGC) from omitted; see dsd_user_config_rtl_gain_is_set() */

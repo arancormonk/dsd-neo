@@ -14,7 +14,7 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 - Analog: `-fA` (NFM monitor), `--nfm-bandwidth-hz <Hz>` (8000..25000, default 16000); `-fM` (native AM, radio/I/Q inputs only), `--am-bandwidth-hz <Hz>` (5000..20000, default 6000); `--tone-allow <list>` / `--tone-block <list>` / `--no-tone-filter` (CTCSS/DCS receive policy on the FM monitor, e.g. `67.0/100.0/D023N`); `--squelch auto[+N]` (open N dB over each analog channel's learned noise floor, radio inputs); `--squelch noise[+N]` (open an FM channel at N dB of quieting, as a radio's squelch does; on audio input from a reference it learns); `--squelch-analog-default <auto[+N]|noise[+N]>` (the squelch analog channels of a radio input run until a squelch is set); see [Analog reception](#analog-reception--fa--fm), [Tone filter](#tone-filter-ctcssdcs-receive-policy), [Auto squelch](#auto-squelch---squelch-auto), [Noise squelch](#noise-squelch---squelch-noise) and [Analog default squelch](#analog-default-squelch---squelch-analog-default)
 - Inversions/filtering: `-xx`, `-xr`, `-xd`, `-xz`, `-l`, `-q`
 - Trunking/scan: `-T`, `-Y`, `--trunk-scan targets.csv` (repeatable; `--trunk-scan-off targets.csv` adds a list that starts off; `--trunk-scan-hold <target-id>` starts held on one target; P25/DMR/NXDN96/NXDN48 trunk and conventional targets, YSF/D-STAR/dPMR/M17/TETRA DMO conventional targets and analog NFM and AM conventional targets; each type selects its decoder class), `-C chan.csv`, `-G group.csv`, `--src-csv src.csv`, `--p25-bandplan plan.csv`, `--p25-bandplan-export plan.csv`, `-W`, `-E`, `-p`, `-e`, `-I 1234`, `-U 4532`, `-B 12000`, `-t 1`, `--enc-lockout|--enc-follow`, `--tg-lockout-session|--tg-lockout-persist`, `--scan-voice-only`, `--scan-voice-qualify-ms <ms>`, `--scan-voice-hold-ms <ms>`, `--scan-max-visit-ms <ms>`, `--scan-skip-silent`, `--scan-skip-silent-ms <ms>`
-- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`gain` `0` = automatic, `1`–`49` = manual dB)
+- RTL‑SDR strings: `-i rtl:dev:freq:gain:ppm:bw:sql:vol[:bias=on|off]` or `-i rtltcp:host:port:freq:gain:ppm:bw:sql:vol[:bias=on|off]` (`dev` = device index or USB serial, see [Choosing a dongle by serial](#choosing-a-dongle-by-serial); `gain` `0` = automatic, `1`–`49` = manual dB); `--rtl-list` lists the dongles with their serials
 - Soapy selection: `-i soapy`, `-i soapy:driver=airspy[,serial=...]`, or `-i soapy[:args]:freq[:gain[:ppm[:bw[:sql[:vol]]]]]` (discover args with `SoapySDRUtil --find`; the Windows ZIP ships it and the Airspy and HackRF modules)
 - RTL retune control: `--rtl-udp-control <port>` binds to loopback by default; use
   `--rtl-udp-control-bind <ipv4>` for explicit remote exposure (see `docs/udp-control.md`). It stays off under
@@ -45,7 +45,9 @@ Friendly, practical overview of the `dsd-neo` command line. This covers what you
 
 Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the interactive setup (respects
 `DSD_NEO_NO_BOOTSTRAP`). When a config file is enabled and loads successfully, a no-arg run reuses it; use
-`--interactive-setup` to force the wizard.
+`--interactive-setup` to force the wizard. Its RTL-SDR question, `RTL device (index or serial)`, reads the answer as
+the device field of `-i rtl:<dev>:...` does (an index such as `0`, or a USB serial such as `00000001`; `serial=1090`
+for a serial that is a plain number), and asks again, saying what to enter, when the answer names neither.
 
 ## Configuration Files
 
@@ -94,7 +96,9 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
   input's CQPSK search records four; that difference is in the capture only, not in what decodes.
 - RTL‑SDR (USB): `-i rtl` or advanced string:
   - `rtl:dev:freq:gain:ppm:bw:sql:vol[:bias[=on|off]]`
-  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`
+  - Examples: `rtl:0:851.375M:22:-2:24:0:2`, `rtl:1:450M:0:0:12:0:2`, `rtl:00000001:851.375M:22:-2:24:0:2`
+  - `dev` is a device index (`0`, `1`, ...) or the dongle's USB serial (`00000001`, or `serial=1090` for a serial
+    that is a plain number); see [Choosing a dongle by serial](#choosing-a-dongle-by-serial).
   - `gain` `0` is automatic gain (the tuner's automatic gain and the RTL2832U's digital AGC); `1`–`49` is a manual
     gain in dB, run at the nearest step the tuner has. The first example asks for a manual 22 dB, the second for
     automatic gain. See RTL‑SDR details below.
@@ -152,7 +156,7 @@ Tip: If you run with no arguments and no config is loaded, `dsd-neo` starts the 
 - UDP PCM16 input: `-i udp[:bind_addr:port]` (defaults 127.0.0.1:7355; port `0` is the default too)
 - M17 UDP/IP frame input: `-i m17udp[:bind_addr:port]` (defaults `127.0.0.1:17000`; use `0.0.0.0` only when LAN access is intended; use with `-fU`)
 - Empty fields: the `rtl`, `rtltcp`, `tcp`, `udp` and `m17udp` specs read their fields by place, so an empty field keeps
-  its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens the default device at 851.0125 MHz with
+  its place and uses the default for that field. `-i rtl::851.0125M:20:3` opens device 0 at 851.0125 MHz with
   gain 20 and PPM 3, `-i rtltcp:192.0.2.10::851.375M` connects to port 1234, and `-i udp::7356` listens on `127.0.0.1`
   port 7356.
 - Ports: a port field must be a whole number from 1 to 65535 (`udp` input also takes `0` for its default). Anything
@@ -1656,7 +1660,7 @@ visit.
 | A DSP bandwidth, a decode mode switch, or a loaded config's `[mode]` or `[input]` `rtl_bw_khz`, during an I/Q stream (`-i iqtcp:`, `-i iqudp:`) | When the new settings plan another rate chain (a switch to TETRA on a 48 kHz stream, or back), the stream restarts at it: TCP reconnects to the sending program and UDP binds again, which the decoder takes as a gap (`Decoding TETRA: I/Q stream reconnected at 72 kHz`). A plan no chain reaches is refused before anything stops: the mode, symbol profile and DSP bandwidth go back and the stream keeps running. A loaded config's gain or PPM restarts nothing: the sending program runs the radio. Otherwise nothing restarts. |
 | A loaded config whose `[input]` reopens the running radio input | Reopens the device. When the reopened stream does not start (the device does not open, or its start refuses a width), the config is not applied to the receive side: the input and its device settings, the tuning, `[mode]` (the decoders and their timing, the EDACS variant, the extra LRRP ports), `[demod]` and `[analog]` (both widths and the tone filter) go back to what ran, that input is started again, and the message says why (`Config not applied: the rtl_tcp input did not start (see log)`). With `--iq-capture` that restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Under a scan row, the reopened stream opens on the configured settings, so its start checks the configured width at its DSP rate even while a digital row runs (the scan stops back onto that monitor), and the input put back after a rollback starts again on what its stream ran, the row's profile (a typed digital row's, whose rate need not fit the configured width); either stream is asked for the row's profile once the row is back. A row's own width the reopen bandwidth cannot filter leaves the config unapplied before anything reopens (see the DSP bandwidth row above); a reopened stream that still cannot run the analog row on air is rolled back the same way, with the message naming the width and the rate. A config that turns the scanner off (`[trunking] scanner = false`) leaves the row instead, so the reopened stream is not held to it. The config's other sections (output, trunking, logging, alerts, recording, DSP, a group list) stay applied. With no stream running before the load, the config's input is still opened; when that start fails there is nothing to put back, so the config stays applied with no input running, and the message says why (`Config applied; no input running: the SoapySDR input did not start (see log)`); an input it opens that cannot run the scan row on air is kept, with the whole config (its `[mode]` and `[analog]` widths too, even the width a row without its own runs and the new input refuses), and the message says so (`Config applied; the scan row cannot run: ...`). |
 | Input > Switch source > RTL-SDR or Airspy | RTL-SDR reopens the input as an RTL-SDR, rtl_tcp or SoapySDR device at the DSP bandwidth, and Airspy opens the Airspy at it (a SoapySDR or Airspy device's own rate is resampled to the bandwidth). An explicit NFM width, or the AM width in use, that bandwidth cannot filter, the configured one (under `-fA` or `-fM`, or while the scan has an analog row or target of its kind without a width of its own) or that of an analog scan row on air, is refused, naming both and the DSP bandwidths that fit, and the running input stays; `DSD_NEO_CHANNEL_LPF=0` is checked first over the same widths. The start then checks the width it opens on, the one in force (the configured one under `-fA` or `-fM`, or that of an analog scan row on air). The switch leaves the scan row on air in place, so under a row that runs a digital protocol it opens on that row's digital profile and checks no analog width, and a configured width the bandwidth cannot filter that the switch did not hold is left to the scan: its return to the monitor when the scan stops is refused and settled as the NFM or AM width row above describes, and its analog rows or targets that run that width are skipped at every visit. A switch whose start fails anyway (a device that does not open) puts the input it replaced back, restarting it when it was a running radio stream (a PCM input was never closed; a radio stream that ran behind it stays stopped), and says why: `Failed: the Airspy input did not start (see log)`. With `--iq-capture` the restart runs without the capture, which stops for the session, so it never writes over the recording (see IQ Capture And Replay for when the failed start already had). Once the input it replaced runs again, a device error the failed start reported (an Airspy that did not open) is dropped, so the session's exit status is what it was before the switch; a DSP bandwidth, a loaded config and an Airspy setting that roll back do the same. |
-| A radio stream restart while a scan row is on air: Input > Switch source, a DSP bandwidth, an Airspy setting, a gain, Device index..., Restart stream, or the restart of the input one of these puts back when its start fails | The new stream opens on the row's settings, but an open picks CQPSK or the FSK discriminator the way it does at startup (as `DSD_NEO_CQPSK` says when set), while the row's own tune ran the row's modulation. So the stream is asked for the row's profile as soon as it runs, timed for the rate it runs the row at: under `DSD_NEO_CQPSK=1` a P25 C4FM row is back on the FSK discriminator, under `DSD_NEO_CQPSK=0` a CQPSK row back on CQPSK, and an `nfm` or `am` row keeps the monitor it opened on. The decoder keeps its acquisition, and a restart that puts an input back resets nothing as for a new input. A loaded config under a scan row asks the same once the row is back (its row above). |
+| A radio stream restart while a scan row is on air: Input > Switch source, a DSP bandwidth, an Airspy setting, a gain, Device..., Restart stream, or the restart of the input one of these puts back when its start fails | The new stream opens on the row's settings, but an open picks CQPSK or the FSK discriminator the way it does at startup (as `DSD_NEO_CQPSK` says when set), while the row's own tune ran the row's modulation. So the stream is asked for the row's profile as soon as it runs, timed for the rate it runs the row at: under `DSD_NEO_CQPSK=1` a P25 C4FM row is back on the FSK discriminator, under `DSD_NEO_CQPSK=0` a CQPSK row back on CQPSK, and an `nfm` or `am` row keeps the monitor it opened on. The decoder keeps its acquisition, and a restart that puts an input back resets nothing as for a new input. A loaded config under a scan row asks the same once the row is back (its row above). |
 | A retune (scanner, trunking, manual tune) | The channel filter, de-emphasis, audio filter and squelch start from empty state on the new channel; a retune that lands on another DSP rate resolves the channel for that rate. |
 | `--nfm-bandwidth-hz`, `--am-bandwidth-hz`, `[analog] nfm_bandwidth_hz`, `am_bandwidth_hz` at startup | When the stream opens. |
 | Tone filter (`--tone-allow`, `--tone-block`, `--no-tone-filter`, `[analog] tone_filter` and `tone_list`) at startup | From the monitor's first read of audio. |
@@ -1736,10 +1740,11 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   back to a channel picks its floor up again; a channel within 5 MHz seeds a new channel's floor until three noise
   windows confirm it. The device is the input spec as written, except that an `rtl:`, `rtltcp:` or `airspy:` spec's
   start frequency, `sql` field and volume do not count (nor empty fields at its end), so a new start on another
-  frequency, squelch or volume finds the floors learned before; a change to the device index, the rtl_tcp host or port,
-  the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
-  `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by its index, so a different dongle at the same index
-  can take a floor learned on the one before.
+  frequency, squelch or volume finds the floors learned before; a change to the RTL-SDR device, the rtl_tcp host or
+  port, the Airspy serial, the gain, PPM, DSP bandwidth or bias tee keeps them apart, and every other spec (SoapySDR,
+  `--iq-replay`) counts whole. The spec names an RTL-SDR dongle by index or serial: one serial is one device however it
+  is written (`rtl:00000001` and `rtl:serial=00000001`); by index, a different dongle at the same index can take a
+  floor learned on the one before.
 - Restarts. A retune to another channel starts the windows over and moves to that channel's floor, which gates at once,
   even when the retune comes right after a restart. Any receiver restart on the same channel keeps its floor but starts
   closed: Stop and Start in the app, a stream reopen, an rtl_tcp reconnect, a USB recovery, an input overflow gap (an
@@ -3291,7 +3296,7 @@ does.
 
 ## RTL‑SDR details (`-i rtl` / `-i rtltcp`)
 
-- Fields: `dev` (device index), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise); one `--squelch` refuses stops the start, naming the field), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
+- Fields: `dev` (device index or USB serial, below), `freq` (Hz/MHz), `gain` (`0` automatic, `1`–`49` manual dB; see below), `ppm`, `bw` (kHz: 4, 6, 8, 12, 16, 24, 48 or 72; anything else runs at the 48 kHz default), `sql` (negative = threshold in dB, `0` = off, positive = linear mean power, `auto[+N]` = the [auto squelch](#auto-squelch---squelch-auto), `noise[+N]` = the [noise squelch](#noise-squelch---squelch-noise); one `--squelch` refuses stops the start, naming the field), `vol` (monitor gain, 0–3; typical 1–3), optional `bias[=on|off]`. `bias` alone (or `b`) turns the bias tee on; a value
   is one whole word: `on`/`off`, `1`/`0`, `true`/`false` or `yes`/`no` (any case). A value or trailing option it cannot
   read is ignored with a warning and leaves the bias tee as it was; the startup `RTL #N:` line ends in `BIAS=on` when
   it is on. 72 kHz is TETRA's bandwidth: it gives `-fT` a whole 4 samples per symbol at 18 ksym/s. The other modes run
@@ -3330,6 +3335,7 @@ does.
   on a fixed scale already, 3 kHz deviation at 15000). `-8` enables the separate source monitor tap.
 - Examples:
   - `-i rtl:0:851.375M:22:-2:24:0:2`
+  - `-i rtl:00000001:851.375M:22:-2:24:0:2`
   - `-i rtltcp:192.168.1.10:1234:851.375M:22:-2:24:0:2`
 - External retune control (RTL/RTL‑TCP): `--rtl-udp-control <port>` listens on `127.0.0.1` by default. Use
   `--rtl-udp-control-bind <ipv4>` only when the unauthenticated listener must be reachable remotely.
@@ -3366,6 +3372,11 @@ Stall recovery (`-i rtl`)
   When Android refuses that reset, the dongle is reopened without one, and a stall that persists ends with `... none
   since it was reopened (its USB reset was refused); the stream stops`. On Windows a WinUSB reset may not be a full
   port reset; whether it worked is judged by the samples that follow.
+- After the reset the dongle is found again by its triple and reopened only when the device found, the triple it was
+  identified by and the reopened handle all agree; the devices changing in between (another dongle at that index for a
+  moment) fail the recovery, which then stays off, rather than record the other dongle for the next reset. A dongle
+  chosen by serial is reopened only while that serial still leads to it alone: another readable device with the same
+  serial (whatever its other strings) fails the recovery the same way.
 - While the dongle is being reset, a frequency, gain, PPM or bias-tee change from a frontend or the control API is refused
   with `Failed: the RTL-SDR is being reset; try again in a moment` and changes nothing; every other command (menus, an
   input switch, quit) applies as soon as it is queued.
@@ -3406,6 +3417,74 @@ Advanced (env)
 - `DSD_NEO_RTL_VERIFY=0|1` — Retry and verify local USB RTL-SDR control applies (default on).
 - `DSD_NEO_RTL_VERIFY_ATTEMPTS=1..10` — Total local USB apply attempts when verification is enabled (default 10).
 - An rtl_tcp reconnect and a USB stall recovery reapply every one of these settings the dongle had taken.
+
+### Choosing a dongle by serial
+
+librtlsdr numbers the dongles it finds `0`, `1`, ... in the order the USB stack lists them, and that order can change
+from one boot or replug to the next. With several dongles, name each by its USB serial instead, which stays with the
+dongle:
+
+- The `dev` field is an index when it is a plain decimal number with no leading zero (`0`, `1`, `12`), so scripts
+  that name a dongle by index read as before. `serial=<sn>` is always a serial, for a serial such as `1090` that would
+  read as an index. Any other value (`00000001`, `0000001`, `A1B2`) is a serial. `01` and `+1` are serials now, not
+  index 1. An empty field (`rtl::851.375M`), or a bare `rtl`, is index 0 with no serial: the spec alone names the
+  dongle, never a device an earlier input selected.
+- A serial matches exactly, case included, as librtlsdr's own lookup does: no prefix, suffix or number reading
+  (`00000001` never opens index 1). It is 1 to 127 printable ASCII characters with no `:` or `"` and no space at
+  either end; a dongle whose serial is anything else is still listed by `--rtl-list`, and can be chosen by index or
+  given a serial `rtl_eeprom -s` can write.
+- `dsd-neo --rtl-list` prints each dongle's index, manufacturer, product and serial, and the `-i` argument that
+  names it (`RTL-SDR 1: Realtek, RTL2838UHIDIR, SN: 00000002  (-i rtl:00000002)`), safe to paste into any shell. It
+  offers that argument only for a serial of letters, digits, `.`, `_` and `-`; any other serial is shown quoted
+  (`SN: "1 East"`) with a note to quote the whole `-i` argument (`-i "rtl:1 East:851.375M"`). It exits 0, also when
+  no dongle is found, and 1 when the build has no RTL-SDR support or the enumeration failed. A device's strings are
+  shown with any byte other than printable ASCII as `\xNN` (and `\` doubled), so a control character a device
+  reports never reaches the terminal; the startup listing and every log line that names a device's string show them
+  the same way. A dongle plugged in while the list is read is listed too (the list is taken again); one that keeps
+  changing is listed with no `-i` argument and a note that the list is incomplete.
+- Every start opens the dongle its `-i` spec names, a restart too (a gain or device change, a config applied while
+  running): the spec is read again, never an index or serial a former spec left behind.
+- The serial is looked up at every start, so the dongle is found wherever it is enumerated; the startup lines say
+  which (`Selected Device #2 with Serial Number: 00000002`, `RTL #2 (SN 00000002): Freq=...`). After it opens, its
+  serial is read back from the device itself; one that reports another (the dongles changed in that instant) is
+  refused and never streamed (closed with none of dsd-neo's settings written to it) and the serial looked up once
+  more. librtlsdr's open has already claimed and initialised that dongle, as any program opening it would: on the
+  desktop the serial can only be read once it is open. Android, where the app hands over the connection, checks the
+  serial before anything opens it (below).
+- No dongle with the serial: the start is refused, never falling back to device 0. The error names the serial, says
+  how many devices could not be read and how many report no serial (`SN: (none)` in `--rtl-list`: such a dongle can
+  be opened by index only), and points at `--rtl-list`.
+- Two or more dongles with the same serial (many generic dongles ship as `00000001`): the start is refused, since
+  they cannot be told apart. Give each its own serial with `rtl_eeprom -s <serial>`, with only that dongle plugged in.
+- A dongle another program is using cannot be read on Windows (WinUSB lets one program open a device at a time), and
+  one this user may not open cannot be read anywhere. Such a dongle is listed as `(could not read: in use by another
+  program, or no permission)`, never matches a serial and never counts as a duplicate. So with three dsd-neo
+  instances, start each by serial: an instance never takes a dongle another one already runs.
+- An index past the dongles found keeps falling back to device 0 with a warning, except when its digits are a
+  readable dongle's serial: `rtl:1090` with one dongle whose serial is `1090` is refused with the hint
+  `use rtl:serial=1090`.
+- The scheme may be written in capitals: `-i RTL:00000001` is `-i rtl:00000001`.
+- On Android the app picks the dongle and hands over its USB connection, and nothing is enumerated. A serial in the
+  spec must then be that dongle's: it is read through the connection before the dongle is opened or reset (after a
+  stall), so another dongle, or one whose serial cannot be read, is refused untouched; it is checked again once
+  open; it must match exactly, character for character (one with a character past ASCII never matches). An index
+  names the one dongle handed over: any index but 0 warns and runs as 0, at a restart too (the spec, the options and
+  a capture then all say 0), and a dongle chosen by serial is index 0 too. A serial changed during a session, or a
+  reopen of the connection already handed over, checks only that this dongle reports the serial; a second permitted
+  dongle with the same serial is caught when the app takes the receiver for a session, not at such a reopen.
+- An I/Q capture records the dongle as `index=N,serial=<sn>` (`source_args` in its sidecar), the serial read from the
+  dongle whether it was chosen by serial or by index (by index on the desktop only where stall recovery identified
+  it; on Android from the dongle the app handed over).
+- An index past the dongles found whose serials cannot be listed again to check (an enumeration error, or a listing
+  that comes back empty) is refused rather than falling back to device 0.
+
+Three dongles, one antenna each, on Windows (one `.bat` per receiver, or all three from one):
+
+```bat
+start "North" dsd-neo.exe -fa -i rtl:00000001:851.0125M:30:0:48:0:2 --frontend terminal
+start "East" dsd-neo.exe -fa -i rtl:00000002:852.5375M:30:0:48:0:2 --frontend terminal
+start "West" dsd-neo.exe -fa -i rtl:00000003:853.6625M:30:0:48:0:2 --frontend terminal
+```
 
 ## SoapySDR details (`-i soapy`)
 

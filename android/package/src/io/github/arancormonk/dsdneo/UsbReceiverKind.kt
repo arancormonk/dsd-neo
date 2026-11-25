@@ -60,7 +60,7 @@ internal object UsbReceiverKind {
 
     /** Long options that take no value. `k_skip_exact_no_arg`. */
     private val LONG_NO_VALUE: Set<String> = setOf(
-        "--airspy-list", "--auto-ppm", "--rtltcp-autotune", "--iq-loop", "--tetra-uplink",
+        "--airspy-list", "--rtl-list", "--auto-ppm", "--rtltcp-autotune", "--iq-loop", "--tetra-uplink",
         "--rdio-api-delete-after-upload", "--enc-lockout", "--enc-follow", "--tg-lockout-session",
         "--tg-lockout-persist", "--no-config", "--print-config", "--interactive-setup", "--dump-config-template",
         "--strict-config", "--list-profiles", "--no-force-key", "--no-decryption-keys", "--dmr-tg-key-clear",
@@ -156,20 +156,69 @@ internal object UsbReceiverKind {
      * options ([lastInput]), separate, attached or bundled, the last one winning, past bare arguments, and never as
      * another option's value; nothing after "--" is an option. The engine's own classifier is
      * dsd_opts_audio_in_dev_is_rtl_spec() and _is_airspy_spec() (include/dsd-neo/core/opts.h): the exact name, or the
-     * name and a colon. A start that asks for an I/Q replay ([replayRequested]) takes no receiver, whatever its "-i":
-     * the replay replaces the input after getopt, or the parser refuses a replay without a path. An INI file's input
-     * (`--config`) is not read here.
+     * name and a colon, a scheme before a colon in any case included, since "-i" lower-cases a known one
+     * (dsd_input_spec_normalize_scheme(): `RTL:0` is `rtl:0`, a bare `RTL` stays as written). A start that asks for an
+     * I/Q replay ([replayRequested]) takes no receiver, whatever its "-i": the replay replaces the input after getopt,
+     * or the parser refuses a replay without a path. An INI file's input (`--config`) is not read here.
      */
-    fun sourceOfArgs(args: Array<String>): String {
-        if (replayRequested(args)) return ""
-        val input = lastInput(longOptionsRemoved(args))
-        return when {
-            input == null -> ""
-            input == "rtl" || input.startsWith("rtl:") -> RTL
-            input == "airspy" || input.startsWith("airspy:") -> AIRSPY
-            else -> ""
-        }
+    fun sourceOfArgs(args: Array<String>): String = sourceOfInput(inputOfArgs(args))
+
+    /** The "-i" value the engine opens for [args] ([sourceOfArgs]), or null for none, a replay or a refused parse. */
+    private fun inputOfArgs(args: Array<String>): String? =
+        if (replayRequested(args)) null else lastInput(longOptionsRemoved(args))
+
+    private fun sourceOfInput(input: String?): String = when {
+        input == null -> ""
+        input == "rtl" || input.startsWith("rtl:", ignoreCase = true) -> RTL
+        input == "airspy" || input.startsWith("airspy:", ignoreCase = true) -> AIRSPY
+        else -> ""
     }
+
+    /**
+     * The USB serial of the RTL-SDR a start's [args] open ([sourceOfArgs] reads them, "usb"), or "" when they open none
+     * by serial: another input, an index, or no device field. The device field (the spec's second) is read as
+     * dsd_rtl_device_field_parse() (src/runtime/input_spec.c) reads it: a decimal number with no leading zero that
+     * fits an int is an index, `serial=<sn>` is always a serial, and any other text is one. A serial the engine refuses
+     * ([rtlSerialValid]) opens nothing, so it names none here either. The final argv is what the session opens, so an
+     * "-i rtl:serial=B" among the Advanced options is the serial asked for, whatever the saved system says.
+     */
+    fun rtlSerialOfArgs(args: Array<String>): String {
+        val input = inputOfArgs(args)
+        if (sourceOfInput(input) != RTL || input == null) return ""
+        val field = input.substringAfter(':', "").substringBefore(':')
+        if (field.isEmpty() || isCanonicalIndex(field)) return ""
+        val serial = field.removePrefix("serial=")
+        return if (rtlSerialValid(serial)) serial else ""
+    }
+
+    /** A decimal number with no leading zero ("0" itself included) that fits an int: an RTL-SDR device index. */
+    private fun isCanonicalIndex(field: String): Boolean =
+        field.all { it in '0'..'9' } && (field == "0" || field[0] != '0') &&
+            (field.toLongOrNull() ?: Long.MAX_VALUE) <= Int.MAX_VALUE
+
+    /**
+     * dsd_rtl_serial_is_valid() (src/runtime/input_spec.c): 1 to 127 characters of printable ASCII, no ':' (the
+     * spec's field separator) or '"', and no space at either end.
+     */
+    fun rtlSerialValid(serial: String): Boolean =
+        serial.length in 1..127 && serial.all { it in ' '..'~' && it != ':' && it != '"' } &&
+            serial.first() != ' ' && serial.last() != ' '
+
+    /**
+     * The serial a receiver of kind [source] is matched by, from its USB serial string [raw] (null when unreadable):
+     * an RTL-SDR's whole serial, as the engine matches it; an Airspy's last 16 characters, its 64-bit serial in hex,
+     * the part `--airspy-serial` names.
+     */
+    fun serialOf(source: String, raw: String?): String =
+        if (raw == null) "" else if (source == AIRSPY) raw.takeLast(16) else raw
+
+    /**
+     * Whether the serials [a] and [b] of a receiver of kind [source] name the same device: an RTL-SDR's exactly
+     * (librtlsdr and the engine compare with strcmp), an Airspy's without case (its hex serial, which `--airspy-serial`
+     * takes in either case). The broker's one comparison: the request, the switch, the hop and the reset record use it.
+     */
+    fun sameSerial(source: String, a: String, b: String): Boolean =
+        if (source == AIRSPY) a.equals(b, ignoreCase = true) else a == b
 
     /**
      * Whether the long-option pre-scan of dsd_parse_args() reads [IQ_REPLAY] in [args]: before any "--", and not as the

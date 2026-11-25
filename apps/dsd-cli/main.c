@@ -27,6 +27,7 @@
 #include <dsd-neo/runtime/exitflag.h>
 #ifdef USE_RADIO
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_device_select.h>
 #endif
 #include <inttypes.h>
 #include <stdio.h>
@@ -85,6 +86,14 @@ main(int argc, char** argv) {
         rc = count < 0 ? 1 : 0;
 #else
         DSD_FPRINTF(stderr, "Airspy support unavailable in this build.\n");
+        rc = 1;
+#endif
+        dsd_engine_release_outputs(opts, state);
+    } else if (opts->rtl_list) {
+#ifdef USE_RADIO
+        rc = rtl_device_list_cli(stdout, stderr);
+#else
+        DSD_FPRINTF(stderr, "RTL-SDR support unavailable in this build.\n");
         rc = 1;
 #endif
         dsd_engine_release_outputs(opts, state);

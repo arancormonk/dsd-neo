@@ -68,11 +68,12 @@ only_playable(const QList<const Member*>& group) {
 }
 
 /* What tells @p member's receiver apart where the card's source line does not already say it (Util.systemMeta() names
-   a TCP or UDP source's address and a file's path): the dongle, an RTL-TCP server's address, an Airspy's serial. */
+   a TCP or UDP source's address and a file's path): the dongle (by its serial when the row names one, exactly as the
+   decoder matches it), an RTL-TCP server's address, an Airspy's serial. */
 QString
 receiver_text(const Member& member) {
     if (member.sourceType == QLatin1String("usb")) {
-        return QStringLiteral("USB");
+        return member.rtlSerial.isEmpty() ? QStringLiteral("USB") : QStringLiteral("USB %1").arg(member.rtlSerial);
     }
     if (member.sourceType == QLatin1String("rtltcp")) {
         return QStringLiteral("RTL-TCP %1:%2").arg(member.host.trimmed(), QString::number(member.port));
@@ -632,6 +633,7 @@ SavedSystemCards::readMembers() {
         member.decodeFlag = text(SavedSystemsModel::DecodeFlagRole);
         member.filePath = text(SavedSystemsModel::FilePathRole);
         member.airspySerial = at.data(SavedSystemsModel::AirspyRole).toMap().value(QStringLiteral("serial")).toString();
+        member.rtlSerial = text(SavedSystemsModel::RtlSerialRole);
         member.chanCsvPath = text(SavedSystemsModel::ChanCsvPathRole);
         member.groupCsvPath = text(SavedSystemsModel::GroupCsvPathRole);
         member.place = at.data(SavedSystemsModel::PlaceRole).toMap();

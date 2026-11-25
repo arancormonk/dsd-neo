@@ -314,9 +314,10 @@ class DecoderService : Service() {
         // detach or access request lands in the middle; the engine is idle, since the service was IDLE.
         val receiver = UsbReceiverKind.sourceOfArgs(args)
         if (receiver.isNotEmpty()) {
-            val take = UsbSourceManager.takeForSession(this, receiver)
+            // The serial the arguments name, not the one the saved system asked for: an Advanced -i wins.
+            val take = UsbSourceManager.takeForSession(this, receiver, UsbReceiverKind.rtlSerialOfArgs(args))
             if (take.failureKind.isNotEmpty()) {
-                failStart(take.reason, receiverFailureText(take.failureKind), take.failureKind)
+                failStart(take.reason, take.message.ifEmpty { receiverFailureText(take.failureKind) }, take.failureKind)
                 return
             }
             synchronized(lock) { receiverTake = take }

@@ -187,8 +187,9 @@ init_opts_tetra_defaults(dsd_opts* opts) {
 static void
 init_opts_radio_input_defaults(dsd_opts* opts) {
     //all RTL user options -- enabled AGC by default due to weak signal related issues
-    opts->rtl_dev_index = 0;  //choose which device we want by index number
-    opts->rtl_gain_value = 0; //mid value, 0 - AGC - 0 to 49 acceptable values
+    opts->rtl_dev_index = 0;        //choose which device we want by index number
+    opts->rtl_dev_serial[0] = '\0'; // or by USB serial (an rtl: spec's device field)
+    opts->rtl_gain_value = 0;       //mid value, 0 - AGC - 0 to 49 acceptable values
     opts->rtl_volume_multiplier =
         2; //sample multiplier; This multiplies the sample value to produce a higher 'inlvl' for the demodulator
     // Generic input volume for non-RTL inputs (Pulse/WAV/TCP/UDP)
@@ -202,6 +203,7 @@ init_opts_radio_input_defaults(dsd_opts* opts) {
     dsd_airspy_config_defaults(&opts->airspy);
     DSD_MEMSET(&opts->airspy_info, 0, sizeof opts->airspy_info);
     opts->airspy_list = 0;
+    opts->rtl_list = 0;
     opts->airspy_config_error = 0;
     opts->soapy_bandwidth_hz = -1;
     opts->soapy_profile[0] = '\0';

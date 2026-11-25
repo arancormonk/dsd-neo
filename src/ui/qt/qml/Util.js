@@ -205,6 +205,22 @@ function isSymbolCapture(path) {
     return extension === ".bin" || extension === ".raw" || extension === ".sym"
 }
 
+// Whether an RTL-SDR serial field holds what an rtl:serial= spec can carry:
+// empty (the first device), or the decoder's own rule,
+// dsd_rtl_serial_is_valid(), which session_args_rtl_serial_valid() applies
+// again when the argv is built: 1 to 127 printable ASCII characters, no ':'
+// (the spec's separator) or '"', no space at either end. Never trimmed: " A"
+// is refused rather than silently opening the dongle named "A".
+function rtlSerialValid(text) {
+    return text.length === 0 || (text.length <= 127 && /^[\x20-\x7e]*$/.test(text) && !/[:"]/.test(text)
+                                 && text[0] !== " " && text[text.length - 1] !== " ")
+}
+
+// What an RTL-SDR serial field says when rtlSerialValid() refuses its text.
+function rtlSerialError(text) {
+    return rtlSerialValid(text) ? "" : qsTr("Enter up to 127 printable ASCII characters, with no : or \" and no space at either end.")
+}
+
 // The NFM channel widths the Radio sheet steps through, in Hz: the full RF
 // passband the channel filter keeps, not the tuner or audio bandwidth. The
 // engine accepts any whole Hz from 8000 to 25000 (the terminal row and the CLI
@@ -542,8 +558,8 @@ function systemMeta(sys) {
         // decode tail instead costs the least: it repeats the chip the user
         // picked, while the source does not appear anywhere else on the card.
         // A saved-system card whose title another card shares names its
-        // receiver on a line of its own (receiverLabel: "USB", "RTL-TCP
-        // host:port", "Airspy serial"), which says RTL-TCP itself.
+        // receiver on a line of its own (receiverLabel: "USB", "USB serial",
+        // "RTL-TCP host:port", "Airspy serial"), which says RTL-TCP itself.
         if (sys.sourceType === "rtltcp" && !sys.receiverLabel)
             parts.push("RTL-TCP")
         var decode = decodeLabel(sys.decodeFlag)

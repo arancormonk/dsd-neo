@@ -396,6 +396,8 @@ test_attempt_failure_wire() {
     expect_true("usb_permission", attempt_failure_from_wire("usb_permission") == 10);
     expect_true("usb_open_failed", attempt_failure_from_wire("usb_open_failed") == 11);
     expect_true("usb_gone", attempt_failure_from_wire("usb_gone") == 12);
+    expect_true("usb_serial_duplicate", attempt_failure_from_wire("usb_serial_duplicate") == 13);
+    expect_true("usb_serial_missing", attempt_failure_from_wire("usb_serial_missing") == 14);
     expect_true("undelivered is the host's own", dsd_android::kAttemptUndelivered == 9);
     expect_true("empty", attempt_failure_from_wire("") == dsd_android::kAttemptNone);
     expect_true("null", attempt_failure_from_wire(nullptr) == dsd_android::kAttemptNone);

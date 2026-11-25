@@ -35,6 +35,7 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/io/rtl_demod_config.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_device_select.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/io/tcp_quality_metrics.h>
 #include <dsd-neo/platform/sockets.h>
@@ -75,6 +76,7 @@ struct airspy_source;
 #include "rtl_net_iq.h"
 #include "rtl_perf.h"
 #include "rtl_replay_device.h"
+#include "rtl_select_driver.h"
 #include "rtl_stream_shared.hpp"
 #include "rtl_tuner_gains.h"
 #include "rtl_usb_identity.h"
@@ -626,6 +628,12 @@ struct rtl_device {
     /* The USB device the dongle was opened on, and whether it can be reset and reopened: set at open, never cleared;
      * the reason when not. The identity is re-resolved after a reopen that found the dongle on another port. */
     struct rtl_usb_identity identity{};
+    /* The serial the dongle was chosen by (rtl_device_create_selected()), "" when chosen by index: a stall recovery
+     * reopens it only while no other readable dongle carries it. Set at open, never changed. */
+    char select_serial[RTL_DEVICE_STRING_SIZE] = "";
+    /* The serial of the dongle opened, as verified on its handle (the one chosen by, or the identity's), "" when not
+     * known (rtl_device_usb_serial()). Set at open. */
+    char opened_serial[RTL_DEVICE_STRING_SIZE] = "";
     std::atomic<int> usb_recovery_on{0};
     char usb_recovery_off_reason[128] = "";
     struct rtl_usb_effective usb_eff{};
@@ -9182,6 +9190,9 @@ static std::atomic<int (*)(int)> g_fd_reset_hook{nullptr};
 /* rtl_device_test_set_fd_identity_hook(): stands in for reading the descriptor's VID:PID and the opened handle's
  * strings, 0 or a negative errno. */
 static std::atomic<int (*)(int, struct rtl_usb_identity*)> g_fd_identity_hook{nullptr};
+/* rtl_device_test_set_fd_serial_descriptor_hook(): stands in for reading the serial string descriptor through the
+ * descriptor (its raw bytes, as GET_DESCRIPTOR returns them), the bytes read or a negative errno. */
+static std::atomic<int (*)(int, unsigned char*, int)> g_fd_serial_descriptor_hook{nullptr};
 
 extern "C" void
 rtl_device_test_set_open_fd_failure_hook(int (*hook)(int)) {
@@ -9196,6 +9207,11 @@ rtl_device_test_set_fd_reset_hook(int (*hook)(int)) {
 extern "C" void
 rtl_device_test_set_fd_identity_hook(int (*hook)(int, struct rtl_usb_identity*)) {
     g_fd_identity_hook.store(hook, std::memory_order_release);
+}
+
+extern "C" void
+rtl_device_test_set_fd_serial_descriptor_hook(int (*hook)(int, unsigned char*, int)) {
+    g_fd_serial_descriptor_hook.store(hook, std::memory_order_release);
 }
 #endif
 
@@ -9305,6 +9321,140 @@ rtl_usb_fd_reset(int fd, const char* before) {
     LOG_WARN("RTL-SDR: the USB reset through descriptor %d %s was refused (errno %d); opening it without one\n", fd,
              before, -rc);
     return RTL_USB_FD_RESET_REFUSED;
+}
+
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+/* String descriptor @p index in language @p langid of the device behind usbfs descriptor @p fd, through its control
+ * endpoint (no interface claimed, nothing open on it), into @p buf: the bytes read, or a negative errno. */
+static int
+rtl_usb_fd_string_descriptor(int fd, uint8_t index, uint16_t langid, unsigned char* buf, uint16_t size) {
+    struct usbdevfs_ctrltransfer ct;
+    DSD_MEMSET(&ct, 0, sizeof ct);
+    ct.bRequestType = 0x80; /* device to host, standard, device */
+    ct.bRequest = 0x06;     /* GET_DESCRIPTOR */
+    ct.wValue = (uint16_t)((0x03U << 8) | index);
+    ct.wIndex = langid;
+    ct.wLength = size;
+    ct.timeout = 1000;
+    ct.data = buf;
+    const int n = ioctl(fd, USBDEVFS_CONTROL, &ct);
+    return n < 0 ? -errno : n;
+}
+
+/* The serial string's index in the device descriptor usbfs returns at the start of @p fd: > 0, 0 for none, or a
+ * negative errno. */
+static int
+rtl_usb_fd_serial_index(int fd) {
+    uint8_t desc[18];
+    const ssize_t got = pread(fd, desc, sizeof desc, 0);
+    if (got < 0) {
+        return -errno;
+    }
+    if (got != (ssize_t)sizeof desc || desc[1] != 0x01U) {
+        return -EIO;
+    }
+    return desc[16];
+}
+
+/* The serial string descriptor through usbfs: rtl_usb_fd_serial_descriptor() on the device. */
+static int
+rtl_usb_fd_serial_descriptor_usbfs(int fd, unsigned char* buf, int size) {
+    const int index = rtl_usb_fd_serial_index(fd);
+    if (index <= 0) {
+        return index == 0 ? -ENOENT : index;
+    }
+    int n = rtl_usb_fd_string_descriptor(fd, 0U, 0U, buf, (uint16_t)size);
+    if (n < 4) {
+        return n < 0 ? n : -EIO;
+    }
+    const uint16_t langid = (uint16_t)(buf[2] | (buf[3] << 8));
+    return rtl_usb_fd_string_descriptor(fd, (uint8_t)index, langid, buf, (uint16_t)size);
+}
+#endif
+
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+/* The descriptor a test's identity hook implies: its serial as UTF-16LE, one code unit per byte. */
+static int
+rtl_usb_fd_serial_descriptor_from_identity(int (*hook)(int, struct rtl_usb_identity*), int fd, unsigned char* buf,
+                                           int size) {
+    struct rtl_usb_identity id{};
+    const int rc = hook(fd, &id);
+    if (rc != 0) {
+        return rc;
+    }
+    const size_t len = strnlen(id.serial, sizeof id.serial);
+    if (len == 0U) {
+        return -ENOENT;
+    }
+    const int n = (int)(2U + 2U * len);
+    if (n > size || n > 255) {
+        return -EIO;
+    }
+    buf[0] = (unsigned char)n;
+    buf[1] = 0x03U;
+    for (size_t i = 0; i < len; i++) {
+        buf[2U + 2U * i] = (unsigned char)id.serial[i];
+        buf[3U + 2U * i] = 0U;
+    }
+    return n;
+}
+#endif
+
+/* The raw serial string descriptor of the dongle behind Android descriptor @p fd, read through the descriptor before
+ * anything opens it (GET_DESCRIPTOR in the device's first language), into @p buf: the bytes read, or a negative errno
+ * when it cannot be read (-ENOENT: the device has no serial string). */
+static int
+rtl_usb_fd_serial_descriptor(int fd, unsigned char* buf, int size) {
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    if (const auto raw = g_fd_serial_descriptor_hook.load(std::memory_order_acquire)) {
+        return raw(fd, buf, size);
+    }
+    if (const auto hook = g_fd_identity_hook.load(std::memory_order_acquire)) {
+        return rtl_usb_fd_serial_descriptor_from_identity(hook, fd, buf, size);
+    }
+#endif
+#if defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD)
+    return rtl_usb_fd_serial_descriptor_usbfs(fd, buf, size);
+#else
+    (void)fd;
+    (void)buf;
+    (void)size;
+    return -ENOTSUP;
+#endif
+}
+
+/* Whether the serial string descriptor @p desc (@p n bytes read) holds exactly @p serial, compared losslessly: a string
+ * descriptor whose length covers the whole serial and nothing more (2 + 2 per character, all read), each UTF-16LE code
+ * unit equal to the serial's printable ASCII character. A NUL, a character past ASCII or a length that differs never
+ * matches, where a conversion to a C string would cut at the NUL or turn a character into a '?' a selector can hold. */
+static bool
+rtl_usb_serial_descriptor_is(const unsigned char* desc, int n, const char* serial) {
+    const size_t len = strlen(serial);
+    if (n < 2 || desc[1] != 0x03U || (int)desc[0] > n || (size_t)desc[0] != 2U + 2U * len) {
+        return false;
+    }
+    for (size_t i = 0; i < len; i++) {
+        const unsigned char lo = desc[2U + 2U * i];
+        const unsigned char hi = desc[3U + 2U * i];
+        if (hi != 0U || lo < 0x20U || lo > 0x7EU || lo != (unsigned char)serial[i]) {
+            return false;
+        }
+    }
+    return true;
+}
+
+/* The serial string descriptor @p desc (@p n bytes) for a log line, into @p out (RTL_DEVICE_STRING_SIZE bytes): each
+ * code unit that fits one byte as that byte (the log line escapes it for display, rtl_device_refuse_preopened()), a
+ * NUL or a character past one byte as '?'. */
+static void
+rtl_usb_serial_descriptor_text(const unsigned char* desc, int n, char* out) {
+    size_t k = 0;
+    const int end = (n >= 2 && (int)desc[0] <= n) ? (int)desc[0] : 0;
+    for (int i = 2; i + 1 < end && k < RTL_DEVICE_STRING_SIZE - 1U; i += 2) {
+        const bool one_byte = desc[i + 1] == 0U && desc[i] != 0U;
+        out[k++] = one_byte ? (char)desc[i] : '?';
+    }
+    out[k] = '\0';
 }
 
 /* What identifies the dongle behind Android descriptor @p fd (#782): its VID:PID, from the device descriptor usbfs
@@ -9457,15 +9607,66 @@ rtl_preopened_fd_take_supported(void) {
 #endif
 }
 
-/* Open @p dev from the descriptor @p taken from the slot: 0, or the open's negative error, reported as the session's
- * failure with the descriptor released (the caller frees @p dev). */
+/* A dongle chosen by @p serial that the descriptor @p fd does not lead to: its handle @p handle (NULL when it was never
+ * opened), which nothing has configured, is closed as it is (no bias tee or FIFO write reaches it) and the descriptor
+ * handed back; the session fails with RTL_DEVICE_ESERIAL. */
 static int
-rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* taken) {
+rtl_device_refuse_preopened(rtlsdr_dev_t* handle, int fd, const char* serial, const char* got) {
+    if (handle != nullptr) {
+        (void)rtl_usb_ctl_close(handle);
+    }
+    g_preopened_usb_fd_held.store(-1, std::memory_order_release);
+    g_last_usb_open_error.store(RTL_DEVICE_ESERIAL, std::memory_order_release);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, RTL_DEVICE_ESERIAL);
+    if (got[0] != '\0') {
+        char shown[RTL_DEVICE_SHOWN_SIZE];
+        rtl_device_string_shown(got, shown, sizeof shown);
+        LOG_ERROR("RTL-SDR: the USB device handed over (descriptor %d) has serial \"%s\", not the requested \"%s\".\n",
+                  fd, shown, serial);
+    } else {
+        LOG_ERROR("RTL-SDR: could not read the serial of the USB device handed over (descriptor %d); the requested "
+                  "serial is \"%s\".\n",
+                  fd, serial);
+    }
+    return RTL_DEVICE_ESERIAL;
+}
+
+/* A dongle chosen by @p serial behind descriptor @p fd: its serial, read through the descriptor before anything opens
+ * it, must be exactly that one. rtlsdr_open_fd() claims the interface, writes the demodulator's registers, can reset
+ * the device and initialises its tuner, so another dongle, or one whose serial cannot be read that way (it reports
+ * none, or the read fails: then whether it is the one asked for is unknown), is refused untouched: RTL_DEVICE_ESERIAL,
+ * the descriptor handed back and any reset it owes kept. 0 when it is the one. */
+static int
+rtl_device_preopened_check_serial(int fd, const char* serial) {
+    unsigned char desc[255];
+    const int n = rtl_usb_fd_serial_descriptor(fd, desc, (int)sizeof desc);
+    char before[RTL_DEVICE_STRING_SIZE];
+    before[0] = '\0';
+    if (n < 0) {
+        LOG_ERROR("RTL-SDR: could not read the serial through descriptor %d (errno %d).\n", fd, -n);
+        return rtl_device_refuse_preopened(nullptr, fd, serial, before);
+    }
+    if (!rtl_usb_serial_descriptor_is(desc, n, serial)) {
+        rtl_usb_serial_descriptor_text(desc, n, before);
+        return rtl_device_refuse_preopened(nullptr, fd, serial, before);
+    }
+    return 0;
+}
+
+/* Open @p dev from the descriptor @p taken from the slot: 0, or the open's negative error, reported as the session's
+ * failure with the descriptor released (the caller frees @p dev). With @p serial non-empty the dongle behind the
+ * descriptor must report exactly that serial through the descriptor before it is reset or opened, and again on the
+ * opened handle; nothing is enumerated (USB discovery is off in this mode). */
+static int
+rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* taken, const char* serial) {
     const int preopened_fd = taken->fd;
     /* Claimed (held) before the wrap, not after: the owner must not be told the
      * descriptor is free while libusb is part way through taking it. libusb's own
      * error text reaches the diagnostics from here on (#782). */
     rtl_usb_log_install();
+    if (serial[0] != '\0' && rtl_device_preopened_check_serial(preopened_fd, serial) != 0) {
+        return RTL_DEVICE_ESERIAL;
+    }
     /* A dongle a stall wedged streams nothing after a plain reopen; the reset through this descriptor clears it
      * (#782). A refused reset opens without one and keeps the obligation, and one that left the descriptor
      * unusable lets the open below fail with its own error. */
@@ -9481,6 +9682,15 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device from descriptor %d.\n", preopened_fd);
         return r;
     }
+    if (serial[0] != '\0') {
+        char got[RTL_DEVICE_STRING_SIZE];
+        if (rtl_select_handle_serial(dev->dev, got) != 0 || strcmp(got, serial) != 0) {
+            const int refused = rtl_device_refuse_preopened(dev->dev, preopened_fd, serial, got);
+            dev->dev = nullptr;
+            return refused;
+        }
+        DSD_SNPRINTF(dev->opened_serial, sizeof dev->opened_serial, "%s", serial);
+    }
     /* Opened: an earlier open's failure is not this session's, as Airspy's open clears it. */
     dsd_input_failure_clear();
     dev->owns_preopened_fd = 1;
@@ -9490,6 +9700,10 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
      * stall recovery reopened it. */
     const int id_rc = rtl_usb_fd_identity_read(preopened_fd, dev->dev, &dev->identity);
     if (id_rc == 0) {
+        /* The serial read on the handle, as an index open records the verified identity's. */
+        if (dev->opened_serial[0] == '\0') {
+            DSD_SNPRINTF(dev->opened_serial, sizeof dev->opened_serial, "%s", dev->identity.serial);
+        }
         dev->usb_recovery_on.store(1, std::memory_order_release);
     } else {
         char reason[96];
@@ -9500,6 +9714,28 @@ rtl_device_open_preopened(struct rtl_device* dev, const rtl_preopened_take* take
 }
 #endif
 
+/* A USB open that failed with @p r: latched and reported as the session's failure. Returns @p r. */
+static int
+rtl_usb_open_failed(int r) {
+    g_last_usb_open_error.store(r, std::memory_order_release);
+    dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
+    return r;
+}
+
+/* The opened handle's USB identity, @p identified before the open, checked on it: stall recovery is on only for a
+ * dongle that is the device identified (D3). */
+static void
+rtl_usb_note_identity(struct rtl_device* dev, rtl_usb_id_result identified) {
+    const rtl_usb_id_result verified =
+        (identified == RTL_USB_ID_OK) ? rtl_usb_identity_verify_handle(dev->dev, &dev->identity) : identified;
+    if (verified == RTL_USB_ID_OK) {
+        DSD_SNPRINTF(dev->opened_serial, sizeof dev->opened_serial, "%s", dev->identity.serial);
+        dev->usb_recovery_on.store(1, std::memory_order_release);
+    } else {
+        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified));
+    }
+}
+
 /* Open @p dev by its index: 0, or the open's negative error, reported as the session's failure (the caller frees
  * @p dev). */
 static int
@@ -9508,20 +9744,72 @@ rtl_device_open_by_index(struct rtl_device* dev, int dev_index) {
     const rtl_usb_id_result identified = rtl_usb_identity_resolve(dev_index, &dev->identity);
     const int r = rtl_usb_open_index(&dev->dev, (uint32_t)dev_index);
     if (r < 0) {
-        g_last_usb_open_error.store(r, std::memory_order_release);
-        dsd_input_failure_report(DSD_INPUT_FAILURE_DEVICE, r);
         DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d.\n", dev_index);
-        return r;
+        return rtl_usb_open_failed(r);
     }
     dsd_input_failure_clear();
-    const rtl_usb_id_result verified =
-        (identified == RTL_USB_ID_OK) ? rtl_usb_identity_verify_handle(dev->dev, &dev->identity) : identified;
-    if (verified == RTL_USB_ID_OK) {
-        dev->usb_recovery_on.store(1, std::memory_order_release);
-    } else {
-        rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(verified));
-    }
+    rtl_usb_note_identity(dev, identified);
     return 0;
+}
+
+/* Why no dongle with @p serial could be opened, logged; the session's failure (RTL_DEVICE_ESERIAL). */
+static int
+rtl_usb_serial_open_refused(const char* serial, rtl_device_find_result found, const rtl_device_find_report* rep) {
+    if (found == RTL_DEVICE_FIND_DUPLICATE) {
+        LOG_ERROR("RTL-SDR: %d devices have serial \"%s\"; give each its own serial with rtl_eeprom -s.\n",
+                  rep->matches, serial);
+    } else if (found == RTL_DEVICE_FIND_FOUND) {
+        LOG_ERROR("RTL-SDR: the device found with serial \"%s\" reported another serial when opened, twice; the "
+                  "dongles are changing (plugged in or out).\n",
+                  serial);
+    } else if (rep->unreadable > 0 || rep->no_serial > 0) {
+        LOG_ERROR("RTL-SDR: no device with serial \"%s\" (%d device(s) could not be read: in use by another program, "
+                  "or no permission; %d report no serial).\n",
+                  serial, rep->unreadable, rep->no_serial);
+    } else {
+        LOG_ERROR("RTL-SDR: no device with serial \"%s\".\n", serial);
+    }
+    return rtl_usb_open_failed(RTL_DEVICE_ESERIAL);
+}
+
+/* Open @p dev on the dongle that carries @p serial, into *@p out_index: looked up at this open (indexes change between
+ * opens), opened, and kept only when the opened handle reports exactly that serial, before this project configures or
+ * publishes it. A handle that reports another (the dongles changed between the lookup and the open) is refused, never
+ * streamed: closed with nothing of ours written to it, and the serial looked up once more. rtlsdr_open() has claimed
+ * and initialised it by then (its serial is readable only on the opened handle); that is the accepted limit. 0, or a negative error, reported as the session's failure (the
+ * caller frees @p dev). */
+static int
+rtl_device_open_by_serial(struct rtl_device* dev, const char* serial, int* out_index) {
+    rtl_device_find_report rep{};
+    rtl_device_find_result found = RTL_DEVICE_FIND_FAILED;
+    for (int attempt = 0; attempt < 2; attempt++) {
+        found = rtl_device_find_serial(serial, &rep);
+        if (found != RTL_DEVICE_FIND_FOUND) {
+            break;
+        }
+        const rtl_usb_id_result identified = rtl_usb_identity_resolve(rep.index, &dev->identity);
+        const int r = rtl_usb_open_index(&dev->dev, (uint32_t)rep.index);
+        if (r < 0) {
+            DSD_FPRINTF(stderr, "Failed to open rtlsdr device %d (serial %s).\n", rep.index, serial);
+            return rtl_usb_open_failed(r);
+        }
+        char got[RTL_DEVICE_STRING_SIZE];
+        if (rtl_select_handle_serial(dev->dev, got) == 0 && strcmp(got, serial) == 0) {
+            dsd_input_failure_clear();
+            rtl_usb_note_identity(dev, identified);
+            DSD_SNPRINTF(dev->opened_serial, sizeof dev->opened_serial, "%s", serial);
+            dev->dev_index = rep.index;
+            *out_index = rep.index;
+            return 0;
+        }
+        char shown[RTL_DEVICE_SHOWN_SIZE];
+        rtl_device_string_shown(got, shown, sizeof shown);
+        LOG_WARN("RTL-SDR: device %d reports serial \"%s\", not \"%s\"; looking the serial up again.\n", rep.index,
+                 shown, serial);
+        (void)rtl_usb_ctl_close(dev->dev);
+        dev->dev = nullptr;
+    }
+    return rtl_usb_serial_open_refused(serial, found, &rep);
 }
 
 /**
@@ -9533,8 +9821,17 @@ rtl_device_open_by_index(struct rtl_device* dev, int dev_index) {
  */
 struct rtl_device*
 rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
+    return rtl_device_create_selected(dev_index, NULL, input_ring, NULL);
+}
+
+struct rtl_device*
+rtl_device_create_selected(int dev_index, const char* serial, struct input_ring_state* input_ring, int* out_dev_index) {
     rtl_device_clear_open_error();
     if (!input_ring) {
+        return NULL;
+    }
+    const char* want = serial ? serial : "";
+    if (strlen(want) >= RTL_DEVICE_STRING_SIZE) {
         return NULL;
     }
 
@@ -9547,6 +9844,8 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
         return nullptr;
     }
     rtl_device_init_usb_fields(dev, dev_index, input_ring);
+    DSD_SNPRINTF(dev->select_serial, sizeof dev->select_serial, "%s", want);
+    int opened_index = dev_index;
 
 #if (defined(__ANDROID__) && defined(USE_RTLSDR) && defined(USE_RTLSDR_OPEN_FD))                                       \
     || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
@@ -9555,20 +9854,44 @@ rtl_device_create(int dev_index, struct input_ring_state* input_ring) {
      * project patch on the vendored tree; the configure step proves it is there. */
     const rtl_preopened_take taken = rtl_preopened_fd_take_supported();
     if (taken.fd >= 0) {
-        if (rtl_device_open_preopened(dev, &taken) < 0) {
+        if (rtl_device_open_preopened(dev, &taken, want) < 0) {
             rtl_device_cleanup_common_state(dev);
             free(dev);
             return NULL;
         }
+        /* The descriptor is the one device there is, device 0, whatever index the options held (a serial chose it). */
+        dev->dev_index = 0;
+        if (out_dev_index) {
+            *out_dev_index = 0;
+        }
         return dev;
     }
 #endif
-    if (rtl_device_open_by_index(dev, dev_index) < 0) {
+    const int rc = want[0] != '\0' ? rtl_device_open_by_serial(dev, want, &opened_index)
+                                   : rtl_device_open_by_index(dev, dev_index);
+    if (rc < 0) {
         rtl_device_cleanup_common_state(dev);
         free(dev);
         return NULL;
     }
+    if (out_dev_index) {
+        *out_dev_index = opened_index;
+    }
     return dev;
+}
+
+int
+rtl_device_usb_serial(const struct rtl_device* dev, char* out, size_t out_size) {
+    if (!out || out_size == 0U) {
+        return -1;
+    }
+    out[0] = '\0';
+    if (!dev || dev->backend != RTL_BACKEND_USB || dev->opened_serial[0] == '\0'
+        || strlen(dev->opened_serial) >= out_size) {
+        return -1;
+    }
+    DSD_SNPRINTF(out, out_size, "%s", dev->opened_serial);
+    return 0;
 }
 
 /* The session's first connection to @p host:@p port, its header read: NULL when either fails or is cancelled. */
@@ -12237,6 +12560,33 @@ rtl_usb_restore_handle(struct rtl_device* dev, rtlsdr_dev_t* handle, const struc
     return rc;
 }
 
+/* Whether two USB identities carry the same string triple. */
+static bool
+rtl_usb_identity_same_strings(const struct rtl_usb_identity* a, const struct rtl_usb_identity* b) {
+    return strncmp(a->manufacturer, b->manufacturer, sizeof a->manufacturer) == 0
+           && strncmp(a->product, b->product, sizeof a->product) == 0
+           && strncmp(a->serial, b->serial, sizeof a->serial) == 0;
+}
+
+/* A dongle chosen by serial reopened at @p index after a reset: why the serial no longer chooses it (D2: another
+ * readable device carries the serial too, whatever its other strings, or the serial is not at that index), NULL when
+ * it still does or the dongle was chosen by index. */
+static const char*
+rtl_usb_serial_choice_lost(const struct rtl_device* dev, int index) {
+    if (dev->select_serial[0] == '\0') {
+        return nullptr;
+    }
+    rtl_device_find_report rep{};
+    const rtl_device_find_result found = rtl_device_find_serial(dev->select_serial, &rep);
+    if (found == RTL_DEVICE_FIND_DUPLICATE) {
+        return "after the USB reset another device has the same serial (set a unique one with rtl_eeprom)";
+    }
+    if (found != RTL_DEVICE_FIND_FOUND || rep.index != index) {
+        return "after the USB reset its serial no longer leads to it";
+    }
+    return nullptr;
+}
+
 /* Reset the dongle at its recorded port and find it again, uniquely, before anything is opened (D3): its librtlsdr
  * index in @p out_index and where it is now in @p fresh. */
 static int
@@ -12266,6 +12616,17 @@ rtl_usb_reset_and_locate(struct rtl_device* dev, int* out_index, struct rtl_usb_
     if (resolved != RTL_USB_ID_OK) {
         rtl_usb_recovery_off(dev, rtl_usb_identity_off_reason(resolved));
         DSD_SNPRINTF(why, why_size, "after the USB reset: %s", rtl_usb_identity_off_reason(resolved));
+        return -ENODEV;
+    }
+    /* The index was found for the dongle's strings, and the identity resolved at it after: the devices can change in
+     * between (A, then B, then A again at that index), so a fresh identity that carries other strings is never
+     * recorded; the opened handle is checked against the old one (rtl_usb_restore_handle()), so all three agree. */
+    const char* other = !rtl_usb_identity_same_strings(fresh, &dev->identity)
+                            ? "the receiver found after the USB reset is not the one that was identified"
+                            : rtl_usb_serial_choice_lost(dev, index);
+    if (other != nullptr) {
+        rtl_usb_recovery_off(dev, other);
+        DSD_SNPRINTF(why, why_size, "%s", other);
         return -ENODEV;
     }
     *out_index = index;

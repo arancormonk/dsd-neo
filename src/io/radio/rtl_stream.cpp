@@ -17,6 +17,7 @@
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include <string.h>
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/core/safe_api.h"
 
@@ -51,6 +52,23 @@ copy_opts(const dsd_opts* src) {
     }
     DSD_MEMCPY(dst, src, sizeof(dsd_opts));
     return dst;
+}
+
+/**
+ * @brief Hand the caller the dongle a local RTL-SDR start opened (dsd_rtl_stream_open() selects it from the spec at
+ *        every start): its index (where a serial was found, or 0 on an Android descriptor) and serial, and the spec
+ *        when the open rewrote it (an index on a descriptor runs as 0), unless the caller's spec moved on since.
+ */
+static void
+sync_local_rtl_selection(const dsd_opts* opened, dsd_opts* caller, const char* spec_before) {
+    if (!dsd_opts_audio_in_dev_is_rtl_spec(opened->audio_in_dev)) {
+        return;
+    }
+    caller->rtl_dev_index = opened->rtl_dev_index;
+    DSD_SNPRINTF(caller->rtl_dev_serial, sizeof caller->rtl_dev_serial, "%s", opened->rtl_dev_serial);
+    if (strcmp(opened->audio_in_dev, spec_before) != 0 && strcmp(caller->audio_in_dev, spec_before) == 0) {
+        DSD_SNPRINTF(caller->audio_in_dev, sizeof caller->audio_in_dev, "%s", opened->audio_in_dev);
+    }
 }
 } // namespace
 
@@ -87,12 +105,17 @@ RtlSdrOrchestrator::start(const struct rtl_stream_start_gate* start_gate) {
     if (!opts_) {
         return -1;
     }
+    char spec_before[sizeof opts_->audio_in_dev];
+    DSD_SNPRINTF(spec_before, sizeof spec_before, "%s", opts_->audio_in_dev);
     int r = dsd_rtl_stream_open(opts_, start_gate);
     if (r < 0) {
         return r;
     }
     if (caller_opts_ && dsd_opts_audio_in_dev_is_airspy_spec(opts_->audio_in_dev)) {
         caller_opts_->airspy_info = opts_->airspy_info;
+    }
+    if (caller_opts_) {
+        sync_local_rtl_selection(opts_, caller_opts_, spec_before);
     }
     started_ = true;
     return 0;

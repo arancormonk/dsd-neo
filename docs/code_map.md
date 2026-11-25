@@ -60,8 +60,23 @@ Generated (do not edit/commit):
     log or MBE file, or a per-call WAV left open, removed when empty as a run's end does) with the same helpers the
     cleanup uses. The Android host calls it on every path that gives up a configured session
     (`nativeDiscardConfigured()`, a failed or exiting `nativeConfigure()` and the configure after one never run,
-    `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list`, and `dsd_engine_run_with_lifecycle()`
-    when the socket layer fails to start before the run
+    `nativeDestroy()`), the CLI on a failed bootstrap and after `--airspy-list` or `--rtl-list`, and
+    `dsd_engine_run_with_lifecycle()` when the socket layer fails to start before the run
+  - Local RTL-SDR startup (`dsd_engine_setup_configure_local_rtl()` in `engine.c`): after the spec is read
+    (`dsd_rtl_input_spec_apply()`: an index or a serial, never both), the devices are listed through
+    `rtl_device_list()` (IO, below; an unreadable device prints `(could not read: in use by another program, or no
+    permission)`, never another's strings). A serial is looked up (`rtl_device_find_serial()`): found, its index is
+    selected; missing (with the unreadable count and the `--rtl-list` hint) or carried by two readable devices (with the
+    `rtl_eeprom -s` hint) refuses the start as an invalid spec does (-1, `RTL-SDR input is unavailable.`), never
+    falling back to device 0. An index past the devices found whose digits are a readable device's serial is refused
+    with `use rtl:serial=<n>`; any other falls back to 0 with a warning and the spec rewritten by
+    `dsd_rtl_spec_set_device()`; a lookup that is not a clean "listed, no readable match" (an enumeration error, or
+    no device listed: librtlsdr counts 0 when libusb cannot start) refuses rather than fall back. A pre-opened
+    descriptor skips listing and lookup (the IO open checks the serial on its dongle); an index on it is the one
+    device, so any but 0 warns and becomes 0, the spec rewritten (as before serials). The tuning notice reads
+    `RTL #N (SN <sn>): ...` for a serial. `carrier_source_key()` keys a dongle chosen by serial as `rtl/sn/<serial>`
+    (wherever it is found), one chosen by index as `rtl/<index>`. Tests:
+    `ENGINE_RTL_SERIAL_SELECT`, `ENGINE_RTL_PREOPENED_FD`, `ENGINE_NO_CARRIER_RESET`
   - Protocol/frame dispatch glue
   - Signal search (issue #537): `signal_search.c` / `engine/signal_search.h` coordinate
     capture measurement, tagged asynchronous tuning, identification and listening on
@@ -5563,6 +5578,21 @@ suite runs under this compiler.
       every file from (not all zero: several keys default to on), `dsd_user_config_apply_section()` marks a section
       present as a `[section]` header does (an empty `[analog]` acts), and `dsd_user_config_apply_key()` applies one
       `[section] key = value` through the loader's own mapper (the control API's `config_apply`)
+    - RTL-SDR selector: `[input] rtl_serial` (the USB serial, `dsd_rtl_serial_is_valid()`) wins over `rtl_device` in
+      the spec the apply builds (`format_rtl_device_field()`: `rtl:serial=<sn>:...` through
+      `dsd_rtl_device_field_format()`, else `rtl:<index>:...`). A serial the rule refuses is never cut or trimmed: the
+      loader marks it (`rtl_serial_invalid`), the spec carries `serial=`, which `dsd_rtl_input_spec_apply()` refuses so
+      the start refuses the input (never index 0), the render writes `rtl_serial = ":"` (refused again on load),
+      `--validate-config` errors, and a runtime apply refuses the config before anything changes
+      (`cfg_rtl_selector_valid()`, which also checks the serial itself, since a config handed over whole through
+      `dsd_app_command_apply_config()` never passed the loader). The render quotes the serial, which holds no `"` by the rule, so the comment
+      stripper keeps `#`, `;` and spaces. A save reads the running spec's device field (`snapshot_rtl_device_field()`):
+      a serial or an index, the other cleared; a bare `rtl` or an empty field is index 0 with no serial, as a start of
+      the same spec opens it (the spec alone names the dongle, never the device the options last held). A serial
+      saves no index (the one it opened at is where it resolved, not a choice); a config that names both (a retained
+      `[input]`) renders `rtl_device` beside the serial, so a patch clearing the serial after a reload falls back on
+      it. Tests:
+      `RUNTIME_CONFIG_USER`, `CONFIG_VALIDATION`, `CONFIG_PROFILE`.
     - Raw I/Q stream source (issue #743): `[input] source = "iqtcp" | "iqudp"` (`DSDCFG_INPUT_IQTCP` / `_IQUDP`) with
       `iq_host`, `iq_port`, `iq_rate`, `iq_format`, `iq_freq` (rate and frequency kept as text, as `rtl_freq` is).
       `dsd_user_config_iq_stream_input_spec()` builds the canonical spec from them (the parser in
@@ -5592,7 +5622,12 @@ suite runs under this compiler.
       (`cfg_settle_retained_input()`) changes it only when the config has an `[input]`, stays applied, and leaves the
       replay running: a loaded file's payload replaces it, a plain patch merges the keys it sets
       (`dsd_user_config_merge_retained_input()`: set = differs from `dsd_user_config_init()`, or its `_is_set` flag), so
-      a sourceless patch keeps the source and endpoint. A patch is checked first on the `[input]` its merge would leave
+      a sourceless patch keeps the source and endpoint. The RTL-SDR selector merges as one choice by the keys a patch
+      names (`merge_rtl_selector()`: a key is named when its value is not the default, so a config a C caller filled in
+      names its index, or when its loader flag, `rtl_device_is_set` / `rtl_serial_is_set`, says a default value was
+      named): `rtl_serial` (empty: by the retained index; refused: stays refused) wins, `rtl_device` alone drops the
+      retained serial, neither keeps it. A patch is
+      checked first on the `[input]` its merge would leave
       (`dsd_user_config_retained_input_patched()`, `cfg_check_retained_stream_patch()`): one that leaves a raw I/Q
       stream whose keys build no spec, or whose RATE no plan takes, is refused before anything changes, as the next start
       would refuse the save. An `[input]` that is a file input of a non-file spec
@@ -6269,7 +6304,10 @@ suite runs under this compiler.
     and a toast saying so, `dsd_decode_mode_keep_saved_am()`, which a runtime config apply of one shares) and the
     setup wizard (which asks it about the input it just configured, and also holds the AM width to the DSP bandwidth
     it just read, as the engine's pre-open check does: `interactive_am_refused()` in
-    `src/runtime/bootstrap/interactive.c`); once an input is
+    `src/runtime/bootstrap/interactive.c`, whose RTL-SDR question, `prompt_rtl_device()`, reads an index or a USB
+    serial with `dsd_rtl_device_field_parse()`, writes it as the spec's device field, and asks again on an answer
+    that names neither; every answer is one whole line, the rest of a line too long for the reader dropped by
+    `read_answer_line()`, so its tail is never read as the next answer); once an input is
     open, `dsd_decode_mode_input_is_iq()` and `dsd_decode_mode_runs_on_input()` go by the input type alone
     (`dsd_opts_input_is_radio()`): an input switch names the input it opens (`tcp:<host>:<port>` and the like, issue
     #634), but a replay session switched to Pulse keeps its replay request. All of them say `DSD_DECODE_MODE_AM_NEEDS_IQ_TEXT`.
@@ -7445,8 +7483,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
     on an entry, else its no-scan answer; `tuning_refused_on_iq_stream()` in `actions_trunk.c`), a `-Y` hold or avoid
     (unreachable, refused anyway) and `SCAN_LIST_SET`; turning trunking or the scanner off and clearing or removing
     avoids stay allowed. A replay keeps trunking and `-Y` as its start allowed them (its retunes defer by design). The
-    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_PPM`, `PPM_DELTA`,
-    `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
+    tuner controls of either input with fixed tuning (`RTL_SET_GAIN`, `RTL_SET_DEV`, `RTL_SET_DEV_SERIAL`, `RTL_SET_PPM`,
+    `PPM_DELTA`, `RTL_SET_BIAS_TEE`, `RTLTCP_SET_AUTOTUNE`, `RTL_SET_AUTO_PPM`, the tuner-autogain DSP op; `RIGCTL_SET_MOD_BW` on a
     stream only, since a replay's start may connect a peer) are refused with `ui_cmd_refuse_fixed_tuner_control()`
     (`svc_fixed_tuner_reason()`: "An I/Q replay has no tuner controls: it plays what was recorded." / "An I/Q stream has
     no tuner controls: adjust the radio in the sending program."), the words Qt's RadioSheet shows. Signal search
@@ -8026,7 +8064,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `DSD_NEO_CHANNEL_LPF=0` (`svc_analog_width_env_allows()`), since the start would refuse it at any rate. A switch whose
   start fails anyway (a width the rate the device delivered cannot filter, a device that does not open) never leaves
   the session without the input it had: the input a start reads is captured before
-  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, device index, tuning, gain, ppm, squelch,
+  the rewrite (`ui_radio_input`: device string and type, rtl_tcp endpoint, the RTL-SDR's index and serial, tuning, gain, ppm, squelch,
   volume, resample policy, Airspy and SoapySDR settings) and put back, a PCM input as it was (the switch never closed
   it, and a background RTL stream it left running, which the failed start stopped, is not restarted, its I/Q capture
   stopping with it as below) and an RTL-family input that ran restarted; it is
@@ -8043,15 +8081,49 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   or `Failed: <why>`. On an I/Q replay `svc_rtl_set_bandwidth_locked()` stores the request as EXPLICIT and re-plans
   the replay instead of reopening it (`svc_rtl_replay_replan_locked()`, see IO, "Run-time re-plan"): a bandwidth that
   plans the running chain reopens nothing, and a refused re-plan puts the request back with the replay running. These
-  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET and a
-  config apply's reopen; a gain, device index or explicit stream restart that fails still leaves no stream. Any
+  are the commands with a rollback: Input > Switch source, RTL_SET_BW, AIRSPY_SET, the RTL-SDR device change
+  (`RTL_SET_DEV` by index, `RTL_SET_DEV_SERIAL` by USB serial; `svc_rtl_set_device()`) and a config apply's reopen;
+  a gain or explicit stream restart that fails still leaves no stream. The device change checks the selector and
+  builds the new spec before anything changes (`dsd_rtl_spec_set_device()` on a copy: a serial the rule refuses, or a
+  field the spec does not fit, changes nothing), writes it into the spec alone (B2: the index alone left the old device
+  in the spec, which a save wrote; the open selects from the spec and hands the selection back), and reopens inside one
+  hold of the P25 SM tick guard; a failed start puts the spec that ran back and starts it again through
+  `svc_rtl_restart_recovery_locked()`,
+  as `svc_airspy_reopen_impl()` does, toasting `Failed: RTL device -> serial <sn> (see log)` with the capture note
+  (a serial past `UI_RTL_TOAST_SERIAL_MAX` shown cut with `...`, so the note always fits the 128-byte toast). With no
+  stream running before (an RTL-SDR input whose last start failed) the failed start puts back only the options and
+  opens nothing. No input is staged over a running radio: while a radio stream runs (`state->rtl_ctx` with
+  `AUDIO_IN_RTL`: an RTL-SDR, rtl_tcp, Airspy or SoapySDR device, or an I/Q stream or replay), a config whose
+  `[input]` selects a PCM input (Pulse, file, TCP or UDP with its device set, `dsd_user_config_input_sets_device()`)
+  is refused before the command does anything, a scan scope's suspend included (`cfg_check_input_over_running_radio()`
+  through `config_refused_over_running_radio()` at the top of `apply_cmd()`; the command's recording outcome reads as
+  failed), toasting `Refused: this config selects <input> while the radio runs; use Switch source, or stop the receiver
+  first`. A config apply never switches the input type, so that `[input]` would leave
+  `audio_in_dev` naming an input that does not run; refused, `audio_in_dev` always names the running receiver while a
+  radio runs, which every restart, rollback and device change reopens. A radio `[input]` builds a spec, which reopens
+  the receiver when it differs from the running one, or builds none (an RTL-SDR source without `rtl_freq`), applying
+  settings only. With no radio running, a config staging a radio spec over PCM applies as before. The spec is the one
+  record of the dongle an input opens: the change writes it where the next open reads the spec
+  (`dsd_app_rtl_device_spec_field()` in `include/dsd-neo/app_control/rtl_device_view.h`: the running input's, which
+  must be a local `rtl` spec; with PCM running the one the RTL-SDR row opens, picked by the row's own rule,
+  `dsd_app_radio_row_source_field()`, a spec a config staged in `audio_in_dev` before `radio_in_dev`, its tuning kept
+  (the input switch refuses a file whose name reads as another input, `switch_path_reads_as_input_spec()`, so a file
+  is given as `./rtl`); with no RTL-SDR spec remembered it creates `rtl:<dev>` in `radio_in_dev`),
+  and the stream open selects from the spec it opens (IO, below), so the dongle that
+  opens, the spec and a save always agree. The terminal's Device prompt opens on that spec's device field
+  (`dsd_app_rtl_device_prefill()`; a bare `rtl` is `0`), never the device the options last opened. With PCM running
+  and the row opening another radio (an rtl_tcp server, a SoapySDR device, a replay or stream) the change is
+  `DSD_ERR_NOT_SUPPORTED`. An active `rtltcp` source has no local dongle:
+  `DSD_ERR_NOT_SUPPORTED`, the server not reconnected, and the terminal hides `Device...` there
+  (`rtl_device_row_offered()`; its gain and PPM rows stay). The API's `rtl_set_dev` sends `{serial}` as `RTL_SET_DEV_SERIAL`, so a serial of digits
+  stays a serial. Tests: `UI_MENU_SERVICES`, `APP_COMMAND_QUEUE`, `API_COMMAND_PAYLOADS`, `API_COMMANDS`. Any
   restart (`svc_rtl_restart_locked()`) of a stream that ran while `--iq-capture` was on turns the capture off before
   its start, whether the start then succeeds or not (issue #743 B16): the stop closed the file with what it recorded,
   and the start would open it for writing again and empty it. It logs a WARN naming the file and, after a start that
   worked, posts the capture-stopped notice (`dsd_app_note_capture_stopped_at_restart()`), so the next drain's toast
   follows the command's own. A start that failed posts nothing: no stream restarted. A rollback reports the stop in its
   toast (`svc_rtl_restart_recovery_locked()` takes the capture the change found on, `capture_before`), and a command
-  with no rollback (RTL_RESTART, RTL_SET_GAIN, RTL_SET_DEV) ends its "Failed:" toast with "; I/Q capture stopped". On
+  with no rollback (RTL_RESTART, RTL_SET_GAIN) ends its "Failed:" toast with "; I/Q capture stopped". On
   an input with fixed tuning (`dsd_opts_input_has_fixed_tuning()`), the gain, device index, bias tee, rtl_tcp
   autotune and auto-PPM services, the PPM commands (RTL_SET_PPM, PPM_DELTA) and the tuner autogain DSP toggle refuse
   with `DSD_ERR_NOT_SUPPORTED` and their "Unsupported" toasts before any option changes or any restart (issue #743 B2:
@@ -8085,7 +8157,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `rtl`/`rtltcp` spec, or any device string on an RTL input that names no SoapySDR, Airspy or replay device (the bare
   `rtl` Input > Switch source > RTL-SDR writes when no radio ran among them), runs at `rtl_dsp_bw_khz`, saturated rather than overflowed for an
   out-of-range bandwidth. `svc_check_analog_bandwidth()` holds a width to no rate on a PCM input, which runs
-  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). A config apply whose reopen of
+  no channel filter, whatever radio a switch to it replaced (kept in `dsd_opts::radio_in_dev`). The hot restart of an
+  RTL-SDR `[input]` opens the dongle the config names: the spec it wrote, which the reopen (`svc_rtl_restart_locked()`)
+  opens and selects from. A config apply whose reopen of
   the running RTL-family input fails to start (the live Airspy reopen, `svc_airspy_reopen_locked()`, or the hot restart
   for a new spec, `apply_cfg_rtl_hot_restart()`, both from `apply_cfg_radio_input()`) never loses that input either
   (`ui_cfg_settle_reopen()`, issue #578): it takes the reason from `svc_describe_start_failure()`, puts back what the
@@ -11656,6 +11730,59 @@ Key public headers:
     totals while accumulating at most 65536 samples per 32-bit reduction (`65536 * 255^2 < 2^32`); x86 widening reduces
     its byte extrema in registers and maps the four clipping-edge values to one unsigned interval. These integer
     reductions leave both the sample values and the statistics exact (`DSP_SIMD_WIDEN`, `IO_INPUT_LEVEL_METRICS`).
+  - RTL-SDR selection by USB serial (`<dsd-neo/io/rtl_device_select.h>`, `radio/rtl_device_select.cpp`, compiled into
+    `dsd-neo_io_radio` whatever `DSD_HAVE_LIBUSB` says; without `USE_RTLSDR` every call fails): the one listing and
+    lookup the engine's startup, `--rtl-list` (`apps/dsd-cli/main.c`, lines from `rtl_device_list_line()`: the `-i`
+    argument to paste only for a serial of `[A-Za-z0-9._-]`, any other quoted with a note; every device string shown
+    escaped, any byte but printable ASCII as `\xNN`, by both line formatters and `rtl_device_string_shown()` for log
+    lines; `rtl_device_list_cli()` takes the listing again while it grows, at most 3 times, then prints it with no `-i`
+    argument and no duplicate mark, marked incomplete) and the open share. `rtl_device_list()` zeroes every entry before
+    its read and checks the result, so an unreadable device never shows another's strings (the startup listing once
+    did); a read that fails, or succeeds with no string at all (a driver can return 0 with empty buffers), is
+    `strings_read` 0, and only an entry with a serial is `readable`. `rtl_device_find_serial()` matches exactly
+    (`strcmp`, as `rtlsdr_get_index_by_serial()`), counts every readable match however many devices there are (FOUND /
+    NOT_FOUND / DUPLICATE / NO_DEVICES / FAILED, with the device, unreadable, no-serial and match counts and the first
+    match's own index); a device whose strings could not be read (`unreadable`) and one that reads but reports no serial
+    (`no_serial`, index only) are counted apart and noted apart by the engine and `--rtl-list`, and neither ever matches
+    or counts as a duplicate. librtlsdr's three reads go through `rtl_select_guarded_*()` (`radio/rtl_select_driver.h`,
+    module-private): MSVC `__try` wrappers against the exception a mismatched libusb DLL raises, which the identity
+    unit's real driver ops call too; `struct rtl_select_driver_ops` (`rtl_device_select_set_driver_ops()`, test hooks
+    only) stands in for them. `rtl_device_create_selected()` takes the serial the `rtl:` spec names
+    (`opts->rtl_dev_serial`, `dsd_rtl_device_field_parse()`) into the USB open (`rtl_device_open_by_serial()`): the
+    serial is looked up at that open, the index found opened, and the raw handle's serial (`rtl_select_handle_serial()`)
+    must match before this project configures or publishes it; a mismatch closes the handle directly (no tuning, gain,
+    bias-tee or FIFO write, as `rtl_device_destroy()` would make), so it is refused and never streamed, and looks the
+    serial up once more, then the open fails with `RTL_DEVICE_ESERIAL` (LIBUSB_ERROR_NOT_FOUND's value) as the session's
+    device failure. Decided limit: on the desktop the serial is readable only on a handle `rtlsdr_open()` has opened,
+    which has claimed and initialised the dongle, so one hot-plugged into the looked-up index in that instant is
+    initialised (never streamed) before it is closed; no custom open is built for it. Decided limit, Android: a live
+    serial change or an in-session reopen of the published descriptor checks only that the dongle held reports the
+    serial; a permitted twin carrying the same serial is caught when the app's broker takes the receiver for a session,
+    not at such a reopen. A pre-opened descriptor (`rtl_device_open_preopened()`) is never enumerated: with a serial,
+    the dongle behind it must report it or the handle is closed and the descriptor handed back
+    (`g_preopened_usb_fd_held` -1), with the same error. Before that, and before any reset it owes,
+    `rtl_device_preopened_check_serial()` reads the serial through the descriptor (`rtl_usb_fd_serial_descriptor()`:
+    usbfs `GET_DESCRIPTOR` on ep0 in the device's first language) and compares it losslessly
+    (`rtl_usb_serial_descriptor_is()`: the descriptor's whole length, every UTF-16 code unit equal to the serial's
+    printable ASCII, so a NUL, a character past ASCII or another length never matches), since `rtlsdr_open_fd()` claims,
+    writes registers, can reset and inits the tuner: another dongle, or one whose serial cannot be read that way, is
+    refused with no open at all, its reset obligation kept (fail closed: the read is a control transfer on the same
+    connection the open uses, so a dongle it cannot reach would not open either). Without a serial, the descriptor
+    identity's serial is the opened one. A descriptor is device 0: the device's and the returned index are 0 whatever
+    index the options held. Every local RTL-SDR stream start selects its dongle from the spec it opens
+    (`stream_open_select_local_rtl()` in `dsd_rtl_stream_open()`: `dsd_rtl_spec_select_device()`, so a cached index or
+    serial a former spec left never opens another dongle; a field the grammar refuses fails the start before anything
+    opens, and so does a spec that is no `rtl` one, which `detect_radio_source()` reads as a local dongle by default: a
+    staged `pulse` opens nothing) and, with a pre-opened descriptor, runs an index as 0 with the spec rewritten. The
+    stream (`stream_open_open_device_usb()`) puts the index found in `dongle.dev_index` and its options, and
+    `RtlSdrOrchestrator::start()` hands the index, the serial and a rewritten spec (unless the caller's spec moved on)
+    to the caller's (decoder-owned) options, as it does `airspy_info`; the log line is `Using RTLSDR Device Index: N (SN
+    <sn>)`. `rtl_device_usb_serial()` is the serial verified on the handle (the one chosen by, or for an index the stall
+    recovery identity's), which an I/Q capture's `source_args` records as `index=N,serial=<sn>`
+    (`capture_rtl_usb_args()`, only a serial `dsd_rtl_serial_is_valid()` accepts). The auto squelch's floor key hashes
+    an `rtl:` device field that names a serial in its one form, `serial=<sn>`
+    (`squelch_device_spec_canonical_serial()`); an index stays hashed as written, so keys learned before stay. Tests:
+    `IO_RTL_DEVICE_SELECT` (lookup, listing, open, descriptor, stream), `IO_RTL_SQUELCH_DEVICE_KEY`, `IO_IQ_METADATA`.
   - USB identity and reset (`radio/rtl_usb_identity.{h,cpp}`, module-private, the only includer of `libusb.h`, which
     `cmake/arch_rules.cmake` enforces): which USB device a stalled dongle is, so a USB port reset reaches it and never a
     second dongle another program streams from. `rtl_usb_identity_resolve()` runs before `rtlsdr_open()`: it takes the
@@ -11718,6 +11845,11 @@ Key public headers:
     (the reset polls it) and returns `-ECANCELED`, so either the reader restarted before the stop (which joins it) or it
     never starts. A dongle found on another port is recorded there; a triple that after the reset no longer leads to
     exactly one device (index or resolution) fails the recovery before any open and turns recovery off from then on.
+    The fresh identity is recorded only when its triple is the old one's and the reopened handle verifies against the
+    old one, so the three agree: devices that change between the index lookup and the resolution (A, B, A at one index)
+    fail the recovery the same way rather than record the other dongle's port for the next reset. A dongle chosen by
+    serial (`select_serial`) is reopened only while `rtl_device_find_serial()` still finds that serial on one readable
+    device, at the index found (D2: a twin with other strings but the same serial fails it too).
     Test: `IO_RTL_USB_SWAP` (a whole fake dongle, `rtl_device_test_usb_dongle_install()`, over a fake device list;
     ASan/TSan). Swap/replay cases require libusb; builds without it exercise the ineligible-device paths.
   - USB stall recovery (issue #518 B1, D1, D2). The stream registers `rtl_device_set_recovery_callback()` before the USB
@@ -18171,6 +18303,15 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     already past the answer, shared targets counted once), `UI_MENU_LABELS`, `UI_MENU_ACTIONS`, `UI_MENU_NAVIGATION`
     (routing and the modal-only overlay), `UI_HOTKEYS_REGRESSION`, `UI_MENU_TREE_AUDIT` (+ `_NO_RADIO`: the row, its
     key, the rigctl rows in Input), `UI_NCURSES_PRINTER_HELPERS` (+ `_RADIO`).
+  - RTL-SDR device prompt: `ui_open_rtl_device_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO` too)
+    opens `Device (index or serial)` with capacity `DSD_RTL_SERIAL_MAX + 9` (room for `serial=` and the longest
+    serial, so a longer paste is refused, never read as another serial). The `rtl.dev` row (`Device...`,
+    `rtl_set_dev()`) prefills it with the input's own device field (`dsd_rtl_device_field_format()`: the index, or
+    `serial=<sn>`, so a serial of digits submitted again stays a serial). `cb_rtl_dev_text()` reads the answer with
+    `dsd_rtl_device_field_parse()`: an index posts `RTL_SET_DEV`, a serial `RTL_SET_DEV_SERIAL`, empty cancels, and
+    a refusal puts `Enter an index like 0 or a serial like 00000001` in the status and reopens the prompt with the text.
+    The I/O pane names a serial-chosen dongle on its identity row (`| RTL: SN <serial>;`, `ui_render_radio_identity_row()`).
+    Tests: `UI_MENU_ACTIONS`, `UI_MENU_CALLBACKS`, `UI_NCURSES_PRINTER_HELPERS`, `UI_MENU_LABELS`.
   - Frequency prompt (issue #670): `ui_open_freq_prompt(c, prefill)` (`menu_actions.h`, built without `USE_RADIO`
     too) is the one opener, for Input > `Frequency...` (`act_set_freq()`, empty field) and for the `=` key (issue #671):
     a string prompt titled `Frequency in MHz, e.g. 146.52 (or add Hz, k, M, G)` with capacity
@@ -18455,7 +18596,8 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
   - Radio input names and tuner rows (issue #743, B5): `lbl_current_input()` names a radio input by its kind through
     the app-control radio-source view (`include/dsd-neo/app_control/radio_source_view.h`,
-    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N`, `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
+    `dsd_app_radio_source_name()`): `Source: RTL-SDR dev N` (`RTL-SDR SN <serial>` when the input names its dongle by
+    USB serial), `rtl_tcp H:P`, `Airspy [serial]`, `SoapySDR [args]`,
     `I/Q replay FILE`, `I/Q stream H:P (cs16, 240 kHz)` / `I/Q stream UDP :P (...)` (`dsd_app_iq_stream_describe()`; a
     host too long for the label is cut and marked so the samples stay), where rtl_tcp, Airspy and a replay all read
     `RTL-SDR dev N`. Switch source's radio row (`lbl_src_rtl()`) names the input it opens
@@ -21962,8 +22104,23 @@ Qt Quick frontend (`src/ui/qt`):
   `rowsAboutToBeRemoved`/`rowsRemoved` (then `sitesChanged`, `countChanged`) mean the removal is on disk, and whatever
   follows rows out of the model can prune on them. A site is grouped while `rrSid > 0` and `rrSiteId > 0`, by
   `site_group_key()` (`site_groups.cpp`): `"<rrSid>|<receiver>"`, the receiver being `receiver_identity()` (the source,
-  then an Airspy's serial, an rtl_tcp or TCP host without case or blanks and its port, a UDP port or a file path;
-  `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is two groups.
+  then an Airspy's serial without case, a USB dongle's `rtlSerial` exactly when it names one (plain `usb` otherwise, the
+  key every group and pin saved before the field has), an rtl_tcp or TCP host without case or blanks and its port, a UDP
+  port or a file path; `session_args.cpp` joins scan lists on the same identity), so a system saved for two receivers is
+  two groups.
+  `rtlSerial` (a saved system's and a scan list's flat field, like `gainDb`) names the USB dongle by serial, kept exactly
+  as typed: `session_args_build()` opens it as `rtl:serial=<sn>` (always the explicit form; none is `rtl:0`) and refuses
+  a serial no spec can carry (`session_args_rtl_serial_valid()`, the decoder's `dsd_rtl_serial_is_valid()`:
+  `SessionArgsError::RtlSerial`, start-check category "rtl-serial", whose text Main.qml shows), since an imported or
+  restored map never passed the editors' check (`Util.rtlSerialValid()`, the same rule). The card's receiver label is
+  `USB <serial>`; on Android, Main.qml asks for the dongle by that serial and starts only once the connected one
+  carries it exactly; a serial that rule refuses asks for no device, and the start is refused with that text. A Signal
+  search detection recorded on an `rtl:` spec that names its dongle by serial (`dsd_rtl_device_field_parse()`) hands
+  `SignalSearchModel::systemForHit()`'s system that `rtlSerial`, so Save as system and Explore here keep the dongle
+  (the wizard's `openForFound()` takes a USB session's `rtlSerial`, so the Spectrum's Save after Explore here keeps it
+  too; a detection's own wins). The
+  extra options' I/Q stream check (`extra_names_iq_stream()`) reads each `-i` value with its scheme normalized
+  (`dsd_input_spec_normalize_scheme()`), as the decoder's `-i` does.
   `SavedSystemsModel::groupKey(row)` reads that key from the row's fields (no field map built); `siblingRows()`,
   `nearestRow()`, `siteCount()`, the site chooser and `ListenPins` all group by it. Every site distance is
   `site_distance_km()`: the geodesic on the WGS84 ellipsoid (a = 6378137 m, f = 1/298.257223563) by Vincenty's inverse,
@@ -24179,11 +24336,13 @@ cancelled end (`SessionPhaseTracker::note_attempt_retired()`), not the expiry's 
 The attempt's own failures (`AttemptFailureKind` in `run_status.h`, numbered after `dsd_input_failure_kind`'s 1-7: 8
 `previous_stopping`, a start refused while the previous session stops, by the host or by the USB broker's take; 9
 undelivered, host only; 10 `usb_permission`, 11 `usb_open_failed`, 12 `usb_gone`, the broker's take failing before
-configure; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
+configure; 13 `usb_serial_duplicate` and 14 `usb_serial_missing`, a take for the RTL-SDR serial the start's arguments
+name that two readable dongles carry or no attached one does; a start the host could not hand over has no kind) are published as Failed with `inputFailureKind()` over
 every record, so an older session's input failure never comes back, until the next start, `stop()` (Retry) or
 `dismissFailure()` (the card's Dismiss, which also retires the attempt). Main.qml's `failureMessage()` words kinds 8 and
-9 for the card and `searchStartFailure()` for Signal search's own screen, and `receiverStartFailure()` kinds 10-12 for
-either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text
+9 for the card and `searchStartFailure()` for Signal search's own screen, `serialStartFailure()` kinds 13 and 14 for
+either (the service's own text, which names the serial and the fix, then "Then tap Retry." or "Then start the search
+again."), and `receiverStartFailure()` kinds 10-12 for either, naming the attempted receiver ("RTL-SDR", "Airspy", or "The receiver" with no attempt); the host's failure text
 for a service-side kind is the record's `lastError` ("The USB receiver is no longer connected", ...). Both RTL-SDR open
 paths in `rtl_device_create()` report `DSD_INPUT_FAILURE_DEVICE` with the open's code, and a successful open clears it,
 as Airspy's open does, so `failureMessage()` words them as kind 7 and a desktop run that opened after a failed open does
@@ -25924,7 +26083,8 @@ Several lists in one session (issue #697):
   differs, in this order (`Different radio source`, `Different gain`, `Different PPM correction`, `Different bandwidth`,
   `Different bias tee`, `Different Airspy settings`, `Different voice-only setting`, `Different skip-silent setting`
   (issue #834), `Different default dwell`, `Different default hold`, `Different fallback talkgroups`, `Different source
-  aliases`; empty when it can join). The radio source is the source type and device (Airspy serial, rtl_tcp/TCP host
+  aliases`; empty when it can join). The radio source is the source type and device (Airspy serial, RTL-SDR serial
+  exactly, rtl_tcp/TCP host
   and port, UDP port, file path); bandwidth is compared as the radio runs it and only on RTL and Airspy sources; gain,
   PPM and bias tee only on RTL sources (a setting the source's argv leaves out, `append_input_args()`, is no setting);
   Airspy values are read with the engine's aliases (`scan_join_airspy_value()`); dwell and hold 0 are the engine's
