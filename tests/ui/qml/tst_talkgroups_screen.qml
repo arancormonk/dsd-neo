@@ -47,6 +47,10 @@ Item {
             testContext.setGroupFileConfigured(false);
             testContext.setHostRunning(true);
             testContext.resetCommands();
+            testContext.setMetric("uiMessage", "");
+            testContext.setMetric("uiMessageSeq", 0);
+            screenLoader.item.bulkMessage = "";
+            screenLoader.item.bulkNewer = false;
             verify(testContext.pushTalkgroup(1001, "A", "Fire Dispatch", "FIRE"));
             verify(testContext.pushTalkgroup(1002, "B", "Fire Tactical", "FIRE"));
             verify(testContext.pushTalkgroup(2001, "A", "EMS Dispatch", "EMS"));
@@ -68,6 +72,10 @@ Item {
             testContext.setGroupFileConfigured(false);
             testContext.setHostRunning(false);
             testContext.resetCommands();
+            testContext.setMetric("uiMessage", "");
+            testContext.setMetric("uiMessageSeq", 0);
+            screenLoader.item.bulkMessage = "";
+            screenLoader.item.bulkNewer = false;
         }
 
         function test_long_names_fit_cards_data() {
@@ -222,6 +230,135 @@ Item {
                 var only = tc.grid.itemAtIndex(0);
                 return only !== null && only.idText === "12*";
             });
+        }
+
+        // B3: the visible lines under the screen that read exactly @p message.
+        function shownCopies(message) {
+            var found = 0;
+            var walk = function (node) {
+                if (!node.visible)
+                    return;
+                if (node.text !== undefined && node.text === message)
+                    found++;
+                for (var i = 0; i < node.children.length; ++i)
+                    walk(node.children[i]);
+            };
+            walk(screenLoader.item);
+            return found;
+        }
+        function applyBulk() {
+            var listen = findChild(screenLoader.item, "listenAllButton");
+            verify(listen !== null && listen.enabled);
+            mouseClick(listen, listen.width / 2, listen.height / 2);
+            var confirm = findChild(screenLoader.item, "confirmTalkgroupBulk");
+            verify(confirm !== null && confirm.visible);
+            mouseClick(confirm, confirm.width / 2, confirm.height / 2);
+            tryCompare(findChild(screenLoader.item, "talkgroupBulkConfirm"), "visible", false);
+        }
+
+        // B3: the engine's answer is said once, on the command line, not on a second line above it as well.
+        function test_engine_answer_shows_once() {
+            var answer = "Applied: 3 talkgroups listened to";
+            testContext.setMetric("uiMessage", answer);
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            tryCompare(toast, "visible", true);
+            compare(toast.text, answer);
+            compare(shownCopies(answer), 1, "the engine's answer is shown once");
+        }
+
+        // B3: one line, the newest message on it. A refusal after an older engine answer shows at once; an engine
+        // answer after an accepted request replaces "Update requested"; an expired answer leaves the line empty
+        // rather than bringing back the older message it replaced.
+        function test_command_line_shows_the_newest_message() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            var refused = "The update could not be queued. Try again.";
+            var requested = "Update requested";
+
+            testContext.setMetric("uiMessage", "Applied: 2 talkgroups listened to");
+            tryCompare(toast, "text", "Applied: 2 talkgroups listened to");
+            testContext.setTalkgroupSelectionAccepted(false);
+            applyBulk();
+            compare(testContext.allTalkgroupsListenCalls(), 0, "a refused request sends nothing");
+            compare(toast.text, refused, "a refusal after an older answer shows at once");
+            verify(toast.visible);
+            compare(shownCopies(refused), 1);
+            compare(shownCopies("Applied: 2 talkgroups listened to"), 0, "the older answer is gone");
+            // The older answer expiring leaves the newer refusal in place.
+            testContext.setMetric("uiMessage", "");
+            compare(toast.text, refused);
+            verify(toast.visible);
+
+            testContext.setTalkgroupSelectionAccepted(true);
+            applyBulk();
+            compare(testContext.allTalkgroupsListenCalls(), 1);
+            compare(toast.text, requested);
+            compare(shownCopies(requested), 1);
+            var rejected = "Talkgroup list changed: stale selection rejected";
+            testContext.setMetric("uiMessage", rejected);
+            tryCompare(toast, "text", rejected, 5000, "the engine's later answer replaces the pending request");
+            compare(shownCopies(rejected), 1);
+            compare(shownCopies(requested), 0, "the request it answered is not shown beside it");
+
+            // The answer expires: nothing older comes back in its place.
+            testContext.setMetric("uiMessage", "");
+            tryCompare(toast, "visible", false);
+            compare(toast.text, "");
+            compare(shownCopies(requested), 0, "an expired answer does not bring back the request");
+            compare(shownCopies(refused), 0, "nor the refusal before it");
+        }
+
+        // B3 (r2 E2): the one command line kept the look of the line it replaced, the app's 13 px text in the primary
+        // colour, so it grows with the text size: at text 2.0 a bulk status or an engine answer is drawn at 26 px.
+        function test_command_line_follows_the_text_size() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            Ui.Theme.fontScale = 2;
+            testContext.setMetric("uiMessage", "Applied: 2 talkgroups listened to");
+            tryCompare(toast, "visible", true);
+            compare(toast.font.pixelSize, Ui.Theme.fontSize(13), "an engine answer at the theme's 13 px");
+            compare(toast.font.pixelSize, 26);
+            verify(Qt.colorEqual(toast.color, Ui.Theme.textPrimary), "in the primary text colour");
+            testContext.setMetric("uiMessage", "");
+            testContext.setTalkgroupSelectionAccepted(false);
+            applyBulk();
+            compare(toast.text, "The update could not be queued. Try again.");
+            compare(toast.font.pixelSize, 26, "a refusal at the same size");
+        }
+
+        // B3: the engine can answer with exactly the text still shown from its last answer (the same selection applied
+        // twice within the answer's life). Its count moves, so the answer replaces "Update requested", and when it
+        // expires the request does not come back.
+        function test_same_answer_text_again_replaces_the_request() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            var answer = "2 selected talkgroups listened to";
+            testContext.setMetric("uiMessage", answer);
+            testContext.setMetric("uiMessageSeq", 1);
+            tryCompare(toast, "text", answer);
+            applyBulk();
+            compare(toast.text, "Update requested");
+            testContext.setMetric("uiMessageSeq", 2);
+            tryCompare(toast, "text", answer, 5000, "the same text answered again replaces the pending request");
+            compare(shownCopies(answer), 1);
+            compare(shownCopies("Update requested"), 0);
+            testContext.setMetric("uiMessage", "");
+            tryCompare(toast, "visible", false);
+            compare(toast.text, "");
+            compare(shownCopies("Update requested"), 0, "an expired answer does not bring back the request");
+        }
+
+        // B3: an accepted request the engine never answers (decoding stopped) leaves the line after the same 4 s an
+        // engine answer lives, and the older answer it replaced does not come back in its place.
+        function test_unanswered_request_expires() {
+            var toast = findChild(screenLoader.item, "talkgroupCommandToast");
+            testContext.setMetric("uiMessage", "Applied: 2 talkgroups listened to");
+            tryCompare(toast, "text", "Applied: 2 talkgroups listened to");
+            applyBulk();
+            compare(toast.text, "Update requested");
+            wait(3000);
+            compare(toast.text, "Update requested", "still shown inside its 4 s");
+            verify(toast.visible);
+            tryCompare(toast, "visible", false, 3000, "the unanswered request leaves after 4 s");
+            compare(toast.text, "");
+            compare(shownCopies("Applied: 2 talkgroups listened to"), 0, "the older answer does not come back");
         }
 
         function test_session_note_tracks_group_file_configuration() {

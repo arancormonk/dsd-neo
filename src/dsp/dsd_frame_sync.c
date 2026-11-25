@@ -3825,6 +3825,9 @@ typedef struct frame_sync_runtime_ctx {
     char synctest16[17];
     char modulation[8];
     char symbol_history[FRAME_SYNC_HISTORY_CAPACITY];
+    /* The last scan quiet answer said a check is under way (issue #834 follow-up): the hunt asks the check's event
+       service before each symbol. */
+    int quiet_live;
     /* The level window, t_max levels; a carried history brings its levels (dsd_frame_sync_history_carry::levels). */
     float lbuf[DSD_FRAME_SYNC_HISTORY_CARRY_LEVELS];
 } frame_sync_runtime_ctx;
@@ -3932,8 +3935,10 @@ frame_sync_runtime_init(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const 
 static void
 frame_sync_runtime_restart(frame_sync_runtime_ctx* rt, const dsd_opts* opts, const dsd_state* state) {
     const frame_sync_cc_stamps cc_stamp_at_entry = rt->cc_stamp_at_entry;
+    const int quiet_live = rt->quiet_live;
     frame_sync_runtime_init(rt, opts, state);
     rt->cc_stamp_at_entry = cc_stamp_at_entry;
+    rt->quiet_live = quiet_live;
 }
 
 static int
@@ -6230,6 +6235,63 @@ frame_sync_yield_to_search(dsd_state* state) {
     return DSD_SYNC_NONE;
 }
 
+/* The scan quiet check's event service before a hunt symbol (issue #834 follow-up): asked only while the last quiet
+   answer said a check is under way, and not where the 300-symbol point just ran its own service. 1 when it hands back,
+   the hunt then leaving with no sync and its history kept, as at that point's hand-back: no symbol was read for it. */
+static int
+frame_sync_quiet_event_hands_back(const dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt) {
+    if (!rt->quiet_live) {
+        return 0;
+    }
+    const int quiet = dsd_frame_sync_hook_scan_quiet_event(opts, state);
+    rt->quiet_live = quiet == DSD_SCAN_QUIET_LIVE;
+    if (quiet != DSD_SCAN_QUIET_HAND_BACK) {
+        return 0;
+    }
+    frame_sync_history_keep(rt, state);
+    frame_sync_sps_hunt_mark_return(state);
+    return 1;
+}
+
+/* The hunt's 300-symbol point: the UI publication, a P25 watchdog beat's tick (one that moved the chain hands back at
+   once, as a read that left for a queued command does), a Signal search's yield, a trunk-scan target's idle dwell run
+   out, and the scan quiet check's service. Returns 1 when the hunt leaves, with its return in @p out.
+
+   A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands back once per
+   1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at 4800 sym/s, 750 ms at
+   2400). The hand-back is a no-sync return like the pass's own, only earlier: the engine's next tick rotates under the
+   coordinator's guard, and its no-carrier pass runs as after any. It keeps its history as the pass end does: a tick
+   that keeps the target leaves a sync straddling the hand-back to the next call, and one that rotates retunes, which
+   drops the history (issue #834). A scan quiet check whose quiet result the tick may skip on hands back the same way;
+   it does its measurement work inside the call and costs one load with skip-silent off (issue #834); a check merely
+   under way (LIVE) hands nothing back, and makes the hunt ask its event service before each symbol until the next
+   answer (issue #834 follow-up). */
+static int
+frame_sync_hunt_point_leaves(dsd_opts* opts, dsd_state* state, frame_sync_runtime_ctx* rt, int* out) {
+    frame_sync_publish_ui_throttled(opts, state);
+    if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
+        frame_sync_sps_hunt_mark_return(state);
+        *out = frame_sync_hand_back_after_tick(state);
+        return 1;
+    }
+    if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
+        *out = frame_sync_yield_to_search(state);
+        return 1;
+    }
+    const int dwell = dsd_trunk_scan_hook_dwell_due(opts, state);
+    const int quiet = dwell ? DSD_SCAN_QUIET_NONE : dsd_frame_sync_hook_scan_quiet_service(opts, state);
+    if (!dwell) {
+        rt->quiet_live = quiet == DSD_SCAN_QUIET_LIVE;
+    }
+    if (dwell || quiet == DSD_SCAN_QUIET_HAND_BACK) {
+        frame_sync_history_keep(rt, state);
+        frame_sync_sps_hunt_mark_return(state);
+        *out = DSD_SYNC_NONE;
+        return 1;
+    }
+    return 0;
+}
+
 int
 getFrameSync(dsd_opts* opts, dsd_state* state) {
     const time_t now = dsd_decode_time();
@@ -6253,33 +6315,20 @@ getFrameSync(dsd_opts* opts, dsd_state* state) {
     frame_sync_publish_ui_throttled(opts, state);
     dsd_event_sync_slot(opts, state, 0);
     dsd_event_sync_slot(opts, state, 1);
+    /* A check under way is asked at once: a READY result an engine publication collected hands back here. */
+    rt.quiet_live = opts->scan_skip_silent;
+    if (frame_sync_quiet_event_hands_back(opts, state, &rt)) {
+        return DSD_SYNC_NONE;
+    }
 
     for (;;) {
         rt.t++;
         if ((rt.t % 300) == 0) {
-            frame_sync_publish_ui_throttled(opts, state);
-            if (frame_sync_service_p25_watchdog(opts, state) == FRAME_SYNC_WD_MOVED) { /* a deferral hunts on */
-                frame_sync_sps_hunt_mark_return(state);
-                return frame_sync_hand_back_after_tick(state);
+            if (frame_sync_hunt_point_leaves(opts, state, &rt, &ended)) {
+                return ended;
             }
-            if (dsd_frame_sync_hook_signal_search_should_yield(opts, state)) {
-                return frame_sync_yield_to_search(state);
-            }
-            /* A trunk-scan target's idle dwell ran out inside the pass (discussion #717). On dead air the hunt hands
-               back once per 1800-symbol pass, so a dwell checked only between passes ran up to a pass long (375 ms at
-               4800 sym/s, 750 ms at 2400). The hand-back is a no-sync return like the pass's own, only earlier: the
-               engine's next tick rotates under the coordinator's guard, and its no-carrier pass runs as after any. It
-               keeps its history as the pass end does: a tick that keeps the target leaves a sync straddling the
-               hand-back to the next call, and one that rotates retunes, which drops the history (issue #834). A scan
-               quiet check whose quiet result the tick may skip on hands back the same way; it does its measurement
-               work inside the call and costs one load with skip-silent off (issue #834); a check merely under way
-               (LIVE) hands nothing back. */
-            if (dsd_trunk_scan_hook_dwell_due(opts, state)
-                || dsd_frame_sync_hook_scan_quiet_service(opts, state) == DSD_SCAN_QUIET_HAND_BACK) {
-                frame_sync_history_keep(&rt, state);
-                frame_sync_sps_hunt_mark_return(state);
-                return DSD_SYNC_NONE;
-            }
+        } else if (frame_sync_quiet_event_hands_back(opts, state, &rt)) {
+            return DSD_SYNC_NONE;
         }
 
         rt.symbol = getSymbol(opts, state, 0);

@@ -1,4 +1,4 @@
-add_library(dsd-neo_proto_m17)
+add_library(dsd-neo_proto_m17 STATIC)
 
 target_sources(
     dsd-neo_proto_m17
@@ -30,10 +30,3 @@ target_link_libraries(
 )
 
 target_link_libraries(dsd-neo_proto_m17 PRIVATE dsd-neo_dsp dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_proto_m17
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

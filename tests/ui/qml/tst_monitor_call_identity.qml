@@ -240,25 +240,34 @@ Item {
             }
         }
 
-        // On a phone-width strip the call's name outranks its PRIVATE tag: the tag gives way rather than cut the name, and
-        // ENC keeps its place.
+        // On a phone-width strip the call's name keeps its width first (issue #901 B6), then the slot label, PRIVATE
+        // and ENC follow while they fit, in that order: at 411 dp ENC gives way, at 360 dp PRIVATE too. The name is
+        // never cut, every tag it lost is still heard (issue #782), and a tag returns with room.
         function test_strip_name_outranks_the_private_tag() {
             setCall(1, {kind: kindGroup, name: "Dispatch", tg: "456", id: 456, src: "7001", protocol: "DMR"});
             setCall(2, {kind: kindPrivate, tg: "2001234", id: 2001234, src: "7001", protocol: "DMR", enc: true});
             testContext.setMetric("leadSlot", 1);
-            root.width = 411;
             try {
                 var identity = item("otherSlotIdentity");
-                tryVerify(function () { return !item("otherPrivateTag").visible; }, 5000, "the tag crowds the name");
+                var privateTag = item("otherPrivateTag");
+                var enc = item("otherEncTag");
+                root.width = 360;
+                tryVerify(function () { return !privateTag.visible && !enc.visible; }, 5000, "the tags crowd the name");
                 waitForRendering(monitor);
                 compare(identity.text, "ID 2001234");
                 verify(!identity.truncated, "the name is cut");
-                // A screen reader still hears what kind of call it is (issue #782).
-                verify(identity.Accessible.name.indexOf("PRIVATE") >= 0, "the hidden tag is not read: " + identity.Accessible.name);
-                verify(findChild(monitor, "otherSlotPanel") !== null);
-                root.width = 420;
-                testContext.setMetric("slot2CallEnc", false);
-                tryVerify(function () { return item("otherPrivateTag").visible; }, 5000, "the tag does not return with room");
+                // A screen reader still hears what kind of call it is.
+                for (var word of ["PRIVATE", "ENC"])
+                    verify(item("otherSlotNode").Accessible.name.indexOf(word) >= 0, "the hidden " + word + " is not read: " + item("otherSlotNode").Accessible.name);
+                root.width = 411;
+                tryVerify(function () { return privateTag.visible && !enc.visible; }, 5000, "PRIVATE does not return first");
+                waitForRendering(monitor);
+                verify(!identity.truncated, "the name is cut");
+                verify(identity.x + identity.width <= privateTag.x + 0.5, "the identity runs under its PRIVATE tag");
+                verify(item("otherSlotNode").Accessible.name.indexOf("ENC") >= 0, "the hidden ENC is not read: " + item("otherSlotNode").Accessible.name);
+                root.width = 480;
+                tryVerify(function () { return enc.visible; }, 5000, "ENC does not return with room");
+                verify(privateTag.visible);
             } finally {
                 root.width = 420;
             }

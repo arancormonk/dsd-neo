@@ -1,6 +1,6 @@
 # Platform abstraction library
 
-add_library(dsd-neo_platform)
+add_library(dsd-neo_platform STATIC)
 
 # Platform-specific sources
 if(WIN32)
@@ -22,7 +22,15 @@ else()
             sockets_posix.c
             timing_posix.c
             file_compat_posix.c
+            file_identity_posix.c
             posix_compat_posix.c
+    )
+    # File identities read a recording over 2 GiB or dated past 2038 on a 32-bit build too: this one file takes 64-bit
+    # file offsets and time (it hands no struct stat, off_t or time_t to any other file; file_compat_posix.c does,
+    # through dsd_stat_t, and checks its descriptors through this file instead).
+    set_source_files_properties(
+        file_identity_posix.c
+        PROPERTIES COMPILE_DEFINITIONS "_FILE_OFFSET_BITS=64;_TIME_BITS=64"
     )
     find_package(Threads REQUIRED)
     target_link_libraries(dsd-neo_platform PUBLIC Threads::Threads)
@@ -78,10 +86,3 @@ target_include_directories(
 )
 
 target_link_libraries(dsd-neo_platform PRIVATE dsd-neo_warnings)
-
-install(
-    TARGETS dsd-neo_platform
-    RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
-    LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
-    ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
-)

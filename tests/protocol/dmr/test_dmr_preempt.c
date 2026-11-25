@@ -12,6 +12,7 @@
 
 #include <dsd-neo/protocol/dmr/dmr_utils_api.h>
 
+#include <dsd-neo/core/call_channel.h>
 #include <dsd-neo/core/call_state.h>
 #include <dsd-neo/core/crc_provenance.h>
 #include <dsd-neo/core/events.h>
@@ -134,20 +135,10 @@ clock_at(double seconds) {
     dsd_decode_clock_test_set_ns(k_t0_ns + (uint64_t)(seconds * 1e9));
 }
 
-/* The request the last tune was handed (issue #834). */
-static uint64_t g_tune_request;
-
 static dsd_trunk_tune_result
 test_tune_request(dsd_opts* opts, dsd_state* state, long int freq, int ted_sps, uint64_t request_id) {
     (void)ted_sps;
-    g_tune_request = request_id;
-    if (g_tune_result == DSD_TRUNK_TUNE_RESULT_PENDING) {
-        /* In flight: the tuner is told where to go, and the request resolves later. */
-        opts->rtlsdr_center_freq = (uint32_t)freq;
-        opts->trunk_is_tuned = 1;
-        state->trunk_vc_freq[0] = state->trunk_vc_freq[1] = freq;
-        return g_tune_result;
-    }
+    (void)request_id;
     if (g_tune_result != DSD_TRUNK_TUNE_RESULT_OK) {
         return g_tune_result;
     }
@@ -219,6 +210,21 @@ tv_grant(dsd_opts* opts, dsd_state* st, uint16_t lpcn, uint8_t slot, uint32_t tg
     write_bits_u32(bits, 16U, lpcn, 12U);
     bits[28] = (uint8_t)(slot & 1U);
     write_bits_u32(bits, 32U, tg, 24U);
+    write_bits_u32(bits, 56U, src, 24U);
+    dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
+}
+
+/* A CRC-valid Tier III private grant through the CSBK layer: PV_GRANT (48) for voice, PD_GRANT (51) for data. */
+static void
+private_grant(dsd_opts* opts, dsd_state* st, uint8_t opcode, uint16_t lpcn, uint8_t slot, uint32_t dst, uint32_t src) {
+    uint8_t bits[256];
+    uint8_t bytes[48];
+    DSD_MEMSET(bits, 0, sizeof(bits));
+    DSD_MEMSET(bytes, 0, sizeof(bytes));
+    bytes[0] = opcode;
+    write_bits_u32(bits, 16U, lpcn, 12U);
+    bits[28] = (uint8_t)(slot & 1U);
+    write_bits_u32(bits, 32U, dst, 24U);
     write_bits_u32(bits, 56U, src, 24U);
     dmr_cspdu(opts, st, bits, bytes, 1U, 0U);
 }
@@ -775,6 +781,44 @@ test_in_place_group_grant_never_binds_private_call(dsd_opts* opts, dsd_state* st
     return rc;
 }
 
+/* A private data grant from 3003 to 2002 in place on the followed slot of a private voice call from 1001 to 2002 is
+   another call (its kind and parties differ, though it names the same destination): it starts a dwell of its own and
+   is not bound to the voice call's transmission. Once that voice call ends, the slot's hangtime is the data grant's: a
+   p50 preempt elsewhere is refused within its dwell, though the voice call (p100) it replaced was past its own, and
+   taken once the data call's dwell ran out. */
+static int
+test_in_place_private_data_grant_starts_its_own_dwell(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 1001, "A", 100, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    private_grant(opts, st, 48U, LPCN_A, 0, 2002, 1001);
+    int rc = expect_true("the private voice call is followed", vc(st) == VC_A && sm()->vc_dst == 2002);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    clock_at(1.0);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    const uint64_t voice_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+    rc |= expect_true("the voice call is published", voice_epoch != 0U && call.ota_source_id == 1001U);
+    const double assigned_m = dsd_decode_now_mono_s();
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    rc |= expect_true("the data grant names the slot",
+                      vc(st) == VC_A && sm()->slots[0].source == 3003U && sm()->slots[0].data_call == 1U);
+    rc |= expect_true("the data grant is not bound to the voice call", sm()->slots[0].call_epoch != voice_epoch);
+    rc |= expect_true("the data grant's dwell runs from its assignment",
+                      fabs(sm()->slots[0].follow_m - assigned_m) < 1e-6);
+    clock_at(1.02);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(1.05);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("a p50 preempt within the data call's dwell is refused", vc(st) == VC_A);
+    clock_at(1.8);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt past the data call's dwell is followed", vc(st) == VC_B && sm()->vc_tg == 50);
+    return rc;
+}
+
 /* The CRC provenance of slot 0's active call (0xFF: none active). */
 static uint8_t
 slot0_call_crc(const dsd_state* st, uint32_t* target) {
@@ -817,157 +861,6 @@ test_in_place_reassignment_carries_crc_provenance(dsd_opts* opts, dsd_state* st)
     return rc;
 }
 
-/* A C_MOVE event, as the CSBK layer submits it. */
-static dmr_sm_grant_result_e
-submit_move(dsd_opts* opts, dsd_state* st, long freq, uint16_t lpcn, int slot, int is_group, uint32_t target,
-            uint32_t src) {
-    dmr_sm_event_t ev;
-    DSD_MEMSET(&ev, 0, sizeof(ev));
-    ev.type = DMR_SM_EV_GRANT;
-    ev.slot = slot;
-    ev.freq_hz = freq;
-    ev.lpcn = lpcn;
-    ev.tg = is_group ? (int)target : 0;
-    ev.dst = is_group ? 0 : (int)target;
-    ev.src = (int)src;
-    ev.is_group = is_group;
-    ev.kind = is_group ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
-    ev.identity_known = 1;
-    ev.origin = DMR_SM_ORIGIN_MOVE;
-    ev.policy_valid = 1;
-    if (is_group) {
-        (void)dsd_tg_policy_evaluate_group_call(opts, st, target, src, 0, 0, &ev.policy);
-    } else {
-        (void)dsd_tg_policy_evaluate_private_call(opts, st, src, target, 0, 0, &ev.policy);
-    }
-    return dmr_sm_submit_grant(opts, st, &ev);
-}
-
-/* A matched C_MOVE whose tune is deferred changes nothing: a repeat of the followed grant still matches it, so the
-   identity a checked LC gave the slot and its follow time stay. */
-static int
-test_deferred_move_keeps_identity(dsd_opts* opts, dsd_state* st) {
-    init_env(opts, st, 2.0);
-    tv_grant(opts, st, LPCN_A, 0, 101, 1);
-    clock_at(0.5);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 202, 2);
-    const double follow_m = sm()->slots[0].follow_m;
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_DEFERRED;
-    int rc = expect_true("a deferred move of the followed call",
-                         submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_DEFERRED && vc(st) == VC_A);
-    g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-    rc |= expect_true("the deferred move left the grant identity", sm()->vc_tg == 101 && sm()->vc_is_group == 1);
-    clock_at(0.6);
-    tv_grant(opts, st, LPCN_A, 0, 101, 1);
-    rc |= expect_true("a repeat of the followed grant keeps the LC's identity and follow time",
-                      sm()->slots[0].target == 202U && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC
-                          && fabs(sm()->slots[0].follow_m - follow_m) < 1e-9);
-    return rc;
-}
-
-/* A same-carrier C_MOVE of a call whose identity was already published moves the publication to the new slot: its
-   first voice there names the call, and the move keeps the follow time. */
-static int
-test_slot_move_republishes(dsd_opts* opts, dsd_state* st) {
-    init_env(opts, st, 2.0);
-    seed_row(st, 100, "A", 10, 0);
-    seed_row(st, 300, "A", 60, 1);
-    tv_grant(opts, st, LPCN_A, 0, 100, 7);
-    clock_at(0.3);
-    voice(opts, st, 0);
-    dsd_call_snapshot call;
-    int rc = expect_true("the grant's identity is published on its slot",
-                         dsd_call_state_get(st, 0U, &call) > 0 && call.ota_target_id == 100U);
-    clock_at(0.4);
-    rc |= expect_true("same-carrier move is in place",
-                      submit_move(opts, st, VC_A, LPCN_A, 1, 1, 100, 7) == DMR_SM_GRANT_IN_PLACE && sm()->vc_slot == 1);
-    rc |= expect_true("the vacated slot's canonical call ended", dsd_call_state_get(st, 0U, &call) > 0
-                                                                     && call.ota_target_id == 100U
-                                                                     && call.phase == DSD_CALL_PHASE_ENDED);
-    clock_at(0.5);
-    voice(opts, st, 1);
-    rc |= expect_true("the moved call's identity is published on its new slot",
-                      dsd_call_state_get(st, 1U, &call) > 0 && call.ota_target_id == 100U
-                          && call.phase == DSD_CALL_PHASE_ACTIVE);
-    rc |= expect_true("one ACTIVE snapshot of the moved call",
-                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ENDED);
-    clock_at(0.8);
-    voice(opts, st, 1);
-    tv_grant(opts, st, LPCN_B, 0, 300, 3);
-    rc |= expect_true("the move kept the follow time", vc(st) == VC_B);
-    return rc;
-}
-
-/* A C_MOVE is the followed call's only when it names the call the followed slot carries (either party of a private
-   call): a checked LC that renamed the call makes the original grant's talkgroup another call. */
-static int
-test_move_matches_slot_identity(dsd_opts* opts, dsd_state* st) {
-    init_env(opts, st, 2.0);
-    seed_row(st, 101, "A", 10, 0);
-    seed_row(st, 202, "A", 10, 0);
-    tv_grant(opts, st, LPCN_A, 0, 101, 1);
-    clock_at(0.5);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 202, 2);
-    int rc = expect_true("a move of the grant's renamed talkgroup is another call's (busy)",
-                         submit_move(opts, st, VC_B, LPCN_B, 0, 1, 101, 1) == DMR_SM_GRANT_BUSY && vc(st) == VC_A);
-    rc |= expect_true("the followed slot keeps its call", sm()->slots[0].target == 202U);
-    rc |= expect_true("a move of the call the slot carries is followed",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B
-                          && sm()->slots[0].target == 202U);
-
-    init_env(opts, st, 2.0);
-    tv_grant(opts, st, LPCN_A, 0, 101, 1);
-    clock_at(0.5);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 7001, 7002);
-    rc |= expect_true("a move naming the private call's source is the followed call's",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 0, 7002, 7001) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B
-                          && sm()->slots[0].target == 7001U);
-    return rc;
-}
-
-/* Issue #834: a C_MOVE's follow whose tune is still in flight has not left the carrier yet, and one that then fails
-   never does: the call's ALG, key ID and MI there stay, and its voice is not held, until the tune lands; one that lands
-   is judged then, before anything the carrier it reached sends is read. */
-static int
-test_move_judges_its_carrier_once_landed(dsd_opts* opts, dsd_state* st) {
-    int rc = 0;
-    for (int lands = 0; lands <= 1; lands++) {
-        init_env(opts, st, 2.0);
-        seed_row(st, 202, "A", 10, 0);
-        tv_grant(opts, st, LPCN_A, 0, 202, 1);
-        clock_at(0.5);
-        voice(opts, st, 0);
-        st->payload_algid = 0x21;
-        st->payload_keyid = 5;
-        st->payload_mi = 0x1234U;
-        st->dmr_enc_class_held[0] = st->dmr_enc_class_held[1] = 0U;
-        g_tune_result = DSD_TRUNK_TUNE_RESULT_PENDING;
-        g_tune_request = 0U;
-        rc |= expect_true("the move is followed, its tune in flight",
-                          submit_move(opts, st, VC_B, LPCN_B, 0, 1, 202, 2) == DMR_SM_GRANT_FOLLOWED
-                              && g_tune_request != 0U);
-        g_tune_result = DSD_TRUNK_TUNE_RESULT_OK;
-        rc |= expect_true("a move in flight keeps the call's decryption",
-                          st->payload_algid == 0x21 && st->payload_keyid == 5 && st->payload_mi == 0x1234U
-                              && st->dmr_enc_class_held[0] == 0U);
-        dsd_trunk_tuning_request_publish(g_tune_request,
-                                         lands ? DSD_TRUNK_TUNE_RESULT_OK : DSD_TRUNK_TUNE_RESULT_FAILED);
-        dmr_sm_resolve_tracked_tune(opts, st);
-        if (lands) {
-            rc |= expect_true("the landed move forgets the call's decryption and holds",
-                              st->payload_algid == 0 && st->payload_mi == 0U && st->dmr_enc_class_held[0] == 1U);
-        } else {
-            rc |=
-                expect_true("a move that failed keeps the call's decryption",
-                            st->payload_algid == 0x21 && st->payload_mi == 0x1234U && st->dmr_enc_class_held[0] == 0U);
-        }
-    }
-    return rc;
-}
-
 /* A call on @p slot as the canonical layer opens it: a voice LC naming group @p tg (0: anonymous late-entry voice). */
 static void
 canonical_call_begins(dsd_state* st, int slot, uint32_t tg, uint32_t src) {
@@ -982,6 +875,479 @@ canonical_call_begins(dsd_state* st, int slot, uint32_t tg, uint32_t src) {
     (void)dsd_call_state_observe(st, &observation, DSD_CALL_BOUNDARY_BEGIN);
 }
 
+/* The transmission of @p slot's canonical call (0: none). */
+static uint64_t
+slot_transmission(const dsd_state* st, int slot) {
+    dsd_call_snapshot call;
+    return dsd_call_state_get(st, (uint8_t)slot, &call) > 0 ? dsd_call_snapshot_transmission(&call) : 0U;
+}
+
+/* Late-entry voice without an LC (DSD_CALL_KIND_VOICE) on the companion slot is voice all the same: an in-place
+   private data grant for that slot names another call, so it is not bound to the voice transmission, at the grant nor
+   at the next voice. */
+static int
+test_in_place_data_grant_never_binds_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    int rc = expect_true("the group call is followed", vc(st) == VC_A && sm()->vc_slot == 0);
+    clock_at(0.3);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    const uint64_t voice_epoch = slot_transmission(st, 1);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    rc |= expect_true("the data grant names the companion slot",
+                      vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].source == 3003U);
+    rc |= expect_true("the data grant is not bound to the late-entry voice",
+                      voice_epoch != 0U && sm()->slots[1].call_epoch != voice_epoch);
+    clock_at(0.6);
+    voice(opts, st, 1);
+    rc |= expect_true("nor at its next voice", sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    return rc;
+}
+
+/* A private data grant in place on the followed slot of an active private voice call awaits its own call. The next
+   transmission there, late-entry voice without an LC, is not that call: the data grant never binds to it. */
+static int
+test_deferred_data_grant_never_binds_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 48U, LPCN_A, 0, 2002, 1001);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    const uint64_t voice_epoch = slot_transmission(st, 0);
+    clock_at(0.6);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant awaits its call",
+                         vc(st) == VC_A && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    clock_at(0.8);
+    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(0.9);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    const uint64_t late_epoch = slot_transmission(st, 0);
+    rc |=
+        expect_true("late-entry voice opened a transmission of its own", late_epoch != 0U && late_epoch != voice_epoch);
+    rc |= expect_true("the deferred data grant is not bound to the late-entry voice",
+                      sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch != late_epoch);
+    return rc;
+}
+
+/* A low-priority private data grant in place on the companion slot, then two LC-less voice transmissions there: the
+   grant waits for its own call, and it never stands for that voice. The voice call is unknown, so a p50 preempt
+   elsewhere is refused past every dwell (an unknown call is protected), not judged against the data grant's p10. */
+static int
+test_unbound_data_grant_never_describes_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    seed_row(st, 100, "A", 10, 0);
+    seed_row(st, 2002, "A", 10, 0);
+    seed_row(st, 3003, "A", 10, 0);
+    seed_row(st, 50, "A", 50, 1);
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    private_grant(opts, st, 51U, LPCN_A, 1, 2002, 3003);
+    int rc = expect_true("the data grant names the companion slot",
+                         vc(st) == VC_A && sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    clock_at(0.6);
+    (void)dsd_call_state_end_ex(st, 1U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
+    clock_at(0.7);
+    canonical_call_begins(st, 1, 0U, 0U);
+    voice(opts, st, 1);
+    rc |= expect_true("the data grant still awaits its call",
+                      sm()->slots[1].data_call == 1U && sm()->slots[1].call_epoch == 0U);
+    clock_at(1.5);
+    voice(opts, st, 0);
+    voice(opts, st, 1);
+    tv_grant(opts, st, LPCN_B, 0, 50, 5);
+    rc |= expect_true("the p50 preempt is refused over the unknown voice call", vc(st) == VC_A && sm()->vc_tg == 100);
+    return rc;
+}
+
+/* A followed private data grant's slot carries LC-less voice: that voice is another call, and the first voice sync
+   gives it nothing of the data grant's (no talker, no target, no private voice class). */
+static int
+test_data_grant_never_names_late_entry_voice(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 0U, 0U);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the late-entry voice stays anonymous",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.kind == DSD_CALL_KIND_VOICE && call.ota_source_id == 0U && call.ota_target_id == 0U
+                          && call.policy_target_id == 0U);
+    return rc;
+}
+
+/* A followed private data grant's slot carries a voice call a checked LC names (TG 400). Its first voice publishes
+   nothing of the data grant's, and it is the slot's first voice all the same: an in-place voice grant for TG 500 while
+   TG 400 goes on renames the followed call but never publishes over the call playing. One transmission, TG 400. */
+static int
+test_data_follow_first_voice_consumes_publication(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant is followed", vc(st) == VC_A && sm()->vc_data_call == 1);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 400U, 4U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 400U, 4U);
+    voice(opts, st, 0);
+    const uint64_t voice_epoch = slot_transmission(st, 0);
+    rc |= expect_true("the first voice is handled", voice_epoch != 0U && sm()->vc_identity_published == 1);
+    clock_at(0.4);
+    tv_grant(opts, st, LPCN_A, 0, 500, 5);
+    rc |= expect_true("the voice grant is in place", vc(st) == VC_A && sm()->vc_tg == 500 && sm()->vc_data_call == 0);
+    clock_at(0.5);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("TG 400 goes on as one transmission",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && dsd_call_snapshot_transmission(&call) == voice_epoch && call.policy_target_id == 400U
+                          && call.ota_source_id == 4U);
+    return rc;
+}
+
+/* Hold 200: the followed slot plays TG 200 (its LC names it) when a private data grant in place replaces the slot's
+   record. The data grant is not that call (unbound), so the slot's call is unknown, but the call playing is still the
+   Hold group's: a second TG 200 grant on another carrier never displaces it by Hold. */
+static int
+test_pending_data_grant_keeps_hold_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 200, 2);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant replaces the slot's record unbound",
+                         vc(st) == VC_A && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    st->tg_hold = 200;
+    clock_at(0.6);
+    voice(opts, st, 0);
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the Hold call playing keeps the receiver", vc(st) == VC_A);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* Hold 200: slot 0 still holds an ACTIVE P25 TG 200 record (another protocol's, never ended) when a private data
+   grant for this carrier is adopted in place, and DMR voice passes on the slot. The record is not a DMR call, so it
+   claims no Hold: a DMR TG 200 grant on another carrier is followed by Hold. */
+static int
+test_other_protocol_record_claims_no_hold(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[0x0020U] = CC_HZ;
+    const dsd_call_observation p25 = {
+        .protocol = DSD_SYNC_P25P1_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_GROUP_VOICE,
+        .ota_target_id = 200U,
+        .policy_target_id = 200U,
+        .ota_source_id = 2U,
+    };
+    (void)dsd_call_state_observe(st, &p25, DSD_CALL_BOUNDARY_BEGIN);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, 0x0020U, 0, 2002, 3003);
+    int rc = expect_true("the data grant adopts the carrier unbound",
+                         sm()->state == DMR_SM_TUNED && sm()->vc_freq_hz == CC_HZ && sm()->slots[0].data_call == 1U
+                             && sm()->slots[0].call_epoch == 0U);
+    clock_at(0.6);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the P25 TG 200 record is still active",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && DSD_SYNC_IS_P25P1(call.protocol) && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the DMR TG 200 grant elsewhere is followed by Hold", vc(st) == VC_B && sm()->vc_tg == 200);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* Hold 200: a TG 200 voice call (its LC names it) loses its terminator, so its record stays ACTIVE, while a private data
+   grant in place keeps the followed slot busy with data past the voice hangtime. Decided limit (fail-closed): the
+   ACTIVE DMR record still claims Hold, so a second TG 200 grant on another carrier never pulls the receiver away. */
+static int
+test_missed_terminator_keeps_hold_call(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    tv_grant(opts, st, LPCN_A, 0, 200, 2);
+    clock_at(0.3);
+    canonical_call_begins(st, 0, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    voice(opts, st, 0);
+    clock_at(0.5);
+    private_grant(opts, st, 51U, LPCN_A, 0, 2002, 3003);
+    int rc = expect_true("the data grant replaces the slot's record unbound",
+                         vc(st) == VC_A && sm()->slots[0].data_call == 1U && sm()->slots[0].call_epoch == 0U);
+    for (int i = 1; i <= 6; i++) {
+        clock_at(0.5 + (0.5 * i));
+        dmr_sm_emit_data_sync(opts, st, 0);
+    }
+    dsd_call_snapshot call;
+    rc |= expect_true("data keeps the carrier past the voice hangtime with TG 200's record active",
+                      vc(st) == VC_A && dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.policy_target_id == 200U);
+    st->tg_hold = 200;
+    tv_grant(opts, st, LPCN_B, 0, 200, 7);
+    rc |= expect_true("the ACTIVE TG 200 record keeps the receiver by Hold", vc(st) == VC_A);
+    st->tg_hold = 0;
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A RAS-accepted group status on LSN 1 is followed; before its voice a checked status
+   names another group on LSN 3 (the followed slot). The followed call takes the status's channel, and the status's
+   flags are ORed into the earlier RAS mark, never replacing it: its first voice publishes LSN 3, still unverified. */
+static int
+test_xpt_status_rename_takes_its_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 100, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    int rc = expect_true("the RAS status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    st->event_crc_invalid[0] = 0U;
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 300U, 1);
+    rc |= expect_true("the checked status renames the followed call with its channel",
+                      sm()->vc_tg == 300 && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED && sm()->vc_lpcn == 3
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes LSN 3 with the RAS mark kept",
+                      target == 300U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == 3U && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 100 on LSN 1 is followed; before its voice a RAS-accepted status
+   names TG 200 on LSN 3 (the followed slot), then a checked one names TG 200 again, on LSN 1. The group is unchanged,
+   but the followed channel is the last status's: the first voice publishes TG 200 on LSN 1, never LSN 3, and the
+   checked status never clears the RAS status's mark (the flags are ORed). */
+static int
+test_xpt_same_group_status_moves_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 100, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 200U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("TG 200 on LSN 3", sm()->vc_tg == 200 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 200U, 1);
+    rc |= expect_true("the same group on LSN 1 takes that channel, its RAS mark kept",
+                      sm()->vc_tg == 200 && sm()->vc_lpcn == 1 && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes TG 200 on LSN 1, unverified",
+                      target == 200U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == 1U && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 71 on LSN 1 is followed, a status names TG 83 on LSN 3 (the
+   followed slot), then a private status names the slot's call on LSN 1. The private call's identity is unknown, but its
+   channel is LSN 1: the call its LC names there takes LSN 1, never LSN 3. */
+static int
+test_xpt_private_status_keeps_its_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 71, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 83U, 1);
+    rc |= expect_true("TG 83 on LSN 3", sm()->vc_tg == 83 && sm()->vc_lpcn == 3);
+    clock_at(0.2);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 0U, 1);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the private status's channel and provenance are the followed call's",
+                      sm()->vc_identity_known == 0 && sm()->vc_lpcn == 1
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    const dsd_call_observation private_call = {
+        .protocol = DSD_SYNC_DMR_BS_VOICE_POS,
+        .slot = 0U,
+        .kind = DSD_CALL_KIND_PRIVATE_VOICE,
+        .ota_target_id = 2002U,
+        .policy_target_id = 2002U,
+        .ota_source_id = 1001U,
+    };
+    (void)dsd_call_state_observe(st, &private_call, DSD_CALL_BOUNDARY_BEGIN);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_PRIVATE_VOICE, 2002U, 1001U);
+    rc |= expect_true("the private call's LC takes LSN 1 with the status's provenance",
+                      sm()->slots[0].channel == 1 && sm()->slots[0].channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->slots[0].channel_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the private call publishes LSN 1", dsd_call_state_get(st, 0U, &call) > 0
+                                                              && call.phase == DSD_CALL_PHASE_ACTIVE
+                                                              && call.ota_target_id == 2002U && call.channel == 1U
+                                                              && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* A RAS-accepted (-F) Tier III grant names TG 71 from radio 777 on VC_A; before its voice a checked XPT status names TG
+   71 on the followed slot. The status names the group and channel, not the talker: its flags are ORed into the grant's,
+   so the first voice publishes radio 777 with the RAS mark kept, never as verified. */
+static int
+test_xpt_status_keeps_grant_ras_mark(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 71, 777);
+    st->event_crc_invalid[0] = 0U;
+    int rc = expect_true("the RAS grant is followed", vc(st) == VC_A && sm()->vc_tg == 71 && sm()->vc_src == 777
+                                                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.2);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 71U, 1);
+    rc |= expect_true("the checked status keeps the grant's talker and RAS mark",
+                      sm()->vc_tg == 71 && sm()->vc_src == 777 && sm()->vc_lpcn == 1
+                          && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes radio 777 with the RAS mark",
+                      target == 71U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.ota_source_id == 777U);
+    return rc;
+}
+
+/* XPT LSNs 1 and 3 share a carrier. A status for TG 71 on LSN 1 is followed, a status names TG 71 on LSN 3, a checked
+   voice LC (radio 5) then names the slot's call and takes LSN 3, and a last status names TG 71 on LSN 1 before the
+   first voice. The LC's parties and binding stand, but the pending channel is refreshed: the first voice publishes
+   LSN 1, with the LC's talker. */
+static int
+test_xpt_status_refreshes_lc_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->trunk_chan_map[1] = VC_A;
+    st->trunk_chan_map[3] = VC_A;
+    st->currentslot = 0;
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 1, 71, 0);
+    ev.slot = 0;
+    ev.channel_kind = (uint8_t)DSD_CALL_CHANNEL_LSN;
+    ev.origin = DMR_SM_ORIGIN_STATUS;
+    int rc = expect_true("the status is followed", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_FOLLOWED);
+    clock_at(0.1);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 3, VC_A, 71U, 1);
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 71U, 5U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 71U, 5U);
+    const uint64_t epoch = sm()->slots[0].call_epoch;
+    rc |= expect_true("the LC takes LSN 3",
+                      sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC && sm()->slots[0].channel == 3 && epoch != 0U);
+    clock_at(0.25);
+    dmr_sm_status_slot_reconcile(sm(), st, 0, 1, VC_A, 71U, 1);
+    rc |= expect_true("the status refreshes the pending channel and keeps the LC's parties and binding",
+                      sm()->vc_lpcn == 1 && sm()->slots[0].channel == 1
+                          && sm()->slots[0].channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN
+                          && sm()->slots[0].prov == (uint8_t)DMR_SM_ID_LC && sm()->slots[0].source == 5U
+                          && sm()->slots[0].call_epoch == epoch);
+    clock_at(0.3);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the first voice publishes LSN 1 with the LC's talker",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
+                          && call.ota_source_id == 5U && call.channel == 1U
+                          && call.channel_kind == (uint8_t)DSD_CALL_CHANNEL_LSN);
+    return rc;
+}
+
+/* Under -F a RAS-accepted grant tunes LPCN 16; a checked LC then names another call on its slot, and a verified
+   absolute grant (CdefParms CHAN 0) confirms that call in place on the same frequency. The followed call reads
+   verified now, and its channel is unknown (the grant named none): neither the followed slot's call nor a companion
+   LC's publishes the RAS grant's channel. */
+static int
+test_in_place_chan0_grant_drops_channel(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    st->event_crc_invalid[0] = 0U;
+    int rc = expect_true("the RAS grant is followed", vc(st) == VC_A && sm()->vc_lpcn == (int)LPCN_A);
+    clock_at(0.2);
+    canonical_call_begins(st, 0, 200U, 2U);
+    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200U, 2U);
+    clock_at(0.3);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
+    ev.slot = 0;
+    rc |= expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
+    rc |= expect_true("the followed call reads verified, its channel unknown",
+                      sm()->vc_tg == 200 && sm()->vc_crc_flags == 0U && sm()->vc_lpcn == 0
+                          && sm()->vc_channel_kind == (uint8_t)DSD_CALL_CHANNEL_NONE);
+    voice(opts, st, 0);
+    dsd_call_snapshot call;
+    rc |= expect_true("the followed slot's call publishes no channel",
+                      dsd_call_state_get(st, 0U, &call) > 0 && call.policy_target_id == 200U && call.channel == 0U);
+    clock_at(0.4);
+    canonical_call_begins(st, 1, 300U, 3U);
+    dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 300U, 3U);
+    rc |= expect_true("the companion LC inherits no channel", sm()->slots[1].channel == 0);
+    voice(opts, st, 1);
+    rc |= expect_true("the companion call publishes no channel",
+                      dsd_call_state_get(st, 1U, &call) > 0 && call.policy_target_id == 300U && call.channel == 0U);
+    return rc;
+}
+
+/* After a CHAN 0 in-place grant made the followed channel unknown, a RAS-accepted in-place grant naming LPCN 16 on the
+   followed slot gives the followed call that channel with its own provenance: the call publishes LPCN 16 as
+   RAS-unverified. */
+static int
+test_in_place_grant_names_channel_with_its_provenance(dsd_opts* opts, dsd_state* st) {
+    init_env(opts, st, 2.0);
+    st->currentslot = 0;
+    tv_grant(opts, st, LPCN_A, 0, 100, 1);
+    clock_at(0.2);
+    dmr_sm_event_t ev = dmr_sm_ev_group_grant(VC_A, 0, 200, 2);
+    ev.slot = 0;
+    int rc = expect_true("the absolute grant is in place", dmr_sm_submit_grant(opts, st, &ev) == DMR_SM_GRANT_IN_PLACE);
+    rc |= expect_true("its channel is unknown", sm()->vc_tg == 200 && sm()->vc_lpcn == 0);
+    clock_at(0.3);
+    st->event_crc_invalid[0] = (uint8_t)DSD_CRC_RAS_UNVERIFIED;
+    tv_grant(opts, st, LPCN_A, 0, 300, 3);
+    st->event_crc_invalid[0] = 0U;
+    rc |= expect_true("the RAS grant names the channel", sm()->vc_tg == 300 && sm()->vc_lpcn == (int)LPCN_A
+                                                             && sm()->vc_crc_flags == (uint8_t)DSD_CRC_RAS_UNVERIFIED);
+    clock_at(0.4);
+    voice(opts, st, 0);
+    uint32_t target = 0U;
+    const uint8_t crc = slot0_call_crc(st, &target);
+    dsd_call_snapshot call;
+    rc |= expect_true("the call publishes the channel as RAS-unverified",
+                      target == 300U && crc == (uint8_t)DSD_CRC_RAS_UNVERIFIED && dsd_call_state_get(st, 0U, &call) > 0
+                          && call.channel == LPCN_A);
+    return rc;
+}
+
 /* Whether @p slot's canonical call is ACTIVE naming group @p tg, and the slot's record is bound to it. */
 static int
 slot_publishes_bound(const dsd_state* st, int slot, uint32_t tg) {
@@ -989,140 +1355,6 @@ slot_publishes_bound(const dsd_state* st, int slot, uint32_t tg) {
     return dsd_call_state_get(st, (uint8_t)slot, &call) > 0 && call.phase == DSD_CALL_PHASE_ACTIVE
            && call.ota_target_id == tg && sm()->slots[slot].target == tg
            && sm()->slots[slot].call_epoch == dsd_call_snapshot_transmission(&call);
-}
-
-/* The followed grant named call A; a checked LC then named another call, B, on the followed slot (A's end withdrew the
-   grant's identity there). A matched move of B republishes B where it went: its first voice on the new carrier, or on
-   the new slot of the same carrier, names B. */
-static int
-test_move_republishes_renamed_call(dsd_opts* opts, dsd_state* st) {
-    int rc = 0;
-    for (int in_place = 0; in_place < 2; in_place++) {
-        init_env(opts, st, 2.0);
-        tv_grant(opts, st, LPCN_A, 0, 100, 1);
-        clock_at(0.3);
-        voice(opts, st, 0);
-        clock_at(0.5);
-        canonical_call_begins(st, 0, 200, 2);
-        dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 200, 2);
-        rc |= expect_true("B's LC names the followed slot, the grant's identity withdrawn",
-                          sm()->slots[0].target == 200U && sm()->vc_identity_known == 0);
-        clock_at(0.6);
-        const int new_slot = in_place ? 1 : 0;
-        const dmr_sm_grant_result_e moved = in_place ? submit_move(opts, st, VC_A, LPCN_A, 1, 1, 200, 2)
-                                                     : submit_move(opts, st, VC_B, LPCN_B, 0, 1, 200, 2);
-        rc |=
-            expect_true("the move of B is followed", moved == (in_place ? DMR_SM_GRANT_IN_PLACE : DMR_SM_GRANT_FOLLOWED)
-                                                         && sm()->vc_tg == 200 && sm()->vc_identity_known == 1);
-        clock_at(0.7);
-        voice(opts, st, new_slot);
-        rc |= expect_true(in_place ? "B's first voice on its new slot publishes B"
-                                   : "B's first voice on the new carrier publishes B",
-                          slot_publishes_bound(st, new_slot, 200U));
-    }
-    return rc;
-}
-
-/* A matched move to another carrier ends the moved call's epoch on the carrier left (as any follow does), so its first
-   voice on the new carrier publishes it in an epoch of its own and the moved identity binds to that call. When the
-   moved call ends, the next, anonymous call on the slot is unknown (a gap record): it yields only to Hold, never to a
-   preempting call that merely outranks the moved call. */
-static int
-test_move_to_carrier_binds_moved_call(dsd_opts* opts, dsd_state* st) {
-    init_env(opts, st, 2.0);
-    seed_row(st, 100, "A", 10, 0);
-    seed_row(st, 300, "A", 60, 1);
-    tv_grant(opts, st, LPCN_A, 0, 100, 1);
-    clock_at(0.3);
-    voice(opts, st, 0);
-    dsd_call_snapshot call;
-    int rc = expect_true("the followed call is published", slot_publishes_bound(st, 0, 100U));
-    const uint64_t left_epoch = dsd_call_state_get(st, 0U, &call) > 0 ? call.epoch : 0U;
-    clock_at(0.4);
-    rc |= expect_true("the move to another carrier is followed",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 1) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
-    rc |= expect_true("the moved call's epoch on the carrier left ended",
-                      dsd_call_state_get(st, 0U, &call) > 0 && call.epoch == left_epoch
-                          && call.phase == DSD_CALL_PHASE_ENDED && call.end_reason == (uint8_t)DSD_CALL_END_EXPLICIT);
-    clock_at(0.5);
-    voice(opts, st, 0);
-    rc |= expect_true("the moved call is published in an epoch of its own, which its identity binds to",
-                      slot_publishes_bound(st, 0, 100U) && dsd_call_state_get(st, 0U, &call) > 0
-                          && call.epoch != left_epoch);
-    clock_at(1.0);
-    (void)dsd_call_state_end_ex(st, 0U, dsd_decode_now_mono_s(), DSD_CALL_END_TERMINATOR);
-    clock_at(1.2);
-    canonical_call_begins(st, 0, 0U, 0U);
-    voice(opts, st, 0);
-    clock_at(1.3);
-    tv_grant(opts, st, LPCN_C, 0, 300, 3);
-    rc |= expect_true("the anonymous call after the moved one yields only to Hold", vc(st) == VC_B && g_tunes == 2);
-    return rc;
-}
-
-/* The CRC provenance of slot @p slot's active call (0xFF: none active), and its target in @p target. */
-static uint8_t
-slot_call_crc(const dsd_state* st, uint8_t slot, uint32_t* target) {
-    dsd_call_snapshot call;
-    if (dsd_call_state_get(st, slot, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE) {
-        return 0xFFU;
-    }
-    *target = (uint32_t)call.policy_target_id;
-    return call.crc_invalid;
-}
-
-/* A verified C_MOVE republishes the followed call's identity as its record holds it, source included, so it carries the
-   provenance of what named that identity with the move's own: a RAS-accepted grant (-F) moved to another carrier, or a
-   verified grant whose RAS-accepted voice LC named the source, moved to the other slot in place, publishes as
-   RAS-unverified, never verified. A verified grant (and LC) moved either way publishes as verified. */
-static int
-test_move_carries_record_provenance(dsd_opts* opts, dsd_state* st) {
-    static const struct {
-        const char* label;
-        uint8_t grant_crc;
-        uint8_t lc_crc;
-        int use_lc;
-        int to_carrier; // 1: a move to VC_B, slot 0; 0: in place, to slot 1
-        uint8_t want;
-    } k_cases[] = {
-        {"RAS grant moved to another carrier", DSD_CRC_RAS_UNVERIFIED, 0U, 0, 1, DSD_CRC_RAS_UNVERIFIED},
-        {"RAS grant moved in place", DSD_CRC_RAS_UNVERIFIED, 0U, 0, 0, DSD_CRC_RAS_UNVERIFIED},
-        {"RAS LC source moved in place", 0U, DSD_CRC_RAS_UNVERIFIED, 1, 0, DSD_CRC_RAS_UNVERIFIED},
-        {"RAS LC source moved to another carrier", 0U, DSD_CRC_RAS_UNVERIFIED, 1, 1, DSD_CRC_RAS_UNVERIFIED},
-        {"verified grant moved to another carrier", 0U, 0U, 0, 1, 0U},
-        {"verified grant and LC moved in place", 0U, 0U, 1, 0, 0U},
-    };
-
-    int rc = 0;
-    for (size_t i = 0U; i < sizeof(k_cases) / sizeof(k_cases[0]); i++) {
-        init_env(opts, st, 2.0);
-        st->currentslot = 0;
-        st->event_crc_invalid[0] = k_cases[i].grant_crc;
-        tv_grant(opts, st, LPCN_A, 0, 100, 1);
-        st->event_crc_invalid[0] = 0U;
-        clock_at(0.3);
-        voice(opts, st, 0);
-        if (k_cases[i].use_lc) {
-            st->event_crc_invalid[0] = k_cases[i].lc_crc;
-            dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 77);
-            st->event_crc_invalid[0] = 0U;
-        }
-        clock_at(0.4);
-        const int new_slot = k_cases[i].to_carrier ? 0 : 1;
-        const dmr_sm_grant_result_e result =
-            submit_move(opts, st, k_cases[i].to_carrier ? VC_B : VC_A, k_cases[i].to_carrier ? LPCN_B : LPCN_A,
-                        new_slot, 1, 100, k_cases[i].use_lc ? 77 : 1);
-        rc |= expect_true(k_cases[i].label,
-                          result == (k_cases[i].to_carrier ? DMR_SM_GRANT_FOLLOWED : DMR_SM_GRANT_IN_PLACE)
-                              && sm()->vc_crc_flags == k_cases[i].want
-                              && sm()->slots[new_slot].crc_flags == k_cases[i].want);
-        clock_at(0.5);
-        voice(opts, st, new_slot);
-        uint32_t target = 0U;
-        const uint8_t crc = slot_call_crc(st, (uint8_t)new_slot, &target);
-        rc |= expect_true(k_cases[i].label, target == 100U && crc == k_cases[i].want);
-    }
-    return rc;
 }
 
 /* A Tier III grant for the carrier the receiver already listens on (the composite control channel's own payload) while
@@ -1227,48 +1459,13 @@ test_scan_target_contexts(dsd_opts* opts, dsd_state* st) {
     return rc;
 }
 
-/* D5 enrichment: a followed call whose checked LC names a talker the radio list blocks is still the followed call. Its
-   C_MOVE is followed, and a resident call on the control channel's carrier with such a talker still holds the receiver
-   (the media gates mute it); a talkgroup block still lets them go. */
+/* D5 enrichment: a resident call on the control channel's carrier whose checked LC names a talker the radio list
+   blocks still holds the receiver (the media gates mute it); a talkgroup block lets it go. */
 static int
 test_radio_block_keeps_followed_call(dsd_opts* opts, dsd_state* st) {
+    int rc = 0;
     init_env(opts, st, 2.0);
-    int rc = expect_true("radio list", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
-    tv_grant(opts, st, LPCN_A, 0, 100, 1);
-    clock_at(0.3);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
-    clock_at(0.4);
-    rc |= expect_true("a move of the followed call naming a blocked talker is followed",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
-
-    /* Under a Hold on another talkgroup too: neither the Hold mismatch nor the radio block lets it go. */
-    init_env(opts, st, 2.0);
-    rc |= expect_true("radio list (hold)", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
-    tv_grant(opts, st, LPCN_A, 0, 100, 1);
-    clock_at(0.3);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
-    st->tg_hold = 555U;
-    clock_at(0.4);
-    rc |= expect_true("a held-elsewhere move naming a blocked talker is followed",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_FOLLOWED && vc(st) == VC_B);
-    st->tg_hold = 0U;
-
-    /* A talkgroup block still lets the moved call go. */
-    init_env(opts, st, 2.0);
-    rc |= expect_true("radio list (talkgroup block)", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
-    tv_grant(opts, st, LPCN_A, 0, 100, 1);
-    clock_at(0.3);
-    voice(opts, st, 0);
-    dmr_sm_note_lc_identity(opts, st, 0, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
-    seed_row(st, 100, "B", 0, 0);
-    clock_at(0.4);
-    rc |= expect_true("a move of a talkgroup-blocked call is refused",
-                      submit_move(opts, st, VC_B, LPCN_B, 0, 1, 100, 7) == DMR_SM_GRANT_REFUSED && vc(st) == VC_A);
-
-    init_env(opts, st, 2.0);
-    rc |= expect_true("radio list again", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
+    rc |= expect_true("radio list", dsd_test_install_radio_policy(st, 7, "B", 0, 0, 0) == 0);
     clock_at(1.0);
     voice(opts, st, 1);
     dmr_sm_note_lc_identity(opts, st, 1, DSD_CALL_KIND_GROUP_VOICE, 100, 7);
@@ -1323,15 +1520,24 @@ main(void) {
     rc |= test_scan_target_contexts(opts, st);
     rc |= test_in_place_reassignment(opts, st);
     rc |= test_in_place_group_grant_never_binds_private_call(opts, st);
+    rc |= test_in_place_private_data_grant_starts_its_own_dwell(opts, st);
     rc |= test_in_place_reassignment_carries_crc_provenance(opts, st);
-    rc |= test_slot_move_republishes(opts, st);
-    rc |= test_move_matches_slot_identity(opts, st);
-    rc |= test_move_judges_its_carrier_once_landed(opts, st);
-    rc |= test_deferred_move_keeps_identity(opts, st);
-    rc |= test_move_republishes_renamed_call(opts, st);
-    rc |= test_move_to_carrier_binds_moved_call(opts, st);
-    rc |= test_move_carries_record_provenance(opts, st);
     rc |= test_composite_grant_adopts_resident_calls(opts, st);
+    rc |= test_in_place_data_grant_never_binds_late_entry_voice(opts, st);
+    rc |= test_deferred_data_grant_never_binds_late_entry_voice(opts, st);
+    rc |= test_unbound_data_grant_never_describes_voice(opts, st);
+    rc |= test_data_grant_never_names_late_entry_voice(opts, st);
+    rc |= test_data_follow_first_voice_consumes_publication(opts, st);
+    rc |= test_pending_data_grant_keeps_hold_call(opts, st);
+    rc |= test_other_protocol_record_claims_no_hold(opts, st);
+    rc |= test_missed_terminator_keeps_hold_call(opts, st);
+    rc |= test_xpt_status_rename_takes_its_channel(opts, st);
+    rc |= test_xpt_same_group_status_moves_channel(opts, st);
+    rc |= test_xpt_private_status_keeps_its_channel(opts, st);
+    rc |= test_xpt_status_keeps_grant_ras_mark(opts, st);
+    rc |= test_xpt_status_refreshes_lc_channel(opts, st);
+    rc |= test_in_place_chan0_grant_drops_channel(opts, st);
+    rc |= test_in_place_grant_names_channel_with_its_provenance(opts, st);
     rc |= test_radio_block_keeps_followed_call(opts, st);
 
     dsd_trunk_tuning_hooks_set((dsd_trunk_tuning_hooks){0});

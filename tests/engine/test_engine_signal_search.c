@@ -30,6 +30,7 @@
 #include <dsd-neo/engine/trunk_tuning.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/io/signal_measure.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/protocol/p25/p25_cc_candidates.h>
 #include <dsd-neo/protocol/tetra/tetra.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -51,6 +52,7 @@
 #include "../../src/app_control/command_dispatch.h"
 #include "../../src/app_control/commands_internal.h"
 #include "../../src/engine/scan_owner.h"
+#include "../../src/protocol/dmr/dmr_t3_channels_internal.h"
 #include "test_env.h"
 
 static dsd_signal_search_status status;
@@ -359,6 +361,9 @@ static uint64_t boundary_session, boundary_hit;
    ended were labelled with. */
 static uint64_t boundary_code;
 static uint8_t boundary_proven;
+/* The kind of the latest carrier boundary: a visit's is a tune, which the production boundary runs without dropping the
+   DMR Tier III channels the air taught (ENGINE_STREAM_GAP proves it; discussion #900 F2). */
+static dsd_carrier_boundary_kind boundary_kind = DSD_CARRIER_BOUNDARY_STREAM_GAP;
 
 /* The P25 Phase 2 code (WACN(20) << 24 | SYSID(12) << 12 | NAC(12)) @p state holds. */
 static uint64_t
@@ -374,6 +379,7 @@ dsd_engine_carrier_boundary(dsd_opts* opts, dsd_state* state, dsd_carrier_bounda
     (void)opts;
     (void)guard;
     ++boundary;
+    boundary_kind = reason;
     boundary_tagged = dsd_signal_search_visit_get(&boundary_session, &boundary_hit);
     boundary_code = code_held(state);
     boundary_proven = state->p2_cc_verified;
@@ -3234,6 +3240,60 @@ test_hardset_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config*
     session_site(s, 0, 0, 0);
 }
 
+/* A DMR Tier III channel the session learned from its site survives the search's visits with its origin and trust: a
+   visit's boundary is a tune, which keeps them, and the departure's restore puts the row back with the provenance the
+   session saved (discussion #900 F2). A visit that hears another network's checked system code (the entry point a
+   checked C_ALOHA or SYS_Parms short LC calls) drops the session's rows; the departure brings the row back as SITE
+   with its trust and the session's baseline with it. */
+enum { LEARNED_CHANNEL = 9 };
+
+static int
+learned_dmr_row_back(const dsd_state* s, uint32_t session_generation) {
+    return s->trunk_chan_map[LEARNED_CHANNEL] == 852012500 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 2U
+           && dmr_t3_chan_origin(s, LEARNED_CHANNEL) == DMR_CHAN_ORIGIN_SITE
+           && dmr_t3_chan_generation(s) == session_generation;
+}
+
+/* Network B's checked code reaches the visit: the session's rows go. */
+static void
+visit_hears_network_b(dsd_state* s, uint32_t session_generation) {
+    dmr_t3_chan_note_checked_syscode(s, 0x2254U); /* Large model: another MODEL than the session's */
+    assert(s->trunk_chan_map[LEARNED_CHANNEL] == 0 && s->dmr_lcn_trust[LEARNED_CHANNEL] == 0U);
+    assert(dmr_t3_chan_generation(s) == session_generation + 1U);
+}
+
+static void
+test_learned_dmr_channel_survives_visits(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
+    const dsd_signal_search_config one = tag_config(config, 85, 1, 0);
+    session_site(s, CODE_A, 0, 0);
+    dmr_ext_t* ext = dmr_ext_get_or_create(s);
+    assert(ext != NULL);
+    dmr_t3_chan_note_checked_syscode(s, 0x1234U); /* the session's network: Small model, NET 0x11 */
+    /* As the over-the-air writer leaves a SITE row learned on the control channel. */
+    dsd_state_set_trunk_chan_freq(s, LEARNED_CHANNEL, 852012500);
+    dsd_state_dmr_lcn_ota_set(s, LEARNED_CHANNEL, 1);
+    ext->origin[LEARNED_CHANNEL] = (uint8_t)DMR_CHAN_ORIGIN_SITE;
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 2U;
+    const uint32_t session_generation = dmr_t3_chan_generation(s);
+    start_tag_session(o, s, &one);
+    visit_strongest(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    visit_hears_network_b(s, session_generation);
+    next_visit(o, s);
+    assert(boundary_kind == DSD_CARRIER_BOUNDARY_TUNE);
+    assert(learned_dmr_row_back(s, session_generation));
+    /* Back on the session's network baseline: its own code is no network change. */
+    dmr_t3_chan_note_checked_syscode(s, 0x1223U);
+    assert(learned_dmr_row_back(s, session_generation));
+    visit_hears_network_b(s, session_generation);
+    stop_tag_session(o, s);
+    assert(learned_dmr_row_back(s, session_generation));
+    s->dmr_lcn_trust[LEARNED_CHANNEL] = 0U;
+    dmr_t3_chan_note_map_cleared(s);
+    ext->syscode_valid = 0U;
+    session_site(s, 0, 0, 0);
+}
+
 static void
 test_unknown_identity_restored(dsd_opts* o, dsd_state* s, const dsd_signal_search_config* config) {
     const dsd_signal_search_config one = tag_config(config, 84, 1, 0);
@@ -3679,6 +3739,7 @@ test_p25_site_and_codes(dsd_opts* o, dsd_state* s, const dsd_signal_search_confi
     test_iden_before_nsb_restored(o, s, config);
     test_pending_announcements_stay_with_their_site(o, s, config);
     test_hardset_restored(o, s, config);
+    test_learned_dmr_channel_survives_visits(o, s, config);
     test_unknown_identity_restored(o, s, config);
     test_verified_seed_at_start_not_restored_as_proof(o, s, config);
     test_shutdown_during_active_call(o, s, config);

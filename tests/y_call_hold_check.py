@@ -18,6 +18,10 @@ A call with no PROVEN or PARTIAL note in its decoder set is the case the rule ex
 A step noCarrier() takes between the call's frames (a hunt pass that found no sync) is the rule from before the
 frame-boundary yield and is reported, not failed.
 
+With skip-silent on, the scan quiet check never asks the signal tap for a reading: I/Q replay's decode clock is no
+session the check runs on. The host prints the tap's request count at its end, and a leg with skip-silent on fails
+unless it is zero.
+
 Usage: y_call_hold_check.py [--hangtime S[,S...]] [--sets typed,fa] [--all-legs] HOST FIXTURE_DIR [NAME...]
 """
 import argparse
@@ -73,6 +77,7 @@ LEAVE_PAD_NXDN_S = 3.5
 # over the bound or as no leave before the run ended.
 END_MARGIN_S = 1.0
 LINE = re.compile(r"YHOLD (landed|sync|step) t=([0-9.]+)(?: proven=(\d+))?(?: partial=(\d+))?(?: via=(\w+))?")
+QUIET_REQUESTS = re.compile(r"YHOLD quiet_requests=(\d+)")
 
 
 def with_tail(fixtures, name, out_dir, bound_s, unchecked):
@@ -118,8 +123,12 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
     result = subprocess.run(cmd, capture_output=True, text=True, errors="replace", timeout=240, check=False)
     if result.returncode != 0:
         return [f"host exited {result.returncode}:\n{result.stderr[-2000:]}"], {}
-    landed, syncs, steps = None, [], []
+    landed, syncs, steps, quiet_requests = None, [], [], None
     for line in (result.stdout + result.stderr).splitlines():
+        quiet = QUIET_REQUESTS.search(line)
+        if quiet:
+            quiet_requests = int(quiet.group(1))
+            continue
         match = LINE.search(line)
         if not match:
             continue
@@ -132,6 +141,10 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
             steps.append((t, match.group(5)))
     if landed is None:
         return ["the host never landed row zero"], {}
+    if quiet_requests is None:
+        return ["the host printed no quiet request count"], {}
+    if skip and quiet_requests != 0:
+        return [f"the scan quiet check asked the signal tap {quiet_requests} time(s) under I/Q replay"], {}
 
     def rel(t):
         """@p t counted from the landing."""
@@ -150,6 +163,7 @@ def run_case(host, fixtures, out_dir, name, skip, hangtime, decoder_set="typed")
         "last_sync": round(last_sync, 3),
         "proven_at": [round(t, 2) for t in proven_times],
         "steps": [(round(rel(t), 2), via) for t, via in steps],
+        "quiet_requests": quiet_requests,
     }
     failures = []
     # A call that gets no PROVEN or PARTIAL note in this decoder set carries nothing the rule can tell from noise, and

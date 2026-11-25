@@ -190,6 +190,11 @@ class Row:
             return None
         return start
 
+    def playing_at(self, t):
+        """The start of the content the scene plays at scene time t (Scene.block() asks this since issue #834's
+        follow-up): call_at(), as a row's content has no silent lead."""
+        return self.call_at(t)
+
     def at_rate(self, rate):
         if rate not in self.cache:
             call = bif.resample_to_fixture_rate(self.baseband, self.native_rate, rate)

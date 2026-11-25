@@ -38,6 +38,7 @@
 #include <dsd-neo/core/string_utils.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/time_format.h>
+#include <dsd-neo/core/utf16.h>
 #include <dsd-neo/core/vocoder.h>
 #include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/core/wav_journal.h>
@@ -51,7 +52,6 @@
 #include <dsd-neo/platform/atomic_compat.h>
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/platform/nonce.h>
-#include <dsd-neo/platform/posix_compat.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/protocol/p25/p25p1_const.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -77,8 +77,10 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/platform/platform.h"
+#include "sdrtrunk_test_support.h"
 #include "wav_journal.h"
 #include "wav_segment.h"
+#include "wav_size_test_support.h"
 
 void
 saveImbe4400Data(dsd_opts* opts, const dsd_state* state, const char* imbe_d) {
@@ -922,8 +924,6 @@ dsd_wav_temp_token_text(char* out, size_t out_size) {
     return 0;
 }
 
-static long wav_file_get_size_or_negative(const char* filename);
-
 /* The last path component of @p path, either separator. */
 static const char*
 wav_temp_basename(const char* path) {
@@ -1048,7 +1048,7 @@ open_wav_file(char* dir, char* temp_filename, size_t temp_filename_size, uint16_
         }
         /* An open that created the file and then failed (a full disk) leaves it empty: nothing to keep. No file holds
            the name after that, so no later close may try to publish it. */
-        if (wav_file_get_size_or_negative(temp_filename) == 0) {
+        if (dsd_wav_file_size_or_negative(temp_filename) == 0) {
             (void)dsd_remove_file(temp_filename);
         }
         wav_journal_segment_error("open", temp_filename, dir);
@@ -1188,6 +1188,18 @@ wav_rename_analog_from(const Event_History* event_item, const dsd_analog_wav_nam
     }
 }
 
+/* A row's target or source as the history shows it: the text, else the number, else nothing. */
+static void
+wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) {
+    if (text && text[0] != '\0') {
+        (void)DSD_SNPRINTF(out, out_size, "%s", text);
+    } else if (id != 0U) {
+        (void)DSD_SNPRINTF(out, out_size, "%u", (unsigned int)id);
+    } else {
+        out[0] = '\0';
+    }
+}
+
 /* Names the file from @p event_item, its row; without a row from @p analog_name, the analog call's own parts (its
    teardown, issue #668), or else as no row's. */
 static void
@@ -1218,8 +1230,15 @@ wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_
     int8_t gi = event_item ? event_item->gi : 0;
     if (event_item) {
         DSD_SNPRINTF(metadata->sys_str, sizeof(metadata->sys_str), "%s", event_item->sysid_string);
-        DSD_SNPRINTF(metadata->src_str, sizeof(metadata->src_str), "%s", event_item->src_str);
-        DSD_SNPRINTF(metadata->tgt_str, sizeof(metadata->tgt_str), "%s", event_item->tgt_str);
+        /* With text on either endpoint, each is named as the history shows it: its text, else its number, else nothing
+           (issue #888 B9). A wholly numeric row keeps TGT_<n>_SRC_<n>. */
+        metadata->is_string = (event_item->src_str[0] != '\0' || event_item->tgt_str[0] != '\0') ? 1 : 0;
+        if (metadata->is_string) {
+            wav_journal_identity(metadata->src_str, sizeof(metadata->src_str), event_item->src_str,
+                                 event_item->source_id);
+            wav_journal_identity(metadata->tgt_str, sizeof(metadata->tgt_str), event_item->tgt_str,
+                                 event_item->target_id);
+        }
         /* The name's copies only: an M17 or D-STAR callsign can hold a '/', which would name a folder and fail the
            publish (issue #708). The row, and the rdio-scanner sidecar built from it, keep the identity as received. */
         wav_rename_sanitize_component(metadata->sys_str);
@@ -1231,7 +1250,6 @@ wav_rename_build_metadata(const Event_History* event_item, const dsd_analog_wav_
     } else if (gi == 1) {
         DSD_SNPRINTF(metadata->gi_str, sizeof(metadata->gi_str), "%s", "PRIVATE");
     }
-    metadata->is_string = (metadata->src_str[0] != '\0') ? 1 : 0;
     if (metadata->is_analog) {
         wav_rename_analog_from(event_item, analog_name, metadata);
     }
@@ -1250,14 +1268,14 @@ wav_rename_build_final_filename(char* out, size_t out_cap, const char* dir, cons
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str, metadata->tgt_str,
                      metadata->src_str);
     } else {
-        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%d_SRC_%d.wav", dir, metadata->datestr, metadata->timestr,
+        DSD_SNPRINTF(out, out_cap, "%s/%s_%s_%05d_%s%s_%s_TGT_%u_SRC_%u.wav", dir, metadata->datestr, metadata->timestr,
                      metadata->random_number, metadata->sys_str, metadata->service, metadata->gi_str,
-                     metadata->target_id, metadata->source_id);
+                     (unsigned int)metadata->target_id, (unsigned int)metadata->source_id);
     }
 }
 
-static long
-wav_file_get_size_or_negative(const char* filename) {
+int64_t
+dsd_wav_file_size_or_negative(const char* filename) {
     if (!filename || filename[0] == '\0') {
         return -1;
     }
@@ -1266,11 +1284,12 @@ wav_file_get_size_or_negative(const char* filename) {
     if (file == NULL) {
         return -1;
     }
-    if (fseek(file, 0, SEEK_END) != 0) {
+    /* 64-bit positions: long is 32 bits on Windows, which loses a recording past 2 GiB. */
+    if (dsd_fseek64(file, 0, SEEK_END) != 0) {
         fclose(file);
         return -1;
     }
-    long size = ftell(file);
+    const int64_t size = dsd_ftell64(file);
     fclose(file);
     return size;
 }
@@ -1297,18 +1316,6 @@ wav_publish_noreplace(const char* from, char* to, size_t to_size, const char* di
         wav_rename_build_final_filename(to, to_size, dir, metadata);
     }
     return 0;
-}
-
-/* A row's target or source as the history shows it: the text, else the number, else nothing. */
-static void
-wav_journal_identity(char* out, size_t out_size, const char* text, uint32_t id) {
-    if (text && text[0] != '\0') {
-        (void)DSD_SNPRINTF(out, out_size, "%s", text);
-    } else if (id != 0U) {
-        (void)DSD_SNPRINTF(out, out_size, "%u", (unsigned int)id);
-    } else {
-        out[0] = '\0';
-    }
 }
 
 /* The segment's length and rate from libsndfile, read before the close finalizes it; 0 when unknown. */
@@ -1395,37 +1402,133 @@ wav_close_segment(SNDFILE* wav_file, const char* wav_out_filename, const char* d
     return -1;
 }
 
-/* An empty segment (the header alone) at @p path: removed, and journaled as discarded. */
+/* Called just before an empty segment's removal, by a test (dsd_wav_test_set_discard_hook()); NULL for none. */
+static dsd_wav_test_discard_fn s_wav_test_discard_hook;
+
+void
+dsd_wav_test_set_discard_hook(dsd_wav_test_discard_fn hook) {
+    s_wav_test_discard_hook = hook;
+}
+
+/* An empty segment (the header alone) at @p path: removed, and journaled as discarded once it is gone, by its removal
+   or because it was already. Any other removal error (a read-only folder, a folder that cannot be searched, a reader
+   on Windows that shares no delete) leaves the file: a warning and an `error` record of kind `discard` name it (issue
+   #888). The removal's own error decides, not whether the file can still be read. */
 static void
-wav_close_discard_empty(const char* path, const wav_close_journal* journal) {
-    (void)dsd_remove_file(path);
+wav_close_discard(const char* path, const char* dir, const wav_close_journal* journal) {
+    if (s_wav_test_discard_hook != NULL) {
+        s_wav_test_discard_hook(path);
+    }
+    if (dsd_remove_file(path) != 0 && errno != ENOENT) {
+        LOG_WARN("Recording %s was to be discarded but could not be removed\n", path);
+        if (journal->on) {
+            wav_journal_error(wav_close_journal_id(journal), "discard", path, dir);
+        }
+        return;
+    }
     if (journal->on) {
         wav_journal_discard(wav_close_journal_id(journal));
     }
 }
 
-/* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
-   (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
-   upload. A row the event layer never judged allows it. A conventional NFM row is exported under its frequency in kHz,
-   or the user's --rdio-analog-talkgroup when it has none, or one under 1 kHz that names no channel (issue #668,
-   dsd_rdio_analog_talkgroup()); with neither it is not exported, said once a run while rdio export is on, with no
-   failure line. A digital row without a talkgroup still warns. */
+/* Whether a close in @p export_mode may give @p row the fallback talkgroup (issue #888 D7): a commit rotation's row,
+   which the event layer has kept; an early close's only when the event layer is known to keep it: the row names a
+   call, as a number or text, or its protocol's voice never carries identity (X2-TDMA, standalone ProVoice), whose
+   identity-less rows are always kept. An EDACS row (an EDACS sync, or ProVoice with a grant's LCN: an EDACS call, not
+   standalone ProVoice) names its call by its decoded IDs alone: standard addressing renders placeholders
+   ("LID_UNK", "000_AFS_00_000") into its strings for parties it does not know. Any other identity-less row vouches
+   for itself only by media and a positive end, a verdict not known before its commit. The naming test is the twin of
+   watchdog_event_row_names_call() (dsd_events.c), the event layer's keep rescue: the two must agree on what names a
+   call, except that the rescue keeps EDACS rows by those placeholders, for history, and an early export does not. */
 static int
-wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
-                      const char* path, time_t opened, time_t started) {
-    int rdio_queued = 0;
-    if (event_item != NULL && event_item->stream_blocked != 0U) {
+wav_close_allows_fallback(int export_mode, const Event_History* row) {
+    if (export_mode == DSD_WAV_EXPORT_COMMITTED) {
+        return 1;
+    }
+    if (export_mode != DSD_WAV_EXPORT_EARLY || row == NULL || row->category != DSD_EVENT_CATEGORY_VOICE) {
         return 0;
     }
-    if (event_item != NULL && event_item->systype == DSD_SYNC_ANALOG
-        && dsd_rdio_analog_talkgroup(opts, event_item) == 0U) {
-        if (opts->rdio_mode != DSD_RDIO_MODE_OFF && wav_recording_analog_rdio_skip_first_this_run()) {
+    if (row->target_id != 0U || row->source_id != 0U) {
+        return 1;
+    }
+    if (DSD_SYNC_IS_EDACS_ONLY(row->systype) || (DSD_SYNC_IS_PROVOICE(row->systype) && row->channel != 0U)) {
+        return 0;
+    }
+    return row->src_str[0] != '\0' || row->tgt_str[0] != '\0'
+           || dsd_call_state_protocol_voice_is_anonymous(row->systype);
+}
+
+/* The line for a voice row with no talkgroup that may not take the fallback (Event_History::fallback_blocked), once a
+   run. */
+static void
+wav_close_note_fallback_blocked(const Event_History* row) {
+    if (row->fallback_blocked != 0U && row->target_id == 0U && row->category == DSD_EVENT_CATEGORY_VOICE
+        && wav_recording_fallback_blocked_first_this_run()) {
+        LOG_WARN("Rdio export: a call with no talkgroup is recorded but not exported when its ID could not be read (a "
+                 "played SDRTrunk roaming or ISSI ID) or it is a YSF call that did not end on its own terminator\n");
+    }
+}
+
+/* A row with no talkgroup, not exported: said once a run per class while rdio export is on, with no failure line. An
+   analog call with no frequency (issue #668); a digital call the fallback would number but has nothing to number it
+   by (issue #888 B3); a digital call the fallback may not number (Event_History::fallback_blocked, issue #888),
+   whether or not this close would allow the fallback. Any other row the fallback never numbers says nothing, and
+   leaves the line for one that it would. */
+static void
+wav_close_note_rdio_skip(const dsd_opts* opts, const Event_History* row, int allow_fallback) {
+    if (row == NULL || opts->rdio_mode == DSD_RDIO_MODE_OFF) {
+        return;
+    }
+    if (row->systype == DSD_SYNC_ANALOG) {
+        if (wav_recording_analog_rdio_skip_first_this_run()) {
             LOG_WARN("Rdio export: analog calls with no channel frequency (an audio input has none) are not exported; "
                      "set --rdio-analog-talkgroup to export them under one talkgroup\n");
         }
+    } else if (dsd_rdio_call_fallback_eligible(row, allow_fallback)) {
+        if (wav_recording_digital_rdio_skip_first_this_run()) {
+            LOG_WARN("Rdio export: digital calls with no talkgroup and no channel frequency (an audio input has none) "
+                     "are not exported; set --rdio-unknown-talkgroup to export them under one talkgroup\n");
+        }
+    } else {
+        wav_close_note_fallback_blocked(row);
+    }
+}
+
+/* A recording closed with DSD_WAV_EXPORT_NONE (the event layer's drop path, as at a played file's boundary) is never
+   exported. One whose row named a party no ID could be read for (a played SDRTrunk roaming source to an ISSI
+   talkgroup, a row the drop path takes since it names nothing) is said as an export's close says it
+   (wav_close_note_rdio_skip()), so the run says why such a call stayed local wherever it closes (issue #888). */
+static void
+wav_close_note_unexported(const dsd_opts* opts, const Event_History* row) {
+    if (row != NULL && opts->rdio_mode != DSD_RDIO_MODE_OFF && row->stream_blocked == 0U
+        && !DSD_SYNC_IS_YSF(row->systype)) {
+        wav_close_note_fallback_blocked(row);
+    }
+}
+
+/* Export a published recording to rdio-scanner; returns whether an API upload was queued. The row's stream verdict
+   (issue #773 D7): a recording whose talkgroup or radio has stream=off stays local, with no DirWatch sidecar and no
+   upload. A row the event layer never judged allows it. The talkgroup is dsd_rdio_call_talkgroup()'s: a conventional
+   NFM row's frequency in kHz or --rdio-analog-talkgroup (issue #668), a digital row's target, else, when
+   @p export_mode allows the fallback (wav_close_allows_fallback()), its frequency in kHz or --rdio-unknown-talkgroup
+   (issue #888). A row with none is not exported, without a failure line (wav_close_note_rdio_skip()). */
+static int
+wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct, const Event_History* event_item,
+                      const char* path, time_t opened, time_t started, int export_mode) {
+    int rdio_queued = 0;
+    if (export_mode == DSD_WAV_EXPORT_NONE) {
+        wav_close_note_unexported(opts, event_item);
         return 0;
     }
-    if (dsd_rdio_export_call_ex(opts, event_struct, path, opened, started, &rdio_queued) != 0) {
+    if (event_item != NULL && event_item->stream_blocked != 0U) {
+        return 0;
+    }
+    const int allow_fallback = wav_close_allows_fallback(export_mode, event_item);
+    if (dsd_rdio_call_talkgroup(opts, event_item, allow_fallback) == 0U) {
+        wav_close_note_rdio_skip(opts, event_item, allow_fallback);
+        return 0;
+    }
+    if (dsd_rdio_export_call_fallback(opts, event_struct, path, opened, started, allow_fallback, &rdio_queued) != 0) {
         LOG_WARN("Rdio export failed for %s\n", path);
     }
     return rdio_queued;
@@ -1434,7 +1537,7 @@ wav_close_export_rdio(const dsd_opts* opts, const Event_History_I* event_struct,
 /* @p analog_name names an NFM recording that has no row (its teardown, issue #668); NULL for every other close. */
 static SNDFILE*
 wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                      const Event_History_I* event_struct, time_t opened, time_t started, int export_call,
+                      const Event_History_I* event_struct, time_t opened, time_t started, int export_mode,
                       const dsd_analog_wav_name* analog_name, const dsd_wav_owner* owner) {
     /* Only a close with options is journaled: the analog teardown's (no options, no row) writes nothing. */
     wav_close_journal journal;
@@ -1457,9 +1560,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
     DSD_MEMSET(new_filename, 0, sizeof(new_filename));
     wav_rename_build_final_filename(new_filename, sizeof(new_filename), dir, &metadata);
 
-    long size = wav_file_get_size_or_negative(wav_out_filename);
+    const int64_t size = dsd_wav_file_size_or_negative(wav_out_filename);
     if (size == 44) {
-        wav_close_discard_empty(wav_out_filename, &journal);
+        wav_close_discard(wav_out_filename, dir, &journal);
         wav_file = NULL;
         return wav_file;
     }
@@ -1476,16 +1579,17 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
         return NULL;
     }
 
-    long final_size = wav_file_get_size_or_negative(new_filename);
+    const int64_t final_size = dsd_wav_file_size_or_negative(new_filename);
     if (final_size == 44) {
-        wav_close_discard_empty(new_filename, &journal);
+        wav_close_discard(new_filename, dir, &journal);
         wav_file = NULL;
         return wav_file;
     }
 
-    const int rdio_queued = (export_call && opts && final_size > 44)
-                                ? wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started)
-                                : 0;
+    int rdio_queued = 0;
+    if (opts && final_size > 44) {
+        rdio_queued = wav_close_export_rdio(opts, event_struct, event_item, new_filename, opened, started, export_mode);
+    }
     if (journal.on) {
         wav_journal_published(journal.id, new_filename, dir, event_struct,
                               dsd_rdio_recording_start(event_item, opened, started), journal.duration_ms, journal.rate,
@@ -1498,9 +1602,9 @@ wav_close_and_publish(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_o
 
 SNDFILE*
 close_and_rename_wav_file_ex(SNDFILE* wav_file, const dsd_opts* opts, const char* wav_out_filename, const char* dir,
-                             const Event_History_I* event_struct, time_t opened, int export_call,
+                             const Event_History_I* event_struct, time_t opened, int export_mode,
                              const dsd_wav_owner* owner) {
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_call, NULL,
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, 0, export_mode, NULL,
                                  owner);
 }
 
@@ -1509,7 +1613,8 @@ close_and_rename_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename
                                  const dsd_analog_wav_name* name) {
     /* With no parts kept, the name has none: ANALOG_FREQ_UNKNOWN. The date and time are the close's, as with no row. */
     static const dsd_analog_wav_name k_no_name = {0};
-    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, 0, name ? name : &k_no_name, NULL);
+    return wav_close_and_publish(wav_file, NULL, wav_out_filename, dir, NULL, 0, 0, DSD_WAV_EXPORT_NONE,
+                                 name ? name : &k_no_name, NULL);
 }
 
 SNDFILE*
@@ -1518,7 +1623,7 @@ discard_analog_wav_file(SNDFILE* wav_file, const char* wav_out_filename) {
        file: none of it was to be kept. Nothing is journaled; what its open or a write reported stays. */
     (void)wav_segment_close(wav_file, NULL);
     if (wav_out_filename != NULL && wav_out_filename[0] != '\0' && dsd_remove_file(wav_out_filename) != 0
-        && wav_file_get_size_or_negative(wav_out_filename) >= 0) {
+        && dsd_wav_file_size_or_negative(wav_out_filename) >= 0) {
         LOG_WARN("Unused call recording %s could not be removed\n", wav_out_filename);
     }
     return NULL;
@@ -1538,7 +1643,9 @@ close_and_publish_call_wav_ex(SNDFILE* wav_file, const dsd_opts* opts, dsd_state
         owner.epoch = dsd_call_state_pending_row_epoch(state, slot);
         owner.kind = owner.epoch != 0U ? DSD_WAV_OWNER_PENDING : DSD_WAV_OWNER_NONE;
     }
-    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started, 1, NULL, &owner);
+    /* Before the row's keep verdict: the fallback only for a row that names a call (issue #888 D7). */
+    return wav_close_and_publish(wav_file, opts, wav_out_filename, dir, event_struct, opened, started,
+                                 DSD_WAV_EXPORT_EARLY, NULL, &owner);
 }
 
 SNDFILE*
@@ -2027,8 +2134,9 @@ sdrtrunk_apply_keystream(char* frame_bits, size_t frame_bits_len, const uint8_t*
     return ks_idx;
 }
 
+/* The superframe's late-entry MI, when @p complete (every one of its 18 frames gave its fragment) and it decodes. */
 static void
-sdrtrunk_dmr_process_late_entry_mi(dsd_state* state) {
+sdrtrunk_dmr_process_late_entry_mi(dsd_state* state, int complete) {
     if (!state) {
         return;
     }
@@ -2043,7 +2151,7 @@ sdrtrunk_dmr_process_late_entry_mi(dsd_state* state) {
     }
 
     dsd_dmr_late_entry_result result = {0};
-    if (!dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result)) {
+    if (!complete || !dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[slot_idx][0][0], &result)) {
         return;
     }
 
@@ -2062,6 +2170,11 @@ purge_audio_buffers_if_needed(dsd_state* state) {
         state->audio_out_idx2 = 0;
     }
 }
+
+/* Set while a played file not in SDRTrunk's own shape plays (read_sdrtrunk_json_format()): its audio is played, written
+   to the static WAV and captured as any other's, but none of it to the per-call recording, so it leaves no per-call
+   recording to publish or export (issue #888). Decoder thread only. */
+static int s_sdrtrunk_per_call_off;
 
 // Playback settles crypto itself (decode_audio_is_allowed), so its recordings,
 // WAV and MBE capture, answer to the replayed call's talkgroup policy alone; the
@@ -2088,12 +2201,13 @@ sdrtrunk_chain_frame(const dsd_opts* opts, dsd_state* state, dsd_voice_media med
     dsd_voice_chain_run(opts, state, 0, state->audio_out_temp_buf, &info);
 }
 
-// The chained frame's consumers share short staging in both output formats.
+// The chained frame's consumers share short staging in both output formats. A file not in SDRTrunk's own shape writes
+// nothing to the per-call recording (s_sdrtrunk_per_call_off).
 static void
 run_decode_audio_output_path(dsd_opts* opts, dsd_state* state) {
     dsd_voice_stage_short_left(opts, state);
     const int record = sdrtrunk_json_record_allowed(opts, state);
-    if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1) {
+    if (record && opts->wav_out_f != NULL && opts->dmr_stereo_wav == 1 && s_sdrtrunk_per_call_off == 0) {
         writeSynthesizedVoice(opts, state);
     }
     if (record && opts->wav_out_f != NULL && opts->static_wav_file == 1) {
@@ -2136,9 +2250,40 @@ store_sdrtrunk_process_result(dsd_state* state, int ret, const mbe_process_resul
     mbe_formatProcessResult(state->err_str, sizeof(state->err_str), result);
 }
 
+/* The frame's DMR late-entry MI fragment @p fragment, stored at its place in the superframe during a late entry. */
+static void
+ambe2_store_late_entry_fragment(dsd_state* state, uint8_t dmra_le, const int* ambe2_counter, uint8_t fragment) {
+    if (dmra_le != 0 && ambe2_counter != NULL && *ambe2_counter >= 0 && *ambe2_counter < 18) {
+        state->currentslot = 0;
+        state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = fragment;
+    }
+}
+
+/* The late-entry MI fragment an AMBE frame carries: the four bits of its C3 word's first nibble. */
+static uint8_t
+ambe2_late_entry_fragment_of(const char (*ambe_fr)[24]) {
+    uint8_t c3[24];
+    for (int i = 0; i < 24; i++) {
+        c3[i] = (uint8_t)ambe_fr[3][i];
+    }
+    return (uint8_t)convert_bits_into_output(c3, 4);
+}
+
+/* A lost AMBE frame (a malformed "hex", sdrtrunk_json_frame_is_valid()): nothing is decoded, played or recorded, but
+   it takes its keystream bits, as a decoded frame does. It gives no DMR late-entry MI fragment, so its superframe
+   assembles no MI (sdrtrunk_json_note_fragment()). Returns the keystream position after it. */
+static uint16_t
+ambe2_lost_frame(uint16_t ks_idx, uint8_t dmra) {
+    return (uint16_t)(ks_idx + 49U + (dmra == 1 ? 7U : 0U));
+}
+
+/* @p ambe_str NULL: a lost frame (ambe2_lost_frame()). */
 static uint16_t
 ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, const uint8_t* ks, uint16_t ks_idx,
                     uint8_t dmra, uint8_t dmra_le, const int* ambe2_counter, uint8_t is_enc, uint8_t ks_available) {
+    if (ambe_str == NULL) {
+        return ambe2_lost_frame(ks_idx, dmra);
+    }
     char ambe_fr[4][24];
     DSD_MEMSET(ambe_fr, 0, sizeof(ambe_fr));
     uint8_t dibits[DSD_AMBE_2450_DIBITS];
@@ -2149,16 +2294,9 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
         ambe_fr[map->low_row][map->low_col] = (char)(dibits[i] & 1U);
     }
 
-    if (dmra_le != 0 && ambe2_counter != NULL && *ambe2_counter >= 0 && *ambe2_counter < 18) {
-        uint8_t c3[24];
-        DSD_MEMSET(c3, 0, sizeof(c3));
-        for (int i = 0; i < 24; i++) {
-            c3[i] = (uint8_t)ambe_fr[3][i];
-        }
-
-        state->currentslot = 0;
-        uint8_t c3_hex = (uint8_t)convert_bits_into_output(c3, 4);
-        state->late_entry_mi_fragment[0][(*ambe2_counter / 3) + 1][*ambe2_counter % 3] = c3_hex;
+    if (dmra_le != 0) {
+        ambe2_store_late_entry_fragment(state, dmra_le, ambe2_counter,
+                                        ambe2_late_entry_fragment_of((const char (*)[24])ambe_fr));
     }
 
     char ambe_d[49];
@@ -2205,9 +2343,14 @@ ambe2_str_to_decode(dsd_opts* opts, dsd_state* state, const char* ambe_str, cons
     return ks_idx; //return current ks_idx
 }
 
+/* @p imbe_str NULL: a lost frame (a malformed "hex"), which decodes, plays and records nothing but takes its 88
+   keystream bits, as a decoded frame does. */
 static uint16_t
 imbe_str_to_decode(dsd_opts* opts, dsd_state* state, const char* imbe_str, const uint8_t* ks, uint16_t ks_idx,
                    uint8_t is_enc, uint8_t ks_available) {
+    if (imbe_str == NULL) {
+        return (uint16_t)(ks_idx + 88U);
+    }
     char imbe_fr[8][23];
     DSD_MEMSET(imbe_fr, 0, sizeof(imbe_fr));
     uint8_t dibits[72];
@@ -2267,7 +2410,11 @@ typedef struct {
     uint8_t ks_available;
     uint8_t is_dmra;
     uint8_t dmra_le;
-    uint8_t show_time;
+    // Whether the call's row carries its recording start yet, the first frame "time" that parsed (issue #888 B21).
+    // Cleared when the call-state layer opens another call inside the file.
+    uint8_t time_stamped;
+    // The calls the call-state layer opened while the file was read. From the second on, each row is stamped afresh.
+    uint8_t calls_opened;
     uint8_t alg_id;
     uint8_t alg_seen;
     uint16_t key_id;
@@ -2291,15 +2438,144 @@ typedef struct {
     uint16_t ks_idx_i;
     int imbe_counter;
     int ambe2_counter;
+    // The DMR late-entry MI fragments the superframe gave so far, bit n for its frame n (sdrtrunk_json_note_fragment()).
+    uint32_t le_fragments;
     uint8_t nxdn_sacch;
     dsd_call_kind kind;
     uint32_t source_id;
     uint32_t target_id;
+    // A "to" or "from" the reader could not read (sdrtrunk_json_parse_id()), such as an SDRTrunk roaming or ISSI
+    // identity: the call is published with dsd_call_observation::identity_unread, so it never takes the fallback
+    // talkgroup (issue #888).
+    uint8_t id_unread;
 } sdrtrunk_json_context;
 
+/* The separators the SDRTrunk export's JSON puts between its tokens: white space and structure. */
+#define SDRTRUNK_JSON_SEPARATORS " \t\r\n,:{}[]"
+
+/* Where the reader is in the export's JSON: the text left, and how deep it sits in objects and arrays, counted from the
+   braces and brackets the tokenizer passes over (one inside a quoted string is text). A record is a top-level object
+   (or, in a file that is one array, an element of it); its "frames" array holds the voice frames, whose members sit at
+   frames_depth + 1. */
+typedef struct {
+    char* p;
+    unsigned depth;        // objects and arrays open around the cursor
+    unsigned record_depth; // the depth of a record's own members: 1, or 2 in a file that is one array of records
+    unsigned frames_depth; // the depth inside the record's "frames" array; 0 outside one
+} sdrtrunk_json_cursor;
+
+static void
+sdrtrunk_json_cursor_init(sdrtrunk_json_cursor* cursor, char* text) {
+    cursor->p = text;
+    cursor->depth = 0U;
+    cursor->record_depth = 1U;
+    cursor->frames_depth = 0U;
+}
+
+/* Count one structural character the cursor passes over. */
+static void
+sdrtrunk_json_cursor_pass(sdrtrunk_json_cursor* cursor, char c) {
+    if (c == '{' || c == '[') {
+        if (cursor->depth == 0U) {
+            cursor->record_depth = c == '[' ? 2U : 1U;
+        }
+        cursor->depth++;
+    } else if (c == '}' || c == ']') {
+        if (cursor->depth > 0U) {
+            cursor->depth--;
+        }
+        if (cursor->depth < cursor->frames_depth) {
+            cursor->frames_depth = 0U;
+        }
+    }
+}
+
+/* The next token of the SDRTrunk export's JSON at @p cursor, which moves past it: a quoted string whole, spaces and
+   escapes (\" and \\ among them, left as written) included, with its closing quote cut; else bare text (a number,
+   true, false, null) up to the next separator. NULL at the end of the text. *@p is_key, when given, gets whether the
+   token is a member's name, a string a ':' follows: only such a token is a key, so a word inside a value never is. */
 static char*
-sdrtrunk_json_next_value(char** str_saveptr) {
-    return dsd_strtok_r(NULL, " : \",{}[]\r\n\t", str_saveptr);
+sdrtrunk_json_token(sdrtrunk_json_cursor* cursor, int* is_key) {
+    if (is_key != NULL) {
+        *is_key = 0;
+    }
+    char* p = cursor->p;
+    if (p == NULL) {
+        return NULL;
+    }
+    while (*p != '\0' && strchr(SDRTRUNK_JSON_SEPARATORS, *p) != NULL) {
+        sdrtrunk_json_cursor_pass(cursor, *p);
+        p++;
+    }
+    if (*p == '\0') {
+        cursor->p = p;
+        return NULL;
+    }
+    char* token = p;
+    char* end = NULL;
+    if (*p == '"') {
+        token = ++p;
+        while (*p != '\0' && *p != '"') {
+            p += (*p == '\\' && p[1] != '\0') ? 2 : 1;
+        }
+        end = p;
+        if (is_key != NULL) {
+            const char* after = *end == '"' ? end + 1 : end;
+            *is_key = after[strspn(after, " \t\r\n")] == ':';
+        }
+    } else {
+        end = p + strcspn(p, SDRTRUNK_JSON_SEPARATORS);
+        // The brace or bracket that ends a bare value is cut below: count it here.
+        sdrtrunk_json_cursor_pass(cursor, *end);
+    }
+    if (*end != '\0') {
+        *end = '\0';
+        cursor->p = end + 1;
+    } else {
+        cursor->p = end;
+    }
+    return token;
+}
+
+/* The value of the member whose name was just read: its scalar token whole (sdrtrunk_json_token()); NULL when there is
+   none or it is an object or an array, whose members are then read as keys of their own. */
+static char*
+sdrtrunk_json_next_value(sdrtrunk_json_cursor* str_saveptr) {
+    char* p = str_saveptr->p;
+    if (p == NULL) {
+        return NULL;
+    }
+    p += strspn(p, " \t\r\n:");
+    str_saveptr->p = p;
+    if (*p == '{' || *p == '[' || *p == ',' || *p == '}' || *p == ']') {
+        return NULL;
+    }
+    return sdrtrunk_json_token(str_saveptr, NULL);
+}
+
+/* Passes over the object or array at @p cursor whole, its strings read as text, so none of its members is read as a
+   key; a cursor at anything else is left. */
+static void
+sdrtrunk_json_skip_container(sdrtrunk_json_cursor* cursor) {
+    char* p = cursor->p;
+    if (p == NULL || (*p != '{' && *p != '[')) {
+        return;
+    }
+    const unsigned outer = cursor->depth;
+    do {
+        if (*p == '"') {
+            p++;
+            while (*p != '\0' && *p != '"') {
+                p += (*p == '\\' && p[1] != '\0') ? 2 : 1;
+            }
+        } else {
+            sdrtrunk_json_cursor_pass(cursor, *p);
+        }
+        if (*p != '\0') {
+            p++;
+        }
+    } while (*p != '\0' && cursor->depth > outer);
+    cursor->p = p;
 }
 
 static void
@@ -2310,7 +2586,8 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->ks_available = 0;
     ctx->is_dmra = 1;
     ctx->dmra_le = 0;
-    ctx->show_time = 1;
+    ctx->time_stamped = 0;
+    ctx->calls_opened = 0;
     ctx->alg_id = 0;
     ctx->alg_seen = 0;
     ctx->key_id = 0;
@@ -2328,10 +2605,12 @@ sdrtrunk_json_context_init(sdrtrunk_json_context* ctx) {
     ctx->ks_idx_i = 808;
     ctx->imbe_counter = 0;
     ctx->ambe2_counter = 0;
+    ctx->le_fragments = 0U;
     ctx->nxdn_sacch = 0;
     ctx->kind = DSD_CALL_KIND_VOICE;
     ctx->source_id = 0U;
     ctx->target_id = 0U;
+    ctx->id_unread = 0U;
 }
 
 static void
@@ -2492,8 +2771,9 @@ sdrtrunk_json_set_protocol(const char* value, dsd_state* state, sdrtrunk_json_co
 }
 
 static int
-sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("version", token, 7) != 0) {
+sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                             sdrtrunk_json_context* ctx) {
+    if (strcmp("version", token) != 0) {
         return 0;
     }
 
@@ -2511,40 +2791,46 @@ sdrtrunk_json_handle_version(const dsd_opts* opts, const char* token, char** str
     return 1;
 }
 
+/* Whether the member just read at @p cursor is one of the record's own: a call's IDs are read only there, so a
+   "metadata" object's "from" is not the call's (issue #888). */
 static int
-sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("protocol", token, 8) != 0) {
-        return 0;
+sdrtrunk_json_at_record(const sdrtrunk_json_cursor* cursor) {
+    return cursor->depth == cursor->record_depth;
+}
+
+static void
+sdrtrunk_json_handle_protocol(dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                              sdrtrunk_json_context* ctx) {
+    if (strcmp("protocol", token) != 0 || !sdrtrunk_json_at_record(str_saveptr)) {
+        return;
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
     if (!value) {
-        return 1;
+        return;
     }
     DSD_FPRINTF(stderr, "\n Protocol: %s", value);
     /* The capture, if any, is created by the first voice frame recorded under this protocol (issue #661). */
     sdrtrunk_json_set_protocol(value, state, ctx);
-    return 1;
 }
 
-static int
-sdrtrunk_json_handle_call_type(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("call_type", token, 9) != 0) {
-        return 0;
+static void
+sdrtrunk_json_handle_call_type(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strcmp("call_type", token) != 0 || !sdrtrunk_json_at_record(str_saveptr)) {
+        return;
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
     if (!value) {
-        return 1;
+        return;
     }
     ctx->kind = (strncmp("GROUP", value, 5) == 0) ? DSD_CALL_KIND_GROUP_VOICE : DSD_CALL_KIND_PRIVATE_VOICE;
     DSD_FPRINTF(stderr, "\n Call Type: %s", value);
-    return 1;
 }
 
 static int
-sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encrypted", token, 9) != 0) {
+sdrtrunk_json_handle_encrypted(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
+    if (strcmp("encrypted", token) != 0) {
         return 0;
     }
 
@@ -2560,32 +2846,78 @@ sdrtrunk_json_handle_encrypted(const char* token, char** str_saveptr, sdrtrunk_j
     return 1;
 }
 
+/* The group number's length in an SDRTrunk P25 patch group's text past its "P:", the @p len characters at @p value:
+   "<group>", then " [<patched talkgroups>]" and " [<patched radios>]" when it has any. 0 for any other text. */
+static size_t
+sdrtrunk_json_patch_group_digits(const char* value, size_t len) {
+    const size_t digits = strspn(value, "0123456789");
+    if (digits >= len) {
+        return len;
+    }
+    if (len - digits < 3U || value[digits] != ' ' || value[digits + 1U] != '[' || value[len - 1U] != ']') {
+        return 0U;
+    }
+    return digits;
+}
+
+/* An SDRTrunk "to" or "from" value, the @p len characters at @p value: a radio or talkgroup ID in decimal, or, when
+   @p patch_group (a "to"), a P25 patch group as SDRTrunk writes one (PatchGroup.toString(): "P:<group>", then
+   " [<patched talkgroups>]" and " [<patched radios>]" when it has any), which is its group's talkgroup. An ID is read
+   by its value: leading zeros say nothing ("00000005678" is 5678), and the strict parser checks the range. 0 with the
+   ID in *@p out; -1 for any other value (an SDRTrunk roaming or ISSI identity among them), which names no ID the reader
+   can read: the call then gets no fallback talkgroup (dsd_call_observation::identity_unread, issue #888). */
 static int
-sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, char** str_saveptr) {
-    if (strncmp("to", token, 2) == 0) {
-        char* value = sdrtrunk_json_next_value(str_saveptr);
-        if (value) {
-            uint32_t parsed = 0;
-            ctx->target_id = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
-            DSD_FPRINTF(stderr, "\n To: %s", value);
-        }
-        return 1;
+sdrtrunk_json_parse_id(const char* value, size_t len, int patch_group, uint32_t* out) {
+    if (patch_group && len > 2U && value[0] == 'P' && value[1] == ':') {
+        value += 2;
+        len = sdrtrunk_json_patch_group_digits(value, len - 2U);
     }
-    if (strncmp("from", token, 4) == 0) {
-        char* value = sdrtrunk_json_next_value(str_saveptr);
-        if (value) {
-            uint32_t parsed = 0;
-            ctx->source_id = (dsd_parse_uint32_strict(value, 10, UINT32_MAX, &parsed) == 0) ? parsed : 0U;
-            DSD_FPRINTF(stderr, "\n From: %s", value);
-        }
-        return 1;
+    if (len == 0U || strspn(value, "0123456789") < len) {
+        return -1;
     }
-    return 0;
+    while (len > 1U && value[0] == '0') {
+        value++;
+        len--;
+    }
+    char text[11];
+    if (len >= sizeof text) {
+        return -1;
+    }
+    DSD_MEMCPY(text, value, len);
+    text[len] = '\0';
+    return dsd_parse_uint32_strict(text, 10, UINT32_MAX, out) == 0 ? 0 : -1;
+}
+
+static void
+sdrtrunk_json_handle_to_from(sdrtrunk_json_context* ctx, const char* token, sdrtrunk_json_cursor* str_saveptr) {
+    const int is_to = strcmp("to", token) == 0;
+    if ((!is_to && strcmp("from", token) != 0) || !sdrtrunk_json_at_record(str_saveptr)) {
+        return;
+    }
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value) {
+        return;
+    }
+    uint32_t parsed = 0;
+    uint32_t id = 0U;
+    if (sdrtrunk_json_parse_id(value, strlen(value), is_to, &parsed) == 0) {
+        id = parsed;
+    } else {
+        ctx->id_unread = 1U;
+    }
+    if (is_to) {
+        ctx->target_id = id;
+        DSD_FPRINTF(stderr, "\n To: %s", value);
+    } else {
+        ctx->source_id = id;
+        DSD_FPRINTF(stderr, "\n From: %s", value);
+    }
 }
 
 static int
-sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_algorithm", token, 20) != 0) {
+sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                         sdrtrunk_json_context* ctx) {
+    if (strcmp("encryption_algorithm", token) != 0) {
         return 0;
     }
 
@@ -2611,8 +2943,9 @@ sdrtrunk_json_handle_alg(const dsd_opts* opts, const char* token, char** str_sav
 }
 
 static int
-sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_key_id", token, 17) != 0) {
+sdrtrunk_json_handle_key_id(const dsd_opts* opts, const char* token, sdrtrunk_json_cursor* str_saveptr,
+                            sdrtrunk_json_context* ctx) {
+    if (strcmp("encryption_key_id", token) != 0) {
         return 0;
     }
 
@@ -2790,9 +3123,9 @@ sdrtrunk_json_classify_p25_crypto(dsd_state* state, const sdrtrunk_json_context*
 // opts is read-only here: the key activation moved to keyring_activate_slot_with_kid(), which
 // takes no opts, leaving only the payload-verbosity read and two const-taking helpers.
 static int
-sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+sdrtrunk_json_handle_mi(const dsd_opts* opts, dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
                         sdrtrunk_json_context* ctx) {
-    if (strncmp("encryption_mi", token, 13) != 0) {
+    if (strcmp("encryption_mi", token) != 0) {
         return 0;
     }
 
@@ -2891,10 +3224,12 @@ sdrtrunk_json_prepare_dmr_aes(const dsd_opts* opts, dsd_state* state, sdrtrunk_j
     }
 }
 
+/* The superframe's verified late-entry MI, when @p complete (sdrtrunk_dmr_process_late_entry_mi()), else the last one
+   carried on. */
 static void
-sdrtrunk_json_finish_dmr_aes(dsd_state* state, sdrtrunk_json_context* ctx) {
+sdrtrunk_json_finish_dmr_aes(dsd_state* state, sdrtrunk_json_context* ctx, int complete) {
     dsd_dmr_late_entry_result result = {0};
-    if (dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[0][0][0], &result) && result.crc_ok) {
+    if (complete && dsd_dmr_late_entry_decode(&state->late_entry_mi_fragment[0][0][0], &result) && result.crc_ok) {
         // A verified late-entry MI belongs to the following 18-frame superframe.
         state->payload_mi = result.mi;
         ctx->mi_seen = 1;
@@ -2908,6 +3243,23 @@ sdrtrunk_json_finish_dmr_aes(dsd_state* state, sdrtrunk_json_context* ctx) {
     ctx->ks_built = 0;
 }
 
+/* The DMR late-entry fragments of all 18 frames of a superframe (sdrtrunk_json_context::le_fragments). */
+#define SDRTRUNK_LE_ALL_FRAGMENTS 0x3FFFFU
+
+/* Notes whether the frame at the superframe position ctx->ambe2_counter gave its late-entry MI fragment (@p received: it
+   was decoded, not lost). Position 0 starts the superframe's set over, so only this superframe's fragments count, as
+   the live decoder's dmr_late_entry_mi() takes an MI only from all six bursts of one superframe (issue #888). */
+static void
+sdrtrunk_json_note_fragment(sdrtrunk_json_context* ctx, int received) {
+    const int position = ctx->ambe2_counter;
+    if (position == 0) {
+        ctx->le_fragments = 0U;
+    }
+    if (received && ctx->dmra_le != 0 && position >= 0 && position < 18) {
+        ctx->le_fragments |= (uint32_t)1U << (unsigned)position;
+    }
+}
+
 static void
 sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
     const int dmr_aes = DSD_SYNC_IS_DMR(state->synctype) && (ctx->alg_id == 0x24 || ctx->alg_id == 0x25);
@@ -2916,12 +3268,14 @@ sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
     }
     ctx->ks_idx = ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, ctx->is_dmra, ctx->dmra_le,
                                       &ctx->ambe2_counter, ctx->is_enc, ctx->ks_available);
+    sdrtrunk_json_note_fragment(ctx, value != NULL);
     ctx->ambe2_counter++;
     if (ctx->dmra_le != 0 && ctx->ambe2_counter == 18) {
+        const int complete = ctx->le_fragments == SDRTRUNK_LE_ALL_FRAGMENTS;
         if (dmr_aes) {
-            sdrtrunk_json_finish_dmr_aes(state, ctx);
+            sdrtrunk_json_finish_dmr_aes(state, ctx, complete);
         } else {
-            sdrtrunk_dmr_process_late_entry_mi(state);
+            sdrtrunk_dmr_process_late_entry_mi(state, complete);
         }
         ctx->ambe2_counter = 0;
         ctx->ks_idx = 0;
@@ -2929,28 +3283,25 @@ sdrtrunk_json_decode_ambe_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
 }
 
 static void
-sdrtrunk_json_handle_nxdn_tag(const char* token, char** str_saveptr, sdrtrunk_json_context* ctx) {
+sdrtrunk_json_handle_nxdn_tag(const char* token, sdrtrunk_json_cursor* str_saveptr, sdrtrunk_json_context* ctx) {
     if (ctx->protocol != 3 || strcmp(token, "tag") != 0) {
         return;
     }
+    /* "SACCH <n>", one quoted value: the frame's place in the SACCH superframe. */
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value || strcmp(value, "SACCH") != 0) {
+    if (!value || strncmp(value, "SACCH ", 6) != 0) {
         return;
     }
-    const char* position = sdrtrunk_json_next_value(str_saveptr);
+    const char* position = value + 6 + strspn(value + 6, " ");
     uint8_t part = 0;
-    if (position && dsd_parse_uint8_strict(position, 10, 4U, &part) == 0 && part != 0U) {
+    if (dsd_parse_uint8_strict(position, 10, 4U, &part) == 0 && part != 0U) {
         ctx->nxdn_sacch = part;
     }
 }
 
 static void
 sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* value) {
-    // NXDN EHR transports 72 bits per 49-bit vocoder frame. Do not interpret EFR as EHR.
-    if (strlen(value) != 18U) {
-        LOG_WARN("Unsupported NXDN MBE voice frame length\n");
-        return;
-    }
+    // NXDN EHR transports 72 bits per 49-bit vocoder frame (sdrtrunk_json_frame_is_valid()): EFR is not read as EHR.
     if (ctx->nxdn_sacch != 0U) {
         unsigned position = (ctx->ks_idx / (16U * 49U)) * (16U * 49U) + (ctx->nxdn_sacch - 1U) * (4U * 49U);
         if (position < ctx->ks_idx) {
@@ -2985,63 +3336,149 @@ sdrtrunk_json_decode_nxdn_hex(dsd_opts* opts, dsd_state* state, sdrtrunk_json_co
         ambe2_str_to_decode(opts, state, value, ctx->ks, ctx->ks_idx, 0, 0, NULL, ctx->is_enc, ctx->ks_available);
 }
 
+/* Whether @p value is a voice frame as SDRTrunk writes one (BinaryMessage.toHexString()): the frame's bits as hex
+   digits, 36 for a P25 Phase 1 IMBE frame (144 bits), 18 for an AMBE frame (72 bits: DMR, P25 Phase 2, NXDN EHR). The
+   decoders read that many digits, so any other value (empty, short, long, or with a character that is no hex digit)
+   is a lost frame: it plays nothing but keeps its place (sdrtrunk_json_handle_hex()). */
 static int
-sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, char** str_saveptr,
+sdrtrunk_json_frame_is_valid(const sdrtrunk_json_context* ctx, const char* value) {
+    const size_t want = ctx->protocol == 1 ? 36U : 18U;
+    return strspn(value, "0123456789ABCDEFabcdef") == want && value[want] == '\0';
+}
+
+static int
+sdrtrunk_json_handle_hex(dsd_opts* opts, dsd_state* state, const char* token, sdrtrunk_json_cursor* str_saveptr,
                          sdrtrunk_json_context* ctx) {
-    if (strncmp("hex", token, 3) != 0) {
+    if (strcmp("hex", token) != 0) {
         return 0;
     }
 
     const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value) {
+    if (value == NULL) {
+        /* An array or an object is no frame, and none of its members is a key of the call's. */
+        sdrtrunk_json_skip_container(str_saveptr);
+    }
+    if (ctx->protocol < 1 || ctx->protocol > 3) {
         return 1;
+    }
+    /* A malformed frame (a value that is no frame's, a missing one, an array, an object) is a lost one: it plays
+       nothing, but it keeps its place in the frame count and the keystream, so the frames after it decrypt with their
+       own bits. */
+    if (value == NULL || !sdrtrunk_json_frame_is_valid(ctx, value)) {
+        LOG_WARN("Skipping malformed SDRTrunk MBE voice frame\n");
+        value = NULL;
     }
     if (ctx->protocol == 1) {
         sdrtrunk_json_decode_imbe_hex(opts, state, ctx, value);
     } else if (ctx->protocol == 2) {
         sdrtrunk_json_decode_ambe_hex(opts, state, ctx, value);
-    } else if (ctx->protocol == 3) {
+    } else {
         sdrtrunk_json_decode_nxdn_hex(opts, state, ctx, value);
     }
     return 1;
 }
 
+/* A frame's "time": when SDRTrunk heard it, in Unix milliseconds (VoiceFrame), as a whole decimal integer. Returns 0
+   with the second it falls in, or -1 for a value that is not one, names no second after the epoch, or does not fit.
+   Only decimal digits are one: strtoull() would skip a quoted value's leading space and take its sign, so " -1" would
+   wrap to UINT64_MAX. */
 static int
-sdrtrunk_json_handle_time(const char* token, char** str_saveptr, dsd_state* state, sdrtrunk_json_context* ctx) {
-    if (strncmp("time", token, 4) != 0) {
+sdrtrunk_json_parse_time(const char* value, time_t* out) {
+    uint64_t ms = 0;
+    if (value[0] == '\0' || value[strspn(value, "0123456789")] != '\0'
+        || dsd_parse_uint64_strict(value, 10, UINT64_MAX, &ms) != 0) {
+        return -1;
+    }
+    const uint64_t seconds = ms / 1000U;
+    const time_t stamp = (time_t)seconds;
+    if (seconds == 0U || (uint64_t)stamp != seconds) {
+        return -1;
+    }
+    *out = stamp;
+    return 0;
+}
+
+/* The record's "frames" member: when its value is an array, the objects directly inside it are the voice frames. */
+static void
+sdrtrunk_json_handle_frames(const char* token, sdrtrunk_json_cursor* cursor) {
+    if (cursor->depth != cursor->record_depth || strcmp("frames", token) != 0) {
+        return;
+    }
+    const char* value = cursor->p + strspn(cursor->p, " \t\r\n:");
+    if (*value == '[') {
+        cursor->frames_depth = cursor->depth + 1U;
+    }
+}
+
+/* The row of a played call is stamped once, from its first frame's "time" that parses: the recording's start, on the
+   recording's own clock. Later frames of the call leave it, so the recording is not filed at its last frame (issue #888
+   B21); the row of a --playfiles call keeps no end (see dsd_rdio_recording_start()). Another call in the same file is
+   stamped afresh from its own first valid frame. Only a voice frame's own "time" counts, a member of an object directly
+   inside the record's "frames": a "time" of the record or of any other object is not when the call was heard. */
+static int
+sdrtrunk_json_handle_time(const char* token, sdrtrunk_json_cursor* str_saveptr, dsd_state* state,
+                          sdrtrunk_json_context* ctx) {
+    if (strcmp("time", token) != 0) {
         return 0;
     }
-
-    const char* value = sdrtrunk_json_next_value(str_saveptr);
-    if (!value) {
+    if (str_saveptr->frames_depth == 0U || str_saveptr->depth != str_saveptr->frames_depth + 1U) {
         return 1;
     }
 
-    char time_str[20];
-    DSD_MEMSET(time_str, 0, sizeof(time_str));
-    DSD_STRNCPY(time_str, value, 10);
-    long event_seconds = 0;
-    (void)dsd_parse_long_strict(time_str, 10, 0L, LONG_MAX, &event_seconds);
-    time_t event_time = (time_t)event_seconds;
+    // The key exactly, not a "timestamp", and its value whole: "1700000000000 junk" is not a time.
+    const char* value = sdrtrunk_json_next_value(str_saveptr);
+    if (!value || ctx->time_stamped != 0U) {
+        return 1;
+    }
+    // Until one parses, a value that does not clears the stamp, as it always has: the row keeps no earlier file's.
+    time_t event_time = 0;
+    ctx->time_stamped = sdrtrunk_json_parse_time(value, &event_time) == 0 ? 1U : 0U;
     dsd_event_history_transaction transaction;
     dsd_event_history_transaction_begin(state, &transaction);
     state->event_history_s[0].Event_History_Items[0].event_time = event_time;
     dsd_event_history_mark_dirty(&state->event_history_s[0]);
     dsd_event_history_transaction_end(&transaction);
+    if (ctx->time_stamped == 0U) {
+        return 1;
+    }
 
     char timestr[9];
     char datestr[11];
     (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_TIME_COLON, timestr, sizeof timestr);
     (void)dsd_format_local_datetime(event_time, DSD_LOCAL_DATETIME_DATE_HYPHEN, datestr, sizeof datestr);
-    if (ctx->show_time == 1) {
-        DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
-    }
-    ctx->show_time = 0;
+    DSD_FPRINTF(stderr, " Date: %s Time: %s", datestr, timestr);
     return 1;
 }
 
+/* The staged row's stamp cleared, so a call with no valid "time" is filed on the decode clock. */
 static void
-sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
+sdrtrunk_json_clear_staged_stamp(dsd_state* state) {
+    if (state->event_history_s == NULL) {
+        return;
+    }
+    dsd_event_history_transaction transaction;
+    dsd_event_history_transaction_begin(state, &transaction);
+    state->event_history_s[0].Event_History_Items[0].event_time = 0;
+    dsd_event_history_mark_dirty(&state->event_history_s[0]);
+    dsd_event_history_transaction_end(&transaction);
+}
+
+/* The call-state layer opened another call while the file is read, the first being the file's own. Its row takes its
+   own first frame's stamp: the latch goes, and from the second call on the staged row's stamp too, so a call with no
+   valid "time" is filed on the decode clock, not at the last call's (issue #888). */
+static void
+sdrtrunk_json_call_opened(dsd_state* state, sdrtrunk_json_context* ctx) {
+    ctx->time_stamped = 0U;
+    if (ctx->calls_opened < UINT8_MAX) {
+        ctx->calls_opened++;
+    }
+    if (ctx->calls_opened >= 2U) {
+        sdrtrunk_json_clear_staged_stamp(state);
+    }
+}
+
+static void
+sdrtrunk_json_publish_call(dsd_state* state, sdrtrunk_json_context* ctx) {
     if (!state || !ctx || state->synctype == DSD_SYNC_NONE) {
         return;
     }
@@ -3052,8 +3489,11 @@ sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
         .ota_target_id = ctx->target_id,
         .policy_target_id = ctx->target_id,
         .ota_source_id = ctx->source_id,
+        .identity_unread = ctx->id_unread,
     };
-    (void)dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE);
+    if (dsd_call_state_observe(state, &observation, DSD_CALL_BOUNDARY_CONTINUE) > 0) {
+        sdrtrunk_json_call_opened(state, ctx);
+    }
     const dsd_call_crypto_update crypto = {
         .classification = ctx->is_enc == 0U         ? DSD_CALL_CRYPTO_CLEAR
                           : ctx->ks_available != 0U ? DSD_CALL_CRYPTO_DECRYPTABLE
@@ -3068,10 +3508,10 @@ sdrtrunk_json_publish_call(dsd_state* state, const sdrtrunk_json_context* ctx) {
 
 static void
 sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_context* ctx, const char* token,
-                            char** str_saveptr) {
+                            sdrtrunk_json_cursor* str_saveptr) {
     (void)sdrtrunk_json_handle_version(opts, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
-    (void)sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
+    sdrtrunk_json_handle_protocol(state, token, str_saveptr, ctx);
+    sdrtrunk_json_handle_call_type(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_encrypted(token, str_saveptr, ctx);
     if (ctx->protocol == 3) {
         sdrtrunk_json_apply_forced_nxdn(state, ctx);
@@ -3079,56 +3519,650 @@ sdrtrunk_json_process_token(dsd_opts* opts, dsd_state* state, sdrtrunk_json_cont
         sdrtrunk_json_apply_forced_algid(state, ctx);
     }
     sdrtrunk_json_apply_dmr_tg_key_map(opts, state, ctx);
-    (void)sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
+    sdrtrunk_json_handle_to_from(ctx, token, str_saveptr);
     (void)sdrtrunk_json_handle_alg(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_key_id(opts, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_mi(opts, state, token, str_saveptr, ctx);
     sdrtrunk_json_handle_nxdn_tag(token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_hex(opts, state, token, str_saveptr, ctx);
     (void)sdrtrunk_json_handle_time(token, str_saveptr, state, ctx);
+    sdrtrunk_json_handle_frames(token, str_saveptr);
     sdrtrunk_json_publish_call(state, ctx);
+}
+
+/* What a member of the JSON SDRTrunk writes for a call holds (issue #888). */
+typedef enum {
+    SDRTRUNK_SHAPE_TEXT = 0, /* a String the reader passes over (a system's or site's name): any JSON string */
+    SDRTRUNK_SHAPE_WORD,     /* a String the reader reads (a protocol, call type, ID, MI) or a member's name: as the
+                                writer writes it, with no escape */
+    SDRTRUNK_SHAPE_PROTOCOL, /* the record's protocol: a WORD, which says whether its frames' tags are NXDN's */
+    SDRTRUNK_SHAPE_TAG,      /* a frame's tag: free text as TEXT, but in an NXDN record with no escape when it names
+                                a SACCH place the reader reads (sdrtrunk_shape_tag()) */
+    SDRTRUNK_SHAPE_UINT8,    /* a JSON whole number with no sign the reader takes as 8 bits (an ALG ID) */
+    SDRTRUNK_SHAPE_UINT16,   /* ... as 16 bits (the record's version, a key id) */
+    SDRTRUNK_SHAPE_INT64,    /* ... within Java's long (a frame's time) */
+    SDRTRUNK_SHAPE_BOOLEAN,  /* a boolean: true or false */
+    SDRTRUNK_SHAPE_HEX,      /* a frame's bits: a quoted string of hex digits, not empty */
+    SDRTRUNK_SHAPE_FRAMES,   /* the call's List<VoiceFrame>: an array of frame objects */
+} sdrtrunk_shape_type;
+
+/* Where a member stands in the two layouts SDRTrunk's writer has had: the current one (since 2025-11) and the one
+   before it. */
+enum {
+    SDRTRUNK_SHAPE_ANY = 0,  /* in either, at its place in the table */
+    SDRTRUNK_SHAPE_CURRENT,  /* only in the current one, whose records it names ("version") */
+    SDRTRUNK_SHAPE_LOCATION, /* in the current one at its place, before "frames"; in the older one after "frames", in
+                                either order ("system", "site") */
+    SDRTRUNK_SHAPE_LATER,    /* only in a frame of a record that named the current layout, which the writer wrote
+                                some time after it ("tag") */
+};
+
+/* A member SDRTrunk's writer writes, what it holds, and where it stands in each layout. */
+typedef struct {
+    const char* name;
+    uint8_t type;   /* sdrtrunk_shape_type */
+    uint8_t layout; /* SDRTRUNK_SHAPE_ANY, _CURRENT, _LOCATION or _LATER */
+} sdrtrunk_shape_member;
+
+/* The call record, in its writer's order: MBECallSequence's @JsonPropertyOrder({"protocol", "version", "call_type",
+   "from", "to", "encrypted", "system", "site", "frames"}). Before 2025-11 the order was {"protocol", "call_type",
+   "from", "to", "encrypted", "frames"}, with no "version", and "system" and "site", which it did not name, after
+   "frames"; "version" and the move of "system" and "site" came in one change, so a record is in one layout or the
+   other. @JsonInclude(NON_NULL): a member with no value is left out. */
+static const sdrtrunk_shape_member k_sdrtrunk_record_members[] = {
+    {"protocol", SDRTRUNK_SHAPE_PROTOCOL, SDRTRUNK_SHAPE_ANY},
+    {"version", SDRTRUNK_SHAPE_UINT16, SDRTRUNK_SHAPE_CURRENT},
+    {"call_type", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
+    {"from", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
+    {"to", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
+    {"encrypted", SDRTRUNK_SHAPE_BOOLEAN, SDRTRUNK_SHAPE_ANY},
+    {"system", SDRTRUNK_SHAPE_TEXT, SDRTRUNK_SHAPE_LOCATION},
+    {"site", SDRTRUNK_SHAPE_TEXT, SDRTRUNK_SHAPE_LOCATION},
+    {"frames", SDRTRUNK_SHAPE_FRAMES, SDRTRUNK_SHAPE_ANY},
+};
+
+/* A voice frame, in its writer's order: VoiceFrame's @JsonPropertyOrder({"tag", "encryption_algorithm",
+   "encryption_key_id", "encryption_mi", "time", "hex"}), NON_NULL as the record. "tag" came in 2026-07, after the
+   current record layout, so a record in the older one has no tagged frame. "hex" is the one member every frame has. */
+static const sdrtrunk_shape_member k_sdrtrunk_frame_members[] = {
+    {"tag", SDRTRUNK_SHAPE_TAG, SDRTRUNK_SHAPE_LATER},
+    {"encryption_algorithm", SDRTRUNK_SHAPE_UINT8, SDRTRUNK_SHAPE_ANY},
+    {"encryption_key_id", SDRTRUNK_SHAPE_UINT16, SDRTRUNK_SHAPE_ANY},
+    {"encryption_mi", SDRTRUNK_SHAPE_WORD, SDRTRUNK_SHAPE_ANY},
+    {"time", SDRTRUNK_SHAPE_INT64, SDRTRUNK_SHAPE_ANY},
+    {"hex", SDRTRUNK_SHAPE_HEX, SDRTRUNK_SHAPE_ANY},
+};
+
+enum {
+    SDRTRUNK_SHAPE_RECORD_MEMBERS = sizeof k_sdrtrunk_record_members / sizeof k_sdrtrunk_record_members[0],
+    SDRTRUNK_SHAPE_FRAME_MEMBERS = sizeof k_sdrtrunk_frame_members / sizeof k_sdrtrunk_frame_members[0],
+    SDRTRUNK_SHAPE_FRAME_HEX = SDRTRUNK_SHAPE_FRAME_MEMBERS - 1,
+    SDRTRUNK_SHAPE_POLL_BYTES = 0x100000, /* the most of the text the check passes from one look at Stop to the next */
+};
+
+/* The shape check's place in the text (from its start, @c text), where it next looks at the exit flag (@c poll_at, an
+   offset), and whether Stop ended it; whether the record is NXDN's (@c nxdn), and for the string read last, how far it
+   is a SACCH place (@c tag_at, sdrtrunk_shape_tag_place_next()) and whether it held an escape (@c tag_escaped), both
+   kept only for a tag. */
+typedef struct {
+    const char* text;
+    const char* p;
+    size_t poll_at;
+    int stopped;
+    uint8_t nxdn;
+    uint8_t tag_at;
+    uint8_t tag_escaped;
+} sdrtrunk_shape_scan;
+
+/* One object's members read so far: bit i of @c seen for members[i], @c last the latest of them in the writer's order
+   (-1 for none), @c current set once one named the current layout (for a frame: once its record's did). */
+typedef struct {
+    const sdrtrunk_shape_member* members;
+    int count;
+    uint32_t seen;
+    int last;
+    uint8_t current;
+} sdrtrunk_shape_level;
+
+static dsd_sdrtrunk_test_poll_fn s_sdrtrunk_test_poll_hook;
+
+void
+dsd_sdrtrunk_test_set_shape_poll_hook(dsd_sdrtrunk_test_poll_fn hook) {
+    s_sdrtrunk_test_poll_hook = hook;
+}
+
+/* Whether Stop has come, the check at @p p about to pass the @p n bytes there: every step of the check comes here
+   first, and the exit flag is looked at before a step that would end past SDRTRUNK_SHAPE_POLL_BYTES since the last
+   look (at once for @c poll_at 0), so two looks are never further apart, a multi-byte character or a number's digits
+   included. Stop, once seen, is kept. */
+static int
+sdrtrunk_shape_stopped(sdrtrunk_shape_scan* scan, const char* p, size_t n) {
+    const size_t offset = (size_t)(p - scan->text);
+    if (scan->stopped == 0 && (scan->poll_at == 0U || offset + n > scan->poll_at)) {
+        scan->poll_at = offset + SDRTRUNK_SHAPE_POLL_BYTES;
+        if (s_sdrtrunk_test_poll_hook != NULL) {
+            s_sdrtrunk_test_poll_hook(offset);
+        }
+        scan->stopped = dsd_exitflag_load() == 1;
+    }
+    return scan->stopped;
+}
+
+/* Passes the white space next; 0 when Stop came during it. */
+static int
+sdrtrunk_shape_space(sdrtrunk_shape_scan* scan) {
+    const char* p = scan->p;
+    while ((*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') && !sdrtrunk_shape_stopped(scan, p, 1U)) {
+        p++;
+    }
+    scan->p = p;
+    return !scan->stopped;
+}
+
+/* Whether @p c comes next, after any white space; passed when it does. */
+static int
+sdrtrunk_shape_take(sdrtrunk_shape_scan* scan, char c) {
+    if (!sdrtrunk_shape_space(scan) || *scan->p != c || sdrtrunk_shape_stopped(scan, scan->p, 1U)) {
+        return 0;
+    }
+    scan->p++;
+    return 1;
+}
+
+/* The length of the escape at @p p (its '\'): one JSON has (\" \\ \/ \b \f \n \r \t, or \u and four hex digits); 0
+   for any other. */
+static size_t
+sdrtrunk_shape_escape_len(const char* p) {
+    if (p[1] != '\0' && strchr("\"\\/bfnrt", p[1]) != NULL) {
+        return 2;
+    }
+    if (p[1] != 'u') {
+        return 0;
+    }
+    for (int i = 2; i < 6; i++) {
+        if (dsd_hex_nibble_value((unsigned char)p[i]) < 0) {
+            return 0;
+        }
+    }
+    return 6;
+}
+
+/* The length of the character at @p p in a quoted string of @p type (SDRTRUNK_SHAPE_TEXT, _WORD, _TAG or _HEX), an
+   escape or a UTF-8 character whole; 0 when the writer writes no such character there: a raw control character or the
+   text's end (the writer escapes both), a byte that starts no well-formed UTF-8 character, an escape outside free
+   text (TEXT, TAG) or one JSON has not, or in a frame's bits anything but a hex digit. */
+static size_t
+sdrtrunk_shape_char_len(const char* p, uint8_t type) {
+    const unsigned char c = (unsigned char)*p;
+    if (c < 0x20U) {
+        return 0;
+    }
+    if (type == SDRTRUNK_SHAPE_HEX) {
+        return dsd_hex_nibble_value(c) >= 0 ? 1U : 0U;
+    }
+    if (c == '\\') {
+        return type == SDRTRUNK_SHAPE_TEXT || type == SDRTRUNK_SHAPE_TAG ? sdrtrunk_shape_escape_len(p) : 0U;
+    }
+    return dsd_utf8_sequence_len(p, 4U);
+}
+
+/* How far a tag's text is a SACCH place the NXDN reader reads (sdrtrunk_json_handle_nxdn_tag(): "SACCH ", then what
+   dsd_parse_uint8_strict() takes as 1 to 4 after the spaces it passes: strtoull()'s white space, a '+', zeros and one
+   digit 1 to 4, and the end). */
+enum {
+    SDRTRUNK_TAG_SPACE = 6, /* "SACCH " read (0 to 5: that many of its characters) */
+    SDRTRUNK_TAG_ZEROS,     /* then a '+' or a zero */
+    SDRTRUNK_TAG_PLACE,     /* then the digit: a place, if the tag ends here */
+    SDRTRUNK_TAG_OTHER,     /* no place */
+};
+
+/* The ASCII character the JSON escape at @p p (its '\', one sdrtrunk_shape_escape_len() passed) stands for, as far as a
+   SACCH place reads it: the white space of \t \n \f \r, or a \u escape of an ASCII character; 0 for any other (\" \\
+   \/ \b, a character not ASCII), which no place holds. */
+static unsigned
+sdrtrunk_shape_escaped_ascii(const char* p) {
+    switch (p[1]) {
+        case 't': return '\t';
+        case 'n': return '\n';
+        case 'f': return '\f';
+        case 'r': return '\r';
+        case 'u': break;
+        default: return 0U;
+    }
+    if (p[2] != '0' || p[3] != '0' || dsd_hex_nibble_value((unsigned char)p[4]) > 7) {
+        return 0U;
+    }
+    return (unsigned)(dsd_hex_nibble_value((unsigned char)p[4]) * 16 + dsd_hex_nibble_value((unsigned char)p[5]));
+}
+
+/* The SACCH-place state (SDRTRUNK_TAG_SPACE and after) once character @p c follows state @p at. */
+static uint8_t
+sdrtrunk_shape_tag_place_next(uint8_t at, unsigned c) {
+    static const char k_sacch[] = "SACCH ";
+    if (at < SDRTRUNK_TAG_SPACE) {
+        return c == (unsigned char)k_sacch[at] ? (uint8_t)(at + 1U) : (uint8_t)SDRTRUNK_TAG_OTHER;
+    }
+    const int lead = at == SDRTRUNK_TAG_SPACE || at == SDRTRUNK_TAG_ZEROS;
+    if (at == SDRTRUNK_TAG_SPACE && (c == ' ' || (c >= '\t' && c <= '\r'))) {
+        return SDRTRUNK_TAG_SPACE;
+    }
+    if ((at == SDRTRUNK_TAG_SPACE && c == '+') || (lead && c == '0')) {
+        return SDRTRUNK_TAG_ZEROS;
+    }
+    return lead && c >= '1' && c <= '4' ? (uint8_t)SDRTRUNK_TAG_PLACE : (uint8_t)SDRTRUNK_TAG_OTHER;
+}
+
+/* Notes the tag character at @p p (an escape or a character whole) in @p scan's SACCH-place state. */
+static void
+sdrtrunk_shape_tag_char(sdrtrunk_shape_scan* scan, const char* p) {
+    const int escape = *p == '\\';
+    if (escape) {
+        scan->tag_escaped = 1U;
+    }
+    if (scan->tag_at != SDRTRUNK_TAG_OTHER) {
+        scan->tag_at =
+            sdrtrunk_shape_tag_place_next(scan->tag_at, escape ? sdrtrunk_shape_escaped_ascii(p) : (unsigned char)*p);
+    }
+}
+
+/* A quoted string of @p type (SDRTRUNK_SHAPE_TEXT, _WORD, _TAG or _HEX, sdrtrunk_shape_char_len()) next: passed, its
+   text (between the quotes, as written) at *@p text, @p len long, and a tag's SACCH-place state in @p scan, read in the
+   same pass. A frame's bits are never empty. */
+static int
+sdrtrunk_shape_string(sdrtrunk_shape_scan* scan, uint8_t type, const char** text, size_t* len) {
+    if (!sdrtrunk_shape_take(scan, '"')) {
+        return 0;
+    }
+    scan->tag_at = 0U;
+    scan->tag_escaped = 0U;
+    const char* p = scan->p;
+    while (*p != '"') {
+        const size_t n = sdrtrunk_shape_char_len(p, type);
+        if (n == 0U || sdrtrunk_shape_stopped(scan, p, n)) {
+            return 0;
+        }
+        if (type == SDRTRUNK_SHAPE_TAG) {
+            sdrtrunk_shape_tag_char(scan, p);
+        }
+        p += n;
+    }
+    if ((type == SDRTRUNK_SHAPE_HEX && p == scan->p) || sdrtrunk_shape_stopped(scan, p, 1U)) {
+        return 0;
+    }
+    *text = scan->p;
+    *len = (size_t)(p - scan->p);
+    scan->p = p + 1;
+    return 1;
+}
+
+/* @p word next (true, false). */
+static int
+sdrtrunk_shape_word(sdrtrunk_shape_scan* scan, const char* word) {
+    if (!sdrtrunk_shape_space(scan)) {
+        return 0;
+    }
+    const size_t n = strlen(word);
+    if (strncmp(scan->p, word, n) != 0 || sdrtrunk_shape_stopped(scan, scan->p, n)) {
+        return 0;
+    }
+    scan->p += n;
+    return 1;
+}
+
+/* A whole number next of @p type (SDRTRUNK_SHAPE_UINT8, _UINT16 or _INT64): JSON's integer form with no sign and no
+   leading zero, as the writer writes it, and a value the reader's handler takes (sdrtrunk_json_handle_version(),
+   _alg(), _key_id(), _time()), read with the strict parser, so a value the playback would pass over is not in the
+   shape. No member the writer writes is ever negative: "version" is the constant 2 (MBECallSequence.getVersion()),
+   "time" a message's epoch milliseconds, and the key fields an 8-bit ALG ID and a 16-bit key id, unsigned (only the
+   P25 writers set them, from their HDU, LDU2 ESP, MAC PTT and ESS fields). */
+static int
+sdrtrunk_shape_integer(sdrtrunk_shape_scan* scan, uint8_t type) {
+    enum { LONG_DIGITS = 19 }; /* Long.MAX_VALUE, 9223372036854775807 */
+
+    if (!sdrtrunk_shape_space(scan)) {
+        return 0;
+    }
+    const char* digits = scan->p;
+    char number[LONG_DIGITS + 1];
+    size_t n = 0;
+    while (n <= LONG_DIGITS && digits[n] >= '0' && digits[n] <= '9') {
+        n++;
+    }
+    if (n == 0U || n > LONG_DIGITS || (digits[0] == '0' && n > 1U)) {
+        return 0;
+    }
+    DSD_MEMCPY(number, digits, n);
+    number[n] = '\0';
+    uint64_t max = (uint64_t)INT64_MAX;
+    if (type == SDRTRUNK_SHAPE_UINT8) {
+        max = UINT8_MAX;
+    } else if (type == SDRTRUNK_SHAPE_UINT16) {
+        max = UINT16_MAX;
+    }
+    uint64_t value = 0;
+    if (dsd_parse_uint64_strict(number, 10, max, &value) != 0 || sdrtrunk_shape_stopped(scan, digits, n)) {
+        return 0;
+    }
+    scan->p = digits + n;
+    return 1;
+}
+
+/* Whether @p member, index @p i of @p level's table, may come next in the layout the object's members so far are in:
+   after the last one read, in the table's order; but "system" and "site" in a record that has not named the current
+   layout only after the table's last member ("frames"), as the older writer put them, and a frame's "tag" only in a
+   record that has. */
+static int
+sdrtrunk_shape_in_layout(const sdrtrunk_shape_level* level, const sdrtrunk_shape_member* member, int i) {
+    if (member->layout == SDRTRUNK_SHAPE_LOCATION && level->current == 0U) {
+        return level->last == level->count - 1;
+    }
+    if (member->layout == SDRTRUNK_SHAPE_LATER && level->current == 0U) {
+        return 0;
+    }
+    return i > level->last;
+}
+
+/* The member named next, with the ':' after its name: its index in @p level's table when it is one of them, read for
+   the first time, and in one writer layout's order (sdrtrunk_shape_in_layout()). -1 for any other. */
+static int
+sdrtrunk_shape_member_next(sdrtrunk_shape_scan* scan, sdrtrunk_shape_level* level) {
+    const char* name = NULL;
+    size_t len = 0;
+    if (!sdrtrunk_shape_string(scan, SDRTRUNK_SHAPE_WORD, &name, &len) || !sdrtrunk_shape_take(scan, ':')) {
+        return -1;
+    }
+    for (int i = 0; i < level->count; i++) {
+        const sdrtrunk_shape_member* member = &level->members[i];
+        if (strlen(member->name) != len || strncmp(member->name, name, len) != 0) {
+            continue;
+        }
+        if ((level->seen & (1U << (unsigned)i)) != 0U || !sdrtrunk_shape_in_layout(level, member, i)) {
+            return -1;
+        }
+        level->seen |= 1U << (unsigned)i;
+        level->last = i > level->last ? i : level->last;
+        if (member->layout == SDRTRUNK_SHAPE_CURRENT) {
+            level->current = 1U;
+        }
+        return i;
+    }
+    return -1;
+}
+
+static int sdrtrunk_shape_frames(sdrtrunk_shape_scan* scan, uint8_t current);
+
+/* The record's protocol next, a WORD: whether it is NXDN's noted in @p scan, as the reader reads it
+   (sdrtrunk_json_set_protocol()). */
+static int
+sdrtrunk_shape_protocol(sdrtrunk_shape_scan* scan) {
+    const char* text = NULL;
+    size_t len = 0;
+    if (!sdrtrunk_shape_string(scan, SDRTRUNK_SHAPE_WORD, &text, &len)) {
+        return 0;
+    }
+    scan->nxdn = len == 4U && strncmp(text, "NXDN", 4) == 0 ? 1U : 0U;
+    return 1;
+}
+
+/* A frame's tag next: free text, as TEXT, but in an NXDN record not one written with an escape whose text, its escapes
+   read, is a SACCH place the reader reads: the reader takes the tag as written, escapes and all, so it would read no
+   place. Any other tag, a DMR or P25 record's included, is free text the reader passes over. */
+static int
+sdrtrunk_shape_tag(sdrtrunk_shape_scan* scan) {
+    const char* text = NULL;
+    size_t len = 0;
+    return sdrtrunk_shape_string(scan, SDRTRUNK_SHAPE_TAG, &text, &len)
+           && !(scan->nxdn != 0U && scan->tag_escaped != 0U && scan->tag_at == SDRTRUNK_TAG_PLACE);
+}
+
+/* A value of @p type next, in an object whose layout @p current names (sdrtrunk_shape_level::current). */
+static int
+sdrtrunk_shape_value(sdrtrunk_shape_scan* scan, uint8_t type, uint8_t current) {
+    const char* text = NULL;
+    size_t len = 0;
+    switch (type) {
+        case SDRTRUNK_SHAPE_TEXT:
+        case SDRTRUNK_SHAPE_WORD:
+        case SDRTRUNK_SHAPE_HEX: return sdrtrunk_shape_string(scan, type, &text, &len);
+        case SDRTRUNK_SHAPE_PROTOCOL: return sdrtrunk_shape_protocol(scan);
+        case SDRTRUNK_SHAPE_TAG: return sdrtrunk_shape_tag(scan);
+        case SDRTRUNK_SHAPE_UINT8:
+        case SDRTRUNK_SHAPE_UINT16:
+        case SDRTRUNK_SHAPE_INT64: return sdrtrunk_shape_integer(scan, type);
+        case SDRTRUNK_SHAPE_BOOLEAN: return sdrtrunk_shape_word(scan, "true") || sdrtrunk_shape_word(scan, "false");
+        default: return sdrtrunk_shape_frames(scan, current);
+    }
+}
+
+/* An object next whose members are all @p level's, each with a value of its type. */
+static int
+sdrtrunk_shape_object(sdrtrunk_shape_scan* scan, sdrtrunk_shape_level* level) {
+    if (!sdrtrunk_shape_take(scan, '{')) {
+        return 0;
+    }
+    if (sdrtrunk_shape_take(scan, '}')) {
+        return 1;
+    }
+    do {
+        const int i = sdrtrunk_shape_member_next(scan, level);
+        if (i < 0 || !sdrtrunk_shape_value(scan, level->members[i].type, level->current)) {
+            return 0;
+        }
+    } while (sdrtrunk_shape_take(scan, ','));
+    return sdrtrunk_shape_take(scan, '}');
+}
+
+/* The record's "frames" next: an array of voice frames, each with its "hex", in the layout the record's @p current
+   names. */
+static int
+sdrtrunk_shape_frames(sdrtrunk_shape_scan* scan, uint8_t current) {
+    if (!sdrtrunk_shape_take(scan, '[')) {
+        return 0;
+    }
+    if (sdrtrunk_shape_take(scan, ']')) {
+        return 1;
+    }
+    do {
+        sdrtrunk_shape_level frame = {k_sdrtrunk_frame_members, SDRTRUNK_SHAPE_FRAME_MEMBERS, 0U, -1, current};
+        if (!sdrtrunk_shape_object(scan, &frame) || (frame.seen & (1U << SDRTRUNK_SHAPE_FRAME_HEX)) == 0U) {
+            return 0;
+        }
+    } while (sdrtrunk_shape_take(scan, ','));
+    return sdrtrunk_shape_take(scan, ']');
+}
+
+/* What a played file's shape check found (sdrtrunk_json_shape()). */
+enum { SDRTRUNK_JSON_STOPPED = -1, SDRTRUNK_JSON_NONSTANDARD = 0, SDRTRUNK_JSON_STANDARD = 1 };
+
+/* Whether the @p size bytes at @p text are a call as SDRTrunk's writer writes one (MBECallSequenceRecorder's
+   writeCallSequence(): Jackson's pretty printer over one MBECallSequence): one record object and only white space
+   after it; members only from the record's table, each at most once, in the order of one of the writer's two layouts
+   (sdrtrunk_shape_in_layout()), each of its type; "frames" an array of frame objects, their members from the frame's
+   table the same way, each with a "hex" of hex digits; strings as the writer writes them (sdrtrunk_shape_char_len())
+   and numbers as it writes them (sdrtrunk_shape_integer()); no other object or array. Read once, before the file
+   plays, and changes nothing (issue #888). The exit flag is looked at as it starts and ends, and never more than a MiB
+   of the text after the last look (sdrtrunk_shape_stopped()): SDRTRUNK_JSON_STOPPED when Stop came during it. */
+static int
+sdrtrunk_json_shape(const char* text, size_t size) {
+    sdrtrunk_shape_scan scan = {text, text, 0U, 0, 0U, 0U, 0U};
+    sdrtrunk_shape_level record = {k_sdrtrunk_record_members, SDRTRUNK_SHAPE_RECORD_MEMBERS, 0U, -1, 0U};
+    const int whole = !sdrtrunk_shape_stopped(&scan, text, 0U) && sdrtrunk_shape_object(&scan, &record)
+                      && sdrtrunk_shape_space(&scan) && scan.p == text + size;
+    scan.poll_at = 0U;
+    if (sdrtrunk_shape_stopped(&scan, scan.p, 0U)) {
+        return SDRTRUNK_JSON_STOPPED;
+    }
+    return whole ? SDRTRUNK_JSON_STANDARD : SDRTRUNK_JSON_NONSTANDARD;
+}
+
+/* A played file not in SDRTrunk's own shape (sdrtrunk_json_shape()) plays, but gets no per-call recording and no
+   export: its audio could be judged by IDs read after it, or by none of the file's. Said once a run while per-call
+   recording is on. */
+static void
+sdrtrunk_json_note_unrecorded(const dsd_opts* opts) {
+    if (opts->dmr_stereo_wav == 1 && wav_recording_played_file_unrecorded_first_this_run()) {
+        LOG_WARN(
+            "Played file %s is not in the shape SDRTrunk writes (one call record, its members in SDRTrunk's order): "
+            "it plays, but it is not recorded per call or exported; later such files are not logged\n",
+            opts->mbe_in_file);
+    }
+}
+
+enum { SDRTRUNK_JSON_READ_CHUNK = 0x100000 };
+
+/* Reads up to @p want bytes into @p dst, one SDRTRUNK_JSON_READ_CHUNK at most at a time, Stop looked at between
+   chunks. The bytes read; *@p stopped set when the exit flag ended the read. */
+static size_t
+sdrtrunk_json_read_chunks(FILE* f, char* dst, size_t want, int* stopped) {
+    size_t got = 0;
+    while (got < want) {
+        const size_t n = want - got < SDRTRUNK_JSON_READ_CHUNK ? want - got : SDRTRUNK_JSON_READ_CHUNK;
+        const size_t r = fread(dst + got, 1, n, f);
+        got += r;
+        if (r < n) {
+            break;
+        }
+        if (dsd_exitflag_load() == 1) {
+            *stopped = 1;
+            break;
+        }
+    }
+    return got;
+}
+
+/* The whole SDRTrunk export at @p f, read from its start through EOF into one NUL-terminated buffer the caller frees,
+   its length in *@p out_size; NULL (with one log line) when it cannot be read or is larger than
+   DSD_SDRTRUNK_JSON_MAX_BYTES, and NULL (silently, the part read dropped) when Stop comes during the read, which looks
+   at the exit flag after each MiB. A file is one call (issue #888), so it is parsed with one state: a long call's text
+   is not cut at a buffer's end and read again from the start. */
+static char*
+sdrtrunk_json_read_whole(FILE* f, const char* name, size_t* out_size) {
+    // openMbeInFile() probes a four-byte binary cookie even for JSON exports.
+    // Rewind so compact JSON does not lose the start of its first property.
+    if (fseek(f, 0L, SEEK_SET) != 0) {
+        LOG_ERROR("Failed to rewind MBE JSON input\n");
+        return NULL;
+    }
+    size_t cap = SDRTRUNK_JSON_READ_CHUNK;
+    size_t size = 0;
+    char* text = NULL;
+    int stopped = 0;
+    for (;;) {
+        char* grown = (char*)realloc(text, cap + 1U);
+        if (grown == NULL) {
+            free(text);
+            LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
+            return NULL;
+        }
+        text = grown;
+        size += sdrtrunk_json_read_chunks(f, text + size, cap - size, &stopped);
+        if (stopped || size < cap || cap >= DSD_SDRTRUNK_JSON_MAX_BYTES) {
+            break;
+        }
+        cap = cap * 2U < DSD_SDRTRUNK_JSON_MAX_BYTES ? cap * 2U : DSD_SDRTRUNK_JSON_MAX_BYTES;
+    }
+    if (stopped) {
+        free(text);
+        return NULL;
+    }
+    if (size == cap && fgetc(f) != EOF) {
+        free(text);
+        LOG_ERROR("SDRTrunk MBE file %s is larger than %lu MiB: not played\n", name,
+                  DSD_SDRTRUNK_JSON_MAX_BYTES / (1024UL * 1024UL));
+        return NULL;
+    }
+    if (ferror(f)) {
+        free(text);
+        LOG_ERROR("Failed to read SDRTrunk MBE file %s\n", name);
+        return NULL;
+    }
+    text[size] = '\0';
+    *out_size = size;
+    return text;
+}
+
+// Each file replays its own traffic. An SDRTrunk JSON export leaves its last
+// call open and its protocol set at EOF, and a raw .imb/.amb/.dmb that follows
+// publishes neither, so the output gates would judge it on the previous file's
+// talkgroup, or as an unclassified live P25 call. Start each file as a fresh
+// -r run does: no call and no protocol. Nor does a file record into another's
+// recording (issue #888): a raw file plays with no call, so the audio it left
+// in the slot file closes here, unexported and as no row's (or as the ended
+// call's whose row has yet to commit), instead of joining the next file's, or
+// a named call's commit publishing it as that call's. An SDRTrunk JSON file's
+// reader ends the earlier file here itself, once the file is read and checked
+// (read_sdrtrunk_json_format()), so a Stop before then, or a file it refuses,
+// leaves that call as it was, its speech decoder included.
+void
+dsd_mbe_file_end_replayed_call(dsd_opts* opts, dsd_state* state) {
+    if (dsd_call_state_end(state, 0U, 0.0) > 0) {
+        dsd_event_sync_slot(opts, state, 0U);
+    }
+    dsd_event_flush_orphan_recordings(opts, state);
+    state->synctype = DSD_SYNC_NONE;
+    state->lastsynctype = DSD_SYNC_NONE;
+    // A file is a reception of its own: its first frame starts from a fresh speech decoder, clear high-pass state
+    // (issue #653) and the start gain (issue #518).
+    if (state->cur_mp != NULL && state->prev_mp != NULL && state->prev_mp_enhanced != NULL) {
+        mbe_initMbeParms(state->cur_mp, state->prev_mp, state->prev_mp_enhanced);
+    }
+    dsd_voice_hpf_reset(state, -1);
+    dsd_voice_level_reset(state, -1);
 }
 
 void
 read_sdrtrunk_json_format(dsd_opts* opts, dsd_state* state) {
-    // openMbeInFile() probes a four-byte binary cookie even for JSON exports.
-    // Rewind so compact JSON does not lose the start of its first property.
-    if (fseek(opts->mbe_in_f, 0L, SEEK_SET) != 0) {
-        LOG_ERROR("Failed to rewind MBE JSON input\n");
-        return;
-    }
-    char* source_str = (char*)malloc(0x100000 + 1);
+    size_t source_size = 0;
+    char* source_str = sdrtrunk_json_read_whole(opts->mbe_in_f, opts->mbe_in_file, &source_size);
     if (source_str == NULL) {
-        LOG_ERROR("Failed to allocate memory for MBE file buffer\n");
+        /* Unread (refused, cut by Stop, or a read error): it plays nothing and changes nothing, so the earlier file's
+           call goes on as it was. */
         return;
     }
 
+    /* Checked before it plays, with nothing changed: a Stop during the check leaves the call and the recordings as they
+       were, the earlier file's included, and a Stop part-way through the playback leaves the verdict on the whole
+       file. Only then does the earlier file end (dsd_mbe_file_end_replayed_call()). */
+    const int shape = sdrtrunk_json_shape(source_str, source_size);
+    if (shape == SDRTRUNK_JSON_STOPPED) {
+        free(source_str);
+        return;
+    }
+    dsd_mbe_file_end_replayed_call(opts, state);
     sdrtrunk_json_context ctx;
     sdrtrunk_json_context_init(&ctx);
     sdrtrunk_json_reset_event_state(state);
     sdrtrunk_json_reset_crypto_state(state);
     dsd_event_sync_slot(opts, state, 0);
+    /* A stamp staged before the file (an earlier file's frame, with no call to commit it) is not this file's; a row
+       still waiting on its verdict keeps its own. */
+    if (dsd_call_state_pending_row_epoch(state, 0U) == 0U) {
+        sdrtrunk_json_clear_staged_stamp(state);
+    }
 
-    size_t source_size = fread(source_str, 1, 0x100000, opts->mbe_in_f);
-    source_str[source_size] = '\0';
+    if (shape != SDRTRUNK_JSON_STANDARD) {
+        sdrtrunk_json_note_unrecorded(opts);
+    }
+    s_sdrtrunk_per_call_off = shape != SDRTRUNK_JSON_STANDARD;
 
-    char* str_saveptr = NULL;
-    const char* str_buffer = dsd_strtok_r(source_str, "{ \"", &str_saveptr);
-
-    for (size_t i = 0; i < source_size; i++) {
-        if (str_buffer == NULL) {
+    /* Members are read by name: a token that is no key (a value no handler took) is passed over. */
+    sdrtrunk_json_cursor cursor;
+    sdrtrunk_json_cursor_init(&cursor, source_str);
+    for (size_t i = 0; i < source_size && dsd_exitflag_load() != 1; i++) {
+        int is_key = 0;
+        const char* token = sdrtrunk_json_token(&cursor, &is_key);
+        if (token == NULL) {
             break;
         }
-        sdrtrunk_json_process_token(opts, state, &ctx, str_buffer, &str_saveptr);
+        if (!is_key) {
+            continue;
+        }
+        sdrtrunk_json_process_token(opts, state, &ctx, token, &cursor);
         if (ctx.is_enc == 0) {
             ctx.ks_idx = 0;
         }
-
-        str_buffer = sdrtrunk_json_next_value(&str_saveptr);
-        if (str_buffer == NULL || dsd_exitflag_load() == 1) {
-            break;
-        }
     }
+    s_sdrtrunk_per_call_off = 0;
 
     free(source_str);
     source_str = NULL;

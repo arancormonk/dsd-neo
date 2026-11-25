@@ -24,6 +24,7 @@
 #include <dsd-neo/engine/scan_voice_gate.h>
 #include <dsd-neo/engine/signal_search.h>
 #include <dsd-neo/engine/trunk_tuning.h>
+#include <dsd-neo/protocol/dmr/dmr_t3_channels.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
@@ -141,6 +142,10 @@ typedef struct {
     int access_noted;
     /* The session's own P25 site as Start found it, put back whole after every departure (issue #804). */
     dsd_p25_site_snapshot session_site;
+    /* The session's DMR Tier III channel provenance as Start found it (origins, trust, the rows the air holds, the
+       network baseline and the control channels it named): it comes back with the map rows it describes, so a visit
+       that heard another network leaves the session's rows as they were (discussion #900 F2). */
+    dmr_t3_chan_target_snapshot session_dmr_chan;
     /* The session's P25 patch table as Start found it (with its owner, listening clock and sequence counter): every
        departure's boundary empties the table, so each visit starts with none, and only the return to the session puts
        this one back (search_return_site()). */
@@ -547,11 +552,13 @@ search_prepare_profile(search_coord* c, dsd_opts* opts, dsd_state* state, uint32
    (-X) or imported channel map comes back, whether or not the code changed: a visit can take an IDEN update stamped
    with the code in force before any network status names its system. The boundary cleared the code's proof, which was
    the carrier left's, and nothing here sets it. A channel map that moved since the session's was saved moves on to a
-   new sequence, so a frontend that copies it on a change sees it go back. */
+   new sequence, so a frontend that copies it on a change sees it go back. The DMR Tier III provenance of the rows comes
+   back with them: a row the session's site taught stays the site's, with its trust. */
 static void
 search_restore_site(search_coord* c, dsd_state* state) {
     const uint64_t seq = state->trunk_chan_map_seq;
     dsd_p25_site_snapshot_restore(state, &c->session_site);
+    dmr_t3_chan_restore(state, &c->session_dmr_chan);
     if (seq != c->session_site.trunk_chan_map_seq) {
         state->trunk_chan_map_seq = seq + 1U;
         c->session_site.trunk_chan_map_seq = state->trunk_chan_map_seq;
@@ -925,7 +932,7 @@ search_reserve_owner(dsd_state* state) {
 }
 
 /* Everything a fresh start can fail on, with nothing changed: the coordinator, the session's P25 site with its channel
-   map's storage, the scan scope's storage and the scan owner, which a session with none gets last, so a failure before
+   map's storage (and the DMR Tier III provenance of those rows), the scan scope's storage and the scan owner, which a session with none gets last, so a failure before
    it leaves no owner made. The site is saved here, before the commit: none of what follows it before the first tune
    (taking back a -Y resume, the Auto preset, the start profile) touches the P25 site or its channel map. */
 static int
@@ -936,6 +943,8 @@ search_reserve_start(dsd_state* state, search_start_reserve* r) {
         return -1;
     }
     if (search_reserve_site(state, &r->coord->session_site) == 0) {
+        /* The DMR Tier III channel provenance goes with the map rows the site holds (discussion #900 F2). */
+        dmr_t3_chan_save(state, &r->coord->session_dmr_chan);
         r->scope = search_reserve_scope();
     }
     if (!r->scope || search_reserve_owner(state)) {

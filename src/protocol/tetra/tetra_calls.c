@@ -18,6 +18,7 @@
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/synctype_ids.h>
 #include <dsd-neo/core/talkgroup_policy.h>
+#include <dsd-neo/core/voice_chain.h>
 #include <dsd-neo/protocol/tetra/tetra_air.h>
 #include <dsd-neo/protocol/tetra/tetra_bsch.h>
 #include <dsd-neo/protocol/tetra/tetra_dmo.h>
@@ -651,12 +652,26 @@ calls_reclassify(dsd_opts* opts, dsd_state* state, dsd_call_crypto_state crypto)
 }
 
 /* Observe @p o on canonical slot 0 as @p pub (call @p call_id) with crypto class @p crypto, which
- * DSD_CALL_CRYPTO_UNKNOWN leaves as it was. Another TETRA call there ends first. */
+ * DSD_CALL_CRYPTO_UNKNOWN leaves as it was. Another TETRA call there ends first. A call admitted on a slot with no
+ * active call first closes the audio its file holds that no call owns (issue #888): speech the record gate let in
+ * before signalling proved the carrier, before a DM-SETUP named the call, or that trailed an ended one. It closes as
+ * the ended epoch's that has yet to commit, else as no row's, unexported, so the admitted call's commit never
+ * publishes it as its own. The speech starts over with it (tetra_voice_call_admitted()): the samples still waiting to
+ * be played (half an output frame after a half slot), its confirmation and the decoder's history go, so none of that
+ * speech is played or concealed into the admitted call's audio. So does the slot's digital high-pass state (-v 0x9),
+ * which the chain keeps across a call learned partway through a reception, so the earlier speech's filter tail does
+ * not lead the call's recording. A republication of the active call keeps all of it. */
 static void
 calls_publish(dsd_opts* opts, dsd_state* state, tetra_state_t* ts, const dsd_call_observation* o,
               dsd_call_crypto_state crypto, uint8_t pub, uint16_t call_id) {
     if (ts->calls.published != pub || ts->calls.published_call_id != call_id) {
         calls_end_published(opts, state, ts, DSD_CALL_END_EXPLICIT);
+    }
+    dsd_call_snapshot call;
+    if (opts && (dsd_call_state_get(state, 0U, &call) <= 0 || call.phase != DSD_CALL_PHASE_ACTIVE)) {
+        dsd_event_flush_orphan_recordings(opts, state);
+        tetra_voice_call_admitted(&ts->voice);
+        dsd_voice_hpf_reset(state, 0);
     }
     (void)dsd_call_state_observe(state, o, DSD_CALL_BOUNDARY_CONTINUE);
     if (crypto != DSD_CALL_CRYPTO_UNKNOWN) {

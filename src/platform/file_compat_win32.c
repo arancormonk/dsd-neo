@@ -487,11 +487,94 @@ dsd_existing_regular_attrs_ok(DWORD attrs) {
     return 0;
 }
 
+static int
+dsd_win32_path_sep(wchar_t c) {
+    return c == L'\\' || c == L'/';
+}
+
+/* Whether @p p, past its root, has an empty part (two separators in a row), a "." or a "..": a plain call resolves
+   them, an extended-length one would take them as names. */
+static int
+dsd_win32_path_has_dots(const wchar_t* p) {
+    while (*p != L'\0') {
+        const wchar_t* end = p;
+        while (*end != L'\0' && !dsd_win32_path_sep(*end)) {
+            end++;
+        }
+        const size_t n = (size_t)(end - p);
+        if ((n == 0 && *end != L'\0') || (n == 1 && p[0] == L'.') || (n == 2 && p[0] == L'.' && p[1] == L'.')) {
+            return 1;
+        }
+        p = *end != L'\0' ? end + 1 : end;
+    }
+    return 0;
+}
+
+/*
+ * @p wide in extended-length form when it needs it to be opened at all: an absolute drive path ("C:\...") or a UNC one
+ * ("\\server\share\...") of MAX_PATH units or more, which a plain call refuses without the process's long-path
+ * opt-in, as "\\?\C:\..." or "\\?\UNC\server\share\...", with every '/' as '\'. NULL (the path as it is) for a short one,
+ * one already extended or a device path ("\\?\", "\\.\"), a relative one, or one with parts an extended path would
+ * not resolve (dsd_win32_path_has_dots()). Freed by the caller.
+ */
+/* How long @p wide's root is: 3 for a drive ("C:\\"), 2 for a UNC path ("\\\\server"), 0 for anything else (relative,
+   already extended, a device path). */
+static size_t
+dsd_win32_absolute_root(const wchar_t* wide) {
+    const int letter = (wide[0] >= L'A' && wide[0] <= L'Z') || (wide[0] >= L'a' && wide[0] <= L'z');
+    if (letter && wide[1] == L':' && dsd_win32_path_sep(wide[2])) {
+        return 3;
+    }
+    const int unc = dsd_win32_path_sep(wide[0]) && dsd_win32_path_sep(wide[1]) && wide[2] != L'\0' && wide[2] != L'?'
+                    && wide[2] != L'.' && !dsd_win32_path_sep(wide[2]);
+    return unc ? 2 : 0;
+}
+
+static wchar_t*
+dsd_win32_extended_path(const wchar_t* wide) {
+    if (wcslen(wide) < MAX_PATH) {
+        return NULL;
+    }
+    const size_t root = dsd_win32_absolute_root(wide);
+    if (root == 0 || dsd_win32_path_has_dots(wide + root)) {
+        return NULL;
+    }
+    const int drive = root == 3;
+    const wchar_t* prefix = drive ? L"\\\\?\\" : L"\\\\?\\UNC";
+    const wchar_t* rest = drive ? wide : wide + 1; /* UNC keeps one leading separator: "\\?\UNC" "\server..." */
+    const size_t prefix_len = wcslen(prefix);
+    const size_t rest_len = wcslen(rest);
+    wchar_t* out = (wchar_t*)malloc((prefix_len + rest_len + 1) * sizeof(wchar_t));
+    if (!out) {
+        return NULL;
+    }
+    DSD_MEMCPY(out, prefix, prefix_len * sizeof(wchar_t));
+    for (size_t i = 0; i <= rest_len; i++) {
+        out[prefix_len + i] = rest[i] == L'/' ? L'\\' : rest[i];
+    }
+    return out;
+}
+
+/* dsd_win32_path_wide() for a name opened by its handle: a long absolute one in extended-length form
+   (dsd_win32_extended_path()). */
+static int
+dsd_win32_path_wide_long(const char* path, wchar_t** out_wide) {
+    const int kind = dsd_win32_path_wide(path, out_wide);
+    if (kind > 0) {
+        wchar_t* extended = dsd_win32_extended_path(*out_wide);
+        if (extended) {
+            free(*out_wide);
+            *out_wide = extended;
+        }
+    }
+    return kind;
+}
+
 /* The attribute check, then the open. */
 static int
 dsd_open_existing_regular_path(const char* path, int flags) {
     wchar_t* wide = NULL;
-    const int kind = dsd_win32_path_wide(path, &wide);
+    const int kind = dsd_win32_path_wide_long(path, &wide);
     if (kind <= 0) {
         if (kind < 0 || dsd_existing_regular_attrs_ok(GetFileAttributesA(path)) != 0) {
             return -1;
@@ -725,6 +808,31 @@ dsd_rename_noreplace(const char* from, const char* to, int* out_source_left) {
     return 0;
 }
 
+int
+dsd_hard_link(const char* existing, const char* new_path) {
+    if (!existing || existing[0] == '\0' || !new_path || new_path[0] == '\0') {
+        errno = EINVAL;
+        return -1;
+    }
+    wchar_t* wide_existing = NULL;
+    wchar_t* wide_new = NULL;
+    const int kind = dsd_win32_path_pair_wide(existing, new_path, &wide_existing, &wide_new);
+    if (kind < 0) {
+        return -1;
+    }
+    /* CreateHardLink() takes the new name first. An existing name fails with ERROR_ALREADY_EXISTS (EEXIST). */
+    const BOOL linked =
+        kind > 0 ? CreateHardLinkW(wide_new, wide_existing, NULL) : CreateHardLinkA(new_path, existing, NULL);
+    const DWORD err = linked ? ERROR_SUCCESS : GetLastError();
+    free(wide_existing);
+    free(wide_new);
+    if (err != ERROR_SUCCESS) {
+        errno = dsd_win32_file_errno(err);
+        return -1;
+    }
+    return 0;
+}
+
 /* dsd_path_type_nofollow()'s answer from one GetFileAttributes() result, whose GetLastError() this reads on a
    failure. GetFileAttributes() describes a link or junction itself, never its target. */
 static int
@@ -748,8 +856,9 @@ dsd_path_type_nofollow(const char* path, dsd_path_type* out_type) {
         errno = EINVAL;
         return -1;
     }
+    /* A long absolute name in extended-length form, as the openers take it: its answer is the name's, never "too long". */
     wchar_t* wide = NULL;
-    const int kind = dsd_win32_path_wide(path, &wide);
+    const int kind = dsd_win32_path_wide_long(path, &wide);
     if (kind <= 0) {
         return kind < 0 ? -1 : dsd_path_type_answer(GetFileAttributesA(path), out_type);
     }
@@ -906,6 +1015,173 @@ dsd_path_same_file(const char* a, const char* b, int* same) {
     }
     *same = id_a.volume == id_b.volume && memcmp(id_a.id, id_b.id, sizeof id_a.id) == 0;
     return 0;
+}
+
+/* The identity of the regular file open at @p h (attributes only): its size and last write time; 0, or -1 with errno,
+   leaving @p out as it is. */
+static int
+dsd_handle_file_identity(HANDLE h, dsd_file_identity_t* out) {
+    /* A device or a pipe opens under a name too (NUL, CON): read, and known to be no file. ENODEV, as POSIX gives. */
+    const DWORD type = GetFileType(h);
+    const DWORD type_err = type == FILE_TYPE_UNKNOWN ? GetLastError() : NO_ERROR;
+    if (type != FILE_TYPE_DISK) {
+        errno = type_err != NO_ERROR ? dsd_path_errno(type_err) : ENODEV;
+        return -1;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    if (!GetFileInformationByHandle(h, &info)) {
+        errno = dsd_path_errno(GetLastError());
+        return -1;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) != 0) {
+        errno = ELOOP; /* first: a folder link or junction carries the folder bit too, and is a link */
+        return -1;
+    }
+    if ((info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0) {
+        errno = EISDIR;
+        return -1;
+    }
+    out->kind = 1;
+    out->size = (int64_t)(((ULONGLONG)info.nFileSizeHigh << 32) | info.nFileSizeLow);
+    /* FILETIME counts 100 ns from 1601-01-01: whole seconds and the rest apart, so no date overflows. */
+    const ULONGLONG ticks = ((ULONGLONG)info.ftLastWriteTime.dwHighDateTime << 32) | info.ftLastWriteTime.dwLowDateTime;
+    out->mtime_s = (int64_t)(ticks / 10000000ULL) - 11644473600LL;
+    out->mtime_ns = (int32_t)((ticks % 10000000ULL) * 100ULL);
+    return 0;
+}
+
+/* Whether the folder @p path (wide when @p kind > 0, else ANSI) names is in is a plain folder, not a reparse point. The
+   folder itself is opened (backup semantics, never through a reparse point) and its attributes read from the handle:
+   that works on a share's root (\\server\share\) too, where an attribute lookup by name fails. A bare name's folder
+   is the current one. */
+static int
+dsd_win32_parent_is_folder(int kind, const wchar_t* wide, const char* path) {
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    HANDLE h = INVALID_HANDLE_VALUE;
+    if (kind > 0) {
+        size_t cut = wcslen(wide);
+        while (cut > 0 && wide[cut - 1] != L'\\' && wide[cut - 1] != L'/') {
+            cut--;
+        }
+        if (cut == 0) {
+            return 1;
+        }
+        wchar_t* parent = (wchar_t*)malloc((cut + 1) * sizeof(wchar_t));
+        if (!parent) {
+            return 0;
+        }
+        DSD_MEMCPY(parent, wide, cut * sizeof(wchar_t));
+        parent[cut] = L'\0';
+        h = CreateFileW(parent, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+        free(parent);
+    } else {
+        size_t cut = strlen(path);
+        while (cut > 0 && path[cut - 1] != '\\' && path[cut - 1] != '/') {
+            cut--;
+        }
+        if (cut == 0) {
+            return 1;
+        }
+        char* parent = (char*)malloc(cut + 1);
+        if (!parent) {
+            return 0;
+        }
+        DSD_MEMCPY(parent, path, cut);
+        parent[cut] = '\0';
+        h = CreateFileA(parent, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+        free(parent);
+    }
+    if (h == INVALID_HANDLE_VALUE) {
+        return 0;
+    }
+    BY_HANDLE_FILE_INFORMATION info;
+    const int folder = GetFileInformationByHandle(h, &info) && (info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0
+                       && (info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT) == 0;
+    CloseHandle(h);
+    return folder;
+}
+
+/* The errno for a failed open of the name itself (dsd_path_file_identity()): a parent reparse loop is EMLINK (the
+   name's type never read), a parent missing or no plain folder ENOTDIR, ENOENT only for a name not in a folder that is
+   there. */
+static int
+dsd_win32_identity_errno(DWORD err, int kind, const wchar_t* wide, const char* path) {
+    if (err == ERROR_CANT_RESOLVE_FILENAME) {
+        return EMLINK;
+    }
+    if (err == ERROR_PATH_NOT_FOUND) {
+        return ENOTDIR;
+    }
+    if (err == ERROR_FILE_NOT_FOUND) {
+        return dsd_win32_parent_is_folder(kind, wide, path) ? ENOENT : ENOTDIR;
+    }
+    return dsd_path_errno(err);
+}
+
+int
+dsd_path_file_identity(const char* path, dsd_file_identity_t* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
+    if (!path || path[0] == '\0' || !out) {
+        errno = EINVAL;
+        return -1;
+    }
+    /* Wide or ANSI as dsd_win32_path_wide() chooses (file_compat.h's note), never both, a long absolute one extended
+       (Qt reads those, so the index can hold them); the name itself, not what a reparse point at it names. */
+    wchar_t* wide = NULL;
+    const int kind = dsd_win32_path_wide_long(path, &wide);
+    if (kind < 0) {
+        return -1;
+    }
+    const DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
+    const DWORD flags = FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT;
+    HANDLE h = kind > 0 ? CreateFileW(wide, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL)
+                        : CreateFileA(path, FILE_READ_ATTRIBUTES, share, NULL, OPEN_EXISTING, flags, NULL);
+    const DWORD err = h == INVALID_HANDLE_VALUE ? GetLastError() : ERROR_SUCCESS;
+    if (h == INVALID_HANDLE_VALUE) {
+        /* Only the name itself not found in a folder that is there is a missing name: a parent missing, a file or a
+           reparse point (ERROR_PATH_NOT_FOUND, or a parent that is no plain folder) never looked the name up. */
+        errno = dsd_win32_identity_errno(err, kind, wide, path);
+        free(wide);
+        return -1;
+    }
+    free(wide);
+    const int rc = dsd_handle_file_identity(h, out);
+    const int saved_errno = errno;
+    CloseHandle(h);
+    if (rc != 0) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
+    errno = saved_errno;
+    return rc;
+}
+
+int
+dsd_file_stream_identity(FILE* fp, dsd_file_identity_t* out) {
+    if (out) {
+        DSD_MEMSET(out, 0, sizeof *out);
+    }
+    const int fd = fp ? _fileno(fp) : -1;
+    const HANDLE h = fd >= 0 ? (HANDLE)_get_osfhandle(fd) : INVALID_HANDLE_VALUE;
+    if (h == INVALID_HANDLE_VALUE || !out) {
+        errno = EINVAL;
+        return -1;
+    }
+    const int rc = dsd_handle_file_identity(h, out);
+    if (rc != 0) {
+        const int saved_errno = errno;
+        DSD_MEMSET(out, 0, sizeof *out);
+        errno = saved_errno;
+    }
+    return rc;
+}
+
+int
+dsd_file_identity_equal(const dsd_file_identity_t* a, const dsd_file_identity_t* b) {
+    return a != NULL && b != NULL && a->kind != 0 && b->kind != 0 && a->size == b->size && a->mtime_s == b->mtime_s
+           && a->mtime_ns == b->mtime_ns;
 }
 
 static int

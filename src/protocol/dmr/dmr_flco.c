@@ -47,6 +47,7 @@
 #include "dmr_crc_provenance.h"
 #include "dmr_hytera.h"
 #include "dmr_mono_slot.h"
+#include "dmr_t3_channels_internal.h"
 #include "dmr_tiii_site.h"
 #include "dmr_vcrypt.h"
 #include "dsd-neo/core/opts_fwd.h"
@@ -2264,7 +2265,9 @@ dmr_slco_handle_c_sys_parms(const dsd_opts* opts, dsd_state* state, uint8_t slco
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
 
     /* Reached only from dmr_slco(), whose short LC passed Hamming(17,12,3) and its CRC-8. C_SYS_PARMS is a control
-       channel's: this carrier, where the receiver is tuned before the state machine hears of it. */
+       channel's: this carrier, where the receiver is tuned before the state machine hears of it. A checked code of
+       another network than the last drops what the air taught, as a C_ALOHA's does. */
+    dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
     dsd_rxid_note_cc_freq(state, DSD_RXID_FAMILY_DMR, dsd_opts_tuned_freq_hz(opts));
     dmr_sm_note_cc_activity(opts, state, 0);
@@ -2278,6 +2281,8 @@ dmr_slco_handle_p_sys_parms(dsd_state* state, uint8_t slco_bits[], const dmr_slc
     DSD_FPRINTF(stderr, " SLC_P_SYS_PARMS: %s; Net ID: %u; Site ID: %s; Comp CC: %d;", data->model_str, (unsigned)net,
                 site_label, data->reg);
     DSD_FPRINTF(stderr, " SYS: %04X;", syscode);
+    /* Checked as C_SYS_PARMS is (dmr_slco()): a payload channel of the network whose code it names. */
+    dmr_t3_chan_note_checked_syscode(state, syscode);
     dmr_tiii_note_search_site(state, syscode, data->dmrla);
 }
 

@@ -36,6 +36,7 @@
 #include <stdint.h>
 #include <stdio.h>
 #include <string.h>
+#include "dmr_abs_params.h"
 #include "dmr_crc_provenance.h"
 #include "dmr_dburst_profile.h"
 #include "dmr_r34_internal.h"
@@ -882,6 +883,34 @@ dmr_dburst_handle_usbd(dmr_data_burst_ctx* ctx) {
     }
 }
 
+/* A burst that proves the carrier is DMR, so two-slot TDMA (dsd_state::tdma_carrier): one whose own 16- or 24-bit
+   check passed (PI, voice and terminator LC, CSBK, MBC and data headers, USBD), not a RAS acceptance. This is how a
+   direct-mode or mobile carrier proves it, which the base station colour-code lock (dmr_confidence.c) never sees. Data
+   blocks, MBC continuations, idle bursts and the embedded LC's 5-bit CRC are left out: their checks are absent or too
+   short to tell noise from a DMR burst. */
+static int
+dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
+    switch (ctx->databurst) {
+        case 0x00:
+        case 0x01:
+        case 0x02:
+        case 0x03:
+        case 0x04:
+        case 0x06:
+        case 0x0B: break;
+        default: return 0;
+    }
+    return ctx->crc_original_validity != 0U && ctx->is_ras == 0U && ctx->irrecoverable_errors == 0U
+           && ctx->state->input_interrupted == 0;
+}
+
+/* Content a scan quiet check counts as activity (issue #834): a burst whose own check proves it (as for the TDMA
+   carrier above), or a RAS signature -F accepts, which the trunk scan and a Signal search take as activity too. */
+static int
+dmr_dburst_proves_content(const dmr_data_burst_ctx* ctx) {
+    return dmr_dburst_proves_tdma_carrier(ctx) || (ctx->is_ras == 1U && ctx->state->input_interrupted == 0);
+}
+
 static void
 dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
     switch (ctx->databurst) {
@@ -892,16 +921,21 @@ dmr_dburst_dispatch_by_type(dmr_data_burst_ctx* ctx) {
         case 0x02:
             dmr_flco(ctx->opts, ctx->state, ctx->dmr_pdu_bits, ctx->crc_correct, &ctx->irrecoverable_errors, 2);
             break;
-        case 0x03:
-            dmr_cspdu(ctx->opts, ctx->state, ctx->dmr_pdu_bits, ctx->dmr_pdu, ctx->crc_correct,
-                      ctx->irrecoverable_errors);
+        case 0x03: {
+            // Its scan activity evidence is noted only if dmr_cspdu_ex() does not refuse it.
+            const dmr_cspdu_shape single = {.proves_content = (uint8_t)dmr_dburst_proves_content(ctx)};
+            dmr_cspdu_ex(ctx->opts, ctx->state, ctx->dmr_pdu_bits, ctx->dmr_pdu, ctx->crc_correct,
+                         ctx->irrecoverable_errors, &single);
             break;
+        }
         case 0x04:
             ctx->state->data_block_counter[ctx->slot] = 0;
             // Arm only a checked header or a RAS acceptance under -F. The raw CRC
             // remains in data_block_crc_valid; acceptance is not an integrity verdict.
             ctx->state->data_header_valid[ctx->slot] =
                 (uint8_t)(ctx->crc_correct != 0 && ctx->irrecoverable_errors == 0);
+            // Its scan activity evidence waits for the MBC it heads (dmr_block_type2_dispatch()).
+            ctx->state->dmr_mbc_header_proven[ctx->slot] = (uint8_t)dmr_dburst_proves_content(ctx);
             ctx->state->data_header_crc_invalid[ctx->slot] = ctx->crc_flags;
             // An MBC header begins no data packet: a data block after it binds to no data header (issue #800).
             DSD_MEMSET(&ctx->state->dmr_data_origin[ctx->slot & 1U], 0, sizeof(ctx->state->dmr_data_origin[0]));
@@ -964,34 +998,6 @@ dmr_dburst_finalize_status(dmr_data_burst_ctx* ctx) {
     }
 }
 
-/* A burst that proves the carrier is DMR, so two-slot TDMA (dsd_state::tdma_carrier): one whose own 16- or 24-bit
-   check passed (PI, voice and terminator LC, CSBK, MBC and data headers, USBD), not a RAS acceptance. This is how a
-   direct-mode or mobile carrier proves it, which the base station colour-code lock (dmr_confidence.c) never sees. Data
-   blocks, MBC continuations, idle bursts and the embedded LC's 5-bit CRC are left out: their checks are absent or too
-   short to tell noise from a DMR burst. */
-static int
-dmr_dburst_proves_tdma_carrier(const dmr_data_burst_ctx* ctx) {
-    switch (ctx->databurst) {
-        case 0x00:
-        case 0x01:
-        case 0x02:
-        case 0x03:
-        case 0x04:
-        case 0x06:
-        case 0x0B: break;
-        default: return 0;
-    }
-    return ctx->crc_original_validity != 0U && ctx->is_ras == 0U && ctx->irrecoverable_errors == 0U
-           && ctx->state->input_interrupted == 0;
-}
-
-/* Content a scan quiet check counts as activity (issue #834): a burst whose own check proves it (as for the TDMA
-   carrier above), or a RAS signature -F accepts, which the trunk scan and a Signal search take as activity too. */
-static int
-dmr_dburst_proves_content(const dmr_data_burst_ctx* ctx) {
-    return dmr_dburst_proves_tdma_carrier(ctx) || (ctx->is_ras == 1U && ctx->state->input_interrupted == 0);
-}
-
 /* The carrier's RAS evidence (dmr_ras.c), noted before the burst dispatches: a retune its handler makes resets it with
    the carrier left. The second signature confirms RAS; without relaxed CRC the operator is told once that -F decodes
    what this carrier sends, or, with -F configured under a scan row's own --strict-crc, that the channel keeps strict
@@ -1028,6 +1034,12 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
                               const uint8_t* reliab98, dmr_burst_origin origin) {
     dmr_data_burst_ctx ctx;
     dmr_dburst_ctx_init(&ctx, opts, state, info, databurst, reliab98, origin);
+
+    // An MBC is consecutive bursts on one slot: any burst there but a continuation ends the one being assembled (an
+    // MBC header arms the slot again in the assembler).
+    if (databurst != 0x05) {
+        state->dmr_mbc_armed[ctx.slot & 1] = 0;
+    }
 
     dmr_dburst_apply_profile(&ctx);
 
@@ -1068,7 +1080,8 @@ dmr_data_burst_handler_origin(dsd_opts* opts, dsd_state* state, uint8_t info[196
     if (dmr_dburst_proves_tdma_carrier(&ctx)) {
         state->tdma_carrier = 1U;
     }
-    if (dmr_dburst_proves_content(&ctx)) {
+    // A CSBK or MBC header proves activity only once its control PDU is accepted (dmr_cspdu_ex()).
+    if (ctx.databurst != 0x03 && ctx.databurst != 0x04 && dmr_dburst_proves_content(&ctx)) {
         dsd_frame_sync_hook_content_evidence(opts, state, DSD_CONTENT_EVIDENCE_PROVEN, 0U);
     }
     const uint8_t saved_crc_invalid = state->event_crc_invalid[ctx.slot];
