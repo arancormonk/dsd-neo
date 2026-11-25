@@ -661,50 +661,65 @@ test_preopened_serial_checked_on_its_dongle(void) {
 
 /* ---- Through a stream ---- */
 
-/* One stream start on the dongle with serial 00000002, recording an I/Q capture: the index it was found at reaches the
-   caller's options, and the capture's sidecar names the dongle by index and serial. */
-int
-stream_start_by_serial(const char* dir, std::string* source_args) {
-    auto opts = std::make_unique<dsd_opts>();
-    DSD_MEMSET(opts.get(), 0, sizeof *opts);
-    opts->audio_in_type = AUDIO_IN_RTL;
-    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:00000002:851.0125M");
-    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "00000002");
-    opts->rtl_dev_index = 0;
-    opts->rtlsdr_center_freq = 851012500U;
-    opts->rtl_dsp_bw_khz = 48;
-    opts->rtl_gain_value = 24;
-    opts->frame_dmr = 1;
+/* One stream start on @p spec with the caller's options holding @p cached_serial / @p cached_index from before (what
+   another spec selected), recording an I/Q capture into @p dir: whether it started, the caller's options after it in
+   *@p caller, and the capture's source_args. */
+int g_stream_opens = 0; /* the dongle's opens in the last stream_start() */
+
+bool
+stream_start(const char* dir, const char* spec, const char* cached_serial, int cached_index, dsd_opts* caller,
+             std::string* source_args) {
+    DSD_MEMSET(caller, 0, sizeof *caller);
+    caller->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(caller->audio_in_dev, sizeof caller->audio_in_dev, "%s", spec);
+    DSD_SNPRINTF(caller->rtl_dev_serial, sizeof caller->rtl_dev_serial, "%s", cached_serial);
+    caller->rtl_dev_index = cached_index;
+    caller->rtlsdr_center_freq = 851012500U;
+    caller->rtl_dsp_bw_khz = 48;
+    caller->rtl_gain_value = 24;
+    caller->frame_dmr = 1;
     char data_path[DSD_TEST_PATH_MAX];
     char meta_path[DSD_TEST_PATH_MAX];
     assert(dsd_test_path_join(data_path, sizeof data_path, dir, "capture.iq") == 0);
     assert(dsd_test_path_join(meta_path, sizeof meta_path, dir, "capture.iq.json") == 0);
-    opts->iq_capture_requested = 1;
-    opts->iq_capture_format = DSD_IQ_FORMAT_CU8;
-    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", data_path);
+    caller->iq_capture_requested = 1;
+    caller->iq_capture_format = DSD_IQ_FORMAT_CU8;
+    DSD_SNPRINTF(caller->iq_capture_path, sizeof caller->iq_capture_path, "%s", data_path);
 
     rig r;
     rtl_device_test_usb_stream_attach();
     RtlSdrContext* ctx = nullptr;
-    assert(rtl_stream_create(opts.get(), &ctx) == 0 && ctx != nullptr);
-    assert(rtl_stream_start(ctx) == 0);
-    const int index = opts->rtl_dev_index;
+    assert(rtl_stream_create(caller, &ctx) == 0 && ctx != nullptr);
+    const bool started = rtl_stream_start(ctx) == 0;
     (void)rtl_stream_stop(ctx);
     (void)rtl_stream_destroy(ctx);
     rtl_device_test_usb_stream_detach();
     assert(r.dongle->open_handles == 0);
+    g_stream_opens = r.dongle->calls[RTL_TEST_DONGLE_OPEN];
 
-    dsd_iq_replay_config cfg{};
-    char err[256];
-    assert(dsd_iq_replay_read_metadata(meta_path, &cfg, err, sizeof err) == DSD_IQ_OK);
-    *source_args = cfg.source_args;
-    dsd_iq_replay_config_clear(&cfg);
+    source_args->clear();
+    if (started) {
+        dsd_iq_replay_config cfg{};
+        char err[256];
+        assert(dsd_iq_replay_read_metadata(meta_path, &cfg, err, sizeof err) == DSD_IQ_OK);
+        *source_args = cfg.source_args;
+        dsd_iq_replay_config_clear(&cfg);
+    }
     for (const char* leaf : {"capture.iq", "capture.iq.json"}) {
         char path[DSD_TEST_PATH_MAX];
         assert(dsd_test_path_join(path, sizeof path, dir, leaf) == 0);
         (void)remove(path);
     }
-    return index;
+    return started;
+}
+
+/* One stream start on the dongle with serial 00000002: the index it was found at reaches the caller's options, and the
+   capture's sidecar names the dongle by index and serial. */
+int
+stream_start_by_serial(const char* dir, std::string* source_args) {
+    auto caller = std::make_unique<dsd_opts>();
+    assert(stream_start(dir, "rtl:00000002:851.0125M", "00000002", 0, caller.get(), source_args));
+    return caller->rtl_dev_index;
 }
 
 void
@@ -723,6 +738,58 @@ test_stream_looks_the_serial_up_at_every_start(void) {
     g_world.handle_serial_count = 1;
     assert(stream_start_by_serial(dir, &args) == 0);
     assert(args == "index=0,serial=00000002");
+    assert(dsd_test_rmdir(dir) == 0);
+}
+
+/* The spec is the one record of the dongle a start opens: options a former spec left (a cached serial or index) never
+   open another dongle. A restart onto rtl:serial=00000002 with 00000001 still cached opens 00000002 and hands that
+   back; an index spec clears a cached serial without any lookup; a device field the grammar refuses opens nothing. */
+void
+test_stream_selects_from_its_spec(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_rtl_spec") != nullptr);
+    auto caller = std::make_unique<dsd_opts>();
+    std::string args;
+    set_devs({"00000001", "00000002"});
+    g_world.handle_serials[0] = "00000002";
+    g_world.handle_serial_count = 1;
+    assert(stream_start(dir, "rtl:serial=00000002:851.0125M", "00000001", 0, caller.get(), &args));
+    assert(caller->rtl_dev_index == 1 && strcmp(caller->rtl_dev_serial, "00000002") == 0);
+    assert(args == "index=1,serial=00000002");
+
+    set_devs({"00000001", "00000002"});
+    assert(stream_start(dir, "rtl:1:851.0125M", "00000001", 0, caller.get(), &args));
+    assert(g_world.count_calls == 0 && g_world.handle_calls == 0);
+    assert(caller->rtl_dev_index == 1 && caller->rtl_dev_serial[0] == '\0');
+
+    set_devs({"00000001", "00000002"});
+    assert(!stream_start(dir, "rtl:serial=:851.0125M", "00000001", 0, caller.get(), &args));
+    assert(g_world.count_calls == 0 && g_world.handle_calls == 0 && g_stream_opens == 0);
+    assert(strcmp(caller->rtl_dev_serial, "00000001") == 0);
+    assert(dsd_test_rmdir(dir) == 0);
+}
+
+/* A live restart on an Android descriptor (the device row, a config reopen) that names an index: the descriptor is the
+   one device there is, so it runs as 0 and the caller's options, its spec and the capture all say 0. */
+void
+test_stream_descriptor_index_is_zero(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    assert(dsd_test_mkdtemp(dir, sizeof dir, "dsdneo_rtl_fd") != nullptr);
+    rtl_device_test_set_open_fd_failure_hook(open_fd_opens_dongle);
+    rtl_device_test_set_fd_identity_hook(fd_identity);
+    g_fd_serial = "00000007";
+    g_fd_identity_rc = 0;
+    set_devs({});
+    rtl_device_set_preopened_fd(9);
+    auto caller = std::make_unique<dsd_opts>();
+    std::string args;
+    assert(stream_start(dir, "rtl:5:851.0125M", "", 5, caller.get(), &args));
+    assert(caller->rtl_dev_index == 0 && strcmp(caller->audio_in_dev, "rtl:0:851.0125M") == 0);
+    assert(args == "index=0,serial=00000007");
+    assert(g_world.count_calls == 0);
+    rtl_device_set_preopened_fd(-1);
+    rtl_device_test_set_fd_identity_hook(nullptr);
+    rtl_device_test_set_open_fd_failure_hook(nullptr);
     assert(dsd_test_rmdir(dir) == 0);
 }
 
@@ -838,6 +905,8 @@ main(void) {
     test_preopened_by_index_records_its_serial();
     test_capture_names_the_dongle();
     test_stream_looks_the_serial_up_at_every_start();
+    test_stream_selects_from_its_spec();
+    test_stream_descriptor_index_is_zero();
 
     rtl_usb_identity_set_driver_ops(nullptr);
     rtl_device_select_set_driver_ops(nullptr);

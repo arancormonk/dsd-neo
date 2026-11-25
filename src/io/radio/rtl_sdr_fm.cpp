@@ -10951,6 +10951,26 @@ stream_open_start_io_pipeline(const dsd_opts* opts, RadioSourceKind source_kind)
 
 extern "C" int dsd_rtl_stream_soft_stop(void);
 
+/* The dongle a local RTL-SDR start opens, from its spec: the spec is the one record of it, so whatever the options held
+   before (a cached index or serial from another spec) the device field selects it here (dsd_rtl_spec_select_device()),
+   and a field the grammar refuses fails the start before anything opens. With an Android descriptor, which is the one
+   device there is, an index names it as 0, the spec rewritten so the options, the spec and a capture agree (as the
+   engine's startup does); a serial is checked on the descriptor's dongle at the open. 0, or -1 when refused. */
+static int
+stream_open_select_local_rtl(dsd_opts* opts) {
+    if (dsd_rtl_spec_select_device(opts, opts->audio_in_dev) < 0) {
+        LOG_ERROR("RTL-SDR: the input \"%s\" names no device that can be opened.\n", opts->audio_in_dev);
+        return -1;
+    }
+    if (rtl_device_preopened_fd_is_set() && opts->rtl_dev_serial[0] == '\0' && opts->rtl_dev_index != 0) {
+        LOG_WARN("WARNING: Requested RTL device index %d out of range (found 1 device(s)); using 0\n",
+                 opts->rtl_dev_index);
+        opts->rtl_dev_index = 0;
+        (void)dsd_rtl_spec_set_device(opts->audio_in_dev, sizeof opts->audio_in_dev, 0, NULL);
+    }
+    return 0;
+}
+
 /**
  * @brief Initialize and open the RTL-SDR streaming pipeline, threads, and buffers.
  *
@@ -10973,6 +10993,9 @@ dsd_rtl_stream_open(dsd_opts* opts, const rtl_stream_start_gate* start_gate) {
 
     RadioSourceKind source_kind = detect_radio_source(opts);
     if (stream_open_validate_source_selection(opts, source_kind) != 0) {
+        return -1;
+    }
+    if (source_kind == RADIO_SOURCE_RTL_USB && stream_open_select_local_rtl(opts) != 0) {
         return -1;
     }
 
