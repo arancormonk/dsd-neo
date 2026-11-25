@@ -2270,126 +2270,132 @@ expect_rtl_device(const char* what, const dsd_opts* opts, const char* spec_field
 static int
 test_rtl_set_device_selects_and_rolls_back(void) {
     int rc = 0;
-    static dsd_opts opts;
-    static dsd_state state;
-    DSD_MEMSET(&opts, 0, sizeof(opts));
-    DSD_MEMSET(&state, 0, sizeof(state));
+    /* Heap fixtures for this case alone (AGENTS.md: dsd_opts and dsd_state live on the heap). */
+    dsd_opts* opts = (dsd_opts*)calloc(1U, sizeof *opts);
+    dsd_state* state = (dsd_state*)calloc(1U, sizeof *state);
+    if (!opts || !state) {
+        free(state);
+        free(opts);
+        return 1;
+    }
     reset_rtl_restart_stubs();
     g_rtl_create_result = g_rtl_start_result = 0;
-    opts.audio_in_type = AUDIO_IN_RTL;
-    opts.rtl_dev_index = 2;
-    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "AAAA");
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
-    state.rtl_ctx = (RtlSdrContext*)&state;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->rtl_dev_index = 2;
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "AAAA");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
+    state->rtl_ctx = (RtlSdrContext*)state;
 
     int stopped = -1;
-    rc |= expect_int("serial A to B", svc_rtl_set_device(&opts, &state, 0, "BBBB", &stopped), 0);
-    rc |= expect_rtl_device("serial A to B", &opts, opts.audio_in_dev, 2, "BBBB", "rtl:serial=BBBB:851375000:22:0:24");
+    rc |= expect_int("serial A to B", svc_rtl_set_device(opts, state, 0, "BBBB", &stopped), 0);
+    rc |= expect_rtl_device("serial A to B", opts, opts->audio_in_dev, 2, "BBBB", "rtl:serial=BBBB:851375000:22:0:24");
     rc |= expect_int("serial B opened", strcmp(g_rtl_opened_serial, "BBBB") == 0 && stopped == 0, 1);
     rc |= expect_int(
         "the change holds the guard once",
         g_p25_tick_guard_enter_calls == 1 && g_p25_tick_guard_depth == 0 && g_rtl_lifecycle_outside_guard == 0, 1);
 
-    rc |= expect_int("serial B to index 0", svc_rtl_set_device(&opts, &state, 0, NULL, NULL), 0);
-    rc |= expect_rtl_device("serial B to index 0", &opts, opts.audio_in_dev, 0, "", "rtl:0:851375000:22:0:24");
+    rc |= expect_int("serial B to index 0", svc_rtl_set_device(opts, state, 0, NULL, NULL), 0);
+    rc |= expect_rtl_device("serial B to index 0", opts, opts->audio_in_dev, 0, "", "rtl:0:851375000:22:0:24");
     rc |= expect_int("index 0 opened", g_rtl_opened_index == 0 && g_rtl_opened_serial[0] == '\0', 1);
 
-    rc |= expect_int("index 0 to index 1", svc_rtl_set_device(&opts, &state, 1, NULL, NULL), 0);
-    rc |= expect_rtl_device("the spec names index 1, not the stale 0 (B2)", &opts, opts.audio_in_dev, 1, "",
+    rc |= expect_int("index 0 to index 1", svc_rtl_set_device(opts, state, 1, NULL, NULL), 0);
+    rc |= expect_rtl_device("the spec names index 1, not the stale 0 (B2)", opts, opts->audio_in_dev, 1, "",
                             "rtl:1:851375000:22:0:24");
 
-    rc |= expect_int("index 1 to serial A", svc_rtl_set_device(&opts, &state, 0, "AAAA", NULL), 0);
+    rc |= expect_int("index 1 to serial A", svc_rtl_set_device(opts, state, 0, "AAAA", NULL), 0);
     /* A dongle that is not plugged in: the start fails, serial A comes back and runs again, its capture off. */
     DSD_SNPRINTF(g_rtl_missing_serial, sizeof g_rtl_missing_serial, "%s", "CCCC");
-    opts.iq_capture_requested = 1;
-    DSD_SNPRINTF(opts.iq_capture_path, sizeof opts.iq_capture_path, "%s", "cap.iq");
+    opts->iq_capture_requested = 1;
+    DSD_SNPRINTF(opts->iq_capture_path, sizeof opts->iq_capture_path, "%s", "cap.iq");
     g_rtl_create_calls = 0;
     g_p25_tick_guard_enter_calls = 0;
-    rc |= expect_int("a missing serial fails", svc_rtl_set_device(&opts, &state, 0, "CCCC", &stopped), -1);
-    rc |= expect_rtl_device("a missing serial puts A back", &opts, opts.audio_in_dev, 1, "AAAA",
+    rc |= expect_int("a missing serial fails", svc_rtl_set_device(opts, state, 0, "CCCC", &stopped), -1);
+    rc |= expect_rtl_device("a missing serial puts A back", opts, opts->audio_in_dev, 1, "AAAA",
                             "rtl:serial=AAAA:851375000:22:0:24");
     rc |= expect_int("serial A runs again",
-                     g_rtl_create_calls == 2 && state.rtl_ctx != NULL && strcmp(g_rtl_opened_serial, "AAAA") == 0, 1);
-    rc |= expect_int("the rollback reports the capture it stopped", stopped == 1 && opts.iq_capture_requested == 0, 1);
+                     g_rtl_create_calls == 2 && state->rtl_ctx != NULL && strcmp(g_rtl_opened_serial, "AAAA") == 0, 1);
+    rc |= expect_int("the rollback reports the capture it stopped", stopped == 1 && opts->iq_capture_requested == 0, 1);
     rc |= expect_int(
         "the rollback runs inside the one hold",
         g_p25_tick_guard_enter_calls == 1 && g_p25_tick_guard_depth == 0 && g_rtl_lifecycle_outside_guard == 0, 1);
 
     /* A serial the rule refuses changes nothing and starts nothing. */
     g_rtl_create_calls = 0;
-    rc |= expect_int("a refused serial", svc_rtl_set_device(&opts, &state, 0, "A:B", NULL), -1);
-    rc |= expect_rtl_device("a refused serial changes nothing", &opts, opts.audio_in_dev, 1, "AAAA",
+    rc |= expect_int("a refused serial", svc_rtl_set_device(opts, state, 0, "A:B", NULL), -1);
+    rc |= expect_rtl_device("a refused serial changes nothing", opts, opts->audio_in_dev, 1, "AAAA",
                             "rtl:serial=AAAA:851375000:22:0:24");
     rc |= expect_int("a refused serial starts nothing", g_rtl_create_calls, 0);
 
     /* A bare `rtl` names the device it opens. */
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl");
-    rc |= expect_int("a bare rtl", svc_rtl_set_device(&opts, &state, 0, "1090", NULL), 0);
-    rc |= expect_rtl_device("a bare rtl names the serial", &opts, opts.audio_in_dev, 1, "1090", "rtl:serial=1090");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl");
+    rc |= expect_int("a bare rtl", svc_rtl_set_device(opts, state, 0, "1090", NULL), 0);
+    rc |= expect_rtl_device("a bare rtl names the serial", opts, opts->audio_in_dev, 1, "1090", "rtl:serial=1090");
 
     /* rtl_tcp: the server chose its dongle. Nothing changes, nothing reconnects. */
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
     g_rtl_create_calls = 0;
     g_rtl_stop_calls = 0;
-    rc |=
-        expect_int("rtl_tcp is not supported", svc_rtl_set_device(&opts, &state, 3, NULL, NULL), DSD_ERR_NOT_SUPPORTED);
+    rc |= expect_int("rtl_tcp is not supported", svc_rtl_set_device(opts, state, 3, NULL, NULL), DSD_ERR_NOT_SUPPORTED);
     rc |= expect_int("rtl_tcp keeps its stream and selector",
-                     g_rtl_create_calls == 0 && g_rtl_stop_calls == 0 && strcmp(opts.rtl_dev_serial, "1090") == 0, 1);
+                     g_rtl_create_calls == 0 && g_rtl_stop_calls == 0 && strcmp(opts->rtl_dev_serial, "1090") == 0, 1);
 
     /* PCM running: the RTL-SDR spec a switch back opens is rewritten, its tuning kept; nothing starts. */
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
-    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
-    state.rtl_ctx = NULL;
-    rc |= expect_int("staged on PCM", svc_rtl_set_device(&opts, &state, 0, "BBBB", NULL), 0);
-    rc |= expect_rtl_device("staged serial", &opts, opts.radio_in_dev, 0, "BBBB", "rtl:serial=BBBB:851375000:22:0:24");
-    rc |= expect_int("staged starts nothing", g_rtl_create_calls == 0 && opts.rtl_needs_restart == 1, 1);
-    char dest[sizeof opts.radio_in_dev];
-    dsd_app_radio_row_destination(&opts, dest, sizeof dest);
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
+    state->rtl_ctx = NULL;
+    rc |= expect_int("staged on PCM", svc_rtl_set_device(opts, state, 0, "BBBB", NULL), 0);
+    rc |= expect_rtl_device("staged serial", opts, opts->radio_in_dev, 0, "BBBB", "rtl:serial=BBBB:851375000:22:0:24");
+    rc |= expect_int("staged starts nothing", g_rtl_create_calls == 0 && opts->rtl_needs_restart == 1, 1);
+    char dest[sizeof opts->radio_in_dev];
+    dsd_app_radio_row_destination(opts, dest, sizeof dest);
     rc |= expect_str("the switch back opens the staged serial", dest, "rtl:serial=BBBB:851375000:22:0:24");
-    rc |= expect_int("staged index", svc_rtl_set_device(&opts, &state, 2, NULL, NULL), 0);
-    rc |= expect_rtl_device("staged index", &opts, opts.radio_in_dev, 2, "", "rtl:2:851375000:22:0:24");
-    rc |= expect_str("PCM input untouched", opts.audio_in_dev, "pulse");
+    rc |= expect_int("staged index", svc_rtl_set_device(opts, state, 2, NULL, NULL), 0);
+    rc |= expect_rtl_device("staged index", opts, opts->radio_in_dev, 2, "", "rtl:2:851375000:22:0:24");
+    rc |= expect_str("PCM input untouched", opts->audio_in_dev, "pulse");
 
     /* A config applied on PCM staged its RTL-SDR spec in audio_in_dev, which the switch back opens before radio_in_dev
        (dsd_app_radio_row_source_field()): the change rewrites that spec, not the one the switch would pass over. */
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
-    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtl:serial=CCCC:460125000:22:0:24");
-    rc |= expect_int("staged over a config's spec", svc_rtl_set_device(&opts, &state, 0, "BBBB", NULL), 0);
-    rc |= expect_rtl_device("the config's spec names B", &opts, opts.audio_in_dev, 2, "BBBB",
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtl:serial=CCCC:460125000:22:0:24");
+    rc |= expect_int("staged over a config's spec", svc_rtl_set_device(opts, state, 0, "BBBB", NULL), 0);
+    rc |= expect_rtl_device("the config's spec names B", opts, opts->audio_in_dev, 2, "BBBB",
                             "rtl:serial=BBBB:851375000:22:0:24");
-    rc |= expect_str("the spec the switch passes over is left", opts.radio_in_dev, "rtl:serial=CCCC:460125000:22:0:24");
-    dsd_app_radio_row_destination(&opts, dest, sizeof dest);
+    rc |=
+        expect_str("the spec the switch passes over is left", opts->radio_in_dev, "rtl:serial=CCCC:460125000:22:0:24");
+    dsd_app_radio_row_destination(opts, dest, sizeof dest);
     rc |= expect_str("the switch back opens B", dest, "rtl:serial=BBBB:851375000:22:0:24");
 
     /* The RTL-SDR row would open another radio (an rtl_tcp server a switch to PCM left): no local dongle to select. */
-    opts.audio_in_type = AUDIO_IN_PULSE;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "pulse");
-    DSD_SNPRINTF(opts.radio_in_dev, sizeof opts.radio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
-    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "BBBB");
-    rc |= expect_int("PCM over a remembered rtl_tcp: not supported", svc_rtl_set_device(&opts, &state, 1, NULL, NULL),
+    opts->audio_in_type = AUDIO_IN_PULSE;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "pulse");
+    DSD_SNPRINTF(opts->radio_in_dev, sizeof opts->radio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851375000");
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "BBBB");
+    rc |= expect_int("PCM over a remembered rtl_tcp: not supported", svc_rtl_set_device(opts, state, 1, NULL, NULL),
                      DSD_ERR_NOT_SUPPORTED);
     rc |= expect_int("PCM over a remembered rtl_tcp: nothing changes",
-                     strcmp(opts.rtl_dev_serial, "BBBB") == 0
-                         && strcmp(opts.radio_in_dev, "rtltcp:127.0.0.1:1234:851375000") == 0,
+                     strcmp(opts->rtl_dev_serial, "BBBB") == 0
+                         && strcmp(opts->radio_in_dev, "rtltcp:127.0.0.1:1234:851375000") == 0,
                      1);
 
     /* No receiver running (an RTL-SDR input whose last start failed): a change whose start fails puts the options back
        and opens nothing in their place. */
-    opts.audio_in_type = AUDIO_IN_RTL;
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
-    DSD_SNPRINTF(opts.rtl_dev_serial, sizeof opts.rtl_dev_serial, "%s", "AAAA");
-    state.rtl_ctx = NULL;
+    opts->audio_in_type = AUDIO_IN_RTL;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "rtl:serial=AAAA:851375000:22:0:24");
+    DSD_SNPRINTF(opts->rtl_dev_serial, sizeof opts->rtl_dev_serial, "%s", "AAAA");
+    state->rtl_ctx = NULL;
     DSD_SNPRINTF(g_rtl_missing_serial, sizeof g_rtl_missing_serial, "%s", "DDDD");
     g_rtl_create_calls = 0;
     g_rtl_opened_serial[0] = '\0';
-    rc |= expect_int("no receiver: the change fails", svc_rtl_set_device(&opts, &state, 0, "DDDD", &stopped), -1);
-    rc |= expect_rtl_device("no receiver: the options come back", &opts, opts.audio_in_dev, 2, "AAAA",
+    rc |= expect_int("no receiver: the change fails", svc_rtl_set_device(opts, state, 0, "DDDD", &stopped), -1);
+    rc |= expect_rtl_device("no receiver: the options come back", opts, opts->audio_in_dev, 2, "AAAA",
                             "rtl:serial=AAAA:851375000:22:0:24");
-    rc |= expect_int("no receiver: nothing else opens",
-                     g_rtl_create_calls == 1 && state.rtl_ctx == NULL && g_rtl_opened_serial[0] == '\0' && stopped == 0,
-                     1);
+    rc |= expect_int(
+        "no receiver: nothing else opens",
+        g_rtl_create_calls == 1 && state->rtl_ctx == NULL && g_rtl_opened_serial[0] == '\0' && stopped == 0, 1);
     reset_rtl_restart_stubs();
+    free(state);
+    free(opts);
     return rc;
 }
 
