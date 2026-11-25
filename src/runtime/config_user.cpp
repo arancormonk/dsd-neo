@@ -927,7 +927,7 @@ render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
     }
 }
 
-/* A PCM source's squelch keys, when its config or session set them (issue #628). */
+/* A PCM source's squelch keys, or a source-less [input]'s, when its config or session set them (issues #628, #899). */
 static void
 render_input_pcm_squelch(FILE* out, const dsdneoUserConfig* cfg) {
     if (cfg->rtl_sql_is_set) {
@@ -1108,6 +1108,9 @@ render_input_section(FILE* out, const dsdneoUserConfig* cfg) {
             break;
         case DSDCFG_INPUT_IQTCP:
         case DSDCFG_INPUT_IQUDP: render_input_iq_stream(out, cfg); break;
+        /* An [input] that names no source (an I/Q replay's retained input) keeps the squelch keys it applies (issue
+           #899), with no source invented for them. */
+        case DSDCFG_INPUT_UNSET: render_input_pcm_squelch(out, cfg); break;
         default: break;
     }
     DSD_FPRINTF(out, "input_warn_db = %.1f\n", cfg->input_warn_db);

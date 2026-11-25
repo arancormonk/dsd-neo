@@ -3285,6 +3285,78 @@ test_noise_squelch_keys_roundtrip(void) {
     return rc;
 }
 
+/* Issue #899: an [input] that names no source (an I/Q replay's retained input) applies its squelch
+   keys, so it renders them too, with no source invented for them: a save and reload keeps rtl_sql = -50, and an auto
+   squelch its mode and margin. Before the fix the render wrote only input_warn_db for that [input]. */
+static int
+test_sourceless_squelch_keys_roundtrip(void) {
+    static const char* ini = "[input]\n"
+                             "rtl_sql = -50\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig cfg;
+    const int loaded = dsd_user_config_load(path, &cfg);
+    (void)remove(path);
+    if (loaded != 0 || cfg.has_input == 0 || cfg.input_source != DSDCFG_INPUT_UNSET || cfg.rtl_sql_is_set == 0) {
+        DSD_FPRINTF(stderr, "a source-less [input]'s rtl_sql did not load (rc %d source %d set %d)\n", loaded,
+                    static_cast<int>(cfg.input_source), cfg.rtl_sql_is_set);
+        return 1;
+    }
+    char text[8192];
+    if (render_config_to_buffer(&cfg, text, sizeof text) != 0) {
+        return 1;
+    }
+    int rc = expect_contains("source-less level render", text, "[input]\nrtl_sql = -50\n");
+    const char* input = strstr(text, "[input]\n");
+    const char* next = input != nullptr ? strstr(input + 1, "\n[") : nullptr;
+    const char* source = input != nullptr ? strstr(input, "source = ") : nullptr;
+    if (source != nullptr && (next == nullptr || source < next)) {
+        DSD_FPRINTF(stderr, "FAIL: a source-less [input] rendered a source:\n%s\n", text);
+        rc |= 1;
+    }
+    if (write_temp_config(text, path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdneoUserConfig back;
+    const int reloaded = dsd_user_config_load(path, &back);
+    (void)remove(path);
+    static dsd_opts opts;
+    static dsd_state state;
+    reset_opts_and_state(opts, state);
+    if (reloaded != 0 || back.rtl_sql_is_set == 0 || back.rtl_sql != -50) {
+        DSD_FPRINTF(stderr, "the saved source-less squelch did not load back (rc %d set %d sql %d)\n", reloaded,
+                    back.rtl_sql_is_set, back.rtl_sql);
+        rc |= 1;
+    } else {
+        dsd_apply_user_config_to_opts(&back, &opts, &state);
+        if (opts.rtl_squelch_mode != DSD_SQUELCH_MODE_LEVEL || fabs(opts.rtl_squelch_level - pow(10.0, -5.0)) > 1e-15) {
+            DSD_FPRINTF(stderr, "the reloaded source-less squelch applied mode %d level %g\n", opts.rtl_squelch_mode,
+                        opts.rtl_squelch_level);
+            rc |= 1;
+        }
+    }
+    dsd_state_ext_free_all(&state);
+
+    cfg.rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
+    cfg.rtl_sql_margin_db = 9;
+    if (render_config_to_buffer(&cfg, text, sizeof text) != 0) {
+        return 1;
+    }
+    rc |= expect_contains("source-less auto render", text, "rtl_sql_mode = \"auto\"\nrtl_sql_margin_db = 9\n");
+    /* A source-less [input] without the keys renders none. */
+    cfg.rtl_sql_is_set = 0;
+    if (render_config_to_buffer(&cfg, text, sizeof text) != 0) {
+        return 1;
+    }
+    if (strstr(text, "rtl_sql") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: a source-less [input] without squelch keys rendered some:\n%s\n", text);
+        rc |= 1;
+    }
+    return rc;
+}
+
 /* The [input] squelch keys on audio input (issue #628): a PCM source's rtl_sql / rtl_sql_mode / rtl_sql_margin_db apply
  * to the session when they are present (the noise squelch runs there now, and the level always did), a PCM config
  * without them (one saved before audio input had a squelch) leaves the session's squelch alone (a runtime load must not
@@ -6841,6 +6913,7 @@ main(void) {
     rc |= test_auto_squelch_keys_roundtrip();
     rc |= test_noise_squelch_keys_roundtrip();
     rc |= test_pcm_squelch_keys_roundtrip();
+    rc |= test_sourceless_squelch_keys_roundtrip();
     rc |= test_load_and_apply_rtltcp_regression();
     rc |= test_snapshot_roundtrip();
     rc |= test_apply_demod_lock();
