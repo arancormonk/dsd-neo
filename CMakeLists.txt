@@ -1231,9 +1231,16 @@ if(DSD_HAS_RTLSDR)
     list(APPEND LIBS ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT})
     list(APPEND _PUBLIC_INCLUDES ${RTLSDR_INCLUDE_DIRS})
 
-    # Interface target for USE_RTLSDR compile definition
+    # Interface target for USE_RTLSDR compile definition, and the library: what
+    # links it (the radio library, PUBLIC) brings librtlsdr after itself on the
+    # link line, which a linker that drops unneeded libraries (GNU ld
+    # --as-needed) requires, as the Airspy and SoapySDR feature targets do.
     add_library(dsd-neo_feature_rtlsdr INTERFACE)
     target_compile_definitions(dsd-neo_feature_rtlsdr INTERFACE USE_RTLSDR)
+    target_link_libraries(
+        dsd-neo_feature_rtlsdr
+        INTERFACE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+    )
     target_include_directories(
         dsd-neo_feature_rtlsdr
         SYSTEM
