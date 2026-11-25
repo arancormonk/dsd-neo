@@ -28,6 +28,7 @@
 #include <string.h>
 #include <string>
 #include <vector>
+#include "rtl_select_driver.h"
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 
@@ -51,10 +52,11 @@ constexpr int kStepVerify = 101;
 struct usb_dev {
     rtl_usb_device_info info{};
     const char* serial = "";
-    int hidden = 0;         /* absent from enumerations: -1 for ever */
-    int gone_on_reset = 0;  /* the reset makes it re-enumerate (GONE) */
-    uint8_t port_after = 0; /* ... back on this port (0: its own) */
-    int never_back = 0;     /* ... and it never comes back */
+    const char* product = nullptr; /* the product string (nullptr: RTL2838UHIDIR) */
+    int hidden = 0;                /* absent from enumerations: -1 for ever */
+    int gone_on_reset = 0;         /* the reset makes it re-enumerate (GONE) */
+    uint8_t port_after = 0;        /* ... back on this port (0: its own) */
+    int never_back = 0;            /* ... and it never comes back */
     std::atomic<int> resets{0};
 };
 
@@ -80,7 +82,7 @@ copy_str(char* dst, const char* src) {
 void
 fill_strings(const usb_dev& d, char* m, char* p, char* s) {
     copy_str(m, "Realtek");
-    copy_str(p, "RTL2838UHIDIR");
+    copy_str(p, d.product != nullptr ? d.product : "RTL2838UHIDIR");
     copy_str(s, d.serial);
 }
 
@@ -215,6 +217,7 @@ usb_world_reset(int duplicate) {
     for (usb_dev& d : g_usb.devs) {
         d.info = rtl_usb_device_info{};
         d.serial = "";
+        d.product = nullptr;
         d.hidden = 0;
         d.gone_on_reset = 0;
         d.port_after = 0U;
@@ -243,6 +246,28 @@ usb_world_reset(int duplicate) {
         g_usb.rtl_count = 2;
     }
 }
+
+/* ---- The same list as librtlsdr's enumeration for a dongle chosen by serial (the selection's driver ops) ---- */
+
+int
+select_count(uint32_t* count) {
+    *count = (uint32_t)g_usb.rtl_count;
+    return 0;
+}
+
+int
+select_index_strings(uint32_t index, char* m, char* p, char* s) {
+    return fake_rtl_index_strings(index, m, p, s);
+}
+
+int
+select_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
+    (void)dev;
+    fill_strings(g_usb.devs[0], m, p, s);
+    return 0;
+}
+
+const rtl_select_driver_ops k_select_ops = {select_count, select_index_strings, select_handle_strings};
 
 /* The app's descriptor "opens" (rtl_device_create()'s Android path, with no dongle behind it). */
 int
@@ -1400,6 +1425,127 @@ test_reopen_with_duplicate_triple_fails_recovery(void) {
     usb_world_reset(0);
 }
 
+/* The devices change while the dongle is found again after the reset: its strings are at index 0 when that index is
+ * looked up, another dongle's when the identity is resolved there, and its own again when the index is opened (A, B,
+ * A). The other dongle is never recorded, which would send a later stall's reset to it: the recovery fails closed
+ * before anything is opened, and recovery stays off. */
+int g_aba_index_reads = 0;
+
+void
+aba_on_step(int step) {
+    if (step == kStepReset) {
+        g_aba_index_reads = 0;
+        g_usb.devs[0].serial = "B0000002";
+    }
+}
+
+int
+aba_index_strings(uint32_t index, char* m, char* p, char* s) {
+    if (index == 0U && strcmp(g_usb.devs[0].serial, "B0000002") == 0 && g_aba_index_reads++ == 0) {
+        usb_dev a;
+        a.serial = "56435444";
+        fill_strings(a, m, p, s);
+        return 0;
+    }
+    return fake_rtl_index_strings(index, m, p, s);
+}
+
+int
+aba_handle_strings(rtlsdr_dev_t* dev, char* m, char* p, char* s) {
+    (void)dev;
+    usb_dev a;
+    a.serial = "56435444";
+    fill_strings(a, m, p, s);
+    return 0;
+}
+
+void
+test_relocate_never_records_another_dongle(void) {
+    usb_world_reset(0);
+    rig r;
+    rig_open(r, 1);
+    rig_configure(r, biased());
+    rig_start(r);
+    (void)log_take();
+    rtl_usb_driver_ops aba = k_usb_ops;
+    aba.rtl_get_device_usb_strings = aba_index_strings;
+    aba.rtl_get_usb_strings = aba_handle_strings;
+    rtl_usb_identity_set_driver_ops(&aba);
+    g_usb.on_step = aba_on_step;
+    const int opens = r.dongle->calls[RTL_TEST_DONGLE_OPEN];
+    std::string why;
+    const int rc = recover(r, &why);
+    rtl_usb_identity_set_driver_ops(&k_usb_ops);
+    assert(rc < 0 && rc != -ECANCELED);
+    assert(why.find("not the one that was identified") != std::string::npos);
+    assert(g_usb.devs[0].resets.load() == 1);
+    assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == opens && r.dongle->open_handles == 0);
+    assert(!bias_tee_left_on(r));
+    const rtl_device_test_usb_swap_state st = swap_state(r);
+    assert(!st.recovery_on && !st.has_handle);
+    std::string again;
+    assert(recover(r, &again) == -ENOTSUP);
+    assert(g_usb.devs[0].resets.load() == 1);
+    (void)log_take();
+    rig_close(r);
+    usb_world_reset(0);
+}
+
+/* A dongle chosen by serial: after the reset another readable device carries the serial (with another product, so
+ * the identity's strings still single the dongle out). The serial no longer chooses one dongle (D2), so the recovery
+ * fails closed before the reopen; with the serial still unique the dongle recovers as one chosen by index does. */
+void
+twin_serial_on_step(int step) {
+    if (step != kStepReset) {
+        return;
+    }
+    usb_dev& twin = g_usb.devs[1];
+    twin.info = g_usb.devs[0].info;
+    twin.info.pid = 0x2832;
+    twin.info.bus = 3;
+    twin.serial = g_usb.devs[0].serial;
+    twin.product = "RTL2832U";
+    twin.hidden = 0;
+    g_usb.dev_count = 2;
+    g_usb.rtl_count = 2;
+}
+
+void
+test_serial_choice_rechecked_at_recovery(void) {
+    for (int twin = 0; twin < 2; twin++) {
+        usb_world_reset(0);
+        rig r;
+        r.ring = std::make_unique<input_ring_state>();
+        assert(input_ring_init(r.ring.get(), 1U << 16) == 0);
+        DSD_MEMSET(r.dongle.get(), 0, sizeof *r.dongle);
+        r.dongle->tuner.tuner_type = 1;
+        r.dongle->gain.gain_count = (int)(sizeof k_gains / sizeof k_gains[0]);
+        DSD_MEMCPY(r.dongle->gain.gains, k_gains, sizeof k_gains);
+        rtl_device_test_usb_dongle_install(r.dongle.get());
+        int index = -1;
+        r.dev = rtl_device_create_selected(0, "56435444", r.ring.get(), &index);
+        assert(r.dev != nullptr && index == 0);
+        rig_configure(r, biased());
+        rig_start(r);
+        (void)log_take();
+        g_usb.on_step = twin != 0 ? twin_serial_on_step : nullptr;
+        const int opens = r.dongle->calls[RTL_TEST_DONGLE_OPEN];
+        std::string why;
+        const int rc = recover(r, &why);
+        if (twin != 0) {
+            assert(rc < 0 && rc != -ECANCELED);
+            assert(why.find("another device has the same serial") != std::string::npos);
+            assert(r.dongle->calls[RTL_TEST_DONGLE_OPEN] == opens && r.dongle->open_handles == 0);
+            assert(!swap_state(r).recovery_on);
+        } else {
+            assert(rc == 0 && swap_state(r).recovery_on);
+        }
+        (void)log_take();
+        rig_close(r);
+    }
+    usb_world_reset(0);
+}
+
 /* An Android receiver (opened from the app's descriptor) is recovered in place since #782, identified by that
  * descriptor (IO_RTL_USB_FD_RECOVERY); one whose identity cannot be read is not, and its open says why once, as a
  * warning like every other reason. */
@@ -1493,6 +1639,7 @@ main(void) {
     g_log.off_level = -1;
     dsd_neo_log_set_tap(capture_log, &g_log);
     rtl_usb_identity_set_driver_ops(&k_usb_ops);
+    rtl_device_select_set_driver_ops(&k_select_ops);
     /* The monitor never ends these sessions: no sample is ever delivered. */
     rtl_device_test_set_progress_limit_ms(3600000U);
     usb_world_reset(0);
@@ -1519,10 +1666,13 @@ main(void) {
         test_reenumerated_port_recorded();
         test_reset_not_back_fails();
         test_reopen_with_duplicate_triple_fails_recovery();
+        test_relocate_never_records_another_dongle();
+        test_serial_choice_rechecked_at_recovery();
     }
 
     rtl_device_test_set_progress_limit_ms(0U);
     rtl_usb_identity_set_driver_ops(nullptr);
+    rtl_device_select_set_driver_ops(nullptr);
     DSD_FPRINTF(stderr, "IO_RTL_USB_SWAP: OK\n");
     return 0;
 }
