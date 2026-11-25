@@ -421,7 +421,9 @@ Rectangle {
     function selectedDraft() {
         return Object.assign({}, draft, {
             entries: csvMode ? [] : entries,
-            targetsCsvPath: csvMode ? draft.targetsCsvPath || "" : ""
+            targetsCsvPath: csvMode ? draft.targetsCsvPath || "" : "",
+            // A USB dongle's serial only, as the wizard saves it.
+            rtlSerial: draft.sourceType === "usb" ? draft.rtlSerial || "" : ""
         });
     }
 
@@ -471,6 +473,8 @@ Rectangle {
             advancedOpen = true;
         else if (draft.sourceType === "rtltcp")
             field = hostField.error.length ? hostField : portField.error.length ? portField : null;
+        else if (draft.sourceType === "usb" && rtlSerialField.error.length)
+            field = rtlSerialField;
         if (field) {
             showValidation(field.error, field);
             return false;
@@ -960,6 +964,24 @@ Rectangle {
                     }
                 }
             }
+            Column {
+                width: parent.width
+                spacing: 6
+                visible: screen.draft.sourceType === "usb"
+                // The dongle by USB serial, as the system editor's field
+                // (Util.rtlSerialValid()): kept exactly, never capitalized.
+                PlexTextField {
+                    id: rtlSerialField
+                    objectName: "scanRtlSerial"
+                    width: parent.width
+                    label: qsTr("Serial (empty selects first device)")
+                    mono: true
+                    text: screen.draft.rtlSerial || ""
+                    error: Util.rtlSerialError(text)
+                    inputMethodHints: Qt.ImhNoAutoUppercase | Qt.ImhNoPredictiveText | Qt.ImhPreferLatin
+                    input.onTextEdited: screen.draft.rtlSerial = text
+                }
+            }
             AirspyControls {
                 id: scanAirspy
                 objectName: "scanAirspyControls"
@@ -975,7 +997,7 @@ Rectangle {
             ReadableText {
                 width: parent.width
                 wrapMode: Text.Wrap
-                text: qsTr("This list's tuner settings replace each system's own source, host, port, PPM, bandwidth and bias tee.")
+                text: qsTr("This list's tuner settings replace each system's own source, serial, host, port, PPM, bandwidth and bias tee.")
                 color: Theme.textSecondary
                 font.family: Theme.sans
                 font.pixelSize: Theme.fontSize(13)
