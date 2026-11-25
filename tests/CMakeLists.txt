@@ -10439,6 +10439,7 @@ if(DSD_HAS_RTLSDR AND NOT APPLE AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
             "-Wl,--end-group"
             "-Wl,--wrap=rtlsdr_get_device_count"
             "-Wl,--wrap=rtlsdr_get_device_usb_strings"
+            "-Wl,--wrap=rtl_device_find_serial"
             "-Wl,--wrap=rtl_stream_create"
             "-Wl,--wrap=rtl_stream_start_gated"
             "-Wl,--wrap=rtl_stream_destroy"

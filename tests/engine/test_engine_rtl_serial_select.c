@@ -19,6 +19,7 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/engine/engine.h>
 #include <dsd-neo/io/rtl_device.h>
+#include <dsd-neo/io/rtl_device_select.h>
 #include <dsd-neo/io/rtl_stream_c.h>
 #include <dsd-neo/runtime/exitflag.h>
 #include <dsd-neo/runtime/log.h>
@@ -64,6 +65,21 @@ __wrap_rtlsdr_get_device_usb_strings(uint32_t index, char* manufact, char* produ
     DSD_SNPRINTF(product, 256, "%s", "RTL2838UHIDIR");
     DSD_SNPRINTF(serial, 256, "%s", g_serials[index]);
     return 0;
+}
+
+/* The lookup by serial, failing as an enumeration error makes it (an MSVC exception in the count) while
+   g_find_fails is set. */
+static int g_find_fails = 0;
+rtl_device_find_result __real_rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report);
+
+rtl_device_find_result
+__wrap_rtl_device_find_serial(const char* serial, struct rtl_device_find_report* report) {
+    if (g_find_fails) {
+        DSD_MEMSET(report, 0, sizeof *report);
+        report->index = -1;
+        return RTL_DEVICE_FIND_FAILED;
+    }
+    return __real_rtl_device_find_serial(serial, report);
 }
 
 int
@@ -264,6 +280,16 @@ test_out_of_range_index(void) {
     rc |= expect_true("other index: falls back to 0", r.rc == 0 && r.dev_index == 0 && r.in_type == AUDIO_IN_RTL);
     rc |= expect_true("other index: the spec says so", strcmp(r.spec, "rtl:0:851.375M:22") == 0);
     rc |= expect_log("other index", "Requested RTL device index 5 out of range (found 2 device(s)); using 0");
+    /* The serials cannot be read to tell whether one is 5: refused, never device 0 instead. */
+    g_find_fails = 1;
+    const int ran = run_local_rtl_setup("rtl:5:851.375M:22", &r);
+    g_find_fails = 0;
+    if (ran != 0) {
+        return 1;
+    }
+    rc |= expect_refused("index past the devices, lookup failed", &r);
+    rc |= expect_log("index past the devices, lookup failed", "could not be listed again to check their serials");
+    rc |= expect_true("lookup failed: no fallback", strstr(g_log, "using 0") == NULL);
     return rc;
 }
 

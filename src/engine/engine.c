@@ -1040,7 +1040,8 @@ dsd_engine_setup_select_rtl_serial(dsd_opts* opts) {
 }
 
 /* An index past the devices found: refused (-1) when its digits are a readable device's serial (the user meant that
-   serial: rtl:serial=<n> names it), else today's fallback to device 0 with the spec saying so. */
+   serial: rtl:serial=<n> names it) or the serials cannot be read to tell, else today's fallback to device 0 with the
+   spec saying so. */
 static int
 dsd_engine_setup_rtl_index_out_of_range(dsd_opts* opts, int device_count) {
     const int requested = opts->rtl_dev_index;
@@ -1048,7 +1049,14 @@ dsd_engine_setup_rtl_index_out_of_range(dsd_opts* opts, int device_count) {
         char digits[16];
         DSD_SNPRINTF(digits, sizeof digits, "%d", requested);
         struct rtl_device_find_report rep;
-        (void)rtl_device_find_serial(digits, &rep);
+        const rtl_device_find_result found = rtl_device_find_serial(digits, &rep);
+        if (found == RTL_DEVICE_FIND_FAILED) {
+            /* Whether a dongle has these digits as its serial is unknown: refused, never device 0 instead. */
+            LOG_ERROR("RTL device index %d is out of range (found %d device(s)), and the devices could not be listed "
+                      "again to check their serials.\n",
+                      requested, device_count);
+            return -1;
+        }
         if (rep.matches > 0) {
             LOG_ERROR("RTL device index %d is out of range (found %d device(s)), but a device has serial \"%s\". To "
                       "select it by its serial, use rtl:serial=%s.\n",
