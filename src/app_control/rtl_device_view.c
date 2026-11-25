@@ -3,9 +3,10 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <dsd-neo/app_control/radio_source_view.h>
 #include <dsd-neo/app_control/rtl_device_view.h>
 #include <dsd-neo/core/opts.h>
-#include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/runtime/input_spec.h>
 #include <stddef.h>
 

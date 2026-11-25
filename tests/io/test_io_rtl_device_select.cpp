@@ -21,12 +21,14 @@
 
 #include <assert.h>
 #include <dsd-neo/core/opts.h>
+#include <dsd-neo/core/opts_fwd.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/iq_replay.h>
 #include <dsd-neo/io/iq_types.h>
 #include <dsd-neo/io/rtl_device.h>
 #include <dsd-neo/io/rtl_device_select.h>
 #include <dsd-neo/io/rtl_stream_c.h>
+#include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/runtime/input_failure.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/log.h>
@@ -42,6 +44,8 @@
 #include "rtl_stream_test_support.h"
 #include "rtl_usb_identity.h"
 #include "test_support.h"
+
+struct rtl_device;
 
 extern "C" void rtl_device_test_set_open_fd_failure_hook(int (*hook)(int));
 extern "C" void rtl_device_test_set_fd_reset_hook(int (*hook)(int));

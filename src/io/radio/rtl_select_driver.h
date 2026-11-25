@@ -17,7 +17,7 @@
 
 #include <stdint.h>
 
-typedef struct rtlsdr_dev rtlsdr_dev_t;
+struct rtlsdr_dev; /* librtlsdr's handle (rtlsdr_dev_t) */
 
 #ifdef __cplusplus
 extern "C" {
@@ -30,20 +30,20 @@ int rtl_select_guarded_device_count(uint32_t* count);
 int rtl_select_guarded_device_usb_strings(uint32_t index, char* manufacturer, char* product, char* serial);
 /* rtlsdr_get_usb_strings() on an opened handle: its result, or -1 when it raised an exception or there is no
  * librtlsdr. */
-int rtl_select_guarded_usb_strings(rtlsdr_dev_t* dev, char* manufacturer, char* product, char* serial);
+int rtl_select_guarded_usb_strings(struct rtlsdr_dev* dev, char* manufacturer, char* product, char* serial);
 
 /* The three reads the selection makes, as rtl_select_guarded_*() answer them. */
 struct rtl_select_driver_ops {
     int (*get_device_count)(uint32_t* count);
     int (*get_device_usb_strings)(uint32_t index, char* manufacturer, char* product, char* serial);
-    int (*get_usb_strings)(rtlsdr_dev_t* dev, char* manufacturer, char* product, char* serial);
+    int (*get_usb_strings)(struct rtlsdr_dev* dev, char* manufacturer, char* product, char* serial);
 };
 
 /*
  * The serial the opened @p dev reports, into @p serial (256 bytes, zeroed first): 0, or -1 when its strings could not
  * be read or it reports none (an empty serial never matches a selection).
  */
-int rtl_select_handle_serial(rtlsdr_dev_t* dev, char* serial);
+int rtl_select_handle_serial(struct rtlsdr_dev* dev, char* serial);
 
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 /* Test hook: NULL restores librtlsdr. Install while nothing else uses the unit. */
