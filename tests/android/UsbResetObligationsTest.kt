@@ -160,11 +160,41 @@ private fun aRecordFromBeforeWholeSerialsStillCounts() {
     val whole = UsbResetObligations()
     whole.record(a(serial = long), owes = true)
     check(whole.entries.single().serial == long && whole.owes(a(serial = long))) { "a new record keeps it whole" }
+    // Read back, a legacy entry stays a legacy entry when it is stored again.
+    check(restored.encode() == legacy) { "a legacy entry keeps its format: ${restored.encode()}" }
+}
+
+// A whole serial of 16 characters this version recorded is only that serial: a replacement under the same name and
+// VID:PID whose longer serial ends with it inherits nothing, before or after storage. Only an entry read in the older
+// format may stand for the end of a longer serial.
+private fun aWholeSixteenCharacterSerialIsNoSuffix() {
+    val sixteen = "1234567890123456"
+    val replacement = "X$sixteen"
+    val recorded = UsbResetObligations()
+    recorded.record(a(serial = sixteen), owes = true)
+    check(recorded.encode() == "$RTL_A\t$VID\t$PID\t$sixteen\twhole\n") { "stored as whole: ${recorded.encode()}" }
+    val stored = recorded.encode()
+    check(!recorded.owes(a(serial = replacement)) && recorded.entries.isEmpty()) {
+        "a recorded whole serial is not the end of a longer one"
+    }
+    val restored = UsbResetObligations()
+    check(!restored.restore(stored, mapOf(RTL_A to (VID to PID)))) { "a whole entry reads back as it was written" }
+    check(restored.entries.single().wholeSerial && restored.owes(a(serial = sixteen))) { "it still owes its own" }
+    check(!restored.owes(a(serial = replacement))) { "and never a replacement's, after storage either" }
+    val legacy = UsbResetObligations()
+    legacy.restore("$RTL_A\t$VID\t$PID\t$sixteen\n", mapOf(RTL_A to (VID to PID)))
+    check(!legacy.entries.single().wholeSerial && legacy.owes(a(serial = replacement))) {
+        "an entry in the older format may be the end of the longer serial"
+    }
+    val unknown = UsbResetObligations()
+    check(unknown.restore("$RTL_A\t$VID\t$PID\t$sixteen\tother\n", mapOf(RTL_A to (VID to PID))) &&
+        unknown.entries.isEmpty()) { "an unknown fifth field is dropped" }
 }
 
 fun main() {
     aSerialInAnotherCaseIsAnotherDevice()
     aRecordFromBeforeWholeSerialsStillCounts()
+    aWholeSixteenCharacterSerialIsNoSuffix()
     eachAttachmentKeepsItsOwn()
     aRefusedResetKeepsIt()
     aDetachDropsIt()
