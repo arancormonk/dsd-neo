@@ -17394,11 +17394,12 @@ test_invalid_type_names_every_type(void) {
     }
 
     /* The session start: the list's path, as long as a list path can be (1023 bytes: folders under the temporary one
-       to fill it, where the platform takes such a path; a 200-byte file name on Windows), then the row's message,
-       whole in DSD_TRUNK_SCAN_ERROR_MAX. */
+       to fill it, where the platform takes such a path; on Windows a file name of up to 200 bytes that keeps the whole
+       path inside MAX_PATH), then the row's message, whole in DSD_TRUNK_SCAN_ERROR_MAX. */
     char dir[DSD_TEST_PATH_MAX];
     char target_path[DSD_TEST_PATH_MAX];
     if (make_temp_dir(dir, sizeof dir) != 0) {
+        DSD_FPRINTF(stderr, "long list path: no temporary folder\n");
         return 1;
     }
     char folders[4][DSD_TEST_PATH_MAX];
@@ -17424,7 +17425,17 @@ test_invalid_type_names_every_type(void) {
     }
     const size_t name_len = 1023U - strlen(parent) - 1U;
 #else
-    const size_t name_len = 200U;
+    /* Windows opens a path of at most MAX_PATH - 1 (259) characters without the long-path opt-in, and the temporary
+       folder is in the build tree (per-test TMPDIR): the name takes what is left of that, at most 200 bytes. */
+    const size_t parent_len = strlen(parent);
+    const size_t room = parent_len + 1U < 259U ? 259U - parent_len - 1U : 0U;
+    const size_t name_len = room < 200U ? room : 200U;
+    if (name_len < 16U) {
+        DSD_FPRINTF(stderr, "long list path: the temporary folder (%zu bytes) leaves no room for a file name\n",
+                    parent_len);
+        cleanup_paths(dir, NULL, NULL);
+        return 1;
+    }
 #endif
     char name[256];
     const size_t fill = name_len < sizeof name ? name_len : sizeof name - 1U;
@@ -17435,6 +17446,7 @@ test_invalid_type_names_every_type(void) {
     DSD_SNPRINTF(content, sizeof content, "%s%s", k_nfm_targets_header, body);
     if (dsd_test_path_join(target_path, sizeof target_path, parent, name) != 0
         || write_text_file(target_path, content) != 0) {
+        DSD_FPRINTF(stderr, "long list path: could not write a %zu-byte list name under %s\n", fill, parent);
         for (size_t i = made; i > 0U; i--) {
             (void)dsd_test_rmdir(folders[i - 1U]);
         }
