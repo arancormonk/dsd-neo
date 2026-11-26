@@ -238,3 +238,39 @@ class PlaybackServicePhases(private val processToken: Long) {
         promoted
     }
 }
+
+/**
+ * What a media session's callback acts on (#909): the playlist [generation] and the item ([token]) the session showed
+ * when the callback was installed. RecordingPlaybackService installs a callback of its own for each target it
+ * publishes, so a command the framework queued for the one before (a headset's double-tap wait, a seek from a system
+ * player) carries that one's generation and token, and the player drops it. The commands are queue-wide but for the
+ * seek, which needs the item.
+ */
+class SessionTarget(val generation: Int, val token: Long) {
+    fun play(player: RecordingPlayer) = on { player.resume(generation) }
+
+    fun pause(player: RecordingPlayer) = on { player.pause(generation) }
+
+    fun next(player: RecordingPlayer) = on { player.next(generation) }
+
+    fun previous(player: RecordingPlayer) = on { player.previous(generation) }
+
+    fun seek(player: RecordingPlayer, positionMs: Long) = on { player.seekFor(generation, token, positionMs) }
+
+    fun stop(player: RecordingPlayer) = on { player.stop(generation) }
+
+    /** Whether this is the target of [status]: its playlist and its item. */
+    fun shows(status: RecordingPlayer.Status): Boolean = generation == status.generation && token == status.playToken
+
+    /** Generation 0 is no playlist: the player would read it as "whatever plays", so nothing is sent for it. */
+    private inline fun on(command: () -> Unit) {
+        if (generation != 0) {
+            command()
+        }
+    }
+
+    companion object {
+        /** Before anything was published: no generation, which no command reaches. */
+        val NONE = SessionTarget(0, 0)
+    }
+}

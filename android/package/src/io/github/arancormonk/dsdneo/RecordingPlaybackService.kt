@@ -38,8 +38,10 @@ import android.util.Log
  * every asynchronous end the player posts here, the instance asks whether it should retire (PlaybackServicePhases).
  *
  * The session is made in [onCreate], so the first startForeground() already carries its token: MediaStyle with a
- * session is what exempts the notification from the notification permission. Its callbacks run on the playback looper
- * and act only on the playlist its state was last published for.
+ * session is what exempts the notification from the notification permission. Its callbacks run on the playback looper.
+ * A callback is installed for each target the session shows (a playlist and its item, [SessionTarget]) and acts only on
+ * that one, so a command the framework had queued for the target before (a headset's double-tap wait) cannot reach a
+ * later playlist or item.
  */
 class RecordingPlaybackService : Service() {
     /** This instance, as PlaybackServicePhases knows it. */
@@ -50,12 +52,8 @@ class RecordingPlaybackService : Service() {
 
     private lateinit var session: MediaSession
 
-    /** The playlist the session's state was last published for, and its play token; read on the playback looper. */
-    @Volatile
-    private var publishedFor = 0
-
-    @Volatile
-    private var publishedToken = 0L
+    /** The playlist and item the session's state was last published for, and its callback installed for. */
+    private var published = SessionTarget.NONE
 
     /** The metadata last set on the session, so a state change with the same item sets none. */
     private var shownMetadata: List<Any>? = null
@@ -70,7 +68,7 @@ class RecordingPlaybackService : Service() {
         super.onCreate()
         ensureNotificationChannel()
         session = MediaSession(this, SESSION_TAG)
-        session.setCallback(SessionCallbacks(), RecordingPlayback.playbackHandler())
+        session.setCallback(SessionCallbacks(published), RecordingPlayback.playbackHandler())
         serial = RecordingPlayback.serviceCreated(this)
     }
 
@@ -125,7 +123,7 @@ class RecordingPlaybackService : Service() {
      * no longer takes media keys while the instance waits to retire or for the next owner. Main thread.
      */
     internal fun ended(generation: Int) {
-        if (generation != 0 && generation == publishedFor && session.isActive) {
+        if (generation != 0 && generation == published.generation && session.isActive) {
             session.isActive = false
         }
     }
@@ -135,8 +133,12 @@ class RecordingPlaybackService : Service() {
         if (!RecordingPlayback.isOwner(status.generation)) {
             return
         }
-        publishedFor = status.generation
-        publishedToken = status.playToken
+        if (!published.shows(status)) {
+            // A callback of its own for the new target: what the framework queued for the old one (setCallback()
+            // drops it, or it runs on the old callback) still names the old playlist and item, and is dropped.
+            published = SessionTarget(status.generation, status.playToken)
+            session.setCallback(SessionCallbacks(published), RecordingPlayback.playbackHandler())
+        }
         val title = title(status)
         val subtitle = subtitle(status)
         val metadata = listOf(status.generation, status.itemIndex, title, subtitle, status.durationMs)
@@ -342,32 +344,29 @@ class RecordingPlaybackService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    /** The session's commands, on the playback looper, for the playlist last published on it. */
-    private inner class SessionCallbacks : MediaSession.Callback() {
-        override fun onPlay() = command { player, generation -> player.resume(generation) }
+    /** The session's commands, on the playback looper, for the [target] this callback was installed for only. */
+    private class SessionCallbacks(private val target: SessionTarget) : MediaSession.Callback() {
+        override fun onPlay() = command(target::play)
 
-        override fun onPause() = command { player, generation -> player.pause(generation) }
+        override fun onPause() = command(target::pause)
 
-        override fun onSkipToNext() = command { player, generation -> player.next(generation) }
+        override fun onSkipToNext() = command(target::next)
 
-        override fun onSkipToPrevious() = command { player, generation -> player.previous(generation) }
+        override fun onSkipToPrevious() = command(target::previous)
 
-        override fun onSeekTo(pos: Long) {
-            val token = publishedToken
-            command { player, generation -> player.seekFor(generation, token, pos) }
-        }
+        override fun onSeekTo(pos: Long) = command { target.seek(it, pos) }
 
         // The system player's dismissal (API 33+) arrives here.
-        override fun onStop() = command { player, generation -> player.stop(generation) }
+        override fun onStop() = command(target::stop)
 
         override fun onCustomAction(action: String, extras: Bundle?) {
             if (action == CUSTOM_STOP) {
-                command { player, generation -> player.stop(generation) }
+                command(target::stop)
             }
         }
 
-        private fun command(action: (RecordingPlayer, Int) -> Unit) =
-            RecordingPlayback.sessionCommand(publishedFor, action)
+        private fun command(action: (RecordingPlayer) -> Unit) =
+            RecordingPlayback.sessionCommand(target.generation) { player, _ -> action(player) }
     }
 
     companion object {

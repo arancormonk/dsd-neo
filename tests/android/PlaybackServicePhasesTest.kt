@@ -110,6 +110,7 @@ private class Playing(val rig: ServiceRig) {
     var nowMs = 0L
     val tasks = mutableListOf<Pair<Long, () -> Unit>>()
     val tokens = mutableListOf<Long>()
+    val seeks = mutableListOf<Pair<Long, Long>>()
     val ends = mutableListOf<Pair<Int, String>>()
     val machine = RecordingPlayer(
         { token ->
@@ -118,7 +119,9 @@ private class Playing(val rig: ServiceRig) {
                 override fun prepare(source: RecordingPlayer.Source) = Unit
                 override fun start() = Unit
                 override fun pause() = Unit
-                override fun seekTo(positionMs: Long) = Unit
+                override fun seekTo(positionMs: Long) {
+                    seeks += token to positionMs
+                }
                 override val durationMs: Long get() = 10_000
                 override fun release() = Unit
             }
@@ -473,6 +476,41 @@ fun thePlayersEndsDriveTheServiceOrder() {
     check(rig.starts.last() == Start.NONE && rig.retired) { "a sheet's play takes no service and the old one retires" }
 }
 
+/** A media session command queued for one target never acts on the next (#909): each callback names its own. */
+fun aSessionCommandActsOnTheTargetItWasQueuedFor() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val a = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    val onA = SessionTarget(a, machine.status.playToken)
+    check(onA.shows(machine.status) && machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "A plays" }
+    val b = playing.playlist()
+    machine.onPrepared(playing.tokens.last())
+    check(!onA.shows(machine.status) && machine.status.generation == b) { "B took the session: another target" }
+    onA.pause(machine)
+    onA.next(machine)
+    onA.seek(machine, 5_000)
+    onA.stop(machine)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING && machine.status.call == 0) {
+        "A's queued Pause, Next and Stop leave B playing where it was"
+    }
+    check(playing.seeks.isEmpty()) { "and A's seek is dropped" }
+    val onB = SessionTarget(b, machine.status.playToken)
+    onB.seek(machine, 5_000)
+    check(playing.seeks == listOf(machine.status.playToken to 5_000L)) { "B's own seek applies" }
+    machine.next(b)
+    machine.onPrepared(playing.tokens.last())
+    check(!onB.shows(machine.status) && machine.status.call == 1) { "B's next call is another target" }
+    onB.seek(machine, 1_000)
+    check(playing.seeks.size == 1) { "a seek queued for B's first call is dropped on its second" }
+    SessionTarget.NONE.stop(machine)
+    SessionTarget.NONE.pause(machine)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "no target, no command" }
+    SessionTarget(b, machine.status.playToken).pause(machine)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the current target's Pause pauses" }
+}
+
 fun main() {
     aPromoteForTheCurrentRequestMakesItTheOwner()
     aPromoteForASettledRequestOnlyRetires()
@@ -488,5 +526,6 @@ fun main() {
     aRefusedStartSettlesWhateverWaitedForIt()
     aNewInstanceEndsTheRetiringPhase()
     thePlayersEndsDriveTheServiceOrder()
+    aSessionCommandActsOnTheTargetItWasQueuedFor()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

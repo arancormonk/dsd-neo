@@ -268,7 +268,7 @@ object RecordingPlayback {
         }
     }
 
-    /** A session callback, on the looper, for the playlist the session was last published for. */
+    /** A session callback, on the looper, for the playlist its callback was installed for, while that one owns it. */
     internal fun sessionCommand(generation: Int, command: (RecordingPlayer, Int) -> Unit) {
         val machine = player ?: return
         if (phases.isOwner(generation)) {
