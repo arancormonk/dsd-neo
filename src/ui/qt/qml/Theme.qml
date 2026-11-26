@@ -27,15 +27,21 @@ QtObject {
             return decoderHost.fontPixelSize(16) / 16;
         return Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16));
     }
-    // Whether the on-screen keyboard is shown: the host's visible-IME
-    // indicator (Android reports a keyboard top, 0 or more, only while it
-    // shows), else Qt's. Where it overlaps an item is keyboardTop()'s to
-    // measure; a window already resized above the keyboard has no overlap.
-    function keyboardShown() {
+    // Whether the on-screen keyboard is shown, decided by the host first: a
+    // keyboard top it reports (0 or more) is the answer, and a host that
+    // reports the keyboard itself (Android, reportsKeyboard) saying none
+    // means hidden. Only a host with no word of its own falls back to Qt's
+    // input method, @p input in a test: shown with a keyboard of some
+    // height. Where it overlaps an item is keyboardTop()'s to measure; a
+    // window already resized above the keyboard has no overlap.
+    function keyboardShown(input) {
         var host = typeof decoderHost !== "undefined" ? decoderHost : null;
         if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)
             return true;
-        return Qt.inputMethod.visible === true;
+        if (host && host.reportsKeyboard === true)
+            return false;
+        var method = input || Qt.inputMethod;
+        return method.visible === true && method.keyboardRectangle.height > 0;
     }
     function keyboardTop(item) {
         var host = typeof decoderHost !== "undefined" ? decoderHost : null;

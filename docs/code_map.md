@@ -20138,8 +20138,11 @@ Qt Quick frontend (`src/ui/qt`):
       its saved end, its events with an event id and a heard flag (a refused resume is an event each time: its reason
       turning "unavailable", or `playbackRefusals` moving on the same reading, which the sheet's notice line says again
       too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up,
-      by the host's visible-IME indicator, `Theme.keyboardShown()`: `decoderHost.keyboardTop >= 0` on Android, else
-      `Qt.inputMethod.visible`, never by overlap, which a window resized above the keyboard does not have) shows it,
+      decided by the host first, `Theme.keyboardShown()`: a `decoderHost.keyboardTop` of 0 or more is the answer, a
+      host that reports the keyboard itself (`DecoderHost::reportsKeyboard()`, Android, whose
+      `AppSupport.updateKeyboardBounds()` uses the IME inset) saying -1 means hidden, and only a host with no word of
+      its own falls back to `Qt.inputMethod.visible` with a keyboard of some height; never by overlap, which a window
+      resized above the keyboard does not have) shows it,
       says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call playing: the
       player names the call that followed the skips, so a call Qt sees first after a stretch away never takes an earlier
       skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event once, only while

@@ -75,6 +75,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(QString localDeviceRequestedSource READ localDeviceRequestedSource NOTIFY localDeviceChanged)
     Q_PROPERTY(bool usesPlatformFontScaling READ usesPlatformFontScaling CONSTANT)
     Q_PROPERTY(qreal keyboardTop READ keyboardTop NOTIFY keyboardChanged)
+    Q_PROPERTY(bool reportsKeyboard READ reportsKeyboard CONSTANT)
     Q_PROPERTY(int fontRevision READ fontRevision NOTIFY typographyChanged)
     /* Issue #800: the platform asks for no animation (Android's "Remove animations"); the map's camera then jumps. */
     Q_PROPERTY(bool reducedMotion READ reducedMotion NOTIFY reducedMotionChanged)
@@ -314,6 +315,15 @@ class DecoderHost : public QObject {
     virtual qreal
     keyboardTop() const {
         return -1;
+    }
+
+    /**
+     * @brief Whether keyboardTop() is the platform's own word on the on-screen keyboard (issue #909): -1 then means
+     * hidden, and the UI does not ask Qt's input method. The base host reports nothing, so Qt's is the fallback.
+     */
+    virtual bool
+    reportsKeyboard() const {
+        return false;
     }
 
     virtual int

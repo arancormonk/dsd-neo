@@ -546,6 +546,8 @@ test_base_host_play() {
                          && host.playbackPath() == QLatin1String("/r/a.wav"));
     expect(__LINE__,
            DecoderHost::PlaybackSingle == 0 && DecoderHost::PlaybackParts == 1 && DecoderHost::PlaybackPlaylist == 2);
+    // No word on the keyboard of its own: the UI falls back to Qt's input method.
+    expect(__LINE__, !host.property("reportsKeyboard").toBool() && host.keyboardTop() < 0);
 }
 
 /* A full log: 1,000 rows of three recordings each (the first away), read once for the whole press, every row its own

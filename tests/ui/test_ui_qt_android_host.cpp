@@ -2702,6 +2702,7 @@ check_recording_playback() {
     reset_recordings();
     PlatformRecordings& r = recordings();
     check(host.playbackSupported() && host.property("playbackSupported").toBool(), "the Android host plays");
+    check(host.property("reportsKeyboard").toBool(), "#909: Android's keyboard top is the platform's own word");
 
     r.nextGeneration = 7;
     check(host.playRecordingOwned(a) == 7, "a sheet's play answers its generation");

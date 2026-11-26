@@ -178,6 +178,7 @@ Item {
             }
             status.appActive = true;
             decoderHost.keyboardTop = -1;
+            decoderHost.reportsKeyboard = false;
             // A field left with the keyboard would take no new focus in the next case, and reveal nothing.
             root.forceActiveFocus();
             Ui.Theme.resetFontScale();
@@ -1306,6 +1307,36 @@ Item {
             verify(Math.abs(listRect.y + listRect.height - screen.height) < 0.5, "the list as without a bar: " + describe(listRect));
             decoderHost.keyboardTop = -1;
             verify(barItem.visible, "back once the keyboard hides");
+        }
+
+        // The keyboard's visibility is decided by the host first: a top it reports is the answer, and a host that
+        // reports the keyboard itself (Android) saying none means hidden, whatever Qt's input method says. Only a host
+        // with no word of its own falls back to Qt's, which counts a keyboard only with some height.
+        function test_keyboard_shown_by_the_host_first() {
+            var up = {visible: true, keyboardRectangle: {height: 300}};
+            var flat = {visible: true, keyboardRectangle: {height: 0}};
+            var down = {visible: false, keyboardRectangle: {height: 0}};
+            decoderHost.reportsKeyboard = true;
+            decoderHost.keyboardTop = -1;
+            verify(!Ui.Theme.keyboardShown(up), "Android says hidden: Qt's flag, stuck up, is not asked");
+            decoderHost.keyboardTop = 700;
+            verify(Ui.Theme.keyboardShown(down), "Android's top is the answer");
+            decoderHost.reportsKeyboard = false;
+            verify(Ui.Theme.keyboardShown(down), "any host's top is the answer");
+            decoderHost.keyboardTop = -1;
+            verify(Ui.Theme.keyboardShown(up), "no word from the host: Qt's flag");
+            verify(!Ui.Theme.keyboardShown(flat), "a keyboard of no height is none");
+            verify(!Ui.Theme.keyboardShown(down), "and a hidden one is none");
+
+            // The bar follows the host's word: shown while Android says the keyboard is hidden.
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            decoderHost.reportsKeyboard = true;
+            verify(bar(screen).visible && !screen.keyboardUp, "the bar shows");
+            decoderHost.keyboardTop = screen.mapToItem(null, 0, screen.height).y;
+            verify(!bar(screen).visible && screen.keyboardUp, "and hides once Android reports a keyboard");
         }
 
         // In a short window at 2x text the bar and a row of list would leave the header no room at all: it keeps what

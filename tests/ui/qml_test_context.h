@@ -8627,6 +8627,8 @@ class Setup : public QObject {
         /* As every desktop host: the state above is the decoder's own; a case clears it through testContext. */
         host[QStringLiteral("sessionStateKnown")] = true;
         host[QStringLiteral("keyboardTop")] = -1;
+        /* As the desktop host: Qt's input method is the keyboard's word; a case sets it to stand in for Android's. */
+        host[QStringLiteral("reportsKeyboard")] = false;
         /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
         host[QStringLiteral("playbackSupported")] = false;
         host.insert(ReadingMap::idlePlaybackReadings());
