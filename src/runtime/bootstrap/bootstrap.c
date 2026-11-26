@@ -419,6 +419,12 @@ bootstrap_compacted_arg_disables_inherited_trunk_scan(int argc, char** argv) {
             break;
         }
         if (arg[1] == '-') {
+            /* An unconsumed "--" ends the options: whatever follows it is an operand, a positional input that turns
+               the inherited scan off as any other does ("-- --iq-replay" too, issue #931). */
+            if (arg[2] == '\0') {
+                disables = i + 1 < compacted_argc && argv_copy[i + 1] != NULL;
+                break;
+            }
             continue;
         }
 

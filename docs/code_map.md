@@ -5660,10 +5660,12 @@ suite runs under this compiler.
     option error). A token, a key or a file name can read like an option (`--print-config`, `--config`, `--`), so every
     pass over the raw argv -- bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction --
     steps over every long option's value by the parser's arity (`dsd_cli_long_option_span()`, issue #931) and stops at
-    the first `--` that is no value; a new raw pass must do the same. The tables give each option the arity the parser
-    reads it with: only `--config` and `--validate-config` take their value only when it does not start with `-`; every
-    other valued option takes the next argument whatever it is (the eight that validate a port, an address or a TETRA
-    value included, so `--api -T --api 0` turns no trunking on). Bootstrap reads its own options in place, `--config`'s
+    the first `--` that is no value; a new raw pass must do the same. What follows that `--` is operands, positional
+    inputs that turn an inherited `[trunk_scan]` off whatever they read like (`-- --iq-replay`;
+    `bootstrap_compacted_arg_disables_inherited_trunk_scan()`). The tables give each option the arity the parser reads
+    it with: only `--config` and `--validate-config` take their value only when it does not start with `-`; every other
+    valued option takes the next argument whatever it is (the eight that validate a port, an address or a TETRA value
+    included, so `--api -T --api 0` turns no trunking on). Bootstrap reads its own options in place, `--config`'s
     optional path, `--validate-config`'s and `--profile`'s name with them, and leaves `-s` to getopt itself: the parse
     sets `opts->input_rate_cli_seen` where it reads `-s`, so `-o -s` sets no rate and a `-s` after an operand counts
     only where that getopt reads past operands (glibc's does, unless `POSIXLY_CORRECT`; MSVC's does not). So

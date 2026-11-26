@@ -3500,6 +3500,37 @@ test_bootstrap_inherited_trunk_scan_disables_for_positional_input(void) {
     return test_rc;
 }
 
+static int print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size);
+
+/* Issue #931 (gate r2): what follows an unconsumed "--" is an operand, a positional input, whatever it reads like: it
+   turns the config's [trunk_scan] off ("-- --iq-replay" as "-- input.amb"). Without one the scan stays on. */
+static int
+test_bootstrap_inherited_trunk_scan_disables_after_terminator(void) {
+    static const char ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+
+    static const struct {
+        const char* args[5];
+        int nargs;
+        const char* want;
+    } cases[] = {
+        {{"--config", "{ini}", "--print-config"}, 3, "[trunk_scan]\nenabled = true\n"},
+        {{"--config", "{ini}", "--print-config", "--", "--iq-replay"}, 5, "[trunk_scan]\nenabled = false\n"},
+        {{"--config", "{ini}", "--print-config", "--", "input.amb"}, 5, "[trunk_scan]\nenabled = false\n"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static char printed[65536];
+        if (print_config_with_ini(ini, cases[i].args, cases[i].nargs, printed, sizeof printed) != 0
+            || strstr(printed, cases[i].want) == NULL) {
+            const char* at = strstr(printed, "[trunk_scan]");
+            DSD_FPRINTF(stderr, "case %zu: want %s, got %.60s\n", i, cases[i].want, at ? at : "(no [trunk_scan])");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -14938,6 +14969,7 @@ main(void) {
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options();
+    rc |= test_bootstrap_inherited_trunk_scan_disables_after_terminator();
     rc |= test_bootstrap_inherited_trunk_scan_ignores_api_token_text();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan();
