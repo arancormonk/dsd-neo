@@ -41,6 +41,7 @@
 #include "../../android/session_state_map.h"
 #include "../../android/start_status.h"
 #include "decoder_host.h"
+#include "decoder_host_test_hooks.h"
 #include "diagnostics_log.h"
 #include "document_import_transport.h"
 #include "document_save_transport.h"
@@ -2797,6 +2798,22 @@ check_recording_playback() {
               && host.playbackMode() == DecoderHost::PlaybackPlaylist && seen.changed == changes,
           "the playlist plays on, and nothing is published");
     check(seen.missing == QStringList({gone}), "the store is asked to look again");
+
+    /* The file goes between the sheet's check and its start (the storage limit's worker): the one check stands, so the
+     * play is taken and the platform's player finds it gone; nothing stops the playlist first or reads Failed. */
+    const QString going = temp_recording(dir, "going.wav", "RIFF");
+    r.commands.clear();
+    seen.missing.clear();
+    dsd_qt::decoder_host_test_after_recording_check([](const QString& path) { QFile::remove(path); });
+    r.nextGeneration = 11;
+    const int owned = host.playRecordingOwned(going);
+    dsd_qt::decoder_host_test_after_recording_check({});
+    check(!QFileInfo::exists(going), "the file went after its check");
+    check(owned == 11 && r.commands.isEmpty() && r.played == going,
+          "a file gone after the check: the play is taken, and nothing is stopped first");
+    check(host.playbackGeneration() == 11 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackError().isEmpty() && seen.missing.isEmpty(),
+          "and it never reads Failed missing from a second check");
 }
 
 /* #909: a playlist's items reach RecordingPlayback.play() as its arrays, and only a play it can take does. */

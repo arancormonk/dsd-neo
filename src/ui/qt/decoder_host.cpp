@@ -36,10 +36,34 @@
 #include <cerrno>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <functional>
+#include "decoder_host_test_hooks.h"
+#endif
 
 namespace dsd_qt {
 
 namespace {
+
+#ifdef DSD_NEO_TEST_HOOKS
+std::function<void(const QString&)>&
+after_recording_check() {
+    static std::function<void(const QString&)> hook;
+    return hook;
+}
+#endif
+
+/* Whether the recording at @p path is a file there now: a play's one admission check. */
+bool
+recording_file_present(const QString& path) {
+    const bool present = QFileInfo(path).isFile();
+#ifdef DSD_NEO_TEST_HOOKS
+    if (present && after_recording_check()) {
+        after_recording_check()(path);
+    }
+#endif
+    return present;
+}
 
 /* @p selection's files as the store selected them (sizes, mtimeSecs, mtimeNanos), one for each of @p count paths, into
  * @p out; false when they are not all there. */
@@ -259,12 +283,35 @@ DecoderHost::playRecording(const QString& path) {
     }
     // A play that fails still replaces the recording playing: the player stops (stopPlayback(), which a platform
     // overrides) before the failure is published, so the store lets go of a file only once nothing plays it.
-    if (!QFileInfo(path).isFile()) {
+    if (!recording_file_present(path)) {
         stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("missing"));
         reportRecordingsMissing({path});
         return;
     }
+    startRecordingPlayback(path);
+}
+
+int
+DecoderHost::playRecordingOwned(const QString& path) {
+    // A file that is gone is refused before the play is taken, as a refused playlist is: what plays plays on and
+    // nothing is published; the store is asked to look again, and the sheet says the recording is gone. That one
+    // check is the only one: the start after it never reaches playRecording()'s, which stops what plays.
+    if (path.isEmpty()) {
+        return 0;
+    }
+    if (!recording_file_present(path)) {
+        reportRecordingsMissing({path});
+        return 0;
+    }
+    startRecordingPlayback(path);
+    // A play the platform took is published Preparing under its generation; one that failed at once is not.
+    const bool taken = m_playback.state == PlaybackPreparing && m_playback.path == path;
+    return taken ? m_playback.generation : 0;
+}
+
+void
+DecoderHost::startRecordingPlayback(const QString& path) {
     if (!playbackSupported()) {
         stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
@@ -273,23 +320,6 @@ DecoderHost::playRecording(const QString& path) {
     // Published before the platform is asked, so the store holds the file from the first moment it may be open.
     publishPlayback(path, PlaybackPreparing, 0, 0, QString());
     beginPlayback(path);
-}
-
-int
-DecoderHost::playRecordingOwned(const QString& path) {
-    // A file that is gone is refused before the play is taken, as a refused playlist is: what plays plays on and
-    // nothing is published; the store is asked to look again, and the sheet says the recording is gone.
-    if (path.isEmpty()) {
-        return 0;
-    }
-    if (!QFileInfo(path).isFile()) {
-        reportRecordingsMissing({path});
-        return 0;
-    }
-    playRecording(path);
-    // A play the platform took is published Preparing under its generation; one that failed at once is not.
-    const bool taken = m_playback.state == PlaybackPreparing && m_playback.path == path && !path.isEmpty();
-    return taken ? m_playback.generation : 0;
 }
 
 namespace {
@@ -896,5 +926,12 @@ DecoderHost::reportRecordingsMissing(const QStringList& paths) {
         Q_EMIT recordingFilesMissing(paths);
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+decoder_host_test_after_recording_check(std::function<void(const QString& path)> hook) {
+    after_recording_check() = std::move(hook);
+}
+#endif
 
 } // namespace dsd_qt

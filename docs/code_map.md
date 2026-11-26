@@ -19810,10 +19810,12 @@ Qt Quick frontend (`src/ui/qt`):
     `playbackInterrupted` ("Paused for another app's audio", the button Pause, B4); with no player the block says
     "Recordings can't be played on this device." and chips only select (B6); a part played from the sheet whose file
     is gone at the press is refused before the play is taken (`playRecordingOwned()` answers 0, what plays plays on,
-    nothing is published, the store looks again) and the sheet says "This recording is gone.". Item commands carry the
-    play token captured when the gesture began (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`); the seek
-    bar reads `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
-    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
+    nothing is published, the store looks again; that one file check is its only one, and the start after it never
+    reaches `playRecording()`'s missing-file stop, `decoder_host_test_hooks.h` taking the file between them in
+    `UI_QT_ANDROID_HOST`) and the sheet says "This recording is gone.". Item commands carry the play token captured when
+    the gesture began (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`); the seek bar reads
+    `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted.
+    History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
     deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
     to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
     `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup

@@ -1648,6 +1648,9 @@ class DecoderHost : public QObject {
     }
 
   private:
+    /* A recording's play past its file check: refused "unsupported" with no player, else published Preparing and
+     * handed to beginPlayback(). */
+    void startRecordingPlayback(const QString& path);
     bool beginTransfer(const QVariantMap& selection, const QString& reference, bool zip);
     /* recordingTransferFinished() for @p selection, queued: a caller sees its call return first. */
     void announceTransferEnd(int selection, int result, int missing);

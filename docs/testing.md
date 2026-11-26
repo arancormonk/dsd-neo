@@ -232,8 +232,9 @@ identity under its id changed, and one for an id no longer indexed answering gon
 (`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 18-field status record and malformed ones ignored (a
 reason not among its own field's codes included), the terminal record after a platform stop, the recheck paths on a
 serial change, on a foreground return and with the next play, token commands with no optimistic position for a stale
-seek, the replacement point, the legacy `playRecording()` missing-file reading, and no status reads while idle or on
-position-only ticks); and
+seek, the replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right
+after its one check (`decoder_host_test_hooks.h`) stopping nothing, and no status reads while idle or on position-only
+ticks); and
 `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
 the playlist cases in `tst_call_recording_player.qml`, against the fake host's queue model in `qml_test_context.h`,
 with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
