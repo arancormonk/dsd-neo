@@ -1186,6 +1186,42 @@ private fun previousDuringASkipDoesNotWaitForTheTurn() {
     }
 }
 
+private fun anErrorFromThePartThatPlayedOutIsIgnoredInTheGap() {
+    // The gap after a call's last part, the part that completed still current: its late error changes nothing.
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    val finished = rig.current
+    rig.complete()
+    val gapTask = rig.scheduler.live().single()
+    rig.nowMs += 400
+    rig.machine.onFailed(finished.token, RecordingPlayer.REASON_DAMAGED)
+    rig.turn()
+    check(rig.status.gap && rig.state == PLAYING && rig.status.skipped == 0) { "still the gap, no skip counted" }
+    check(rig.scheduler.live().single() === gapTask && !finished.released) { "the gap is not restarted" }
+    rig.elapse(600)
+    check(rig.last.path == path(1, 1) && !rig.status.gap) { "it runs out on time and the next call opens" }
+    rig.prepared()
+    rig.machine.previous()
+    rig.prepared()
+    check(rig.status.call == 0 && rig.opener.opened.count { it == path(0, 1) } == 2) { "the part is not marked failed" }
+
+    // The gap entered after the call's other part failed: the part that played is held into it, and its error too.
+    val held = Rig()
+    held.fail(path(0, 2), RecordingPlayer.REASON_GONE)
+    held.queue(2, 1)
+    held.prepared()
+    val played = held.current
+    held.complete()
+    held.turn()
+    check(held.status.gap && held.status.skipped == 1 && held.current === played) { "the gap, on the part that played" }
+    val heldGap = held.scheduler.live().single()
+    held.machine.onFailed(played.token, RecordingPlayer.REASON_PLAYER)
+    held.turn()
+    check(held.status.gap && held.state == PLAYING && held.status.skipped == 1) { "ignored: not failed, not ended" }
+    check(held.scheduler.live().single() === heldGap) { "and the gap runs on" }
+}
+
 private fun aRefusedResumeStaysPausedInEveryMode() {
     // A playlist paused while its first part opens, resumed during a phone call: still paused, not failed.
     val opening = Rig()
@@ -1550,6 +1586,7 @@ fun main() {
     failuresArePerRecordingAndKeepTheirDirection()
     previousPassesOverACallWhoseRecordingsAllFailed()
     previousDuringASkipDoesNotWaitForTheTurn()
+    anErrorFromThePartThatPlayedOutIsIgnoredInTheGap()
     aRefusedResumeStaysPausedInEveryMode()
     aPauseHoldsWhileItSearches()
     theRecheckListOutlivesThePlayAndHandsEachPathOnce()

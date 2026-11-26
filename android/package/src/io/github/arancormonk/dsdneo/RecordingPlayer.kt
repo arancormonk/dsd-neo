@@ -60,7 +60,8 @@ class RecordingRecheck {
  * forward ends the play: "unplayable" when every recording of the play failed, else finished. One backward with no
  * open player goes on forward. Each search visits each recording at most once; the next candidate after a failure
  * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
- * of its call at once, then the gap before the next call. Play in a paused gap opens the next call at once.
+ * of its call at once, then the gap before the next call; an error from the part that completed, in the gap, is
+ * ignored. Play in a paused gap opens the next call at once.
  *
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
  * which nothing was wanted or the focus was away, checked by a task and at every event against the elapsed clock.
@@ -604,9 +605,13 @@ class RecordingPlayer(
         }
     }
 
-    /** The player failed: [REASON_PLAYER] ends the play; anything else is this recording's fault ([REASON_DAMAGED]). */
+    /**
+     * The player failed: [REASON_PLAYER] ends the play; anything else is this recording's fault ([REASON_DAMAGED]).
+     * In the gap the player is the part that already played to its end, so an error from it is ignored: the part is
+     * not marked failed, no skip is counted and the gap runs on.
+     */
     fun onFailed(token: Long, reason: String) {
-        if (player == null || token != this.token || expireIfDue()) {
+        if (player == null || token != this.token || expireIfDue() || gap) {
             return
         }
         failItem(if (reason == REASON_PLAYER) REASON_PLAYER else REASON_DAMAGED)
