@@ -3635,6 +3635,9 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     playRecording(const QString& path) {
         noteCall(QStringLiteral("playRecording"), {{QStringLiteral("path"), path}});
+        if (!playAccepted || path.isEmpty()) {
+            return;
+        }
         (void)openPlay({QVariantMap{{QStringLiteral("path"), path}}}, dsd_qt::DecoderHost::PlaybackSingle, QString());
     }
 
@@ -6247,10 +6250,6 @@ class Setup : public QObject {
     setPlaybackSupported(bool supported) {
         m_host[QStringLiteral("playbackSupported")] = supported;
         m_host_readings->insert(QStringLiteral("playbackSupported"), supported);
-        QQmlContext* ctx = m_engine->rootContext();
-        if (ctx->contextProperty(QStringLiteral("decoderHost")).value<QObject*>() == m_host_readings) {
-            ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
-        }
     }
 
     /** @brief What the decoderHost map's shareRecording() answers. */

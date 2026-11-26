@@ -406,9 +406,11 @@ class DecoderHost : public QObject {
      *
      * The other readings come from the same platform record and change together on playbackChanged; only the position
      * moves alone (playbackPositionChanged). playbackGeneration names the play they describe (0: none): it stays on an
-     * ended play's last reading (playbackEndedReason says how it ended) until the next play or a stop. playbackToken
-     * names the recording open now (0: none); a new one is opened under a new token, even the same file again, so a
-     * command carrying the token of a gesture begun on another recording is dropped (seekPlaybackFor() and its kin).
+     * ended play's last reading (playbackEndedReason says how it ended) until the next play or a stop. Generation 0
+     * with Preparing is a sheet's single play starting, published before the platform is asked (so the store holds its
+     * file first); the platform's generation follows once it takes it. playbackToken names the recording open now (0:
+     * none); a new one is opened under a new token, even the same file again, so a command carrying the token of a
+     * gesture begun on another recording is dropped (seekPlaybackFor() and its kin).
      * playbackPath, playbackTitle and playbackKey are the open item's path, call name and History row uid, as the play
      * listed them. playbackCallIndex and playbackCallCount place its call in the play (-1 and 0: none);
      * playbackPartOrdinal and playbackPartCount place the part among all its call's recordings (0: none).
@@ -602,8 +604,9 @@ class DecoderHost : public QObject {
     }
 
     /*
-     * Item commands (issue #909): each carries the playbackToken read when its gesture began, and is dropped, with no
-     * change shown, when another recording is open by the time it arrives.
+     * Item commands (issue #909): each carries the playbackToken read when its gesture began. A host with a player
+     * forwards one only while that token is the one open, and otherwise drops it with no change shown (the overrides'
+     * contract); the base host has no player and ignores them.
      */
     Q_INVOKABLE virtual void
     seekPlaybackFor(qint64 token, qint64 positionMs) {
@@ -623,7 +626,7 @@ class DecoderHost : public QObject {
 
     /**
      * @brief Stop play @p generation, and only it: one already ended, or replaced by a newer play, is left alone. The
-     * base host stops what plays when @p generation is the one its readings name.
+     * base host stops what plays when @p generation is the one its readings name and it is still open.
      */
     Q_INVOKABLE virtual void stopPlaybackGeneration(int generation);
 

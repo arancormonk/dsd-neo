@@ -2923,15 +2923,25 @@ check_playlist_record() {
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == QStringLiteral("/r/b1.wav"),
           "a record naming none keeps the item shown");
-    r.status = f.text() + QStringLiteral("\t0");
-    host.refresh();
-    r.status = f.text().replace(QStringLiteral("\t-1\t"), QStringLiteral("\tx\t"));
-    host.refresh();
-    f.gap = 2;
-    r.status = f.text();
-    host.refresh();
-    check(host.playbackGap() == false && host.playbackState() == DecoderHost::PlaybackPreparing,
-          "a record with a field too many, a number that is none or a flag that is neither says nothing");
+    // Each malformed record would show something new (Playing, another position, the gap) were it read.
+    StatusFields bad = f;
+    bad.state = DecoderHost::PlaybackPlaying;
+    bad.position = 7777;
+    bad.gap = 1;
+    const int changed = seen.changed;
+    const int moved = seen.moved;
+    const auto unread = [&](const QString& record, const char* why) {
+        r.status = record;
+        host.refresh();
+        check(seen.changed == changed && seen.moved == moved && host.playbackState() == DecoderHost::PlaybackPreparing
+                  && host.playbackPositionMs() != 7777 && !host.playbackGap(),
+              why);
+    };
+    unread(bad.text() + QStringLiteral("\t0"), "a record with a field too many says nothing");
+    unread(bad.text().replace(QStringLiteral("\t-1\t"), QStringLiteral("\tx\t")),
+           "a record with a number that is none says nothing");
+    bad.gap = 2;
+    unread(bad.text(), "a record with a flag that is neither 0 nor 1 says nothing");
 }
 
 /* #909: a play that ended from the platform (a notification Stop, its end, a failure) keeps its last reading under

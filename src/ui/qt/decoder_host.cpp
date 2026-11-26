@@ -346,7 +346,9 @@ DecoderHost::beginPlayback(const QString& path) {
 
 void
 DecoderHost::stopPlaybackGeneration(int generation) {
-    if (generation > 0 && generation == m_playback.generation) {
+    const int state = m_playback.state;
+    const bool open = state == PlaybackPreparing || state == PlaybackPlaying || state == PlaybackPaused;
+    if (generation > 0 && generation == m_playback.generation && open) {
         stopPlayback();
     }
 }
