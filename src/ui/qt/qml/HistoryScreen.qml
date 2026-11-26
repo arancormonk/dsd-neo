@@ -302,14 +302,17 @@ Item {
     //
     // Issue #909: the now-playing bar docks at the bottom and the list ends
     // above it, so the bar never covers the last row. The bar's height comes
-    // out of the list's share, down to one row of list above it, before the
-    // header gives any room up. While the keyboard is up (a search being
-    // typed) the bar hides and History is laid out as it is without one; the
-    // notification keeps the playlist's controls, and its events wait.
+    // out of the list's share, down to one whole row of list (and its day's
+    // heading) above it, before the header gives any room up. While the
+    // keyboard is up (a search being typed) the bar hides and History is laid
+    // out as it is without one; the notification keeps the playlist's
+    // controls, and its events wait.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
     readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
-    readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + rowHeight : 0)
+    // A day's heading over the rows (the list's section delegate).
+    readonly property real sectionHeight: 34
+    readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + sectionHeight + rowHeight : 0)
 
     PlexFlickable {
         id: headerScroll
@@ -687,7 +690,7 @@ Item {
             required property string section
 
             width: ListView.view ? ListView.view.width : 0
-            height: 34
+            height: screen.sectionHeight
             leftPadding: Theme.screenPadding
             verticalAlignment: Text.AlignBottom
             bottomPadding: 8

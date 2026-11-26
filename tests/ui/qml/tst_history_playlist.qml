@@ -508,6 +508,48 @@ Item {
             compare(callHistory.count, 0);
         }
 
+        // ✕ takes a pointer's tap in both forms: while it plays it stops the playlist; once ended it only
+        // dismisses, sending nothing. Ended and stacked, it is centred on the result it closes.
+        function test_close_by_pointer_data() {
+            return [{tag: "stacked", width: 360}, {tag: "one line", width: 900}];
+        }
+        function test_close_by_pointer(data) {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            root.width = data.width;
+            idleLoader.width = data.width;
+            try {
+                var generation = playAll(screen, calls);
+                playing({item: 0});
+                compare(bar(screen).stacked, data.width < 400);
+                var close = part(screen, "nowPlayingClose");
+                waitForRendering(screen);
+                mouseClick(close, close.width / 2, close.height / 2);
+                var stops = hostCallsNamed("stopPlaybackGeneration");
+                compare(stops.length, 1, "a tap stops it");
+                compare(stops[0].generation, generation);
+                verify(!bar(screen).visible);
+
+                playAll(screen, calls);
+                testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
+                verify(bar(screen).visible);
+                var result = part(screen, "nowPlayingResult");
+                if (bar(screen).stacked) {
+                    var r = rectIn(part(screen, "nowPlayingShowInList"), screen), c = rectIn(close, screen);
+                    verify(Math.abs((c.y + c.height / 2) - (r.y + r.height / 2)) < 1, "✕ centred on the result: " + describe(c) + " " + describe(r));
+                }
+                var before = testContext.hostCalls().length;
+                waitForRendering(screen);
+                mouseClick(close, close.width / 2, close.height / 2);
+                compare(testContext.hostCalls().length, before, "ended: a tap sends nothing");
+                verify(!bar(screen).visible, "dismissed");
+            } finally {
+                root.width = 360;
+                idleLoader.width = 360;
+            }
+        }
+
         // Clear history also lets go of an ended playlist's result: its rows are gone. Nothing is sent.
         function test_clear_dismisses_an_ended_result() {
             var calls = logCalls(2);
@@ -714,7 +756,15 @@ Item {
             verify(Math.abs(barRect.y + barRect.height - screen.height) < 0.5, "docked at the bottom: " + describe(barRect));
             verify(listRect.y + listRect.height <= barRect.y + 0.5, "the list ends above the bar: " + describe(listRect) + " " + describe(barRect));
             verify(list.height + barItem.height >= share - 0.5, "list and bar keep the list's share: " + list.height + "+" + barItem.height);
-            verify(list.height >= screen.rowHeight - 0.5, "at least a row of list: " + list.height);
+            verify(list.height >= screen.sectionHeight + screen.rowHeight - 0.5, "at least a whole row of list and its day: " + list.height);
+            // From the top: the day's heading and its first row whole above the bar.
+            list.positionViewAtBeginning();
+            waitForRendering(list);
+            var first = list.itemAtIndex(0);
+            verify(first !== null, "the first row is built");
+            var firstRect = rectIn(first, screen);
+            verify(firstRect.y >= listRect.y - 0.5 && firstRect.y + firstRect.height <= barRect.y + 0.5,
+                   "a whole row shows above the bar: " + describe(firstRect) + " " + describe(barRect));
             verify(listRect.y >= scroll.y + scroll.height, "the list starts under the header");
             if (barItem.height + screen.rowHeight <= share)
                 compare(scroll.height, Math.min(scroll.contentHeight, screen.height - share - 4), "the bar took nothing from the header");

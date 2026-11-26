@@ -433,7 +433,9 @@ Rectangle {
         icon: "close"
         accessibleName: bar.live ? qsTr("Stop playing") : qsTr("Close")
         x: bar.closeX
-        y: bar.stacked ? bar.padding + (bar.topRow - height) / 2 : (bar.height - height) / 2
+        // Beside the top row's text; once ended, centred on the result, which
+        // then fills the transport's room too.
+        y: bar.stacked ? bar.padding + ((bar.end ? bar.textHeight : bar.topRow) - height) / 2 : (bar.height - height) / 2
         onClicked: bar.close()
     }
 
