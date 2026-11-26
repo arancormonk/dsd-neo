@@ -2147,8 +2147,9 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
             f"Every row classifies with the plan full_demod() installs (the harness's chain requests, a reader row's "
             f"through the reader); the script's own plan (the half-band recursion, or its port of the reader, and the "
             f"channel taps) agrees with it within {max(model_off) if model_off else 0.0:.2e} (lag equal; beta, rho "
-            f"absolute; N_eff, gain relative) over {len(model_off)} plans. The streamed chain (unit impulses at every input phase through the ported "
-            f"stages) gives the recursion's covariance within {meta['generator_check']:.1e} of the power on every chain "
+            f"absolute; N_eff, gain relative) over {len(model_off)} plans. The streamed chain (unit impulses at every "
+            f"input phase through the ported stages) gives the recursion's covariance within "
+            f"{meta['generator_check']:.1e} of the power on every chain "
             "without a reader."
         ),
         "",
