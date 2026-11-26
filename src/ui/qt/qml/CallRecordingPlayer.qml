@@ -244,11 +244,24 @@ Column {
             say("", false);
     }
 
+    // Issue #909: what the play button would do now and what it would do it
+    // to: its action, the host's play and recording, and the part shown.
+    function playGesture() {
+        return {action: wantsPlay ? "pause" : paused ? "resume" : "play", generation: Number(decoderHost.playbackGeneration), token: Number(decoderHost.playbackToken), path: part ? part.path : ""};
+    }
+    // The gesture a press on the play button began, for its tap.
+    property var playPress: null
     // Play from the start, or carry on where it paused. Pause and Resume carry
     // the token of the recording open when they were pressed: one pressed on a
-    // recording that has moved on since does nothing.
-    function toggle() {
+    // recording that has moved on since does nothing. A tap acts on what its
+    // press began on (@p pressed, from playGesture()): one whose target moved
+    // while the press was held (a playlist on to another part or call) is
+    // dropped, never turned into another action on another recording.
+    function toggle(pressed) {
         if (!supported || !part || storageAway || awaitingToken)
+            return;
+        var now = playGesture();
+        if (pressed && (pressed.action !== now.action || pressed.generation !== now.generation || pressed.token !== now.token || pressed.path !== now.path))
             return;
         var token = decoderHost.playbackToken;
         if (wantsPlay) {
@@ -624,7 +637,12 @@ Column {
             showPause: player.wantsPlay
             enabled: !player.storageAway && !player.awaitingToken
             accessibleName: player.wantsPlay ? qsTr("Pause recording") : player.paused ? qsTr("Resume recording") : qsTr("Play recording")
-            onClicked: player.toggle()
+            onPressBegan: player.playPress = player.playGesture()
+            onClicked: {
+                var pressed = playButton.tapping ? player.playPress : null;
+                player.playPress = null;
+                player.toggle(pressed);
+            }
         }
 
         Column {
@@ -672,6 +690,9 @@ Column {
                     property real dragMs: 0
                     // The recording a drag began on: its seek is dropped once another one is open.
                     property real dragToken: 0
+                    // Issue #909: the recording open when a press on the bar began; a tap or a drag that
+                    // starts once another one is open does nothing.
+                    property real pressToken: 0
                     readonly property real fraction: player.durationMs > 0 ? Math.max(0, Math.min(1, player.positionMs / player.durationMs)) : 0
 
                     width: parent.width
@@ -762,8 +783,10 @@ Column {
 
                     GatedTapHandler {
                         enabled: seekBar.seekable
+                        onPressBegan: seekBar.pressToken = Number(decoderHost.playbackToken)
                         onAllowedTap: function (eventPoint) {
-                            seekBar.seekTo(seekBar.msAt(eventPoint.position.x), decoderHost.playbackToken);
+                            if (seekBar.pressToken > 0 && seekBar.pressToken === Number(decoderHost.playbackToken))
+                                seekBar.seekTo(seekBar.msAt(eventPoint.position.x), seekBar.pressToken);
                         }
                     }
                     // Not a tap: a drag that began on a sheet over the bar takes the
@@ -776,7 +799,10 @@ Column {
                         yAxis.enabled: false
                         onActiveChanged: {
                             if (active) {
-                                seekBar.dragToken = decoderHost.playbackToken;
+                                // Begun on a recording that is no longer the one open: no drag.
+                                if (seekBar.pressToken <= 0 || seekBar.pressToken !== Number(decoderHost.playbackToken))
+                                    return;
+                                seekBar.dragToken = seekBar.pressToken;
                                 seekBar.dragMs = seekBar.msAt(centroid.position.x);
                                 seekBar.dragging = true;
                             } else if (seekBar.dragging) {
@@ -785,7 +811,7 @@ Column {
                             }
                         }
                         onCentroidChanged: {
-                            if (active)
+                            if (active && seekBar.dragging)
                                 seekBar.dragMs = seekBar.msAt(centroid.position.x);
                         }
                     }

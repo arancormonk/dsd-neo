@@ -19814,11 +19814,14 @@ Qt Quick frontend (`src/ui/qt`):
     one file check is its only one, and the start after it never reaches `playRecording()`'s missing-file stop,
     `decoder_host_test_hooks.h` taking the file between them in `UI_QT_ANDROID_HOST`) and the sheet says "This recording
     is gone.". Item commands carry the play token captured when the gesture began (`seekPlaybackFor`,
-    `pausePlaybackFor`, `resumePlaybackFor`); the seek bar reads `playbackCanSeek`. A single recording's delete
-    confirmation says `deleteMessage` ("Only the audio is deleted. History and detections are unchanged.", a host may
-    set its own), and the Call recordings screen's bulk deletes say the same of their count: a recording may have no
-    History row (never linked, or trimmed) and may belong to a Signal search detection, so "the call stays in History"
-    would not hold (issue #809 B3).
+    `pausePlaybackFor`, `resumePlaybackFor`): the play button reads its action, the host's generation and token and
+    the part shown at the press (`PlayCircle.pressBegan`, `tapping` while a tap's `clicked()` runs) and the seek bar
+    its token (`GatedTapHandler.pressBegan`), and a tap, or a drag's start, once any of that moved does nothing (the
+    now-playing bar's Pause/Resume reads its action and playlist the same way); the seek bar reads `playbackCanSeek`. A
+    single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and detections are
+    unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of their count: a
+    recording may have no History row (never linked, or trimmed) and may belong to a Signal search detection, so "the
+    call stays in History" would not hold (issue #809 B3).
     `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
     editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
     with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
@@ -25612,9 +25615,10 @@ does not, and a press on a `MouseArea` (a scrim, a barrier) or a Control reaches
 refuses a handler beneath while the cover is up, but a control that closes the cover on that release has taken it away
 by the time the handler beneath reports its tap. Every tap in `src/ui/qt/qml` therefore goes through
 `qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)` (its parent unless `gate` is set) when
-the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()`; a new
-control uses it and handles those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed`
-(Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
+the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()` (and
+`pressBegan()` as a press starts, for a control that acts on what it showed then); a new control uses it and handles
+those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed` (Semgrep
+`dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
 `onSingleTapped`/`onDoubleTapped`; it cannot see a handler reached another way, `Connections { function onTapped() }` or
 `.tapped.connect(...)`). Keyboard and accessibility presses do not come through it and keep the control's own guarded
 activation. A drag or pinch is not a tap: a drag, mouse or touch, that begins anywhere on a cover, its scrim included,

@@ -389,6 +389,25 @@ Item {
             compare(barItem.announcements, 1, "not said again");
         }
 
+        // Pause pressed while it plays, a headset pausing it before the release: the tap acts on what it was pressed
+        // on, so it does not resume the playlist the user meant to pause.
+        function test_a_press_acts_on_what_it_began_on() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 0});
+            var play = part(screen, "nowPlayingPlay");
+            verify(play.showPause);
+            mousePress(play, play.width / 2, play.height / 2);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "user"});
+            verify(!play.showPause, "paused meanwhile");
+            mouseRelease(play, play.width / 2, play.height / 2);
+            compare(hostCallsNamed("resumePlayback").length + hostCallsNamed("pausePlayback").length, 0, "nothing sent");
+            mouseClick(play, play.width / 2, play.height / 2);
+            compare(hostCallsNamed("resumePlayback").length, 1, "a press begun now resumes");
+        }
+
         // A Resume refused, then refused again with the same reading but for the host's refusal count: each refusal
         // is said on the bar (the fake host, like the real one, publishes nothing for a reading that did not change).
         function test_repeated_refusal_said_again() {

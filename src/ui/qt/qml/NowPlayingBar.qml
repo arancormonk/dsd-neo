@@ -147,8 +147,19 @@ Rectangle {
         notice = qsTr("This call isn't in the list now.");
         Navigation.announce(bar, showButton, notice);
     }
-    function togglePlay() {
+    // What a press on Pause/Resume began on: whether it would pause, and the
+    // playlist; a tap acts on that, or on nothing once either changed while
+    // the press was held (a headset paused it meanwhile: the tap does not
+    // resume it).
+    property var playPress: null
+    function playGesture() {
+        return {wanted: wanted, generation: status ? status.generation : 0};
+    }
+    function togglePlay(pressed) {
         if (!live)
+            return;
+        var now = playGesture();
+        if (pressed && (pressed.wanted !== now.wanted || pressed.generation !== now.generation))
             return;
         if (wanted)
             decoderHost.pausePlayback();
@@ -411,7 +422,12 @@ Rectangle {
         accessibleName: bar.wanted ? qsTr("Pause") : qsTr("Resume")
         x: bar.playX
         y: bar.transportY
-        onClicked: bar.togglePlay()
+        onPressBegan: bar.playPress = bar.playGesture()
+        onClicked: {
+            var pressed = playButton.tapping ? bar.playPress : null;
+            bar.playPress = null;
+            bar.togglePlay(pressed);
+        }
     }
     MapControlButton {
         id: nextButton

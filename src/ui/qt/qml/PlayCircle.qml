@@ -15,6 +15,11 @@ Item {
     property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
+    // Issue #909: a pointer press began, and whether the clicked() now emitted
+    // ends one (a tap) rather than a key or a screen reader's press: a control
+    // whose action depends on what it shows reads it at the press.
+    signal pressBegan
+    property bool tapping: false
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Button
@@ -103,6 +108,11 @@ Item {
 
     GatedTapHandler {
         enabled: control.enabled
-        onAllowedTap: control.activate()
+        onPressBegan: control.pressBegan()
+        onAllowedTap: {
+            control.tapping = true;
+            control.activate();
+            control.tapping = false;
+        }
     }
 }

@@ -15,7 +15,8 @@ import QtQuick
 //
 // Callers handle allowedTap and allowedLongPress, not tapped and longPressed.
 // Keyboard and accessibility presses do not come through here: they keep the
-// control's own guarded activation.
+// control's own guarded activation. pressBegan() marks a press's start, for a
+// control whose tap should act on what it showed then (issue #909).
 TapHandler {
     id: handler
 
@@ -28,10 +29,14 @@ TapHandler {
     signal allowedTap(var eventPoint, int button)
     /** longPressed(), likewise. */
     signal allowedLongPress
+    /** A press began (before any tap or drag it turns into). */
+    signal pressBegan
 
     onPressedChanged: {
-        if (pressed)
+        if (pressed) {
             pressAllowed = !!gate && Navigation.allows(gate);
+            handler.pressBegan();
+        }
     }
     onTapped: function (eventPoint, button) {
         if (pressAllowed && Navigation.allows(gate))

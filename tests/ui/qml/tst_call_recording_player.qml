@@ -1278,6 +1278,52 @@ Item {
             compare(lastHostCall().token, 6);
         }
 
+        // A tap acts on what its press began on: Pause pressed on call A's part, the playlist on to call B before the
+        // release, sends nothing (not a play of A, which would replace the playlist); a tap on the seek bar pressed on
+        // one part and released on the next seeks nothing, and a drag that starts after the move does not start.
+        function test_a_press_acts_on_its_own_target() {
+            var a = rec("t-1", pathA, 12000);
+            var b = rec("t-2", pathB, 8000);
+            var uidA = callHistory.pushWithRecordings([a]);
+            var uidB = callHistory.pushWithRecordings([b]);
+            playPlaylist([itemOf(a, 0, 1, 1, uidA), itemOf(b, 1, 1, 1, uidB)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 3, playbackDurationMs: 12000, playbackCanSeek: true});
+            openRow(uidA);
+            var button = item("recordingPlayButton");
+            verify(button.showPause, "A plays here");
+            var calls = testContext.hostCalls().length;
+            mousePress(button, button.width / 2, button.height / 2);
+            testContext.publishPlaybackReading({item: 1, playbackToken: 4, playbackDurationMs: 8000});
+            verify(!button.showPause, "A no longer plays");
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(testContext.hostCalls().length, calls, "the press's target moved: nothing is sent");
+            compare(hostCallsNamed("playRecordingOwned").length, 0);
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "playRecordingOwned", "a press begun now plays A");
+            sheet().visible = false;
+
+            uidA = openWith([rec("t-3", pathA, 10000), rec("t-4", pathB, 10000)]);
+            tap("recordingPlayAll");
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 10000, playbackCanSeek: true});
+            var bar = item("recordingSeekBar");
+            var y = bar.height / 2;
+            var seeks = hostCallsNamed("seekPlaybackFor").length;
+            mousePress(bar, bar.width / 2, y);
+            testContext.publishPlaybackReading({item: 1, playbackToken: 6, playbackPositionMs: 0});
+            mouseRelease(bar, bar.width / 2, y);
+            compare(hostCallsNamed("seekPlaybackFor").length, seeks, "a tap pressed on part 1 seeks nothing on part 2");
+            mousePress(bar, bar.width * 0.2, y);
+            testContext.publishPlaybackReading({item: 0, playbackToken: 7, playbackPositionMs: 0});
+            for (var i = 1; i <= 8; ++i)
+                mouseMove(bar, bar.width * (0.2 + i * 0.05), y);
+            verify(!bar.dragging, "a drag that starts after the move does not start");
+            mouseRelease(bar, bar.width * 0.6, y);
+            compare(hostCallsNamed("seekPlaybackFor").length, seeks, "and seeks nothing");
+            mouseClick(bar, bar.width / 2, y);
+            compare(hostCallsNamed("seekPlaybackFor").length, seeks + 1, "a tap begun on the part open seeks it");
+            compare(lastHostCall().token, 7);
+        }
+
         // Ownership by generation: a sheet whose own play a playlist replaced on the same path stops nothing at its
         // close; one whose Play all parts moved on to a later part stops it by its generation.
         function test_close_stops_only_its_own_generation() {
