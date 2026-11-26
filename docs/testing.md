@@ -213,12 +213,12 @@ meanwhile and the late results released, every part stuck ending "unplayable", a
 prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), a stuck setup thread
 replaced at its timeout, or at once when Stop or Next leaves it (the next item and a later sheet play set up on a fresh
 one, never failing; a hung prepare keeps its thread),
-no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the
-gap opening the call again; an error from a part completed or left reaching nothing; Previous on a recording deleted
-while it played skipping it), a resume from the paused gap or the focus back while the next part
-opens keeping the paused stretch until a part plays (paused again 600.05 s from the first pause: "timeout"), and
-`FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build of the
-same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
+no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the gap
+opening the call again, and staying paused in a paused gap; an error from a part completed or left reaching nothing;
+Previous on a recording deleted while it played skipping it), a resume from the paused gap or the focus back while the
+next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the first pause: "timeout"),
+and `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build
+of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
 the retire check after every delivery, `onDestroy` fenced to its generation, `release()` with a promoted service and

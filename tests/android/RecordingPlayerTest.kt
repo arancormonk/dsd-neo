@@ -806,6 +806,23 @@ private fun previousFollowsTheThreeSecondRule() {
     gap.elapse(5_000)
     check(gap.players.size == 2 && gap.status.call == 0) { "the gap is over" }
 
+    // In a paused gap: the call opened again stays paused, its new player never started and no focus asked.
+    val pausedGap = Rig()
+    pausedGap.queue(1, 1)
+    pausedGap.prepared()
+    pausedGap.complete()
+    pausedGap.machine.pause()
+    check(pausedGap.status.gap && pausedGap.state == PAUSED) { "a paused gap" }
+    val asked = pausedGap.focus.requests.size
+    pausedGap.machine.previous()
+    check(!pausedGap.status.gap && pausedGap.players.size == 2 && pausedGap.last.path == path(0, 1)) {
+        "Previous in the paused gap opens the call again"
+    }
+    pausedGap.prepared()
+    check(pausedGap.state == PAUSED && !pausedGap.last.started && pausedGap.focus.requests.size == asked) {
+        "and stays paused: never started, no focus asked"
+    }
+
     val parts = Rig()
     parts.queue(2, 1)
     parts.playOut()
