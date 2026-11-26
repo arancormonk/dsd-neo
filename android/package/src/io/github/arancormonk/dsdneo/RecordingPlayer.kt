@@ -154,7 +154,8 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * candidate fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
  * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
  * of its call at once, then the gap before the next call. The gap holds no player, only the readings of the part that
- * completed (its item, token, duration and position). Play in a paused gap opens the next call at once.
+ * completed or failed while it played (its item, token, duration and position). Every open starts at position 0 with
+ * an unknown length, never the readings of the part tried before it. Play in a paused gap opens the next call at once.
  *
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
  * which nothing was wanted or the focus was away, checked by a task, at every event and when the device wakes
@@ -1009,6 +1010,11 @@ class RecordingPlayer(
     private fun open(candidate: Int) {
         index = candidate
         token = tokens.incrementAndGet()
+        // The part opening has no readings of its own yet: never the position or length of the part tried before it
+        // (one that failed while it played), which the Previous rule, the seek and the record would read as this one's.
+        // What a gap needs of the part that played is kept apart, in [left].
+        positionMs = 0
+        durationMs = 0
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a stuck setup to return too.
         val opened = token
@@ -1105,6 +1111,10 @@ class RecordingPlayer(
         cancel(Slot.PREPARE)
         val wasOpen = prepared
         positionMs = currentPositionMs()
+        if (wasOpen) {
+            // It played: followed as if it had completed, so the gap after its call names it, whatever opens next.
+            left = Left(index, token, durationMs, positionMs)
+        }
         player?.release()
         player = null
         dropOpening()

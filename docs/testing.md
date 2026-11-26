@@ -197,33 +197,34 @@ the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part,
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
 pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
 then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
-good, B all failed, C good), all failed, a player-wide error, the skip notice on the call a part played on after the
-skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the gap after the call the skip happened
-on), queued items with a negative size refused and only SINGLE opening unchecked, by its mode, the refusal count moving
-on each refused focus request, the recheck list across Stop and replacement, the state/action table row by row (a
-command a state forbids is dropped), interruption with a system Play and with the app's Pause, noisy in each state, the
-10-minute deadline with a clock jump, a late task and deep sleep (the screen turning on ends it, `onAwake()`), play
-tokens (Pause and Resume for the item in a gap with no player after its last part failed, no seek there), task ids and
-focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after the play,
-refused, timed out and late, PARTS's failure rule and duration 0, a throwing player factory, a prepare that never
-answers (skipped at 10 s in a playlist and in PARTS, where part 2 then plays, Failed alone, none at 9.9 s or after a
-move, its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast error to a part
-prepared after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), each
-player's own thread (a fake setup held, run late, failed or refused: a setup stuck in a read failing its part at 10 s
-with Stop working meanwhile and the late results released, every part stuck ending "unplayable", a result after a move
-released, a prepare answering before the result, an error before it, SINGLE and PARTS on the same path, and a player
-that cannot be made on its thread, a thread that cannot start and a refused hand-off ending the play), a stuck setup
-holding only its own thread, at its timeout or when Stop or Next leaves it (the next item and a later sheet play set up
-at once, never failing; a hung prepare is not counted as stuck), at most two setups given up still running at once (a
-third open waits with no player made: it goes on when one returns, and times out and is skipped one at a time when both
-are stuck; Stop drops the wait; five quick moves whose setups are done but not delivered skip nothing; five Next then
-five Previous with every setup in flight fail nothing), a prepare timeout past a paused deadline ending "timeout" at
-once, a setup's gone file rechecked when its result comes after Stop or Next, Previous while a part opens opening it
-again (deleted meanwhile: skipped), no player ever reused (a completion around a Previous, in either order, never
-reaching the new pass; Previous in the gap opening the call again, and staying paused in a paused gap; an error from a
-part completed or left reaching nothing; the next part handed off before the completed one is released; Previous on a
-recording deleted while it played skipping it), a resume from the paused gap or the focus back while the next part opens
-keeping the paused stretch until a part plays (paused again 600.05 s from the first pause: "timeout"),
+good, B all failed, C good), all failed, a player-wide error, a part opened after one that failed while it played
+reading 0 and unknown (Previous then going to the call before, and the gap naming the part that played), the skip notice
+on the call a part played on after the skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the
+gap after the call the skip happened on), queued items with a negative size refused and only SINGLE opening unchecked,
+by its mode, the refusal count moving on each refused focus request, the recheck list across Stop and replacement, the
+state/action table row by row (a command a state forbids is dropped), interruption with a system Play and with the app's
+Pause, noisy in each state, the 10-minute deadline with a clock jump, a late task and deep sleep (the screen turning on
+ends it, `onAwake()`), play tokens (Pause and Resume for the item in a gap with no player after its last part failed, no
+seek there), task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before
+and after the play, refused, timed out and late, PARTS's failure rule and duration 0, a throwing player factory, a
+prepare that never answers (skipped at 10 s in a playlist and in PARTS, where part 2 then plays, Failed alone, none at
+9.9 s or after a move, its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast
+error to a part prepared after the deadline, which plays, ending finished when every remaining part fails, "timeout"
+when refused), each player's own thread (a fake setup held, run late, failed or refused: a setup stuck in a read failing
+its part at 10 s with Stop working meanwhile and the late results released, every part stuck ending "unplayable", a
+result after a move released, a prepare answering before the result, an error before it, SINGLE and PARTS on the same
+path, and a player that cannot be made on its thread, a thread that cannot start and a refused hand-off ending the
+play), a stuck setup holding only its own thread, at its timeout or when Stop or Next leaves it (the next item and a
+later sheet play set up at once, never failing; a hung prepare is not counted as stuck), at most two setups given up
+still running at once (a third open waits with no player made: it goes on when one returns, and times out and is skipped
+one at a time when both are stuck; Stop drops the wait; five quick moves whose setups are done but not delivered skip
+nothing; five Next then five Previous with every setup in flight fail nothing), a prepare timeout past a paused deadline
+ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next, Previous while a part
+opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion around a Previous, in either
+order, never reaching the new pass; Previous in the gap opening the call again, and staying paused in a paused gap; an
+error from a part completed or left reaching nothing; the next part handed off before the completed one is released;
+Previous on a recording deleted while it played skipping it), a resume from the paused gap or the focus back while the
+next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the first pause: "timeout"),
 and `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build
 of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start

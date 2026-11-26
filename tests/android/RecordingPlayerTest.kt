@@ -828,6 +828,54 @@ private fun nextPastOnlyFailedCallsFinishes() {
     check(rig.service.ends == listOf(generation to RecordingPlayer.ENDED_FINISHED)) { "the service is told once" }
 }
 
+/**
+ * Every open starts at position 0 and an unknown length (#909): a skip that opens the next part after one failed while
+ * it played never carries the failed part's readings. B1 plays 4 s of 60 and fails; while B2 opens, the record shows
+ * 0 and unknown, and Previous applies the 3,000 ms rule to B2's own position, so it goes to call A. The gap after a
+ * call still names the part that played in it.
+ */
+private fun aSkipOpensThePartWithItsOwnReadings() {
+    val rig = Rig()
+    rig.queue(1, 2)
+    rig.playOut()
+    rig.elapse(RecordingPlayer.GAP_MS)
+    rig.prepared()
+    val b1 = rig.current
+    rig.elapse(4_000)
+    check(rig.status.call == 1 && rig.position == 4_000L && rig.status.durationMs == 60_000L) { "B1 plays at 4 s" }
+    rig.error(b1, RecordingPlayer.REASON_DAMAGED)
+    rig.turn()
+    check(rig.status.partOrdinal == 2 && rig.state == PREPARING && rig.status.skipped == 1) { "B1 skipped, B2 opens" }
+    check(rig.position == 0L && rig.status.durationMs == 0L && !rig.status.canSeek) {
+        "B2 opening reads 0 and unknown, not B1's 4 s of 60 (${rig.position}, ${rig.status.durationMs})"
+    }
+    val record = rig.status.record(rig.nowMs).split('\t')
+    check(record[2] == "0" && record[3] == "0") { "and so does its record: ${record.take(4)}" }
+    check(rig.service.changes.last().positionMs(rig.nowMs) == 0L && rig.service.changes.last().durationMs == 0L) {
+        "and the session's reading"
+    }
+    rig.machine.previous()
+    check(rig.status.call == 0 && rig.last.path == path(0, 1)) { "Previous before B2 prepares goes to call A" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 0) { "which plays" }
+
+    // A call's last part fails while it plays, and the call's remaining part is gone: the gap names the part that
+    // played, at the position it reached, not the part tried after it.
+    val gap = Rig()
+    gap.queue(2, 1)
+    gap.prepared()
+    val first = gap.current
+    gap.elapse(4_000)
+    gap.fail(path(0, 2), RecordingPlayer.REASON_GONE)
+    gap.error(first, RecordingPlayer.REASON_DAMAGED)
+    gap.turn()
+    gap.turn()
+    check(gap.status.gap && gap.status.partOrdinal == 1 && gap.status.playToken == first.token) {
+        "the gap names part 1, which played (${gap.status.partOrdinal})"
+    }
+    check(gap.position == 4_000L && gap.status.durationMs == 60_000L) { "at its own readings" }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -2790,6 +2838,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    aSkipOpensThePartWithItsOwnReadings()
     movesWhilePausedStayPausedAndKeepTheDeadline()
     aResumeWaitingForTheFocusKeepsTheDeadline()
     lateCallbacksTasksAndFocusAreDropped()
