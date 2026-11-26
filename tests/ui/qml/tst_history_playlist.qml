@@ -948,6 +948,44 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
+        // In a short window at 2x text the bar and a row of list would leave the header no room at all: it keeps one
+        // control row, above the bar and scrolling, so Search (and the filters, Export and Clear under it) stays in
+        // reach without ending the playlist.
+        function test_short_window_keeps_the_header_data() {
+            return [{tag: "idle", session: false}, {tag: "session", session: true}];
+        }
+        function test_short_window_keeps_the_header(data) {
+            var calls = logCalls(5);
+            var loader = data.session ? sessionLoader : idleLoader;
+            var screen = loader.item;
+            only(screen);
+            Ui.Theme.fontScale = 2.0;
+            loader.height = 240;
+            try {
+                playAll(screen, calls);
+                playing({item: 0});
+                verify(waitForPolish(screen));
+                waitForRendering(screen);
+                compare(screen.height, 240);
+                var scroll = findChild(screen, "historyHeaderScroll");
+                var barRect = rectIn(bar(screen), screen);
+                verify(barRect.height > 0 && bar(screen).visible, "the bar shows: " + describe(barRect));
+                verify(scroll.height > 0, "the header keeps room: " + scroll.height);
+                verify(scroll.height >= Math.min(scroll.contentHeight, 48, barRect.y - 4) - 0.5, "at least a control row: " + scroll.height);
+                verify(scroll.y + scroll.height <= barRect.y + 0.5, "above the bar: " + scroll.height + " " + describe(barRect));
+                verify(scroll.interactive, "and it scrolls for the rest");
+                var search = findChild(screen, "historySearch");
+                search.forceActiveFocus();
+                tryVerify(function () {
+                    var r = rectIn(search, screen);
+                    return r.y < scroll.y + scroll.height - 1 && r.y + r.height > scroll.y + 1;
+                }, 2000, "Search scrolled into the header's room");
+            } finally {
+                loader.height = 640;
+                root.forceActiveFocus();
+            }
+        }
+
         // The line under the name holds at most two lines: every status it shows fits them whole at 360 px, at
         // normal or 2x text (and wide), except one whose whole words Show in list's description reads. A refused
         // resume shows a short line; its full sentence is what is read. The result takes the transport's room and

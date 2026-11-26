@@ -307,12 +307,20 @@ Item {
     // keyboard is up (a search being typed) the bar hides and History is laid
     // out as it is without one; the notification keeps the playlist's
     // controls, and its events wait.
+    //
+    // That reservation never takes the whole header: in a short window at a
+    // large text size the bar and a row of list leave it nothing, and Search,
+    // the filters, Export and Clear could not be reached without ending the
+    // playlist. The header keeps one control row of room (the search field's
+    // height), scrolling for the rest, within what the bar leaves.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
     readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
     // A day's heading over the rows (the list's section delegate).
     readonly property real sectionHeight: 34
     readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + sectionHeight + rowHeight : 0)
+    readonly property real headerFloor: Math.min(headerScroll.contentHeight, Theme.screenPadding + Math.max(Theme.minimumTouchSize, search.height),
+                                                 Math.max(0, height - barHeight - logList.anchors.topMargin))
 
     PlexFlickable {
         id: headerScroll
@@ -322,7 +330,7 @@ Item {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: Math.min(contentHeight, Math.max(0, screen.height - screen.listShare - logList.anchors.topMargin))
+        height: Math.min(contentHeight, Math.max(screen.headerFloor, screen.height - screen.listShare - logList.anchors.topMargin))
         contentWidth: width
         // A few pixels under the filters for their focus ring, which the clip
         // would otherwise cut; the list's top margin gives them back.

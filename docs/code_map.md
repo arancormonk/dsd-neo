@@ -20087,7 +20087,10 @@ Qt Quick frontend (`src/ui/qt`):
       ends its delete confirmation (forgetting the file it named) and its save picker when its sheet hides or opens
       again (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the
       first call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the
-      block).
+      block). The bar's height and a row of list come out of the list's share before the header gives room up, but
+      the header always keeps one control row (`HistoryScreen.headerFloor`, the search field's height) above the bar,
+      scrolling for the rest, so in a short window at a large text size Search, the filters, Export and Clear stay in
+      reach.
     - Documented limits: calls recorded after the press are not added; the limit or a delete can take a queued
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is
