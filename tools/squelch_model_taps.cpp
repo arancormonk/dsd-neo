@@ -4,30 +4,34 @@
  */
 
 /*
- * Tap source for tools/squelch_model.py: prints the channel-filter plans the demodulator really runs, as JSON lines.
+ * Tap and plan source for tools/squelch_model.py: prints the channel-filter plans the demodulator really runs, and the
+ * auto squelch plans full_demod() installs on them, as JSON lines.
  *
  * Not part of the build. tools/squelch_model.py compiles it against the static DSP, runtime, IQ and platform libraries
  * of a configured build tree (the link line of dsd-neo_test_dsp_channel_filters) and reads its output.
  *
  * The first line holds the half-band decimator taps and the analog channel constants. Then each stdin line
- * "<rate_out_hz> <width_hz> <kind>" (kind 0 = FM, 1 = AM) gets one JSON line with the plan full_demod() designs for an
- * analog-family monitor at that demod rate: the width-driven analog design for width_hz > 0, the legacy WIDE profile
+ * "<rate_hz> <width_hz> <kind>" (kind 0 = FM, 1 = AM) gets one JSON line with the plan full_demod() designs for an
+ * analog-family monitor at that complex rate: the width-driven analog design for width_hz > 0, the legacy WIDE profile
  * plan (288-tap cap, 63-tap fallback) for width_hz 0. It also reports the validator's view of the width
  * (dsd_analog_width_realizable(), the tap count for the rate, the widest width the rate fits and the legacy WIDE
  * width) and whether dsd_channel_lpf_design_analog() called directly gives the same taps as the plan.
  *
- * tools/squelch_paths_model.py (issue #625) adds three fields, "<profile> <hb> <channel_rate_hz>": profile -1 keeps the
- * analog-family design above, a dsd_ch_lpf_profile designs that profile's plan off the analog family (the EDACS FSK
- * path's PROVOICE, the M17 encoder's WIDE), and -2 runs no channel filter. Its line then also carries the auto
- * squelch's classifier plan for those taps behind the half-band stage hb (0 none, 15 or 31 taps) at the channel rate
- * (dsd_squelch_floor_plan_design()).
+ * Three more fields, "<path> <profile> <passes>", run that request on a whole chain without a step (issue #899): the
+ * path (0 the analog monitor, 1 the M17 encoder's monitor, 2 the 9600 bit/s two-level FSK path EDACS analog voice
+ * reads), the channel filter (-1 the analog family's design above, -2 the channel LPF off, or a dsd_ch_lpf_profile off
+ * the family: PROVOICE, WIDE) and the half-band passes ahead of it at 2^passes times the rate. full_demod() runs a block
+ * of that chain under AUTO, and the line also carries the auto squelch plan it installed (the decoder's own: the whole
+ * cascade's for two passes or more) and whether the tracker ran.
  *
  * "squelch_model_taps track" runs the auto squelch's tracker itself instead (tools/squelch_paths_model.py's timing
- * checks): a first stdin line "<channel_rate_hz> <margin_db> <hb> <taps_len> <tap>..." sets the plan, then interleaved
+ * checks): a first stdin line "<margin_db> <rate_hz> <lag> <rho_lag> <beta> <neff> <sqrt_neff> <noise_gain>" sets the
+ * plan (one this harness printed, or the tools' model of a chain the decoder's plan does not cover), then interleaved
  * float32 I/Q follows to EOF; stdout gets one flag byte per sample (DSD_SQUELCH_FLAG_CLOSED when the gate was closed),
  * from a tracker that starts LEARNING.
  */
 
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
@@ -49,10 +53,19 @@ print_taps(const float* taps, int len) {
     DSD_FPRINTF(stdout, "]");
 }
 
-/* One block through full_demod() so the channel LPF designs its plan, as DSP_CHANNEL_FILTERS does: the analog family's
-   (profile -1), or a profile's off the family. */
+static void
+release_demod(demod_state* s) {
+    dsd_neo_aligned_free(s->post_polydecim_taps);
+    dsd_neo_aligned_free(s->post_polydecim_hist);
+    s->post_polydecim_taps = NULL;
+    s->post_polydecim_hist = NULL;
+}
+
+/* One block through full_demod() so the channel LPF designs its plan, as DSP_CHANNEL_FILTERS does: the analog
+   family's. */
 static int
-design_plan(demod_state* s, int rate_hz, int kind, int width_hz, int profile) {
+design_plan(demod_state* s, int rate_hz, int kind, int width_hz) {
+    release_demod(s);
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = rate_hz;
     s->rate_out = rate_hz;
@@ -63,71 +76,114 @@ design_plan(demod_state* s, int rate_hz, int kind, int width_hz, int profile) {
     s->lowpassed = s->input_cb_buf;
     s->lp_len = 1024;
     s->channel_lpf_enable = 1;
-    s->channel_lpf_profile = profile < 0 ? DSD_CH_LPF_PROFILE_WIDE : profile;
-    s->analog_family = profile < 0 ? 1 : 0;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    s->analog_family = 1;
     s->analog_demod = kind;
-    s->channel_lpf_width_hz = profile < 0 ? width_hz : 0;
+    s->channel_lpf_width_hz = width_hz;
     full_demod(s);
     return s->channel_lpf_plan_taps_len;
 }
 
-/* The auto squelch's classifier plan for the channel taps (none when taps_len is 0) behind half-band stage hb. */
+/* Blocks of silence through full_demod() on @p path with @p passes half-band passes and no step, under AUTO, until a
+   block leaves channel samples: the channel filter designs its plan and the tracker installs its own. Returns the
+   channel taps' length (0 with the channel LPF off). */
+static int
+run_chain_plan(demod_state* s, int rate_hz, int kind, int width_hz, int path, int profile, int passes) {
+    release_demod(s);
+    DSD_MEMSET(s, 0, sizeof(*s));
+    s->rate_in = rate_hz;
+    s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
+    s->post_downsample = 1;
+    s->downsample_passes = passes;
+    s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    s->mode_demod = &dsd_fm_demod;
+    s->channel_lpf_enable = profile == -2 ? 0 : 1;
+    s->channel_lpf_profile = profile >= 0 ? profile : DSD_CH_LPF_PROFILE_WIDE;
+    if (path == 0) {
+        s->analog_family = 1;
+        s->analog_demod = kind;
+        s->mode_demod = kind == DSD_ANALOG_DEMOD_AM ? &dsd_am_demod : &dsd_fm_demod;
+        s->channel_lpf_width_hz = profile == -1 ? width_hz : 0;
+    } else if (path == 1) {
+        s->m17_encoder_monitor = 1;
+    } else {
+        s->output_kind = DSD_DEMOD_OUTPUT_FSK_DISCRIMINATOR;
+        s->symbol_rate_hz = 9600;
+        s->symbol_levels = 2;
+    }
+    s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    s->squelch_margin_db = 10;
+    const int pairs = passes >= 6 ? 16384 : (256 << passes);
+    for (int i = 0; i < 8; i++) {
+        DSD_MEMSET(s->input_cb_buf, 0, (size_t)pairs * 2U * sizeof(float));
+        s->lowpassed = s->input_cb_buf;
+        s->lp_len = pairs * 2;
+        full_demod(s);
+        if (!s->front_end_empty && s->lp_len > 0) {
+            break;
+        }
+    }
+    return s->channel_lpf_enable ? s->channel_lpf_plan_taps_len : 0;
+}
+
 static void
-print_floor_plan(const float* taps, int taps_len, int hb, int channel_rate) {
-    const float* hb_taps = hb == 31 ? hb31_q15_taps : (hb == 15 ? hb_q15_taps : NULL);
-    const int hb_len = hb == 31 ? 31 : (hb == 15 ? HB_TAPS : 0);
-    dsd_squelch_floor_plan fp;
-    DSD_MEMSET(&fp, 0, sizeof fp);
-    (void)dsd_squelch_floor_plan_design(&fp, taps_len > 0 ? taps : NULL, taps_len, hb_taps, hb_len, channel_rate);
+print_floor_plan(const dsd_squelch_floor_plan* fp, int installed) {
     DSD_FPRINTF(stdout,
-                ",\"profile_plan\":1,\"floor_plan\":{\"valid\":%d,\"rate_hz\":%d,\"lag\":%d,\"rho_lag\":%.17g,"
+                ",\"installed\":%d,\"floor_plan\":{\"valid\":%d,\"rate_hz\":%d,\"lag\":%d,\"rho_lag\":%.17g,"
                 "\"beta\":%.17g,\"neff\":%.17g,\"sqrt_neff\":%.17g,\"noise_gain\":%.17g}",
-                fp.valid, fp.rate_hz, fp.lag, fp.rho_lag, fp.beta, fp.neff, fp.sqrt_neff, fp.noise_gain);
+                installed, fp->valid, fp->rate_hz, fp->lag, fp->rho_lag, fp->beta, fp->neff, fp->sqrt_neff,
+                fp->noise_gain);
+}
+
+/* The next number of a header, or 0 when there is none. */
+static int
+next_double(char** cur, double* out) {
+    char* end = NULL;
+    *out = strtod(*cur, &end);
+    if (end == *cur) {
+        return 0;
+    }
+    *cur = end;
+    return 1;
 }
 
 /* The tracker over stdin's I/Q, one flag byte per sample to stdout. */
 static int
 run_tracker(void) {
-    static char header[65536];
+    char header[1024];
     if (!fgets(header, sizeof header, stdin)) {
         return 1;
     }
-    static float taps[DSD_ANALOG_CHANNEL_MAX_TAPS];
+    double v[8];
     char* cur = header;
-    char* next = NULL;
-    const long rate = strtol(cur, &next, 10);
-    cur = next;
-    const long margin = strtol(cur, &next, 10);
-    cur = next;
-    const long hb = strtol(cur, &next, 10);
-    cur = next;
-    const long taps_len = strtol(cur, &next, 10);
-    if (next == cur || rate <= 0 || taps_len < 0 || taps_len > DSD_ANALOG_CHANNEL_MAX_TAPS) {
-        DSD_FPRINTF(stderr, "bad track header\n");
-        return 1;
-    }
-    for (long i = 0; i < taps_len; i++) {
-        cur = next;
-        taps[i] = strtof(cur, &next);
-        if (next == cur) {
-            DSD_FPRINTF(stderr, "bad tap %ld\n", i);
+    for (int i = 0; i < 8; i++) {
+        if (!next_double(&cur, &v[i])) {
+            DSD_FPRINTF(stderr, "bad track header\n");
             return 1;
         }
     }
-    const float* hb_taps = hb == 31 ? hb31_q15_taps : (hb == 15 ? hb_q15_taps : NULL);
-    const int hb_len = hb == 31 ? 31 : (hb == 15 ? HB_TAPS : 0);
     dsd_squelch_floor_plan plan;
-    if (dsd_squelch_floor_plan_design(&plan, taps_len > 0 ? taps : NULL, (int)taps_len, hb_taps, hb_len, (int)rate)
-        != 0) {
+    DSD_MEMSET(&plan, 0, sizeof plan);
+    plan.rate_hz = (int)v[1];
+    plan.lag = (int)v[2];
+    plan.rho_lag = v[3];
+    plan.beta = v[4];
+    plan.neff = v[5];
+    plan.sqrt_neff = v[6];
+    plan.noise_gain = v[7];
+    if (plan.rate_hz < 100 || plan.lag < 1 || plan.lag > DSD_SQUELCH_FLOOR_MAX_LAG || !(plan.sqrt_neff > 0.0)
+        || !(plan.noise_gain > 0.0)) {
         DSD_FPRINTF(stderr, "plan not valid\n");
         return 1;
     }
+    plan.valid = 1;
     dsd_squelch_floor* t = static_cast<dsd_squelch_floor*>(calloc(1, sizeof(dsd_squelch_floor)));
     if (!t) {
         return 1;
     }
     dsd_squelch_floor_set_plan(t, &plan);
-    dsd_squelch_floor_set_margin(t, (int)margin);
+    dsd_squelch_floor_set_margin(t, (int)v[0]);
     dsd_squelch_floor_reset(t);
     static float iq[2 * 8192];
     static uint8_t flags[8192];
@@ -152,6 +208,7 @@ main(int argc, char** argv) {
     if (!s) {
         return 1;
     }
+    DSD_MEMSET(s, 0, sizeof(*s));
     DSD_FPRINTF(stdout, "{\"header\":1,\"transition_hz\":%d,\"guard_hz\":%d,\"max_taps\":%d,\"hb15\":",
                 DSD_ANALOG_CHANNEL_TRANSITION_HZ, DSD_ANALOG_CHANNEL_GUARD_HZ, DSD_ANALOG_CHANNEL_MAX_TAPS);
     print_taps(hb_q15_taps, HB_TAPS);
@@ -175,27 +232,29 @@ main(int argc, char** argv) {
             rc = 1;
             continue;
         }
-        /* The optional profile fields (tools/squelch_paths_model.py). */
+        /* The optional chain fields (tools/squelch_paths_model.py, tools/squelch_model.py). */
         char* end4 = NULL;
-        long profile = strtol(end3, &end4, 10);
-        const int with_profile = end4 != end3 ? 1 : 0;
-        long hb = 0;
-        long channel_rate = rate;
-        if (with_profile) {
+        const long path = strtol(end3, &end4, 10);
+        const int with_chain = end4 != end3 ? 1 : 0;
+        long profile = -1;
+        long passes = 0;
+        if (with_chain) {
             char* end5 = NULL;
-            hb = strtol(end4, &end5, 10);
+            profile = strtol(end4, &end5, 10);
             char* end6 = NULL;
-            channel_rate = strtol(end5, &end6, 10);
-            if (end5 == end4 || end6 == end5 || profile < -2 || profile > DSD_CH_LPF_PROFILE_P25_CQPSK
-                || (hb != 0 && hb != 15 && hb != 31) || channel_rate < rate || channel_rate > 10000000) {
+            passes = strtol(end5, &end6, 10);
+            const int profile_ok = path == 0 ? (profile == -1 || profile == -2)
+                                             : (profile == -2 || profile == DSD_CH_LPF_PROFILE_WIDE
+                                                || profile == DSD_CH_LPF_PROFILE_PROVOICE);
+            if (end5 == end4 || end6 == end5 || path < 0 || path > 2 || !profile_ok || passes < 0 || passes > 10) {
                 DSD_FPRINTF(stderr, "bad request: %s", line);
                 rc = 1;
                 continue;
             }
-        } else {
-            profile = -1;
         }
-        const int taps_len = profile == -2 ? 0 : design_plan(s, (int)rate, (int)kind, (int)width, (int)profile);
+        const int taps_len =
+            with_chain ? run_chain_plan(s, (int)rate, (int)kind, (int)width, (int)path, (int)profile, (int)passes)
+                       : design_plan(s, (int)rate, (int)kind, (int)width);
         int direct_len = -1;
         int direct_same = 0;
         if (width > 0 && profile == -1) {
@@ -213,13 +272,14 @@ main(int argc, char** argv) {
                     dsd_analog_channel_taps_for_rate((int)rate), dsd_analog_width_max_for_rate((int)rate),
                     dsd_channel_lpf_legacy_wide_width_hz((int)rate), direct_len, direct_same);
         print_taps(s->channel_lpf_plan_taps, taps_len > 0 ? taps_len : 0);
-        if (with_profile) {
-            DSD_FPRINTF(stdout, ",\"profile\":%ld,\"hb\":%ld,\"channel_rate\":%ld,\"protected_edge_hz\":%.1f", profile,
-                        hb, channel_rate, profile >= 0 ? dsd_channel_lpf_protected_edge_hz((int)profile) : 0.0);
-            print_floor_plan(s->channel_lpf_plan_taps, taps_len, (int)hb, (int)channel_rate);
+        if (with_chain) {
+            DSD_FPRINTF(stdout, ",\"path\":%ld,\"profile\":%ld,\"passes\":%ld,\"protected_edge_hz\":%.1f", path,
+                        profile, passes, profile >= 0 ? dsd_channel_lpf_protected_edge_hz((int)profile) : 0.0);
+            print_floor_plan(&s->squelch_floor.plan, s->squelch_auto_ran);
         }
         DSD_FPRINTF(stdout, "}\n");
     }
+    release_demod(s);
     dsd_neo_aligned_free(s);
     return rc;
 }

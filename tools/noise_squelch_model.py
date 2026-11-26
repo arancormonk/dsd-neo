@@ -48,7 +48,10 @@ noise and neighbours included) through each plan of 12.5 kHz or wider.
 
 The receiver's half-band cascade. Each chain decimates through `passes` half-band stages ahead of the channel filter
 (src/dsp/demod_pipeline.cpp: the 31-tap stage first, the 15-tap ones after), and the 15-tap stage droops inside the
-band. The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at twice
+band. The passes are the shared chain identity's (tools/squelch_model.py rate_plans(): an RTL-SDR bandwidth's 4 to 8,
+a replay's recorded base decimation). The stepped chains (a fixed-grid device: the passes, then the live step) and the
+reader's chains (a resampler ahead of the passes) are not run here: this model has no port of the step, and
+DSP_SQUELCH_STEP_MODEL holds the stepped noise plans. The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at twice
 the channel rate, through the stages before the last (one linear-phase FIR sampled from their composite response,
 CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last stage. With no channel filter the
 cascade's roll-off is the channel's edge, and it truncates a signal that reaches the rate's Nyquist into the band: such
@@ -673,47 +676,23 @@ def report(results: list[dict], members: dict, out_dir: Path, started: float, mo
     return text
 
 
-def rtl_passes(rate_in_hz: int) -> int:
-    """rtl_downsample_passes_for_rate_in() (src/io/radio/rtl_sdr_fm.cpp): the half-band passes an RTL chain runs."""
-    factor = 1000000 // rate_in_hz + 1
-    if factor <= 1:
-        return 0
-    log2 = factor.bit_length() - 1
-    passes = min(sm.MAX_DOWNSAMPLE_PASSES, log2 if factor & (factor - 1) == 0 else log2 + 1)
-    good = (960000, 1024000, 1200000, 1536000, 1920000, 2048000, 2400000)
-    best, best_err = passes, None
-    for delta in (-1, 0, 1):
-        p = max(0, min(sm.MAX_DOWNSAMPLE_PASSES, passes + delta))
-        cap = rate_in_hz * (1 << p)
-        if cap < 225000 or cap > 3200000:
-            continue
-        for rate in good:
-            if best_err is None or abs(cap - rate) < best_err:
-                best_err, best = abs(cap - rate), p
-    return best
-
-
-def cascade_passes(plan) -> int:
-    """The half-band passes ahead of plan's channel filter."""
-    if plan.source == "rtl":
-        return rtl_passes(plan.rate_in)
-    if plan.source == "device":
-        capture = sm.DEVICE_CAPTURES_HZ[plan.name.split("-bw")[0]]
-        return round(math.log2(capture / plan.rate_out))
-    return 0 if plan.hb is None else 1
-
-
 def cascade_stages(plan, hb_taps: dict) -> list:
-    """The cascade's stages, top first, as src/dsp/demod_pipeline.cpp runs them: hb31 first, hb15 after."""
-    passes = cascade_passes(plan)
-    return [np.asarray(hb_taps["hb31" if i == 0 else "hb15"]).tolist() for i in range(passes)]
+    """The cascade's stages, top first, as src/dsp/demod_pipeline.cpp runs them: hb31 first, hb15 after, as many as the
+    shared chain identity's passes (tools/squelch_model.py: an RTL-SDR chain's 4 to 8)."""
+    return [np.asarray(hb_taps["hb31" if i == 0 else "hb15"]).tolist() for i in range(plan.passes)]
+
+
+def modelled_here(plan) -> bool:
+    """The chains this model runs: the stepped ones (the live step after the passes) and the reader's (a resampler
+    ahead of them) are not modelled here; DSP_SQUELCH_STEP_MODEL holds the stepped noise plans."""
+    return not plan.stepped and plan.reader is None
 
 
 def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict], dict]:
     jobs, members = {}, {}
     for combo in combos:
         plan = combo["plan"]
-        key = f"{combo['fkey']}:p{cascade_passes(plan)}:{combo['protected_hz']}"
+        key = f"{combo['fkey']}:{combo['protected_hz']}"
         members.setdefault(key, []).append(sm.combo_id(combo))
         jobs.setdefault(
             key,
@@ -733,14 +712,14 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
     """The custom widths (CUSTOM_WIDTHS_HZ) on every chain without post-decimation at CUSTOM_MIN_RATE_HZ or above."""
     known = {j["key"] for j in jobs}
     for plan in plans:
-        if plan.post_downsample != 1 or plan.rate_out < CUSTOM_MIN_RATE_HZ:
+        if not modelled_here(plan) or plan.post_downsample != 1 or plan.complex_rate < CUSTOM_MIN_RATE_HZ:
             continue
         for width in CUSTOM_WIDTHS_HZ:
-            rec = harness_plans.get((plan.rate_out, width, sm.FM_KIND))
+            rec = harness_plans.get((plan.complex_rate, width, sm.FM_KIND))
             if not rec or not rec["realizable"]:
                 continue
             taps_key = sm.taps_key(np.asarray(rec["taps"]))
-            key = f"{plan.channel_rate}:{plan.hb}:{taps_key}:p{cascade_passes(plan)}:{width}"
+            key = f"{plan.chain_key}:{taps_key}:{width}"
             members.setdefault(key, []).append(f"NFM {width} (custom) on {plan.name}")
             if key in known:
                 continue
@@ -764,12 +743,12 @@ def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, job
     known = {j["key"] for j in jobs}
     added = set()
     for plan in plans:
-        if plan.rate_in < sm.LPF_DEFAULT_ENABLE_RATE_IN_HZ:
+        if not modelled_here(plan) or plan.rate_in < sm.LPF_DEFAULT_ENABLE_RATE_IN_HZ:
             continue
-        rec = harness_plans[(plan.rate_out, 0, sm.FM_KIND)]
-        width = rec["legacy_wide_width_hz"] * plan.post_downsample
+        rec = harness_plans[(plan.complex_rate, 0, sm.FM_KIND)]
+        width = rec["legacy_wide_width_hz"]
         taps_key = sm.taps_key(np.asarray(rec["taps"]))
-        key = f"{plan.channel_rate}:{plan.hb}:{taps_key}:p{cascade_passes(plan)}:{width}"
+        key = f"{plan.chain_key}:{taps_key}:{width}"
         members.setdefault(key, []).append(f"M17 encoder legacy WIDE on {plan.name}")
         if key in known:
             continue
@@ -805,14 +784,19 @@ def main(argv: list[str] | None = None) -> int:
     out_dir.mkdir(parents=True, exist_ok=True)
     exe = sm.build_harness(args.build_dir.resolve(), out_dir)
     plans = sm.rate_plans()
-    requests = {(p.rate_out, w, sm.FM_KIND) for p in plans for w in (*sm.NFM_WIDTHS_HZ, sm.NFM_WIDTH_DEFAULT_HZ, 0)}
-    requests |= {(p.rate_out, w, sm.AM_KIND) for p in plans for w in sm.AM_WIDTHS_HZ}
+    requests = set(sm.harness_requests(plans))
     requests |= {
-        (p.rate_out, w, sm.FM_KIND) for p in plans for w in CUSTOM_WIDTHS_HZ if p.rate_out >= CUSTOM_MIN_RATE_HZ
+        (p.complex_rate, w, sm.FM_KIND) for p in plans for w in CUSTOM_WIDTHS_HZ if p.complex_rate >= CUSTOM_MIN_RATE_HZ
     }
     header, harness_plans = sm.run_harness(exe, sorted(requests))
     hb_taps = {name: np.asarray(header[name], dtype=np.float64) for name in ("hb15", "hb31")}
-    combos = [c for c in sm.build_combos(plans, harness_plans, hb_taps) if c["runs"] and c["config"].kind == sm.FM_KIND]
+    combos = [
+        c
+        for c in sm.build_combos(plans, harness_plans, hb_taps)
+        if sm.modelled(c) and modelled_here(c["plan"]) and c["config"].kind == sm.FM_KIND
+    ]
+    skipped = sorted({p.name for p in plans if not modelled_here(p)})
+    print(f"chains not modelled here (stepped, or through a reader): {', '.join(skipped)}", flush=True)
     jobs, members = unique_jobs(combos, hb_taps, mode)
     custom_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
     encoder_only = encoder_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
