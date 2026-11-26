@@ -177,8 +177,8 @@ Item {
             var node = testContext.accessibleNode(group);
             verify(!node.inTree, why + ": out of the tree");
             compare(node.name, "", why + ": nameless");
-            verify(!node.focusable && node.actions.indexOf("SetFocus") < 0, why + ": no stop, " + JSON.stringify(node.actions));
-            testContext.accessibleDoAction(group, "SetFocus");
+            verify(!node.focusable && node.actions.indexOf(testContext.setFocusAction) < 0, why + ": no stop, " + JSON.stringify(node.actions));
+            testContext.accessibleDoAction(group, testContext.setFocusAction);
             verify(!group.activeFocus, why + ": a cached SetFocus takes no keyboard");
         }
         function grouped_data() {
@@ -201,7 +201,7 @@ Item {
             for (var how of ["hidden", "covered"]) {
                 var node = testContext.accessibleNode(group);
                 verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
-                testContext.accessibleDoAction(group, "SetFocus");
+                testContext.accessibleDoAction(group, testContext.setFocusAction);
                 verify(group.activeFocus, how + ": SetFocus gives the group the keyboard");
                 if (how === "hidden")
                     set(data.hidden);
@@ -243,7 +243,7 @@ Item {
             for (var how of ["hidden", "covered"]) {
                 node = testContext.accessibleNode(item);
                 verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
-                testContext.accessibleDoAction(item, "SetFocus");
+                testContext.accessibleDoAction(item, testContext.setFocusAction);
                 verify(item.activeFocus, how + ": SetFocus gives it the keyboard");
                 if (how === "hidden")
                     set(data.hidden);
@@ -282,7 +282,7 @@ Item {
             for (var how of ["hidden", "covered"]) {
                 var node = testContext.accessibleNode(fields);
                 verify(node.inTree && node.focusable && node.name.length > 0, how + ": shown, a named stop");
-                testContext.accessibleDoAction(fields, "SetFocus");
+                testContext.accessibleDoAction(fields, testContext.setFocusAction);
                 verify(fields.activeFocus, how + ": SetFocus gives the fields the keyboard");
                 if (how === "hidden")
                     set({siteProtocol: "DMR"});

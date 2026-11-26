@@ -307,7 +307,7 @@ Item {
             verify(testContext.accessibleNode(item).focusable, "shown: a stop");
             // The focused control itself is hidden; a text takes the keyboard from a screen reader's SetFocus.
             if (data.tag === "ReadableText")
-                testContext.accessibleDoAction(item, "SetFocus");
+                testContext.accessibleDoAction(item, testContext.setFocusAction);
             else
                 item.forceActiveFocus();
             verify(item.activeFocus, "shown: it has the keyboard");
@@ -321,9 +321,9 @@ Item {
             verify(!node.inTree, "hidden: out of the tree");
             compare(node.name, "", "hidden: nameless");
             verify(!node.focusable, "hidden: no stop, " + JSON.stringify(node.actions));
-            verify(node.actions.indexOf("SetFocus") < 0, "hidden: no focus action");
+            verify(node.actions.indexOf(testContext.setFocusAction) < 0, "hidden: no focus action");
             verify(!item.activeFocus, "hidden: no keyboard");
-            testContext.accessibleDoAction(item, "SetFocus");
+            testContext.accessibleDoAction(item, testContext.setFocusAction);
             verify(!item.activeFocus, "hidden: an accessibility focus takes no keyboard");
             // No key of its own acts unseen: Space toggles nothing, Down opens no list, typing edits nothing.
             keyClick(Qt.Key_Space);
@@ -415,7 +415,7 @@ Item {
 
             // The focused control itself is covered; a text takes the keyboard from a screen reader's SetFocus.
             if (data.text)
-                testContext.accessibleDoAction(item, "SetFocus");
+                testContext.accessibleDoAction(item, testContext.setFocusAction);
             else
                 item.forceActiveFocus();
             verify(item.activeFocus, "before the cover: it has the keyboard");
@@ -432,10 +432,10 @@ Item {
             compare(node.name, "", "covered: nameless");
             compare(node.value, "", "covered: no text to read");
             verify(!node.focusable, "covered: no stop");
-            verify(node.actions.indexOf("SetFocus") < 0, "covered: no focus action, " + JSON.stringify(node.actions));
+            verify(node.actions.indexOf(testContext.setFocusAction) < 0, "covered: no focus action, " + JSON.stringify(node.actions));
             // A cached node's actions, whatever it still lists, act on nothing.
             var checked = item.checked;
-            testContext.accessibleDoAction(item, "SetFocus");
+            testContext.accessibleDoAction(item, testContext.setFocusAction);
             testContext.accessibleDoAction(item, "Press");
             testContext.accessibleDoAction(item, "Toggle");
             verify(!item.activeFocus, "covered: an accessibility focus leaves the keyboard where it was");
@@ -746,7 +746,7 @@ Item {
             var row = rows[1];
             verify(testContext.accessibleNode(row).focusable && row.Accessible.name === "DMR", "open: a named stop");
             // Issue #902: a screen reader's SetFocus gives the option the keyboard.
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             verify(row.activeFocus, "open: SetFocus gives the option the keyboard");
             Ui.Navigation.modals = Ui.Navigation.modals.concat([cover]);
             compare(row.Accessible.name, "", "covered: nameless");
@@ -876,7 +876,7 @@ Item {
             combo.popup.open();
             tryVerify(function () { return combo.popup.opened; });
             var row = comboRow(1);
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             verify(row.activeFocus);
             sheet.visible = true;
             verify(!combo.popup.visible, "the sheet closes the list");
@@ -894,7 +894,7 @@ Item {
             combo.popup.open();
             tryVerify(function () { return combo.popup.opened; });
             var row = comboRow(1);
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             verify(row.activeFocus);
             sheet.visible = true;
             verify(!combo.popup.visible, "the sheet closes the list");
@@ -1231,7 +1231,7 @@ Item {
             combo.popup.open();
             tryVerify(function () { return combo.popup.opened; });
             var row = comboRow(1);
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             var tap = row.mapToItem(root, row.width / 2, row.height / 2);
             if (data.how === "layer")
                 Ui.Navigation.layers = [{surface: loadedLayer}];
@@ -1252,7 +1252,7 @@ Item {
             combo.popup.open();
             tryVerify(function () { return combo.popup.opened; });
             var row = comboRow(1);
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             testContext.sendKey(row, Qt.Key_Space, 0, true, false);
             verify(row.parent.pressed, "Space is down on the option");
             sheet.visible = true;
@@ -1263,7 +1263,7 @@ Item {
             tryVerify(function () { return combo.popup.opened; });
             row = comboRow(1);
             verify(!row.parent.pressed && !row.parent.down, "open again: no option is pressed");
-            testContext.accessibleDoAction(row, "SetFocus");
+            testContext.accessibleDoAction(row, testContext.setFocusAction);
             testContext.sendKey(row, Qt.Key_Space, 0, false, false);
             compare(combo.currentIndex, 0, "a lone Space release chooses nothing");
         }
@@ -1306,7 +1306,7 @@ Item {
             node = testContext.accessibleNode(heldLine);
             verify(!node.inTree, "not shown: out of the tree");
             compare(node.name, "", "not shown: nameless");
-            verify(!node.focusable && node.actions.indexOf("SetFocus") < 0, "not shown: no stop, " + JSON.stringify(node.actions));
+            verify(!node.focusable && node.actions.indexOf(testContext.setFocusAction) < 0, "not shown: no stop, " + JSON.stringify(node.actions));
         }
 
         // Uncovered, a check box and a toggle still take a screen reader's double tap.

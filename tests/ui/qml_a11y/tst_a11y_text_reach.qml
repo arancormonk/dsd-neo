@@ -712,7 +712,7 @@ Item {
             verify(paused.inTree && paused.focusable, "paused: a stop in the tree");
             diagnosticsLog.paused = false;
             var streaming = testContext.accessibleNode(row);
-            var stop = streaming.focusable || streaming.actions.indexOf("SetFocus") >= 0;
+            var stop = streaming.focusable || streaming.actions.indexOf(testContext.setFocusAction) >= 0;
             dispose(screen);
             verify(!streaming.inTree && streaming.name === "", "streaming: out of the tree, nameless");
             verify(!stop, "streaming: no stop, " + JSON.stringify(streaming.actions));
@@ -768,7 +768,7 @@ Item {
                 }
             }
             if (focused !== null) {
-                testContext.accessibleDoAction(focused, "SetFocus");
+                testContext.accessibleDoAction(focused, testContext.setFocusAction);
                 verify(focused.activeFocus, data.tag + ": SetFocus gives the reading the keyboard");
             }
             findChild(screen, "searchHistoryActions").activate();
@@ -801,8 +801,8 @@ Item {
             for (var reading of readings) {
                 var line = findChild(screen, reading);
                 var native = testContext.accessibleNode(line);
-                testContext.accessibleDoAction(line, "SetFocus");
-                if (native.focusable || native.actions.indexOf("SetFocus") >= 0 || line.activeFocus)
+                testContext.accessibleDoAction(line, testContext.setFocusAction);
+                if (native.focusable || native.actions.indexOf(testContext.setFocusAction) >= 0 || line.activeFocus)
                     stops.push(reading + " " + JSON.stringify(native.actions));
             }
             Ui.Navigation.modals = modals;
