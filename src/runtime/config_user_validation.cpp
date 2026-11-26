@@ -1097,7 +1097,9 @@ validate_composed_config_path(const char* path, dsdcfg_diagnostics_t* diags) {
     char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
     int count =
         dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, DSD_CONFIG_VALIDATE_MAX_PROFILES);
-    if (count <= 0) {
+    if (count < 0) {
+        /* Never OK with every profile's composed check skipped (issue #931). */
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Read error; the profiles could not be listed");
         return;
     }
 

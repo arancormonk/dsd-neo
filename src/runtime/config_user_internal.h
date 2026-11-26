@@ -15,8 +15,9 @@
 #include <stdio.h>
 
 static constexpr int DSD_USER_CONFIG_MAX_INCLUDE_DEPTH = 3;
-/* A read error part way through a config file (user_config_read_line() returning -1): the file is unreadable. */
-static constexpr int DSD_USER_CONFIG_READ_ERROR = -3;
+/* Inside the loader: a read error (DSD_USER_CONFIG_READ_ERROR) of a file already logged with its path, which every
+   caller up to the public loader passes on unchanged. */
+static constexpr int USER_CFG_READ_ERROR_SAID = -4;
 
 void user_cfg_reset(dsdneoUserConfig* cfg);
 void user_config_strip_inline_comment(char* line);

@@ -13772,6 +13772,54 @@ test_bootstrap_steps_over_option_values(void) {
     return rc;
 }
 
+/* Issue #931 (gate r3fix): a config that cannot be read is said to be unreadable, once by the loader with its path,
+   and bootstrap does not call it a missing profile. Linux's /proc/self/mem opens and fails its first read (EIO). */
+static int
+test_bootstrap_config_read_error_reported(void) {
+#if defined(__linux__)
+    static const struct {
+        const char* args[4];
+        int nargs;
+        int want_boot;
+        const char* want;
+    } cases[] = {
+        {{"--config", "/proc/self/mem", "--profile", "p"},
+         4,
+         DSD_BOOTSTRAP_ERROR,
+         "Profile 'p' not loaded: the config could not be read (see above)"},
+        {{"--config", "/proc/self/mem"}, 2, DSD_BOOTSTRAP_CONTINUE, "Config not loaded: a read error (see above)"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        static char err[8192];
+        const int boot = bootstrap_with_ini("", cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        if (boot != cases[i].want_boot || strstr(err, cases[i].want) == NULL
+            || strstr(err, "a read error in /proc/self/mem") == NULL || strstr(err, "not found") != NULL) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d\n%s\n", i, boot, err);
+            rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return rc;
+#else
+    return 0;
+#endif
+}
+
 /* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
    positive value off for the run; the config saved from that run leaves the key out. --print-config shows a positive
    value and omits an effective 0. -h lists the option. */
@@ -15145,6 +15193,7 @@ main(void) {
     rc |= test_enum_options_checked_per_occurrence();
     rc |= test_print_config_leaves_out_credentials();
     rc |= test_bootstrap_steps_over_option_values();
+    rc |= test_bootstrap_config_read_error_reported();
     rc |= test_rdio_credentials_too_long_refused();
     rc |= test_rejected_long_option_value_not_echoed();
     rc |= test_config_am_on_pcm_input_falls_back();

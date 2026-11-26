@@ -796,13 +796,19 @@ int dsd_user_imports_dir_create(void);
 /**
  * @brief Load a user config from the given path.
  *
- * On error (missing/unreadable file or parse error), cfg is zeroed.
+ * On error (missing/unreadable file or parse error), cfg is zeroed: it holds the reset defaults and nothing of the file
+ * or its includes. A read error in the file or in any file it includes fails the whole load (issue #931), with
+ * DSD_USER_CONFIG_READ_ERROR; the failing file is logged once.
  *
  * @param path Path to the INI file.
  * @param cfg [out] Destination user config.
- * @return 0 on success; non-zero on error.
+ * @return 0 on success; DSD_USER_CONFIG_READ_ERROR on a read error; other non-zero on other errors.
  */
 int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
+
+/** dsd_user_config_load() / dsd_user_config_load_profile() result: a read error part way through the file or an
+    include (the file is unreadable, not missing). */
+#define DSD_USER_CONFIG_READ_ERROR (-3)
 
 /**
  * @brief Atomically write cfg to the given path (for interactive save).

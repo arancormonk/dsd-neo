@@ -257,13 +257,22 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
 
 static int
 bootstrap_handle_failed_user_config_load(const bootstrap_cli_args* args, int explicit_profile_selected,
-                                         const char* config_env, const char* cfg_path, int* out_exit_rc) {
+                                         const char* config_env, const char* cfg_path, int load_rc, int* out_exit_rc) {
+    /* A read error is said by the loader, once, with the file it is in (issue #931): no missing profile. */
+    const int read_error = load_rc == DSD_USER_CONFIG_READ_ERROR;
+    if (explicit_profile_selected && read_error) {
+        LOG_ERROR("Profile '%s' not loaded: the config could not be read (see above)\n", args->profile_cli);
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
     if (explicit_profile_selected) {
         LOG_ERROR("Profile '%s' not found in config file %s\n", args->profile_cli, cfg_path);
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
-    if (args->config_path_cli || config_env || args->enable_config_cli) {
+    if (read_error) {
+        LOG_WARN("WARNING: Config not loaded: a read error (see above); proceeding without config.\n");
+    } else if (args->config_path_cli || config_env || args->enable_config_cli) {
         LOG_WARN("WARNING: Failed to load config file from %s; proceeding without config.\n", cfg_path);
     }
     return DSD_BOOTSTRAP_CONTINUE;
@@ -309,7 +318,8 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
         return DSD_BOOTSTRAP_CONTINUE;
     }
 
-    return bootstrap_handle_failed_user_config_load(args, explicit_profile_selected, config_env, cfg_path, out_exit_rc);
+    return bootstrap_handle_failed_user_config_load(args, explicit_profile_selected, config_env, cfg_path, load_rc,
+                                                    out_exit_rc);
 }
 
 static int

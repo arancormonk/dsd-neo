@@ -1289,12 +1289,30 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
 
         apply_section_key(cfg, current_section, key_lc, val, USER_CFG_PARSE_MODE_BASE);
     }
-    if (got < 0) {
-        LOG_WARN("Config: a read error stopped the load; the config is not used\n");
-        return DSD_USER_CONFIG_READ_ERROR;
-    }
+    return got < 0 ? DSD_USER_CONFIG_READ_ERROR : 0;
+}
 
-    return 0;
+/* @p rc of reading @p opened_path: a read error of that file itself (DSD_USER_CONFIG_READ_ERROR) is logged once, with
+   its path, and passed on as USER_CFG_READ_ERROR_SAID, which every caller up to the public loader passes on unchanged
+   (issue #931). */
+static int
+note_read_error(int rc, const char* opened_path) {
+    if (rc != DSD_USER_CONFIG_READ_ERROR) {
+        return rc;
+    }
+    LOG_WARN("Config: a read error in %s; the config is not loaded\n", opened_path);
+    return USER_CFG_READ_ERROR_SAID;
+}
+
+/* The public loaders' result: on any failure @p cfg is reset, holding nothing of the files (config.h); a read error
+   anywhere is DSD_USER_CONFIG_READ_ERROR. */
+static int
+finish_public_load(int rc, dsdneoUserConfig* cfg) {
+    if (rc == 0) {
+        return 0;
+    }
+    user_cfg_reset(cfg);
+    return rc == USER_CFG_READ_ERROR_SAID ? DSD_USER_CONFIG_READ_ERROR : rc;
 }
 
 static int
@@ -1311,7 +1329,7 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
 
     int rc = user_config_load_no_reset_stream(fp, cfg);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 int
@@ -1326,14 +1344,15 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
         return -1;
     }
 
-    /* Process includes first (they provide base values that can be overridden) */
+    /* Process includes first (they provide base values that can be overridden); a read error in any file fails the
+       load, and nothing of it is used. */
     const char* stack[1] = {root_path};
-    if (process_includes(root_path, cfg, 0, stack, 1) == DSD_USER_CONFIG_READ_ERROR) {
-        return -1; /* a read error in the root file: nothing of it is used */
+    if (process_includes(root_path, cfg, 0, stack, 1) == USER_CFG_READ_ERROR_SAID) {
+        return finish_public_load(USER_CFG_READ_ERROR_SAID, cfg);
     }
 
     /* Now load the main config (which overrides included values) */
-    return user_config_load_no_reset(root_path, cfg);
+    return finish_public_load(user_config_load_no_reset(root_path, cfg), cfg);
 }
 
 // Profile support -------------------------------------------------------------
@@ -1601,13 +1620,19 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
             continue;
         }
 
-        /* Apply each optional include atomically. Missing, unreadable, or invalid includes are skipped without
-         * discarding values already composed from earlier includes. Nested includes retain their normal precedence
-         * below the file that names them. */
+        /* Apply each optional include atomically. Missing or invalid includes are skipped without discarding values
+         * already composed from earlier includes; a read error in one fails the whole load (issue #931). Nested
+         * includes retain their normal precedence below the file that names them. */
         dsdneoUserConfig candidate = *cfg;
         if (process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size)
-                != DSD_USER_CONFIG_READ_ERROR
-            && user_config_load_no_reset(inc_path, &candidate) == 0) {
+            == USER_CFG_READ_ERROR_SAID) {
+            return USER_CFG_READ_ERROR_SAID;
+        }
+        const int child_rc = user_config_load_no_reset(inc_path, &candidate);
+        if (child_rc == USER_CFG_READ_ERROR_SAID) {
+            return USER_CFG_READ_ERROR_SAID;
+        }
+        if (child_rc == 0) {
             *cfg = candidate;
         }
     }
@@ -1626,7 +1651,7 @@ process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char*
 
     int rc = process_includes_stream(fp, cfg, depth, include_stack, include_stack_size);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 static int
@@ -1730,7 +1755,6 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
         }
     }
     if (got < 0) {
-        LOG_WARN("Config: a read error stopped the profile load; the config is not used\n");
         return DSD_USER_CONFIG_READ_ERROR;
     }
 
@@ -1761,7 +1785,7 @@ load_config_internal(const char* path, const char* profile_name, dsdneoUserConfi
 
     int rc = load_config_internal_stream(fp, profile_name, cfg);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 int
@@ -1777,25 +1801,21 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
         return -1;
     }
 
-    /* Process includes first (they provide base values that can be overridden) */
+    /* Process includes first (they provide base values that can be overridden); a read error in any file fails the
+       load, and nothing of it is used. */
     const char* stack[1] = {root_path};
-    if (process_includes(root_path, cfg, 0, stack, 1) == DSD_USER_CONFIG_READ_ERROR) {
-        return -1; /* a read error in the root file: nothing of it is used */
+    if (process_includes(root_path, cfg, 0, stack, 1) == USER_CFG_READ_ERROR_SAID) {
+        return finish_public_load(USER_CFG_READ_ERROR_SAID, cfg);
     }
 
     /* Now load the main config (which overrides included values) */
     int rc = user_config_load_no_reset(root_path, cfg);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* If no profile requested, we're done */
-    if (!profile_name || !*profile_name) {
-        return 0;
+    if (rc != 0 || !profile_name || !*profile_name) {
+        return finish_public_load(rc, cfg);
     }
 
     /* Now overlay profile settings */
-    return load_config_internal(root_path, profile_name, cfg, 0, stack, 1);
+    return finish_public_load(load_config_internal(root_path, profile_name, cfg, 0, stack, 1), cfg);
 }
 
 static int
@@ -1856,16 +1876,17 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
     size_t buf_used = 0;
     char line[8192];
 
+    /* Read to the end even once the output is full: a read error after it still fails the list (issue #931). */
     int got = 0;
-    while (count < max_names && (got = user_config_read_line(stream, line, sizeof line, NULL)) > 0) {
+    int full = 0;
+    while ((got = user_config_read_line(stream, line, sizeof line, NULL)) > 0) {
         const char* profile_name = NULL;
-        if (!extract_profile_section_name(line, &profile_name)) {
+        if (full || !extract_profile_section_name(line, &profile_name)) {
             continue;
         }
-        if (!append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
-                                           &buf_used)) {
-            break; /* buffer full */
-        }
+        full = count >= max_names
+               || !append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
+                                                 &buf_used);
     }
 
     return got < 0 ? -1 : count; /* a read error lists nothing */
@@ -1886,5 +1907,8 @@ dsd_user_config_list_profiles(const char* path, const char** names, char* names_
 
     int count = dsd_user_config_list_profiles_stream(fp, names, names_buf, names_buf_size, max_names);
     fclose(fp);
+    if (count < 0) {
+        LOG_WARN("Config: a read error in %s; no profiles listed\n", opened_path);
+    }
     return count;
 }

@@ -5880,8 +5880,10 @@ test_config_line_nul_and_crlf(void) {
 #include <dsd-neo/runtime/path_policy.h>
 
 /* Issue #931 (gate r3): a stream that serves g_fault_content and then, from the g_fault_from_open-th open on (1-based),
-   fails with EIO instead of ending; earlier opens end cleanly after it. Off unless g_fault_reads. */
+   fails with EIO instead of ending; earlier opens end cleanly after it. With g_fault_path set, only an open of a path
+   holding it is faulted and every other open is the real one. Off unless g_fault_reads. */
 static int g_fault_reads;
+static std::string g_fault_path;
 static int g_fault_from_open;
 static int g_fault_opens;
 static int g_fault_hits;
@@ -5938,7 +5940,7 @@ extern "C" FILE* __wrap_dsd_path_fopen_user_read_file(const char* requested, cha
 
 extern "C" FILE*
 __wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size) {
-    if (!g_fault_reads) {
+    if (!g_fault_reads || (!g_fault_path.empty() && (!requested || !strstr(requested, g_fault_path.c_str())))) {
         return __real_dsd_path_fopen_user_read_file(requested, out, out_size);
     }
     if (out && out_size > 0) {
@@ -5956,6 +5958,7 @@ __wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t ou
 
 static void
 fault_arm(const char* content, int from_open) {
+    g_fault_path.clear();
     g_fault_content = content;
     g_fault_from_open = from_open;
     g_fault_opens = 0;
@@ -5963,10 +5966,11 @@ fault_arm(const char* content, int from_open) {
     g_fault_reads = 1;
 }
 
-/* Issue #931 (gate r3): a read error part way through a line is no end of file. "rdio_system_id = 154" then EIO
-   (before "437\n") is no line at all: the load fails with a warning, so a caller keeps the config it had, and no
-   partial value is applied. That holds for the main pass, the include pass before it, a profile overlay, the profile
-   list and --validate-config. A clean end after the same bytes loads 154. */
+/* Issue #931 (gate r3, r3fix): one rule for read errors. A read error in any file of a load (the root, an include, a
+   profile overlay) fails the whole load with DSD_USER_CONFIG_READ_ERROR: the caller's config is zeroed (config.h),
+   holding nothing of the files, not even the complete lines before the error, and the failing file is named once. A
+   partial line ("rdio_system_id = 154" then EIO) is never applied. The profile list fails on a read error even after
+   its output is full, and --validate-config reports a read error, a failed profile listing included. */
 static int
 test_config_read_error_mid_line(void) {
     int rc = 0;
@@ -5979,50 +5983,105 @@ test_config_read_error_mid_line(void) {
         DSD_FPRINTF(stderr, "FAIL: a clean end after the bytes: rc=%d system=%d\n", load_rc, cfg.rdio_system_id);
         rc |= 1;
     }
+    /* A complete line, then EIO, on the include pass (open 1) or the main pass (open 2): nothing of it is kept. */
     for (int from_open : {1, 2}) {
         g_log_text[0] = '\0';
-        fault_arm(k_partial, from_open);
+        cfg.rdio_system_id = 5;
+        fault_arm("[recording]\nrdio_system_id = 77\n", from_open);
         load_rc = dsd_user_config_load("faulted.ini", &cfg);
         g_fault_reads = 0;
-        if (load_rc == 0 || cfg.rdio_system_id == 154 || g_fault_hits == 0
-            || (from_open == 2 && strstr(g_log_text, "read error") == nullptr)) {
+        if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || g_fault_hits == 0
+            || strstr(g_log_text, "a read error in faulted.ini") == nullptr) {
             DSD_FPRINTF(stderr, "FAIL: a read error from open %d: rc=%d system=%d hits=%d (log: '%s')\n", from_open,
                         load_rc, cfg.rdio_system_id, g_fault_hits, g_log_text);
             rc |= 1;
         }
     }
-    /* The profile overlay is the third open (include pass, base pass, overlay). */
+    fault_arm(k_partial, 2);
+    load_rc = dsd_user_config_load("faulted.ini", &cfg);
+    g_fault_reads = 0;
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id == 154) {
+        DSD_FPRINTF(stderr, "FAIL: a partial line before EIO: rc=%d system=%d\n", load_rc, cfg.rdio_system_id);
+        rc |= 1;
+    }
+    /* The profile overlay is the third open (include pass, base pass, overlay): the profile load fails as a read
+       error, not a missing profile, and keeps none of the base's values. */
+    g_log_text[0] = '\0';
     fault_arm("[recording]\nrdio_system_id = 12\n\n[profile.p]\nrecording.rdio_system_id = 154", 3);
     load_rc = dsd_user_config_load_profile("faulted.ini", "p", &cfg);
     g_fault_reads = 0;
-    if (load_rc == 0 || cfg.rdio_system_id == 154 || g_fault_hits == 0) {
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || g_fault_hits == 0) {
         DSD_FPRINTF(stderr, "FAIL: a read error in the profile overlay: rc=%d system=%d\n", load_rc,
                     cfg.rdio_system_id);
         rc |= 1;
     }
+    /* An include whose read fails fails the whole load, naming the include. */
+    char child[DSD_TEST_PATH_MAX];
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config("[recording]\nrdio_unknown_talkgroup = 3\n", child, sizeof child) != 0) {
+        return 1;
+    }
+    const std::string root_ini = std::string("include = \"") + child + "\"\n[recording]\nrdio_system_id = 7\n";
+    if (write_temp_config(root_ini.c_str(), root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    g_log_text[0] = '\0';
+    fault_arm("[recording]\nrdio_unknown_talkgroup = 3\n", 1);
+    g_fault_path = child;
+    load_rc = dsd_user_config_load(root, &cfg);
+    g_fault_reads = 0;
+    g_fault_path.clear();
+    const std::string want_child = std::string("a read error in ") + child;
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || cfg.rdio_unknown_talkgroup != 0
+        || strstr(g_log_text, want_child.c_str()) == nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: an include's read error: rc=%d system=%d (log: '%s')\n", load_rc, cfg.rdio_system_id,
+                    g_log_text);
+        rc |= 1;
+    }
+    (void)remove(root);
+    (void)remove(child);
+    /* The list fails on a read error even when one name fills it first. */
     const char* names[4] = {nullptr};
     char names_buf[256];
-    fault_arm("[profile.a]\nx = 1\n[profile.b", 1);
-    const int listed = dsd_user_config_list_profiles("faulted.ini", names, names_buf, sizeof names_buf, 4);
+    fault_arm("[profile.a]\nx = 1\n[profile.b]\n", 1);
+    const int listed = dsd_user_config_list_profiles("faulted.ini", names, names_buf, sizeof names_buf, 1);
     g_fault_reads = 0;
     if (listed != -1) {
-        DSD_FPRINTF(stderr, "FAIL: a read error in the profile list listed %d\n", listed);
+        DSD_FPRINTF(stderr, "FAIL: a read error after a full profile list listed %d\n", listed);
         rc |= 1;
     }
-    dsdcfg_diagnostics_t diags;
-    DSD_MEMSET(&diags, 0, sizeof(diags));
-    fault_arm(k_partial, 1);
-    const int validated = dsd_user_config_validate("faulted.ini", &diags);
-    g_fault_reads = 0;
-    int read_errors = 0;
-    for (int i = 0; i < diags.count; i++) {
-        read_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "Read error");
+
+    /* --validate-config: a read error in the file it checks, and one in the profile listing of the composed checks
+       (opens: syntax pass 1, composed include pass 2, base 3, the list 4). */
+    static const struct {
+        const char* content;
+        int from_open;
+        const char* want;
+    } validations[] = {
+        {k_partial, 1, "Read error; the file cannot be loaded"},
+        {"[recording]\nrdio_system_id = 7\n[profile.a]\n", 4, "Read error; the profiles could not be listed"},
+    };
+
+    for (const auto& v : validations) {
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        fault_arm(v.content, v.from_open);
+        const int validated = dsd_user_config_validate("faulted.ini", &diags);
+        g_fault_reads = 0;
+        int read_errors = 0;
+        for (int i = 0; i < diags.count; i++) {
+            read_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, v.want);
+        }
+        if (validated == 0 || read_errors != 1) {
+            DSD_FPRINTF(stderr, "FAIL: --validate-config, %s: rc=%d errors=%d\n", v.want, validated, read_errors);
+            for (int i = 0; i < diags.count; i++) {
+                DSD_FPRINTF(stderr, "  %s\n", diags.items[i].message);
+            }
+            rc |= 1;
+        }
+        dsdcfg_diags_free(&diags);
     }
-    if (validated == 0 || read_errors != 1) {
-        DSD_FPRINTF(stderr, "FAIL: --validate-config on a read error: rc=%d read errors=%d\n", validated, read_errors);
-        rc |= 1;
-    }
-    dsdcfg_diags_free(&diags);
     return rc;
 }
 #endif
