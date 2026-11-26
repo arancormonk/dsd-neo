@@ -387,7 +387,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /** @brief A play's items as RecordingPlayback.play() takes them: one array per field, in the items' order. */
     struct PlaybackRequest {
         QStringList paths;
-        QList<qint64> sizes; // -1: not checked
+        QList<qint64> sizes; // -1: none, a single play's (named by path)
         QList<qint64> mtimeSecs;
         QList<int> mtimeNanos;
         QList<int> calls;

@@ -19911,7 +19911,13 @@ Qt Quick frontend (`src/ui/qt`):
       "part 2 of 3"), and hands them in order to `playRecordings(items, PlaybackPlaylist, "history")`. Item map keys:
       `path`, `size`, `mtimeSec`, `mtimeNanos` (the entry's indexed identity, `entry.identity`, never `bytes`, which the
       limit updates as accounting), `call`, `partOrdinal`, `partCount`, `title`, `line` (local "yyyy-MM-dd hh:mm"),
-      `key` (the row's uid, which `playbackKey` echoes for the row marker). Results: `accepted` (generation above 0 and
+      `key` (the row's uid, which `playbackKey` echoes for the row marker). The store lists every recording's identity,
+      so a PARTS or PLAYLIST item without one is malformed: `DecoderHost::playbackItemsValid()` refuses the request
+      (`size` must be a number from 0, `mtimeSec` and `mtimeNanos` numbers) as any invalid one, returning 0 with what
+      plays left playing; `RecordingPlayback.play()` refuses a negative size again (`RecordingPlayer.identified()`), and
+      the opener skips the identity check only for a SINGLE play, chosen by its mode, never by the size's sign. The
+      sheet's Play all parts passes each part's identity as listed, inventing none, and its Delete of a part listed
+      without one deletes by id alone (`deleteRecording()`), as before #909. Results: `accepted` (generation above 0 and
       the call count), `none`, `gone` (`startUid` not in the view after `flushPendingSearch()`), `rowNone` (shown,
       nothing playable), `unsupported` and `refused`; every refusal leaves what plays playing. Calls recorded after the
       press, and filter changes, never change the playlist; nothing runs on position ticks.

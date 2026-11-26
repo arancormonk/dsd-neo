@@ -4227,6 +4227,9 @@ class HistoryPlaylistFake : public QObject {
         QVariantList played = items;
         if (played.isEmpty()) {
             played.append(QVariantMap{{QStringLiteral("path"), QStringLiteral("/rec/playlist.wav")},
+                                      {QStringLiteral("size"), qint64{96044}},
+                                      {QStringLiteral("mtimeSec"), qint64{1700000100}},
+                                      {QStringLiteral("mtimeNanos"), 0},
                                       {QStringLiteral("call"), 0},
                                       {QStringLiteral("partOrdinal"), 1},
                                       {QStringLiteral("partCount"), 1},

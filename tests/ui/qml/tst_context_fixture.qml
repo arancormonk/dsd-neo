@@ -200,9 +200,10 @@ TestCase {
         testContext.setPlaybackSupported(true);
         compare(decoderHost.playbackSupported, true);
 
-        var items = [{path: "/r/a.wav", call: 0, partOrdinal: 1, partCount: 2, title: "A", key: "ua"},
-                     {path: "/r/b.wav", call: 1, partOrdinal: 1, partCount: 1, title: "B", key: "ub"}];
-        compare(decoderHost.playRecordings([{path: "/r/a.wav", call: 1}], 2, "history"), 0, "calls from 0 only");
+        var items = [{path: "/r/a.wav", size: 1000, mtimeSec: 1700000100, mtimeNanos: 0, call: 0, partOrdinal: 1, partCount: 2, title: "A", key: "ua"},
+                     {path: "/r/b.wav", size: 2000, mtimeSec: 1700000200, mtimeNanos: 0, call: 1, partOrdinal: 1, partCount: 1, title: "B", key: "ub"}];
+        compare(decoderHost.playRecordings([{path: "/r/a.wav", size: 1000, mtimeSec: 1700000100, mtimeNanos: 0, call: 1}], 2, "history"), 0, "calls from 0 only");
+        compare(decoderHost.playRecordings([{path: "/r/a.wav", call: 0}], 2, "history"), 0, "a queued item names its identity");
         compare(decoderHost.playbackGeneration, 0, "a refused play changes nothing");
         var first = decoderHost.playRecordings(items, 2, "history");
         verify(first > 0);

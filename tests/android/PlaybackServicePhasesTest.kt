@@ -132,7 +132,7 @@ private class Playing(val rig: ServiceRig) {
                 override fun release() = Unit
             }
         },
-        {
+        { _, _ ->
             RecordingPlayer.OpenResult.Opened(
                 object : RecordingPlayer.Source {
                     override fun close() = Unit

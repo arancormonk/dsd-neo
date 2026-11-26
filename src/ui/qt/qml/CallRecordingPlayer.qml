@@ -416,6 +416,8 @@ Column {
     // Issue #909: the call's parts one after another as one play of the host
     // (B2), each with its identity from the store, the call's own numbering
     // and this block's title; a part whose storage is away is left out (B1).
+    // The store lists every recording's identity: one without it is passed as
+    // it is, and the host refuses the play.
     function startPlayAll() {
         if (!supported)
             return;
@@ -427,7 +429,7 @@ Column {
                 continue;
             if (first < 0)
                 first = i;
-            items.push({path: recording.path, size: recording.identitySize !== undefined ? Number(recording.identitySize) : -1, mtimeSec: Number(recording.mtimeSec) || 0, mtimeNanos: Number(recording.mtimeNanos) || 0, call: 0,
+            items.push({path: recording.path, size: recording.identitySize, mtimeSec: recording.mtimeSec, mtimeNanos: recording.mtimeNanos, call: 0,
                 partOrdinal: i + 1, partCount: parts.length, title: title, line: "", key: ""});
         }
         if (items.length === 0)
@@ -596,12 +598,13 @@ Column {
     }
     // Issue #909 (B10, B11): the confirmation's words and the file it deletes
     // are the ones shown at the press (its id and identity), however the parts
-    // move while it is out.
+    // move while it is out. A recording listed without an identity is deleted
+    // by its id alone, as before #909.
     function askDelete() {
         if (!part)
             return;
         var several = parts.length > 1;
-        confirmDelete.target = {id: part.id, path: part.path, size: part.identitySize !== undefined ? Number(part.identitySize) : -1, mtimeSec: Number(part.mtimeSec) || 0, mtimeNanos: Number(part.mtimeNanos) || 0};
+        confirmDelete.target = {id: part.id, path: part.path, size: part.identitySize, mtimeSec: part.mtimeSec, mtimeNanos: part.mtimeNanos};
         confirmDelete.ordinal = several ? current + 1 : 0;
         confirmDelete.message = several ? qsTr("Part %1 is deleted from this phone. The other parts and the call stay in History.").arg(current + 1) : deleteMessage;
         confirmDelete.open();
@@ -615,7 +618,10 @@ Column {
         // while its storage is not connected; the recording plays on, as
         // nothing was deleted. Issue #909: and when the file under its id is
         // another one now, or the id is gone.
-        if (recordings.deleteRecordingChecked(target.id, target.size, target.mtimeSec, target.mtimeNanos) === false) {
+        var identified = target.size !== undefined && target.mtimeSec !== undefined && target.mtimeNanos !== undefined;
+        var taken = identified ? recordings.deleteRecordingChecked(target.id, Number(target.size), Number(target.mtimeSec), Number(target.mtimeNanos))
+                               : recordings.deleteRecording(target.id);
+        if (taken === false) {
             var refusal = recordings.deleteRefusal();
             say(refusal === "changed" ? qsTr("This recording changed. Delete it again.")
                 : refusal === "gone" ? qsTr("This recording is gone.")

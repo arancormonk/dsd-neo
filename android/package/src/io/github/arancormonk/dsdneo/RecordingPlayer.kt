@@ -246,12 +246,13 @@ class RecordingPlayer(
     class SetupResult(val failure: String = "", val path: String = "")
 
     /**
-     * Opens an item's file and, for an item with a size (not SINGLE's -1), checks it is the regular file the store
-     * listed (size and modification time). Gone: no file there. Changed: another file, a link, or any other open error.
+     * Opens an item's file and, when [checked] (a PARTS or PLAYLIST play, never SINGLE, whatever its size says),
+     * checks it is the regular file the store listed (size and modification time); SINGLE opens it by path, unchecked.
+     * Gone: no file there. Changed: another file, a link, or any other open error.
      */
     fun interface Opener {
         /** Called on the part's player's own thread only, inside its setup ([Player.setup]). */
-        fun open(item: Item): OpenResult
+        fun open(item: Item, checked: Boolean): OpenResult
     }
 
     enum class FocusMode { GAIN, GAIN_TRANSIENT }
@@ -293,10 +294,11 @@ class RecordingPlayer(
     }
 
     /**
-     * One recording of a play. [size] is -1 for SINGLE (no identity check). [call] is the 0-based call it belongs to
-     * (non-decreasing along the items, starting at 0, never skipping one); [partOrdinal] is its 1-based place among
-     * all its call's parts and [partCount] their number, both as listed (failed or away parts included). [key],
-     * [title] and [line] are carried for the service's notification.
+     * One recording of a play. [size], [mtimeSec] and [mtimeNanos] are the file's identity as the store listed it, a
+     * size from 0, for PARTS and PLAYLIST, whose items all carry one ([identified]); SINGLE has none (size -1).
+     * [call] is the 0-based call it belongs to (non-decreasing along the items, starting at 0, never skipping one);
+     * [partOrdinal] is its 1-based place among all its call's parts and [partCount] their number, both as listed
+     * (failed or away parts included). [key], [title] and [line] are carried for the service's notification.
      */
     class Item(
         val path: String,
@@ -484,13 +486,20 @@ class RecordingPlayer(
         private val tokens = AtomicLong()
 
         /**
+         * Whether a play's items carry what [mode] needs: every PARTS or PLAYLIST item its listed identity (the
+         * store lists one for every recording, so a negative size is a malformed request); SINGLE needs none.
+         * RecordingPlayback refuses a play without it before accepting it, so what plays plays on.
+         */
+        fun identified(mode: Int, sizes: LongArray): Boolean = mode == MODE_SINGLE || sizes.all { it >= 0 }
+
+        /**
          * A part's setup, on its player's own thread: open [item], make the platform player, hand it the file and close
          * what was opened. It touches nothing of the machine's; the result goes back to the machine's thread. A player
          * that cannot be made is the player's failure ([REASON_PLAYER]), a file it cannot take the file's.
          */
-        private fun setUp(opener: Opener, item: Item, player: Player): SetupResult {
+        private fun setUp(opener: Opener, item: Item, checked: Boolean, player: Player): SetupResult {
             val opened = try {
-                opener.open(item)
+                opener.open(item, checked)
             } catch (_: Exception) {
                 OpenResult.Refused(REASON_CHANGED)
             }
@@ -1038,7 +1047,7 @@ class RecordingPlayer(
         // a result is posted on every path, its player is released and an open waiting for a stuck setup is woken.
         made.setup({
             try {
-                setUp(opener, item, made)
+                setUp(opener, item, setup.checked, made)
             } catch (_: Throwable) {
                 SetupResult(REASON_PLAYER, item.path)
             } finally {
@@ -1579,7 +1588,7 @@ class RecordingPlayer(
         return items.indices.all { i ->
             val item = items[i]
             val step = if (i == 0) 0 else item.call - items[i - 1].call
-            step in 0..1 && item.partOrdinal in 1..item.partCount
+            step in 0..1 && item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
         }
     }
 

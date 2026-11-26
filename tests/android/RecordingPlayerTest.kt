@@ -171,10 +171,14 @@ private class FakeOpener : RecordingPlayer.Opener {
     /** Paths whose open throws an Error (out of memory), not an Exception. */
     val erroring = HashSet<String>()
     val opened = mutableListOf<String>()
+
+    /** Whether each open checked the file's identity, in order. */
+    val checks = mutableListOf<Boolean>()
     val sources = mutableListOf<FakeSource>()
 
-    override fun open(item: RecordingPlayer.Item): OpenResult {
+    override fun open(item: RecordingPlayer.Item, checked: Boolean): OpenResult {
         opened += item.path
+        checks += checked
         if (item.path in throwing) {
             throw SecurityException("no access")
         }
@@ -1982,6 +1986,36 @@ private fun invalidItemsFailThePlay() {
     check(rig.state == FAILED && rig.status.itemIndex == -1) { "a start outside the items" }
 }
 
+/**
+ * Queued plays carry each file's identity (#909): the store lists one for every recording, so a PARTS or PLAYLIST
+ * item with a negative size is refused before the play is accepted, and only SINGLE opens a file unchecked, chosen by
+ * its mode, never by the size's sign.
+ */
+private fun queuedItemsCarryTheirIdentity() {
+    for (mode in listOf(MODE_PARTS, MODE_PLAYLIST)) {
+        check(!RecordingPlayer.identified(mode, longArrayOf(100, -1))) { "mode $mode: an item with no identity is refused" }
+        check(RecordingPlayer.identified(mode, longArrayOf(100, 0))) { "mode $mode: sizes from 0 are taken" }
+    }
+    check(RecordingPlayer.identified(RecordingPlayer.MODE_SINGLE, longArrayOf(-1))) { "a single play needs none" }
+
+    // The machine refuses one too, as a second guard: nothing is opened unchecked.
+    val bare = Rig()
+    bare.machine.play(1, MODE_PARTS, listOf(RecordingPlayer.Item("/r/a.wav"), RecordingPlayer.Item("/r/b.wav", 10)))
+    check(bare.state == FAILED && bare.opener.opened.isEmpty()) { "parts with an item without its size fail, none opened" }
+
+    val single = Rig()
+    single.play()
+    single.machine.play(2, RecordingPlayer.MODE_SINGLE, listOf(RecordingPlayer.Item("/r/b.wav", 100, 1, 2)))
+    check(single.opener.checks == listOf(false, false)) { "a single play opens unchecked, whatever its size says" }
+
+    val queued = Rig()
+    queued.queue(1, 1)
+    queued.playOut()
+    queued.elapse(RecordingPlayer.GAP_MS)
+    queued.machine.play(9, MODE_PARTS, listOf(RecordingPlayer.Item("/r/z.wav", 0, 1, 0)))
+    check(queued.opener.checks == listOf(true, true, true)) { "every queued open is checked: ${queued.opener.checks}" }
+}
+
 // ---- the focus requests the platform holds
 
 private fun onlyAGrantedFocusRequestIsKept() {
@@ -2780,6 +2814,7 @@ fun main() {
     theTenMinuteDeadlineCountsFromThePause()
     theTerminalRecordStaysUntilTheNextPlay()
     invalidItemsFailThePlay()
+    queuedItemsCarryTheirIdentity()
     onlyAGrantedFocusRequestIsKept()
     aPrepareThatNeverAnswersFailsItsPart()
     aPartsSetupRunsOffTheMachinesThread()

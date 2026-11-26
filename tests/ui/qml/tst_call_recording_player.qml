@@ -846,6 +846,32 @@ Item {
             compare([calls[calls.length - 1].size, calls[calls.length - 1].mtimeSec, calls[calls.length - 1].mtimeNanos], [44 + 8000 * 16, 1700000100, 250]);
         }
 
+        // Issue #909: the store lists every recording's identity, so a part
+        // listed without one is malformed. Play all parts passes it as it is,
+        // inventing none, and the host refuses the play: nothing plays, and the
+        // sheet says it couldn't start. Delete deletes it by its id alone, as
+        // before #909.
+        function test_part_without_an_identity() {
+            var bare = rec("t-2", pathB, 8000);
+            delete bare.identitySize;
+            delete bare.mtimeSec;
+            delete bare.mtimeNanos;
+            openWith([rec("t-1", pathA, 12000), bare]);
+            compare(decoderHost.playbackGeneration, 0);
+            tap("recordingPlayAll");
+            compare(lastHostCall().name, "playRecordings");
+            var items = lastHostCall().items;
+            compare([items[0].size, items[0].mtimeSec, items[0].mtimeNanos], [44 + 12000 * 16, 1700000100, 250], "part 1's identity");
+            compare([items[1].size, items[1].mtimeSec, items[1].mtimeNanos], [undefined, undefined, undefined], "none invented for part 2");
+            compare(decoderHost.playbackGeneration, 0, "refused: nothing plays");
+            compare(item("recordingNotice").text, "Couldn't start playing. Try again.");
+            tap("recordingPart1");
+            tap("recordingDelete");
+            findChild(item("recordingDeleteConfirm"), "confirmActionButton").activate();
+            compare(lastStoreCall().name, "deleteRecording", "by its id alone");
+            compare(lastStoreCall().id, "t-2");
+        }
+
         // Issue #909 (B11): the store refuses a delete whose file is another one under the id now, or whose id is
         // gone; nothing stops, and the sheet says which.
         function test_delete_refused_by_identity_data() {

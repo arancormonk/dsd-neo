@@ -117,7 +117,8 @@ object RecordingPlayback {
      * Play the items the arrays list, one entry per recording, from [start] in [mode] (RecordingPlayer.MODE_*),
      * replacing what plays: the play's positive generation once accepted, also when its service could not be started
      * (that generation then reads FAILED, ended "start"). 0 only for a refusal before acceptance: arrays of different
-     * lengths, no items, [start] or [mode] out of range, or the app ending. The machine checks the items themselves.
+     * lengths, no items, [start] or [mode] out of range, a PARTS or PLAYLIST item with no identity (a negative size,
+     * [RecordingPlayer.identified]; the host refuses one first), or the app ending. The machine checks the rest.
      */
     @JvmStatic
     fun play(
@@ -141,7 +142,8 @@ object RecordingPlayback {
             lines.size, keys.size,
         )
         if (count == 0 || lengths.any { it != count } || start !in 0 until count ||
-            mode !in RecordingPlayer.MODE_SINGLE..RecordingPlayer.MODE_PLAYLIST
+            mode !in RecordingPlayer.MODE_SINGLE..RecordingPlayer.MODE_PLAYLIST ||
+            !RecordingPlayer.identified(mode, sizes)
         ) {
             return 0
         }
@@ -529,9 +531,9 @@ object RecordingPlayback {
 
     /** Opens a part's file on its player's own thread ([MediaItem]), inside its setup. */
     private object Opener : RecordingPlayer.Opener {
-        override fun open(item: RecordingPlayer.Item): RecordingPlayer.OpenResult {
-            if (item.size < 0) {
-                return openUnchecked(item.path)
+        override fun open(item: RecordingPlayer.Item, checked: Boolean): RecordingPlayer.OpenResult {
+            if (!checked) {
+                return openUnchecked(item.path) // SINGLE, as #708 opened it
             }
             return when (
                 val opened = RecordingDescriptor.open(item.path, item.size, item.mtimeSec, item.mtimeNanos.toLong())

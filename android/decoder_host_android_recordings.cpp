@@ -95,6 +95,7 @@ playback_request(const QVariantList& items, int mode) {
     for (const QVariant& value : items) {
         const QVariantMap item = value.toMap();
         request.paths.append(item.value(QStringLiteral("path")).toString());
+        // A queued item's identity was checked present; a single play may name its file by path alone (-1).
         request.sizes.append(item.value(QStringLiteral("size"), qint64{-1}).toLongLong());
         request.mtimeSecs.append(item.value(QStringLiteral("mtimeSec")).toLongLong());
         request.mtimeNanos.append(item.value(QStringLiteral("mtimeNanos")).toInt());

@@ -2005,7 +2005,8 @@ Item {
         // Issue #809: a detection's recordings, from its Recent detections row.
         // A recording as the store lists it (RecordingsFake fills the keys left out).
         function rec(id, start, ms, extra) {
-            return Object.assign({id: id, path: "/rec/Explore/" + id + ".wav", fileName: id + ".wav", folderUid: "explore", start: start, durationMs: ms, rate: 8000, bytes: 96000}, extra || {});
+            return Object.assign({id: id, path: "/rec/Explore/" + id + ".wav", fileName: id + ".wav", folderUid: "explore", start: start, durationMs: ms, rate: 8000, bytes: 96000,
+                identitySize: 96044, mtimeSec: start + 60, mtimeNanos: 0}, extra || {});
         }
         function recordingsSheet() {
             return findChild(loader.item, "detectionRecordingsSheet");

@@ -532,8 +532,14 @@ void
 test_base_host_play() {
     FakeHost host;
     host.base = true;
-    const QVariantList items{QVariantMap{{QStringLiteral("path"), QStringLiteral("/r/a.wav")}},
-                             QVariantMap{{QStringLiteral("path"), QStringLiteral("/r/b.wav")}}};
+    // Each item with its identity, as a playlist lists it (an item without one is refused before the player).
+    const auto item = [](const QString& path) {
+        return QVariantMap{{QStringLiteral("path"), path},
+                           {QStringLiteral("size"), qint64{1000}},
+                           {QStringLiteral("mtimeSec"), kBase},
+                           {QStringLiteral("mtimeNanos"), 0}};
+    };
+    const QVariantList items{item(QStringLiteral("/r/a.wav")), item(QStringLiteral("/r/b.wav"))};
     expect(__LINE__, host.playRecordings(items, DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 0);
     expect(__LINE__, host.playbackState() == DecoderHost::PlaybackFailed
                          && host.playbackError() == QLatin1String("unsupported")

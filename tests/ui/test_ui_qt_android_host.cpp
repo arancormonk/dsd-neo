@@ -2885,12 +2885,32 @@ check_playlist_arrays() {
     refused({items.at(2), items.at(0)}, DecoderHost::PlaybackPlaylist, "calls going back are refused");
     refused(items, DecoderHost::PlaybackParts, "parts of two calls are refused");
     refused({items.at(0), items.at(1)}, DecoderHost::PlaybackSingle, "a single play of two items is refused");
+    // #909: the store lists every recording's identity, so a queued item without one is malformed, refused before the
+    // platform sees it; the play now open (21) plays on.
+    for (const int mode : {int{DecoderHost::PlaybackParts}, int{DecoderHost::PlaybackPlaylist}}) {
+        for (const char* field : {"size", "mtimeSec", "mtimeNanos"}) {
+            QVariantMap bare = items.at(1).toMap();
+            bare.remove(QString::fromLatin1(field));
+            refused({items.at(0), bare}, mode, "a queued item without its identity is refused");
+        }
+        QVariantMap negative = items.at(1).toMap();
+        negative.insert(QStringLiteral("size"), qint64{-1});
+        refused({items.at(0), negative}, mode, "a queued item with a negative size is refused");
+        QVariantMap word = items.at(1).toMap();
+        word.insert(QStringLiteral("mtimeSec"), QStringLiteral("soon"));
+        refused({items.at(0), word}, mode, "a queued item whose identity is no number is refused");
+    }
     r.nextGeneration = 22;
     check(host.playRecordings({items.at(0), items.at(1)}, DecoderHost::PlaybackParts, QString()) == 22,
           "a sheet's parts of one call are taken");
     check(host.playbackMode() == DecoderHost::PlaybackParts && host.playbackHoldPath().isEmpty()
               && r.request.mode == DecoderHost::PlaybackParts,
           "as parts, holding no file");
+    r.nextGeneration = 23;
+    const QVariantMap byPath{{QStringLiteral("path"), QStringLiteral("/r/one.wav")}};
+    check(host.playRecordings({byPath}, DecoderHost::PlaybackSingle, QString()) == 23
+              && r.request.sizes == QList<qint64>{-1},
+          "a single item names its file by path alone, no identity needed");
 }
 
 /* #909: one record publishes every reading at once, its item's path, title and key from the play's own items. */

@@ -82,8 +82,8 @@ Item {
             decoderHost.playRecordingOwned("/rec/m-1.wav");
             compare(row.playback, 0, "a sheet's play is not a playlist");
 
-            decoderHost.playRecordings([{path: "/rec/m-0.wav", call: 0, partOrdinal: 1, partCount: 1, title: "A", key: String(uids[0])},
-                                        {path: "/rec/m-1.wav", call: 1, partOrdinal: 1, partCount: 1, title: "B", key: String(uids[1])}], 2, "history");
+            decoderHost.playRecordings([{path: "/rec/m-0.wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: 0, partOrdinal: 1, partCount: 1, title: "A", key: String(uids[0])},
+                                        {path: "/rec/m-1.wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: 1, partOrdinal: 1, partCount: 1, title: "B", key: String(uids[1])}], 2, "history");
             testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackToken: 3});
             compare(row.playback, 1);
             verify(glyph.visible && glyph.bars);

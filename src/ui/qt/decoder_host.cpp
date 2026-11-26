@@ -337,6 +337,20 @@ playback_item_call(const QVariantMap& item, int* call) {
     return ok;
 }
 
+/* Whether queued item @p item names the file the store listed (issue #909): a size from 0, and the modification time's
+ * seconds and nanoseconds, each a number. The store lists them for every recording, so an item without them is
+ * malformed; the queue would otherwise have no identity to check the file found at its turn against. */
+bool
+playback_item_identified(const QVariantMap& item) {
+    bool sizeOk = false;
+    bool secOk = false;
+    bool nanosOk = false;
+    const qint64 size = item.value(QStringLiteral("size")).toLongLong(&sizeOk);
+    (void)item.value(QStringLiteral("mtimeSec")).toLongLong(&secOk);
+    (void)item.value(QStringLiteral("mtimeNanos")).toInt(&nanosOk);
+    return sizeOk && size >= 0 && secOk && nanosOk;
+}
+
 /* The readings a change of which is news on playbackChanged: all but the position. */
 auto
 playback_shown(const DecoderHost::PlaybackReading& r) {
@@ -355,12 +369,14 @@ DecoderHost::playbackItemsValid(const QVariantList& items, int mode) {
         return false;
     }
     // Calls from 0 up, with no hole: each item's call is the one before's, or the next. Parts are all of one call.
+    // Parts and a playlist check each file at its turn, so every item names its identity; a single play names a path.
     int previous = 0;
     for (qsizetype i = 0; i < items.size(); ++i) {
         const QVariantMap item = items.at(i).toMap();
         int call = 0;
         if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, &call)
-            || (call != previous && (i == 0 || call != previous + 1)) || (mode == PlaybackParts && call != 0)) {
+            || (call != previous && (i == 0 || call != previous + 1)) || (mode == PlaybackParts && call != 0)
+            || (mode != PlaybackSingle && !playback_item_identified(item))) {
             return false;
         }
         previous = call;
