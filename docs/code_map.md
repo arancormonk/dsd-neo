@@ -5658,17 +5658,15 @@ suite runs under this compiler.
     radio keys only; a save to the private config file keeps them. A `--name=value` token the parser refuses
     (`--rdio-api-key=...` is no form it takes) is named without its value (`cli_report_short_opt_error()`, the Airspy
     option error). A token, a key or a file name can read like an option (`--print-config`, `--config`, `--`), so every
-    pass over the raw argv -- bootstrap's pre-parse and
-    inherited-trunk-scan checks, the one-shot check, compaction -- steps over every long option's value by the
-    parser's arity (`dsd_cli_long_option_span()`, issue #931) and stops at the first `--` that is no value; a new raw
-    pass must do the same. The one exception is harmless: eight options the tables list as taking the next argument only
-    when it does not start with `-` (`--api`, `--api-bind`, `--rtl-udp-control`, `--rtl-udp-control-bind`,
-    `--lrrp-extra-port`, `--dmr-udp-comp-port`, `--tetra-net`, `--tetra-key`) are read by the parser with the next
-    argument whatever it is, and each validates it, so a value starting with `-` fails the parse with exit code 1 before
-    any one-shot, wizard or `-s` rate takes effect. Bootstrap reads its own options in place, `--config`'s optional
-    path, `--validate-config`'s and `--profile`'s name with them, and finds `-s` as getopt will read the elements that
-    pass leaves (`bootstrap_short_walk_feed()`: `-o -s` sets no rate). So `--rdio-api-key --print-config` is a key, a
-    profile named `--` ends no options, and `--no-config -- --print-config` runs no one-shot.
+    pass over the raw argv -- bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction --
+    steps over every long option's value by the parser's arity (`dsd_cli_long_option_span()`, issue #931) and stops at
+    the first `--` that is no value; a new raw pass must do the same. The tables give each option the arity the parser
+    reads it with: only `--config` and `--validate-config` take their value only when it does not start with `-`; every
+    other valued option takes the next argument whatever it is (the eight that validate a port, an address or a TETRA
+    value included, so `--api -T --api 0` turns no trunking on). Bootstrap reads its own options in place, `--config`'s
+    optional path, `--validate-config`'s and `--profile`'s name with them, and finds `-s` as getopt will read the
+    elements that pass leaves (`bootstrap_short_walk_feed()`: `-o -s` sets no rate). So `--rdio-api-key --print-config`
+    is a key, a profile named `--` ends no options, and `--no-config -- --print-config` runs no one-shot.
     `dsd_cli_option_takes_free_value()` names the options whose value is any text whatever it starts with
     (`--api-token`, `--dmr-chan-overrides`, ...), which compaction steps over even when it starts with `-`. The Android
     receiver's `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user

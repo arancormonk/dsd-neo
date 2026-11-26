@@ -77,8 +77,9 @@ private fun anotherOptionsOperandIsNoInput() {
     check(of("--api-token=-irtl", "-i", "udp:0.0.0.0:7355") == "") { "a token attached with =" }
     check(of("-i", "udp:0.0.0.0:7355", "--frame-log", "-irtl") == "") { "a long option's value, whatever it reads like" }
     check(of("-i", "udp:0.0.0.0:7355", "--iq-capture", "-irtl") == "") { "a value taken whatever it starts with" }
-    check(of("--rtl-udp-control", "-irtl") == "usb") { "a value that must not start with '-' leaves an -i alone" }
-    check(of("--rtl-udp-control", "6020", "-i", "rtl") == "usb") { "and is taken when it does not" }
+    check(of("--rtl-udp-control", "-irtl") == "") { "a port is taken whatever it starts with (#931), never as -i" }
+    check(of("--rtl-udp-control", "6020", "-i", "rtl") == "usb") { "and a real port leaves the -i after it alone" }
+    check(of("--config", "-irtl") == "usb") { "--config takes no value that starts with '-'" }
     check(of("-i", "udp:0.0.0.0:7355", "-c", "-irtl") == "") { "a short option's separate value" }
     check(of("-i", "udp:0.0.0.0:7355", "-cirtl") == "") { "a short option's attached value" }
     check(of("-qirtl") == "usb" && of("-qi", "airspy") == "airspy") { "-i bundled behind options that take none" }

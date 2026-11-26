@@ -666,23 +666,31 @@ test_rtl_udp_control_consumes_port_and_leaves_short_opts(void) {
     return 0;
 }
 
+/* Issue #931: the parser takes the next argument as the port whatever it starts with (and refuses "-T" as one), so
+   compaction drops it too: getopt never reads a value the long-option pass already took ("--api -T --api 0" turns no
+   trunking on). */
 static int
-test_rtl_udp_control_missing_port_does_not_consume_next_option(void) {
-    char arg0[] = "dsd-neo";
-    char arg1[] = "--rtl-udp-control";
-    char arg2[] = "-fi";
-    char* argv[] = {arg0, arg1, arg2, NULL};
-
-    int new_argc = dsd_cli_compact_args(3, argv);
-    if (new_argc != 2) {
-        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
-        return 1;
+test_rtl_udp_control_takes_next_argument_whatever_it_is(void) {
+    static const char* const options[] = {
+        "--lrrp-extra-port", "--dmr-udp-comp-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--api",
+        "--api-bind",        "--tetra-net",         "--tetra-key"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        char arg0[] = "dsd-neo";
+        char arg1[32];
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", options[i]);
+        char arg2[] = "-T";
+        char arg3[] = "-fi";
+        char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+        const int new_argc = dsd_cli_compact_args(4, argv);
+        if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0
+            || dsd_cli_long_option_arity(options[i]) != DSD_CLI_LONG_NEXT) {
+            DSD_FPRINTF(stderr, "%s -T -fi: new_argc=%d argv[1]=\"%s\"\n", options[i], new_argc,
+                        argv[1] ? argv[1] : "(null)");
+            rc = 1;
+        }
     }
-    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
-        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
-        return 1;
-    }
-    return 0;
+    return rc;
 }
 
 static int
@@ -975,6 +983,8 @@ test_long_option_span(void) {
     char frontend_eq[] = "--frontend=none";
     char unknown[] = "--no-such-option";
     char short_opt[] = "-o";
+    char api[] = "--api";
+    char validate[] = "--validate-config";
 
     struct {
         char* argv[4];
@@ -990,6 +1000,9 @@ test_long_option_span(void) {
         {{a0, config, path, NULL}, 3, 1, 2},
         {{a0, config, print_config, NULL}, 3, 1, 1},
         {{a0, config, NULL, NULL}, 2, 1, 1},
+        {{a0, validate, key, NULL}, 3, 1, 1},
+        {{a0, api, key, NULL}, 3, 1, 2},
+        {{a0, api, short_opt, NULL}, 3, 1, 2},
         {{a0, print_config, key, NULL}, 3, 1, 1},
         {{a0, frontend_eq, path, NULL}, 3, 1, 1},
         {{a0, unknown, path, NULL}, 3, 1, 0},
@@ -1037,7 +1050,7 @@ main(void) {
     rc |= test_dmr_udp_comp_port_consumes_value_and_leaves_short_opts();
     rc |= test_dmr_udp_comp_port_equals_form_is_removed();
     rc |= test_rtl_udp_control_consumes_port_and_leaves_short_opts();
-    rc |= test_rtl_udp_control_missing_port_does_not_consume_next_option();
+    rc |= test_rtl_udp_control_takes_next_argument_whatever_it_is();
     rc |= test_rtl_udp_control_bind_consumes_address_and_leaves_short_opts();
     rc |= test_iq_capture_and_replay_long_options_are_removed();
     rc |= test_iq_capture_equals_form_is_removed();

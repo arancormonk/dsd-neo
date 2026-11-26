@@ -13593,6 +13593,32 @@ test_bootstrap_steps_over_option_values(void) {
         (void)remove(env_ini);
     }
 
+    /* --api takes the next argument whatever it is, as the parser does: in
+       "--api --rdio-api-key --print-config --api 0" the first port is "--rdio-api-key", so --print-config is the option
+       and the run prints (issue #931). */
+    {
+        static char api_printed[65536];
+        const char* const api_args[] = {"--api", "--rdio-api-key", "--print-config", "--api", "0"};
+        if (print_config_with_ini(ini, api_args, 5, api_printed, sizeof api_printed) != 0
+            || strstr(api_printed, "[recording]") == NULL) {
+            DSD_FPRINTF(stderr, "--api --rdio-api-key --print-config --api 0 did not print the config:\n%s\n",
+                        api_printed);
+            rc = 1;
+        }
+        /* ... and a port getopt never reads too: "--api -T --api 0" turns no trunking on. */
+        const char* const api_t[] = {"dsd-neo", "--api", "-T", "--api", "0", NULL};
+        am_cli_run cli;
+        if (am_cli_parse(api_t, 0, &cli) != 0) {
+            return 1;
+        }
+        if (cli.rc != DSD_PARSE_CONTINUE || cli.opts->trunk_enable != 0) {
+            DSD_FPRINTF(stderr, "--api -T --api 0: rc=%d trunk_enable=%d\n%s\n", cli.rc, cli.opts->trunk_enable,
+                        cli.err);
+            rc = 1;
+        }
+        am_cli_free(&cli);
+    }
+
     /* A key "--" is a value: the --print-config after it is the option, and the run prints. */
     static char printed[65536];
     const char* const dash_key[] = {"--rdio-api-key", "--", "--config", "{ini}", "--print-config"};

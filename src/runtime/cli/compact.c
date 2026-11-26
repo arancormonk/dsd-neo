@@ -176,6 +176,17 @@ static const char* const k_skip_exact_next_any[] = {
     "--calc-cc-freq",
     "--calc-cc-lcn",
     "--calc-start-lcn",
+    /* The parser takes these values whatever they start with, and validates them (a port, an IPv4 address, a TETRA
+       network or key): a value starting with '-' fails the parse, and is never read as an option meanwhile, so
+       --api -T --api 0 turns no trunking on (issue #931). */
+    "--lrrp-extra-port",
+    "--dmr-udp-comp-port",
+    "--rtl-udp-control",
+    "--rtl-udp-control-bind",
+    "--api",
+    "--api-bind",
+    "--tetra-net",
+    "--tetra-key",
 };
 
 /* Their value is taken whatever it starts with, as is that of a free-value option (an API token or a target id may
@@ -185,20 +196,14 @@ static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-replay",  "--iq-replay-rate",    "--iq-info",
 };
 
+/* Bootstrap's own options, which take the next argument only when it does not start with '-' (bootstrap.c), so
+   "--config --print-config" loads the default config and prints it. */
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--lrrp-extra-port",
-    "--dmr-udp-comp-port",
-    "--rtl-udp-control",
-    "--rtl-udp-control-bind",
     "--config",
     "--validate-config",
-    "--api",
-    "--api-bind",
-    "--tetra-net",
-    "--tetra-key",
 };
 
-/* Of those, the ones that do without a value: each then reads its default path (bootstrap.c). The others need one. */
+/* Of those, the ones that do without a value: each then reads its default path (bootstrap.c). */
 static const char* const k_skip_exact_next_nonopt_optional[] = {
     "--config",
     "--validate-config",
