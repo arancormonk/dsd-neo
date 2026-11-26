@@ -33,10 +33,13 @@ QtObject {
     // The host's refusal count last read: a resume refused again reads the
     // same but for it, and is said again.
     property int refusalsSeen: 0
-    // The latest event: its id, its words, whether it was read out.
+    // The latest event: its id, its words, whether it was read out, and
+    // whether it is a refused resume (said only while the host still reports
+    // the refusal).
     property int eventId: 0
     property string eventText: ""
     property bool eventHeard: true
+    property bool eventRefusal: false
     // The application is in the foreground and active. Followed from the
     // signal's own state: the host acts on the same signal first (a return
     // reads the platform before anything here is said).
@@ -74,14 +77,16 @@ QtObject {
         return qsTr("Couldn't play these recordings.");
     }
 
-    function note(text) {
+    function note(text, refusal) {
         eventId++;
         eventText = text;
         eventHeard = false;
+        eventRefusal = refusal === true;
     }
     function drop() {
         eventText = "";
         eventHeard = true;
+        eventRefusal = false;
     }
     // Event @p id was read out; a newer one waits on.
     function heard(id) {
@@ -163,7 +168,13 @@ QtObject {
         pausedReason = reason;
         refusalsSeen = refusals;
         if (refused && !quiet)
-            note(unavailableText);
+            note(unavailableText, true);
+        else if (reason !== "unavailable" && !eventHeard && eventRefusal)
+            // A refusal nobody heard, the host no longer reporting it (a
+            // resume taken after all, from the sheet or a media key): it is
+            // no longer true, so it is not said over the playing recording.
+            // Any other event waiting (the start, the end) is left alone.
+            drop();
     }
 
     readonly property Connections hostWatch: Connections {

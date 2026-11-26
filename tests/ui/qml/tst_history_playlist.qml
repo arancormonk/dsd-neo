@@ -572,6 +572,50 @@ Item {
             testContext.setResumeRefused(false);
         }
 
+        // A refused resume nobody heard (the sheet over the bar, here the app away) is dropped once the host no longer
+        // reports it: a resume taken after all is never told "Can't play right now" when the bar is read again. A
+        // refusal still standing waits, and so does any other event (the start, the end).
+        function test_unheard_refusal_dropped_once_resumed() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            status.appActive = false;
+            playAll(screen, calls);
+            playing({item: 0});
+            playing({item: 0, playbackPositionMs: 12500});
+            verify(!status.eventHeard && status.eventText === "Playing 2 calls", "the start waits through a reading");
+            status.appActive = true;
+            tryCompare(barItem, "announcements", 1);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "user"});
+            status.appActive = false;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            verify(!status.eventHeard && status.eventText === full, "the refusal waits, unheard");
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1, playbackPositionMs: 12500});
+            verify(!status.eventHeard, "still refused: it still waits");
+            playing({item: 0, playbackRefusals: 1});
+            verify(status.eventHeard && status.eventText === "", "resumed: the refusal is dropped");
+            status.appActive = true;
+            wait(30);
+            compare(barItem.announcements, 1, "nothing is read over the playing recording");
+            compare(barItem.announced, "Playing 2 calls");
+
+            // Refused, then paused by the user from the sheet: the refusal no longer stands either.
+            status.appActive = false;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 2});
+            verify(!status.eventHeard);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "user", playbackRefusals: 2});
+            verify(status.eventHeard, "paused for another reason: dropped");
+
+            // The end waiting unheard is left alone by a later reading with no refusal.
+            playing({item: 1, playbackState: 0, playbackEndedReason: "finished", playbackCallCount: 2, playbackRefusals: 2});
+            verify(!status.eventHeard && status.eventText.indexOf("Finished") === 0, "the end waits: " + status.eventText);
+            status.appActive = true;
+            tryCompare(barItem, "announcements", 2);
+            verify(barItem.announced.indexOf("Finished") === 0, "and is read once the app is back");
+        }
+
         // Previous, Pause/Resume and Next drive the whole playlist; Next is not offered at the last call.
         function test_bar_controls() {
             var calls = logCalls(2);
