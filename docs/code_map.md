@@ -19904,9 +19904,21 @@ Qt Quick frontend (`src/ui/qt`):
       listed size and mtime; the check RecordingExport's selected open uses), and the player keeps its own copy of the
       descriptor, so the file playing plays to its end when it is deleted under it. What plays is decided by the file
       found at its turn: one whose delete waits on an export or upload and that is still there unchanged plays.
+    - Setup off the looper (every mode): blocking file I/O never runs on the playback looper. The looper makes each
+      part's `MediaPlayer` (so its callbacks come to the looper), arms the prepare timeout and hands the player to the
+      setup thread (`RecordingPlayer.Opener.setup()`; in `RecordingPlayback.kt` a single-thread executor, a daemon
+      thread `dsd-neo-playback-setup` beside the looper and as long-lived), which opens the file
+      (`RecordingDescriptor.open()`, or a plain open for SINGLE), calls `setDataSource(fd)` and `prepareAsync()`,
+      closes what it opened and posts its result (done, or failed with the reason) with the part's token. Until then
+      the looper never touches that player (a prepare answering first is noted and applied at adoption; an error
+      drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement)
+      only releases its player. A setup stuck in a read holds those queued behind it, which time out in turn, so a
+      playlist ends by itself; Stop always works. The JVM tests drive it with a fake setup that holds, runs late or
+      fails.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
-      seconds of its open, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, cancelled on prepare,
+      seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
+      before the hand-off to the setup thread and cancelled on prepare,
       error, a move and the end: a SINGLE play then reads Failed, a PARTS play ends, a PLAYLIST skips it, a resume
       waiting for it still waiting for the next); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is
       not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play

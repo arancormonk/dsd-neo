@@ -24,6 +24,9 @@ import java.io.File
 import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileNotFoundException
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
+import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
@@ -31,7 +34,10 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * One looper thread owns a [RecordingPlayer] and the MediaPlayer it drives, so the player's calls and callbacks never
  * race. The Qt thread's calls only post there and return; the host polls [status], which reads the state the looper
- * published. The audio focus is speech, transient for a sheet's play and lasting for a History playlist: other media
+ * published. Blocking file I/O never runs on the looper: each part's MediaPlayer is made there (its callbacks come
+ * there) and handed to one setup thread, which opens the file, sets it as the data source, starts the prepare and posts
+ * the result back with the part's token. The audio focus is speech, transient for a sheet's play and lasting for a
+ * History playlist: other media
  * pauses while a recording plays, and the decoder's live audio, which asks for no focus, plays on beside it (D7).
  * DsdNeoActivity reports the foreground, whose loss pauses a sheet's play (D10), and [release]s playback when the app
  * ends. Headphones unplugged pause any play.
@@ -70,6 +76,14 @@ object RecordingPlayback {
 
     /** The playback service instance alive; on the main thread only. */
     private var service: RecordingPlaybackService? = null
+
+    /**
+     * The setup thread, beside the looper and as long-lived: each part's blocking open, data source and prepare start
+     * ([RecordingPlayer.Opener.setup]), one after another.
+     */
+    private val setupThread: ExecutorService by lazy {
+        Executors.newSingleThreadExecutor { work -> Thread(work, "dsd-neo-playback-setup").apply { isDaemon = true } }
+    }
 
     /** Looper only: the playlist's wake lock and the receivers' registrations. */
     private var wakeLock: PowerManager.WakeLock? = null
@@ -512,6 +526,22 @@ object RecordingPlayback {
             }
         }
 
+        /** [work] on the setup thread, its result posted to the looper; a refused hand-off fails as the player. */
+        override fun setup(
+            work: () -> RecordingPlayer.SetupResult,
+            deliver: (RecordingPlayer.SetupResult) -> Unit,
+        ) {
+            try {
+                setupThread.execute {
+                    val result = work()
+                    post { deliver(result) }
+                }
+            } catch (e: RejectedExecutionException) {
+                Log.w(TAG, "could not hand a call recording to its setup", e)
+                post { deliver(RecordingPlayer.SetupResult(RecordingPlayer.REASON_PLAYER)) }
+            }
+        }
+
         private fun openUnchecked(path: String): RecordingPlayer.OpenResult = try {
             // A descriptor rather than the path: the file opened is the one that plays, and a gone one says so here.
             RecordingPlayer.OpenResult.Opened(StreamSource(FileInputStream(path)))
@@ -533,7 +563,8 @@ object RecordingPlayback {
 
     /**
      * One recording in a MediaPlayer, made (inside the player's guard) and called on the looper, which its callbacks
-     * also arrive on. A media server that died is the player's fault and ends the play; any other error is the file's.
+     * also arrive on; only [prepare] runs on the setup thread, before the looper touches it. A media server that died
+     * is the player's fault and ends the play; any other error is the file's.
      */
     private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val media = MediaPlayer()

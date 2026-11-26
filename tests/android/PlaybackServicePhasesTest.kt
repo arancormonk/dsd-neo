@@ -127,6 +127,11 @@ private class Playing(val rig: ServiceRig) {
             }
         },
         object : RecordingPlayer.Opener {
+            override fun setup(
+                work: () -> RecordingPlayer.SetupResult,
+                deliver: (RecordingPlayer.SetupResult) -> Unit,
+            ) = deliver(work())
+
             override fun open(item: RecordingPlayer.Item) =
                 RecordingPlayer.OpenResult.Opened(
                     object : RecordingPlayer.Source {

@@ -39,12 +39,16 @@ private class FakePlayer(val token: Long, private val length: Long, private val 
     var prepared = false
     var started = false
     var released = false
+
+    /** It reported an error: in MediaPlayer's Error state, where only a release is allowed. */
+    var errored = false
     val seeks = mutableListOf<Long>()
     val calls = mutableListOf<String>()
 
     private fun valid(call: String, ok: Boolean) {
         calls += call
         check(!released) { "$call on a released player" }
+        check(!errored) { "$call on a player in the Error state" }
         check(ok) { "$call in a state the player does not take it in: ${calls.joinToString()}" }
     }
 
@@ -86,11 +90,36 @@ private class FakePlayer(val token: Long, private val length: Long, private val 
     }
 }
 
+/** A setup handed to the setup thread and held there: the test runs its work and delivers its result when it says. */
+private class HeldSetup(
+    val work: () -> RecordingPlayer.SetupResult,
+    val deliver: (RecordingPlayer.SetupResult) -> Unit,
+) {
+    var result: RecordingPlayer.SetupResult? = null
+
+    /** The setup thread does the work (it opens the file and prepares), its result not back yet. */
+    fun run(): HeldSetup = also { result = work() }
+
+    /** The result reaches the machine's thread (the work first, if it has not run). */
+    fun land() = deliver(result ?: work())
+}
+
+/** The opener; each setup runs at once on the caller's thread unless [holding], when it waits in [setups]. */
 private class FakeOpener : RecordingPlayer.Opener {
     val refusals = HashMap<String, String>()
     val throwing = HashSet<String>()
     val opened = mutableListOf<String>()
     val sources = mutableListOf<FakeSource>()
+    var holding = false
+    val setups = mutableListOf<HeldSetup>()
+
+    override fun setup(work: () -> RecordingPlayer.SetupResult, deliver: (RecordingPlayer.SetupResult) -> Unit) {
+        if (holding) {
+            setups += HeldSetup(work, deliver)
+        } else {
+            deliver(work())
+        }
+    }
 
     override fun open(item: RecordingPlayer.Item): OpenResult {
         opened += item.path
@@ -198,6 +227,12 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     val position: Long get() = machine.status.positionMs(nowMs)
     val last: FakePlayer get() = players.last()
 
+    /**
+     * The players handed a file. A player is built before its file is opened (on the setup thread), so one whose file
+     * was gone or changed was built and released without one.
+     */
+    val given: List<FakePlayer> get() = players.filter { it.asked }
+
     /** The player the status names. */
     val current: FakePlayer get() = players.last { it.token == status.playToken }
 
@@ -222,6 +257,12 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     fun prepared(player: FakePlayer = last) {
         player.prepared = true
         machine.onPrepared(player.token)
+    }
+
+    /** [player] reported an error, as MediaPlayer's error listener says on the looper; it is in the Error state. */
+    fun error(player: FakePlayer, reason: String) {
+        player.errored = true
+        machine.onFailed(player.token, reason)
     }
 
     /** The current player played to its end. */
@@ -421,7 +462,9 @@ private fun failuresSayWhy() {
     rig.fail("/r/gone.wav", RecordingPlayer.REASON_GONE)
     rig.play("/r/gone.wav")
     check(rig.state == FAILED && rig.status.error == RecordingPlayer.ERROR_MISSING) { "a file gone is missing" }
-    check(rig.players.isEmpty()) { "no player is built for a file that cannot be opened" }
+    check(rig.players.single().released && !rig.players.single().asked) {
+        "the player built before the open is released, never given a file"
+    }
     // A file there that cannot be opened (no access, a folder) is a failure, not a missing file.
     rig.fail("/r/locked.wav", RecordingPlayer.REASON_CHANGED)
     rig.play("/r/locked.wav")
@@ -446,7 +489,9 @@ private fun aPlayerThatCannotBeBuiltFailsThePlay() {
     single.factoryFails = true
     single.play()
     check(single.state == FAILED && single.status.error == RecordingPlayer.ERROR_FAILED) { "a player that cannot be built fails" }
-    check(single.opener.sources.single().closed && !single.focus.held) { "its source is closed, nothing held" }
+    check(single.opener.opened.isEmpty() && !single.focus.held) {
+        "built before the open: nothing opened, nothing held"
+    }
 
     val playlist = Rig()
     playlist.factoryFails = true
@@ -455,7 +500,9 @@ private fun aPlayerThatCannotBeBuiltFailsThePlay() {
         "a playlist whose player cannot be built ends failed"
     }
     playlist.turn()
-    check(playlist.opener.opened == listOf(path(0, 1)) && playlist.status.skipped == 0) { "with no skip: it is not the file's fault" }
+    check(playlist.opener.opened.isEmpty() && playlist.status.skipped == 0) {
+        "with no skip: it is not the file's fault"
+    }
     check(playlist.service.ends.single() == playlist.generation to RecordingPlayer.ENDED_FAILED) { "the service is told once" }
 
     // The media server dying under a playing part is the player's fault too.
@@ -1103,7 +1150,7 @@ private fun allFailedEndsAndGoodThenFailuresFinishes() {
     val g = all.queue(1, 1, 1)
     all.turn()
     check(all.state == FAILED && all.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) { "couldn't play these recordings" }
-    check(all.status.skipped == 3 && all.focus.requests.isEmpty() && all.players.isEmpty()) { "nothing played" }
+    check(all.status.skipped == 3 && all.focus.requests.isEmpty() && all.given.isEmpty()) { "nothing played" }
     check(all.service.ends == listOf(g to RecordingPlayer.ENDED_UNPLAYABLE)) { "settled once" }
     check(all.recheck.take().size == 3) { "each gone one rechecked" }
 
@@ -1190,7 +1237,9 @@ private fun failuresArePerRecordingAndKeepTheirDirection() {
     rest.queue(2, 1)
     rest.playOut()
     rest.turn()
-    check(rest.status.gap && rest.status.partOrdinal == 1 && rest.players.size == 1) { "back in the gap after the last part heard" }
+    check(rest.status.gap && rest.status.partOrdinal == 1 && rest.given.size == 1) {
+        "back in the gap after the last part heard"
+    }
     rest.elapse(1_000)
     check(rest.last.path == path(1, 1)) { "then the next call" }
 }
@@ -1907,6 +1956,124 @@ private fun aPrepareThatNeverAnswersFailsItsPart() {
     check(early.state == PLAYING) { "which plays" }
 }
 
+/**
+ * A part's setup (the file, the data source, the prepare's start) runs on the setup thread: the machine's thread never
+ * waits for it, the prepare timeout covers it, and a result that comes back for a part no longer current is let go.
+ */
+private fun aPartsSetupRunsOffTheMachinesThread() {
+    val limit = RecordingPlayer.PREPARE_TIMEOUT_MS
+
+    // Blocked in a read: the timeout fails the part at 10 s, the next setup queues behind it, Stop works meanwhile.
+    val blocked = Rig()
+    blocked.opener.holding = true
+    val g = blocked.queue(1, 1)
+    val stuck = blocked.last
+    check(blocked.state == PREPARING && blocked.opener.setups.size == 1) { "the setup is handed over" }
+    check(blocked.opener.opened.isEmpty() && !stuck.asked && blocked.status.playToken == stuck.token) {
+        "nothing is opened on the machine's thread; the record names the opening part"
+    }
+    blocked.machine.pauseFor(g, stuck.token)
+    check(blocked.status.pausedReason == RecordingPlayer.PAUSED_USER) { "the opening part takes its item commands" }
+    blocked.machine.resumeFor(g, stuck.token)
+    blocked.elapse(limit - 1)
+    check(blocked.state == PREPARING && blocked.status.skipped == 0 && !stuck.released) { "still opening at 9.999 s" }
+    blocked.elapse(1)
+    check(blocked.status.skipped == 1 && !stuck.released) { "at 10 s the part fails; its player is still the setup's" }
+    blocked.turn()
+    check(blocked.opener.setups.size == 2 && blocked.status.call == 1) { "the next call's setup queues behind it" }
+    val queued = blocked.last
+    blocked.machine.stop(g)
+    check(blocked.state == STOPPED && blocked.status.endedReason == RecordingPlayer.ENDED_STOPPED) {
+        "Stop works while the setup is stuck"
+    }
+    check(blocked.service.ends == listOf(g to RecordingPlayer.ENDED_STOPPED)) { "the service is told once" }
+    blocked.opener.setups.forEach { it.land() }
+    check(stuck.released && queued.released && !stuck.started && !queued.started) { "the late results are released" }
+    check(blocked.state == STOPPED && blocked.focus.requests.isEmpty()) { "and nothing is adopted" }
+
+    // Every setup stuck: each part times out in turn and the playlist ends by itself.
+    val stalled = Rig()
+    stalled.opener.holding = true
+    val s = stalled.queue(1, 1)
+    stalled.elapse(limit)
+    stalled.turn()
+    stalled.elapse(limit)
+    stalled.turn()
+    check(stalled.state == FAILED && stalled.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
+        "every part timed out: unplayable"
+    }
+    check(stalled.service.ends == listOf(s to RecordingPlayer.ENDED_UNPLAYABLE) && stalled.scheduler.live().isEmpty()) {
+        "settled, nothing left"
+    }
+    stalled.opener.setups.forEach { it.land() }
+    check(stalled.players.all { it.released } && stalled.state == FAILED) { "late results let go" }
+
+    // A result that comes back after a move: released, and the part moved to plays.
+    val moved = Rig()
+    moved.opener.holding = true
+    moved.queue(1, 1, 1)
+    val first = moved.last
+    moved.machine.next()
+    val second = moved.last
+    check(moved.opener.setups.size == 2 && moved.status.playToken == second.token) { "Next opens the next call" }
+    moved.opener.setups[0].land()
+    check(first.released && moved.status.call == 1 && moved.state == PREPARING) { "the first call's result is let go" }
+    moved.opener.setups[1].land()
+    moved.prepared(second)
+    check(moved.state == PLAYING && second.started && !second.released) {
+        "the next call's result is adopted and plays"
+    }
+
+    // The prepare answers before the setup's result is back: prepared as soon as it is adopted.
+    val early = Rig()
+    early.opener.holding = true
+    early.queue(1, 1)
+    val quick = early.last
+    early.opener.setups[0].run()
+    early.prepared(quick)
+    check(early.state == PREPARING && !quick.started) { "not touched before its result" }
+    early.opener.setups[0].land()
+    check(early.state == PLAYING && quick.started) { "adopted, prepared: it plays" }
+    check(early.scheduler.live().none { it.delayMs == limit }) { "the timeout is cancelled" }
+
+    // An error before the result: the part fails at once; its result releases the player.
+    val broken = Rig()
+    broken.opener.holding = true
+    broken.queue(1, 1)
+    val bad = broken.last
+    broken.opener.setups[0].run()
+    broken.error(bad, RecordingPlayer.REASON_DAMAGED)
+    check(broken.status.skipped == 1 && !bad.released) { "skipped; the player still the setup's" }
+    broken.opener.setups[0].land()
+    check(bad.released && broken.status.skipped == 1) { "released when its result is back" }
+
+    // The setup's own failures, and the normal path, for every mode: a sheet's single and parts plays too.
+    val gone = Rig()
+    gone.opener.holding = true
+    gone.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+    gone.queue(1, mode = MODE_PARTS)
+    gone.opener.setups.single().land()
+    check(gone.state == FAILED && gone.status.error == RecordingPlayer.ERROR_MISSING && gone.last.released) {
+        "a part gone fails Play all parts, its player released"
+    }
+    val single = Rig()
+    single.opener.holding = true
+    single.play()
+    check(single.state == PREPARING && single.opener.opened.isEmpty()) { "a single play's open is the setup's too" }
+    single.opener.setups.single().land()
+    check(single.opener.sources.single().closed && single.last.asked) { "the file given, its source closed" }
+    single.prepared()
+    check(single.state == PLAYING && single.last.started) { "and it plays" }
+    val parts = Rig()
+    parts.opener.holding = true
+    parts.queue(2, mode = MODE_PARTS)
+    parts.opener.setups.single().land()
+    parts.playOut()
+    parts.opener.setups.last().land()
+    parts.prepared()
+    check(parts.state == PLAYING && parts.status.partOrdinal == 2) { "Play all parts goes through its parts" }
+}
+
 fun main() {
     aPlayStartsOncePreparedAndHoldsTheFocus()
     aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted()
@@ -1951,5 +2118,6 @@ fun main() {
     invalidItemsFailThePlay()
     onlyAGrantedFocusRequestIsKept()
     aPrepareThatNeverAnswersFailsItsPart()
+    aPartsSetupRunsOffTheMachinesThread()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

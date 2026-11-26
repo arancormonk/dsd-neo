@@ -77,9 +77,14 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * is prepared, play is wanted, the foreground (SINGLE, PARTS) and the service (PLAYLIST) allow it and the focus is
  * granted. Every prepare gets a fresh play token, unique in the process and never reused, which the player's callbacks
  * and the host's item commands carry; each scheduled task (gap, skip search, paused deadline, promotion timeout,
- * prepare timeout) has its own id; focus callbacks carry the epoch of the request they answer. A callback, task or
- * command whose identity is not current is dropped. A part not prepared within [PREPARE_TIMEOUT_MS] of its open fails
- * as a player error on it would (a MediaPlayer that never answers would leave the play opening for good).
+ * prepare timeout) has its own id; focus callbacks carry the epoch of the request they answer. A callback, task or command whose identity is not current is dropped.
+ *
+ * Opening a part never blocks the machine's thread: the player is made there, then handed to the setup thread
+ * ([Opener.setup]), which opens the file, gives it to the player and starts its prepare. The machine does not touch
+ * that player until the setup's result comes back with the part's token, and releases it then if the part is no longer
+ * current (it timed out, was moved off, stopped or ended). A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
+ * setup included, fails as a player error on it would (a stalled read or a MediaPlayer that never answers would leave
+ * the play opening for good).
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
@@ -125,8 +130,9 @@ class RecordingPlayer(
      */
     interface Player {
         /**
-         * Take [source]'s file and prepare it, asynchronously; throws when the file cannot be set (a damaged file).
-         * The machine closes [source] once this returns: the player keeps its own copy of the descriptor.
+         * Take [source]'s file and start preparing it, asynchronously; throws when the file cannot be set (a damaged
+         * file). Called on the setup thread ([Opener.setup]), never on the machine's, which does not touch the player
+         * meanwhile. The setup closes [source] once this returns: the player keeps its own copy of the descriptor.
          */
         fun prepare(source: Source)
 
@@ -155,12 +161,24 @@ class RecordingPlayer(
         class Refused(val reason: String) : OpenResult()
     }
 
+    /** What a part's setup came to: [failure] is empty when the player took the file and prepares, else REASON_*. */
+    class SetupResult(val failure: String = "")
+
     /**
      * Opens an item's file and, for an item with a size (not SINGLE's -1), checks it is the regular file the store
      * listed (size and modification time). Gone: no file there. Changed: another file, a link, or any other open error.
      */
     interface Opener {
+        /** Called on the setup thread only. */
         fun open(item: Item): OpenResult
+
+        /**
+         * Run [work] on the setup thread, one setup after another, then hand what it returned to [deliver] on the
+         * machine's thread. [work] does the blocking part of an open (the file, the player's data source and the start
+         * of its prepare) and touches nothing of the machine's; one stuck in a read holds the setups behind it, which
+         * time out with it.
+         */
+        fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
     }
 
     enum class FocusMode { GAIN, GAIN_TRANSIENT }
@@ -388,6 +406,35 @@ class RecordingPlayer(
 
         /** Play tokens, unique in the process. */
         private val tokens = AtomicLong()
+
+        /**
+         * A part's setup, on the setup thread: open [item], hand it to [player] and close what was opened. It touches
+         * nothing of the machine's; the result goes back to the machine's thread.
+         */
+        private fun setUp(opener: Opener, item: Item, player: Player): SetupResult {
+            val opened = try {
+                opener.open(item)
+            } catch (_: Exception) {
+                OpenResult.Refused(REASON_CHANGED)
+            }
+            val source = when (opened) {
+                is OpenResult.Refused ->
+                    return SetupResult(if (opened.reason == REASON_GONE) REASON_GONE else REASON_CHANGED)
+                is OpenResult.Opened -> opened.source
+            }
+            return try {
+                player.prepare(source)
+                SetupResult()
+            } catch (_: Exception) {
+                SetupResult(REASON_DAMAGED)
+            } finally {
+                try {
+                    source.close()
+                } catch (_: Exception) {
+                    // The player has its own descriptor; a failed close loses nothing.
+                }
+            }
+        }
     }
 
     private enum class Slot { GAP, SEARCH, DEADLINE, PROMOTION, PREPARE }
@@ -413,6 +460,12 @@ class RecordingPlayer(
 
     private class Ended(val state: Int, val error: String, val reason: String)
 
+    /** A part's player while its setup runs on the setup thread: not touched here until the setup's result is back. */
+    private class Opening(val token: Long, val player: Player) {
+        /** Its prepare answered before the setup's result came back: it is prepared as soon as it is adopted. */
+        var prepared = false
+    }
+
     private var generation = 0
     private var latestGeneration = 0
     private var mode = MODE_SINGLE
@@ -429,6 +482,9 @@ class RecordingPlayer(
     private var index = -1
     private var token = 0L
     private var player: Player? = null
+
+    /** The current part's setup, while it runs; dropped (and its player released when it comes back) if it is not. */
+    private var opening: Opening? = null
     private var prepared = false
     private var playing = false
     private var positionMs = 0L
@@ -661,6 +717,11 @@ class RecordingPlayer(
     }
 
     fun onPrepared(token: Long) {
+        val setup = opening
+        if (setup != null && setup.token == token) {
+            setup.prepared = true // The setup's result is still on its way: prepared once it is adopted.
+            return
+        }
         val current = player ?: return
         if (token != this.token || prepared || expireIfDue()) {
             return
@@ -696,10 +757,11 @@ class RecordingPlayer(
     /**
      * The player failed: [REASON_PLAYER] ends the play; anything else is this recording's fault ([REASON_DAMAGED]).
      * In the gap the player is the part that already played to its end, so an error from it is ignored: the part is
-     * not marked failed, no skip is counted and the gap runs on.
+     * not marked failed, no skip is counted and the gap runs on. An error while the part's setup runs drops the setup.
      */
     fun onFailed(token: Long, reason: String) {
-        if (player == null || token != this.token || expireIfDue() || gap) {
+        val open = player != null || opening?.token == token
+        if (!open || token != this.token || expireIfDue() || gap) {
             return
         }
         failItem(if (reason == REASON_PLAYER) REASON_PLAYER else REASON_DAMAGED)
@@ -733,6 +795,7 @@ class RecordingPlayer(
         gap = false
         gapSinceMs = -1
         halt()
+        opening = null
         val current = player
         if (current != null && prepared) {
             releaseHeld()
@@ -817,61 +880,69 @@ class RecordingPlayer(
         val restart = gap || playableBefore || currentPositionMs() > RESTART_MS
         val earlier = if (restart) emptyList() else (call - 1 downTo 0).flatMap { callStarts[it]..callEnd(it) }
         val candidates = (earlier + span(callStarts[call], callEnd(call)).asList()).toIntArray()
-        if (candidates.firstOrNull { !failed[it] } == index && player != null && !prepared) {
+        if (candidates.firstOrNull { !failed[it] } == index && (player != null || opening != null) && !prepared) {
             publish() // It is already opening that part, at 0.
             return
         }
         beginMove(Move(candidates, forward = false, resumeAfter = callEnd(call)))
     }
 
+    /**
+     * Build the candidate's player here (its callbacks come to this thread), guarded: one that cannot be built ends
+     * the play. Then hand it to the setup thread, with the prepare timeout already armed, so it covers the setup too.
+     */
     private fun open(candidate: Int) {
         index = candidate
         token = tokens.incrementAndGet()
-        val result = try {
-            opener.open(items[candidate])
+        val made = try {
+            players(token)
         } catch (_: Exception) {
-            OpenResult.Refused(REASON_CHANGED)
+            null
         }
-        when (result) {
-            is OpenResult.Refused -> failItem(if (result.reason == REASON_GONE) REASON_GONE else REASON_CHANGED)
-            is OpenResult.Opened -> prepareFrom(result.source)
+        if (made == null) {
+            failItem(REASON_PLAYER)
+            return
         }
+        val setup = Opening(token, made)
+        opening = setup
+        // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
+        // and a later open's player is never failed by it.
+        val opened = token
+        schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
+            if (token == opened && !prepared) {
+                onFailed(opened, REASON_DAMAGED)
+            }
+        }
+        publish()
+        val item = items[candidate]
+        opener.setup({ setUp(opener, item, made) }) { result -> onSetUp(setup, result) }
     }
 
-    /** Build the player and hand it the file, all guarded: a player that cannot be built ends the play. */
-    private fun prepareFrom(source: Source) {
-        var made: Player? = null
-        var damaged = false
-        try {
-            made = players(token)
-            made.prepare(source)
-        } catch (_: Exception) {
-            damaged = made != null
-        } finally {
-            try {
-                source.close()
-            } catch (_: Exception) {
-                // The player has its own descriptor; a failed close loses nothing.
-            }
+    /**
+     * A setup's result, on this thread. A part no longer current (timed out, moved off, stopped, ended, replaced)
+     * only releases its player; a current one adopts it, prepared already if its prepare answered first, or fails.
+     */
+    private fun onSetUp(setup: Opening, result: SetupResult) {
+        if (opening !== setup) {
+            setup.player.release()
+            return
         }
-        when {
-            made == null -> failItem(REASON_PLAYER)
-            damaged -> {
-                made.release()
-                failItem(REASON_DAMAGED)
+        opening = null
+        if (result.failure.isNotEmpty()) {
+            setup.player.release()
+            if (!expireIfDue()) {
+                failItem(result.failure)
             }
-            else -> {
-                player = made
-                // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end
-                // cancels it, and a later open's player is never failed by it.
-                val opened = token
-                schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
-                    if (token == opened && !prepared) {
-                        onFailed(opened, REASON_DAMAGED)
-                    }
-                }
-                publish()
-            }
+            return
+        }
+        player = setup.player
+        if (expireIfDue()) {
+            return
+        }
+        if (setup.prepared) {
+            onPrepared(setup.token)
+        } else {
+            publish()
         }
     }
 
@@ -882,6 +953,7 @@ class RecordingPlayer(
         positionMs = currentPositionMs()
         player?.release()
         player = null
+        opening = null
         prepared = false
         playing = false
         playingSinceMs = -1
@@ -1149,6 +1221,7 @@ class RecordingPlayer(
         cancelAll()
         player?.release()
         player = null
+        opening = null
         releaseHeld()
         move = null
         prepared = false
@@ -1173,6 +1246,7 @@ class RecordingPlayer(
         cancelAll()
         player?.release()
         player = null
+        opening = null
         releaseHeld()
         move = null
         prepared = false
@@ -1239,7 +1313,8 @@ class RecordingPlayer(
     }
 
     private fun isCurrent(generation: Int, token: Long) =
-        token != 0L && generation == this.generation && token == this.token && (player != null || gap)
+        token != 0L && generation == this.generation && token == this.token &&
+            (player != null || opening != null || gap)
 
     private fun currentCall(): Int = items[index].call
 
