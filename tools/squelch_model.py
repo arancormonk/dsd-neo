@@ -2310,6 +2310,9 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
     for ck, v in verdicts.items():
         if v["accepted"]:
             print(f"  accepted {'; '.join(members(runnable, ck))}: {'; '.join(v['reasons'])} ({v['accepted']})")
+        elif v["listed"]:
+            state = "meets every bound in this run" if v["pass"] else "FAILS"
+            print(f"  accepted-marginal entry {'; '.join(members(runnable, ck))}: {state}")
     for ck in failing:
         print(f"  FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
     print(

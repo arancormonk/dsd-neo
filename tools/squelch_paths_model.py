@@ -727,6 +727,14 @@ def write_report(out_dir: Path, meta: dict, rows: list[dict]) -> tuple[Path, Pat
                 f"{r['hold_s'] * 1000:.0f} ms | {verdict_text(r)} |"
             )
         lines.append("")
+    listed = [r for r in rows if r["listed"]]
+    lines += ["## Accepted marginal plans", ""]
+    for r in listed:
+        state = f"accepted ({'; '.join(r['reasons'])})" if r["accepted"] else verdict_text(r)
+        entry = ACCEPTED_MARGINAL[(r["path"], r["chain"], r["filter"])]
+        why = "; ".join(f"{k} up to {a:g}: {reason}" for k, (a, reason) in entry.items())
+        lines.append(f"- {r['path']} {r['chain']} {r['filter']}: {state}. Entry: {why}")
+    lines.append("")
     lines += [
         (
             "Stepped chains (Airspy, Airspy Mini, RX-888/SDDC) are scoped out: tools/squelch_model.py has no port of "
@@ -854,6 +862,9 @@ def main(argv: list[str] | None = None) -> int:
     for r in rows:
         if r["accepted"]:
             print(f"  accepted {r['path']} {r['chain']} {r['filter']}: {'; '.join(r['reasons'])} ({r['accepted']})")
+        elif r["listed"]:
+            state = "meets every bound in this run" if r["pass"] else "FAILS"
+            print(f"  accepted-marginal entry {r['path']} {r['chain']} {r['filter']}: {state}")
     print(f"verdict: the shipped classifier {'holds' if not failing else 'does NOT hold'} on every plan")
     print(f"report: {md}\n        {js}")
     return 0 if not failing else 1
