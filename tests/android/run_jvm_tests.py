@@ -1559,7 +1559,13 @@ SUITES = {
     "downloads_save": Suite(
         builds=(
             Build(
-                sources=("DownloadsSave.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "RecordingExport.kt"),
+                sources=(
+                    "DownloadsSave.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                ),
                 tests=("DownloadsSaveTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),
@@ -1577,7 +1583,13 @@ SUITES = {
         checks=(recording_transfer_codes_match,),
         builds=(
             Build(
-                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
+                sources=(
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "DownloadsSave.kt",
+                ),
                 tests=("RecordingExportTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),
