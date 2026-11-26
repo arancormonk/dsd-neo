@@ -19925,8 +19925,10 @@ Qt Quick frontend (`src/ui/qt`):
       B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
       every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
       (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume ends it
-      only once the focus is granted, so one refused as the next part prepares keeps the pause's start), checked by a
-      task and at every event against `SystemClock.elapsedRealtime()`, so it ends at the first chance after 10 minutes.
+      only once the focus is granted, so one refused as the next part prepares keeps the pause's start), checked against
+      `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's awake time), when
+      the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered on the looper
+      while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.
       Identities: every prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap,
       skip search, deadline, promotion timeout) has its own id and is cancelled when superseded; focus callbacks carry
       an epoch; a callback, task or command whose identity is not current is dropped. The last generation's terminal
@@ -19993,7 +19995,8 @@ Qt Quick frontend (`src/ui/qt`):
       On 29-32 the compact Previous / Play-Pause / Next and Stop are immutable `getService` PendingIntents (a request
       code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A
       partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the
-      `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any play is open.
+      `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any play is open,
+      and the `SCREEN_ON` one (the same way) while a playlist is open.
       While a playlist owns the service (`RecordingPlayback.playlistSessionOpen()`, the phases' owner, under their
       lock), `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause,
       play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity

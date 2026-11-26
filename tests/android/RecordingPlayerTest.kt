@@ -1554,6 +1554,35 @@ private fun theTenMinuteDeadlineCountsFromThePause() {
     late.elapse(900_000)
     check(late.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "a late task ends it" }
 
+    // Deep sleep: the task counts awake time and has not run; the screen turning on ends it at once.
+    val asleep = Rig()
+    val slept = asleep.queue(1, 1)
+    asleep.prepared()
+    asleep.machine.pause()
+    asleep.nowMs += 3_600_000
+    check(asleep.state == PAUSED) { "nothing has looked yet" }
+    asleep.machine.onAwake()
+    check(asleep.state == STOPPED && asleep.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "awake, it ends" }
+    check(asleep.service.ends == listOf(slept to RecordingPlayer.ENDED_TIMEOUT) && asleep.scheduler.live().isEmpty()) {
+        "settled"
+    }
+    asleep.machine.onAwake()
+    check(asleep.service.ends.size == 1) { "once" }
+    val early = Rig()
+    early.queue(1, 1)
+    early.prepared()
+    early.machine.pause()
+    early.nowMs += 599_999
+    early.machine.onAwake()
+    check(early.state == PAUSED) { "awake before ten minutes, it waits" }
+    val alone = Rig()
+    alone.play()
+    alone.prepared()
+    alone.machine.pause()
+    alone.nowMs += 3_600_000
+    alone.machine.onAwake()
+    check(alone.state == PAUSED) { "a single play has no paused deadline to check" }
+
     // Interrupted for ten minutes ends too.
     val interrupted = Rig()
     interrupted.queue(1, 1)

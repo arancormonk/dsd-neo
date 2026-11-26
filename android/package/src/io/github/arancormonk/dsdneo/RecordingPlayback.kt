@@ -38,8 +38,9 @@ import java.util.concurrent.atomic.AtomicBoolean
  *
  * A History playlist plays on in the background under [RecordingPlaybackService], in the order [PlaybackServicePhases]
  * keeps: the play is posted to the player, then a start is issued while the app is visible, and audio begins once the
- * service has promoted it. A partial wake lock is held while a playlist wants audio (opening, playing, the gap). The
- * recordings found gone or changed at their turn wait in a list for the store ([takeRecheck]).
+ * service has promoted it. A partial wake lock is held while a playlist wants audio (opening, playing, the gap); while
+ * a playlist is open the screen turning on checks its paused deadline, whose task counts only the device's awake time.
+ * The recordings found gone or changed at their turn wait in a list for the store ([takeRecheck]).
  */
 object RecordingPlayback {
     private const val TAG = "dsd-neo"
@@ -70,12 +71,20 @@ object RecordingPlayback {
     /** The playback service instance alive; on the main thread only. */
     private var service: RecordingPlaybackService? = null
 
-    /** Looper only: the playlist's wake lock and the noisy receiver's registration. */
+    /** Looper only: the playlist's wake lock and the receivers' registrations. */
     private var wakeLock: PowerManager.WakeLock? = null
-    private var noisyRegistered = false
-
-    /** The play whose noisy receiver could not be registered: not tried again (nor logged again) until the next. */
-    private var noisyRefusedFor = 0
+    private val noisy = Listening(
+        Noisy,
+        AudioManager.ACTION_AUDIO_BECOMING_NOISY,
+        "the headphones receiver",
+        "this play will not pause on unplugging",
+    )
+    private val screenOn = Listening(
+        ScreenOn,
+        Intent.ACTION_SCREEN_ON,
+        "the screen-on receiver",
+        "a paused playlist ends on its deadline's task",
+    )
 
     internal val attributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
@@ -357,35 +366,53 @@ object RecordingPlayback {
         sync(machine)
     }
 
-    /** Looper only: a play open listens for headphones unplugged; a playlist that wants audio keeps the CPU awake. */
+    /**
+     * Looper only: a play open listens for headphones unplugged; a playlist open, for the screen turning on (its paused
+     * deadline, #909); a playlist that wants audio keeps the CPU awake.
+     */
     private fun sync(machine: RecordingPlayer) {
         val status = machine.status
         val open = status.allows(RecordingPlayer.ACTION_STOP)
-        listenForNoisy(open, status.generation)
-        keepAwake(open && status.mode == RecordingPlayer.MODE_PLAYLIST && status.allows(RecordingPlayer.ACTION_PAUSE))
+        val playlist = open && status.mode == RecordingPlayer.MODE_PLAYLIST
+        noisy.follow(open, status.generation)
+        screenOn.follow(playlist, status.generation)
+        keepAwake(playlist && status.allows(RecordingPlayer.ACTION_PAUSE))
     }
 
-    private fun listenForNoisy(listen: Boolean, generation: Int) {
-        val context = application ?: return
-        if (listen == noisyRegistered || (listen && generation == noisyRefusedFor)) {
-            return
-        }
-        try {
-            if (listen) {
-                // A protected broadcast only the system sends: registered with no export flag (Android 14's exception).
-                val filter = IntentFilter(AudioManager.ACTION_AUDIO_BECOMING_NOISY)
-                context.registerReceiver(Noisy, filter, null, synchronized(lock) { handler })
-            } else {
-                context.unregisterReceiver(Noisy)
+    /** A receiver of one system broadcast, registered on the looper while [follow] is told to listen. Looper only. */
+    private class Listening(
+        private val receiver: BroadcastReceiver,
+        private val action: String,
+        private val name: String,
+        private val without: String,
+    ) {
+        private var registered = false
+
+        /** The play whose registration was refused: not tried again (nor logged again) until the next. */
+        private var refusedFor = 0
+
+        fun follow(listen: Boolean, generation: Int) {
+            val context = application ?: return
+            if (listen == registered || (listen && generation == refusedFor)) {
+                return
             }
-            noisyRegistered = listen
-        } catch (e: RuntimeException) {
-            if (listen) {
-                noisyRefusedFor = generation
-                Log.w(TAG, "could not register the headphones receiver; this play will not pause on unplugging", e)
-            } else {
-                noisyRegistered = false // gone anyway: never try to unregister it again
-                Log.w(TAG, "could not unregister the headphones receiver", e)
+            try {
+                if (listen) {
+                    // A protected broadcast only the system sends: registered with no export flag (Android 14's
+                    // exception), delivered on the looper.
+                    context.registerReceiver(receiver, IntentFilter(action), null, synchronized(lock) { handler })
+                } else {
+                    context.unregisterReceiver(receiver)
+                }
+                registered = listen
+            } catch (e: RuntimeException) {
+                if (listen) {
+                    refusedFor = generation
+                    Log.w(TAG, "could not register $name; $without", e)
+                } else {
+                    registered = false // gone anyway: never try to unregister it again
+                    Log.w(TAG, "could not unregister $name", e)
+                }
             }
         }
     }
@@ -438,6 +465,15 @@ object RecordingPlayback {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 onLooper { it.onNoisy() }
+            }
+        }
+    }
+
+    /** The screen turned on: a paused playlist whose ten minutes ran out in deep sleep ends now (on the looper). */
+    private object ScreenOn : BroadcastReceiver() {
+        override fun onReceive(context: Context, intent: Intent) {
+            if (intent.action == Intent.ACTION_SCREEN_ON) {
+                onLooper { it.onAwake() }
             }
         }
     }

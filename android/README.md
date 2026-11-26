@@ -861,7 +861,8 @@ the media controls are current all along. After a playlist ends, a media button 
   to DSD-neo; until then its row may still show a recording, and playing it from its sheet finds it missing.
 - If Android closed DSD-neo while a playlist was still starting, it may show the **Call recordings** notification for a
   moment the next time it starts the playback service; nothing plays.
-- The 10-minute end happens at the first chance after 10 minutes: a phone in deep sleep can make it later.
+- The 10-minute timer counts the time the phone is awake. The end is also checked when the screen turns on and at
+  every control, so a playlist left paused in a phone in deep sleep ends when you next turn the screen on.
 - Which headset and Bluetooth buttons reach DSD-neo, and whether the media player can be hidden, depends on the
   phone and its Android version.
 

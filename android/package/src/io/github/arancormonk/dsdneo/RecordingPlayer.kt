@@ -64,7 +64,8 @@ class RecordingRecheck {
  * ignored. Play in a paused gap opens the next call at once.
  *
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
- * which nothing was wanted or the focus was away, checked by a task and at every event against the elapsed clock.
+ * which nothing was wanted or the focus was away, checked by a task, at every event and when the device wakes
+ * ([onAwake]) against the elapsed clock.
  * Neither navigating while paused, the app's Pause during an interruption nor a refused resume restarts or extends
  * it; only audio carrying on ends the stretch (a resume ends it once the focus is granted, not when it is pressed). A
  * focus request refused for the play's own start ends it as unavailable; one refused for a resume leaves it paused (any
@@ -544,6 +545,17 @@ class RecordingPlayer(
             advance()
         } else if (wanted) {
             hold(PAUSED_BACKGROUND)
+        }
+    }
+
+    /**
+     * The device woke for the user (the screen turned on): the paused deadline is checked now. The deadline's task
+     * counts the device's awake time, so a PLAYLIST whose ten minutes ran out in deep sleep ends here, not on a later
+     * task.
+     */
+    fun onAwake() {
+        if (active) {
+            expireIfDue()
         }
     }
 
