@@ -116,6 +116,12 @@ private class Playing(val rig: ServiceRig) {
         { token ->
             tokens += token
             object : RecordingPlayer.Player {
+                override fun setup(
+                    work: () -> RecordingPlayer.SetupResult,
+                    deliver: (RecordingPlayer.SetupResult) -> Unit,
+                ) = deliver(work())
+
+                override fun create() = Unit
                 override fun prepare(source: RecordingPlayer.Source) = Unit
                 override fun start() = Unit
                 override fun pause() = Unit
@@ -126,20 +132,12 @@ private class Playing(val rig: ServiceRig) {
                 override fun release() = Unit
             }
         },
-        object : RecordingPlayer.Opener {
-            override fun setup(
-                work: () -> RecordingPlayer.SetupResult,
-                deliver: (RecordingPlayer.SetupResult) -> Unit,
-            ) = deliver(work())
-
-            override fun abandonSetup() = Unit
-
-            override fun open(item: RecordingPlayer.Item) =
-                RecordingPlayer.OpenResult.Opened(
-                    object : RecordingPlayer.Source {
-                        override fun close() = Unit
-                    },
-                )
+        {
+            RecordingPlayer.OpenResult.Opened(
+                object : RecordingPlayer.Source {
+                    override fun close() = Unit
+                },
+            )
         },
         object : RecordingPlayer.Focus {
             override fun request(mode: RecordingPlayer.FocusMode, epoch: Int) = true

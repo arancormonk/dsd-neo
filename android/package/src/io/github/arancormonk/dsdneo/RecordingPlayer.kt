@@ -62,13 +62,13 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
 
 /**
  * The setups given up while their work still runs (#909), counted for the process: a setup dropped while it runs (its
- * part timed out, was moved off, stopped or replaced) keeps its thread and its MediaPlayer until its read returns, and
- * on storage that stopped answering it may never return. While [limit] of them are still running, a new open makes no
- * player and starts no setup: it waits, under its own prepare timeout, for one to return. One leaves the count when
- * its work returns on its setup thread, before its result is posted, so a setup that is done and only waits for the
- * looper to take its result counts for nothing; the looper hears it when that result is delivered, which releases its
- * player and lets a waiting open go on. RecordingPlayback owns one for the process. [abandoned] and [full] run on the
- * playback looper, [returned] on the setup thread.
+ * part timed out, was moved off, stopped or replaced) keeps its player's own thread and its MediaPlayer until its read
+ * returns, and on storage that stopped answering it may never return. While [limit] of them are still running, a new
+ * open makes no player and starts no setup: it waits, under its own prepare timeout, for one to return. One leaves the
+ * count when its work returns on its player's thread, before its result is posted, so a setup that is done and only
+ * waits for the looper to take its result counts for nothing; the looper hears it when that result is delivered, which
+ * releases its player (and so ends its thread) and lets a waiting open go on. RecordingPlayback owns one for the
+ * process. [abandoned] and [full] run on the playback looper, [returned] on the player's thread.
  */
 class AbandonedSetups(val limit: Int = LIMIT) {
     /** One setup's work, as the count follows it: given up or not, returned or not. */
@@ -85,7 +85,7 @@ class AbandonedSetups(val limit: Int = LIMIT) {
 
     val full: Boolean get() = synchronized(lock) { running >= limit }
 
-    /** A setup's work, as it is handed to its setup thread. */
+    /** A setup's work, as it is handed to its player's thread. */
     fun begin(): Work = Work()
 
     /** The machine gave the setup up: counted while its work still runs. */
@@ -135,11 +135,12 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * paused deadline, promotion timeout, prepare timeout) has its own id; focus callbacks carry the epoch of the request
  * they answer. A callback, task or command whose identity is not current is dropped.
  *
- * Opening a part never blocks the machine's thread: the player is made there, then handed to the setup thread
- * ([Opener.setup]), which opens the file, gives it to the player and starts its prepare. The machine does not touch
- * that player until the setup's result comes back with the part's token, and releases it then if the part is no longer
- * current (it timed out, was moved off, stopped or ended); a setup that found its file gone or changed puts it on the
- * recheck list whether or not its part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
+ * Opening a part never blocks the machine's thread: each part's player has a thread of its own, which does everything
+ * for it ([Player.setup]): it opens the file, makes the platform player, gives it the file and starts its prepare. The
+ * machine does not touch that player until the setup's result comes back with the part's token, and releases it then
+ * if the part is no longer current (it timed out, was moved off, stopped or ended); a setup stuck in a read holds only
+ * its own player's thread. A setup that found its file gone or changed puts it on the recheck list whether or not its
+ * part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
  * setup included, fails (a stalled read or a MediaPlayer that never answers would leave the play opening for good):
  * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] setups given up still run, an open waits, with
  * no player made, until one returns; its prepare timeout bounds the wait.
@@ -147,7 +148,7 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
  * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. A restart
- * opens the part again, as any move does (a new player and token, through the setup thread), so the pass before can
+ * opens the part again, as any move does (a new player and token, set up on its own thread), so the pass before can
  * deliver nothing to it; a part gone since is a failed open, skipped and counted. A move that finds nothing forward
  * ends the play: "unplayable" when every recording of the play failed, else finished. A backward move whose every
  * candidate fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
@@ -185,14 +186,30 @@ class RecordingPlayer(
     private val abandoned: AbandonedSetups = AbandonedSetups(),
 ) {
     /**
-     * One recording's player, made by the factory with its play token; it reports back through [onPrepared],
-     * [onCompleted] and [onFailed] with that token.
+     * One recording's player, made by the factory with its play token on the machine's thread; it reports back through
+     * [onPrepared], [onCompleted] and [onFailed] with that token, on the machine's thread.
+     *
+     * Each player has one thread of its own, which does everything for it (on Android a HandlerThread: MediaPlayer is
+     * not thread-safe, so the one thread makes it, calls it and receives its callbacks). [setup]'s work runs there and
+     * calls [create] and [prepare]; [start], [pause], [seekTo] and [release] are called on the machine's thread and
+     * passed to the player's own thread in the order they were called. [durationMs] is read on the machine's thread.
      */
     interface Player {
         /**
-         * Take [source]'s file and start preparing it, asynchronously; throws when the file cannot be set (a damaged
-         * file). Called on the setup thread ([Opener.setup]), never on the machine's, which does not touch the player
-         * meanwhile. The setup closes [source] once this returns: the player keeps its own copy of the descriptor.
+         * Run [work] on this player's own thread, then hand what it returned to [deliver] on the machine's thread.
+         * [work] does the blocking part of an open (the file, then [create] and [prepare]) and never throws: whatever
+         * it meets is a result, so every setup delivers one. A hand-off the thread refuses (it has quit) delivers a
+         * failed setup, [REASON_PLAYER]. The machine does not touch the player until the result is delivered.
+         */
+        fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
+
+        /** Make the platform player, on its own thread inside [setup]'s work; throws when it cannot be made. */
+        fun create()
+
+        /**
+         * Take [source]'s file and start preparing it, asynchronously, on the player's own thread inside [setup]'s
+         * work, after [create]; throws when the file cannot be set (a damaged file). The setup closes [source] once
+         * this returns: the player keeps its own copy of the descriptor.
          */
         fun prepare(source: Source)
 
@@ -202,9 +219,10 @@ class RecordingPlayer(
 
         fun seekTo(positionMs: Long)
 
-        /** The length, once prepared. */
+        /** The length, once prepared: read when [onPrepared] has come for this player. */
         val durationMs: Long
 
+        /** Let the player go; its own thread releases it after everything passed to it before, then ends. */
         fun release()
     }
 
@@ -231,25 +249,9 @@ class RecordingPlayer(
      * Opens an item's file and, for an item with a size (not SINGLE's -1), checks it is the regular file the store
      * listed (size and modification time). Gone: no file there. Changed: another file, a link, or any other open error.
      */
-    interface Opener {
-        /** Called on the setup thread only. */
+    fun interface Opener {
+        /** Called on the part's player's own thread only, inside its setup ([Player.setup]). */
         fun open(item: Item): OpenResult
-
-        /**
-         * Run [work] on the setup thread, one setup after another, then hand what it returned to [deliver] on the
-         * machine's thread. [work] does the blocking part of an open (the file, the player's data source and the
-         * start of its prepare) and touches nothing of the machine's; one stuck in a read holds the setups behind it,
-         * which time out with it. [work] never throws: whatever it meets is a result, so every setup posts one.
-         */
-        fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
-
-        /**
-         * The setup running now was dropped with its result still out (its part timed out, was moved off, stopped,
-         * failed or replaced), so its read may never return: later setups go to a fresh setup thread, and that one
-         * takes no new work. It finishes, if ever, on its own; its result is delivered and released as any late one.
-         * Healthy setups finish in milliseconds, so this costs at most a short-lived thread per quick move.
-         */
-        fun abandonSetup()
     }
 
     enum class FocusMode { GAIN, GAIN_TRANSIENT }
@@ -482,8 +484,9 @@ class RecordingPlayer(
         private val tokens = AtomicLong()
 
         /**
-         * A part's setup, on the setup thread: open [item], hand it to [player] and close what was opened. It touches
-         * nothing of the machine's; the result goes back to the machine's thread.
+         * A part's setup, on its player's own thread: open [item], make the platform player, hand it the file and close
+         * what was opened. It touches nothing of the machine's; the result goes back to the machine's thread. A player
+         * that cannot be made is the player's failure ([REASON_PLAYER]), a file it cannot take the file's.
          */
         private fun setUp(opener: Opener, item: Item, player: Player): SetupResult {
             val opened = try {
@@ -497,10 +500,17 @@ class RecordingPlayer(
                 is OpenResult.Opened -> opened.source
             }
             return try {
-                player.prepare(source)
-                SetupResult(path = item.path)
-            } catch (_: Exception) {
-                SetupResult(REASON_DAMAGED, item.path)
+                try {
+                    player.create()
+                } catch (_: Exception) {
+                    return SetupResult(REASON_PLAYER, item.path)
+                }
+                try {
+                    player.prepare(source)
+                    SetupResult(path = item.path)
+                } catch (_: Exception) {
+                    SetupResult(REASON_DAMAGED, item.path)
+                }
             } finally {
                 try {
                     source.close()
@@ -538,7 +548,7 @@ class RecordingPlayer(
     private class Ended(val state: Int, val error: String, val reason: String)
 
     /**
-     * A part's player while its setup runs on the setup thread: not touched here until the setup's result is back.
+     * A part's player while its setup runs on its own thread: not touched here until the setup's result is back.
      * [checked]: its play checks identities (not SINGLE), so a file found gone or changed is rechecked.
      */
     private class Opening(
@@ -573,8 +583,8 @@ class RecordingPlayer(
     private var opening: Opening? = null
 
     /**
-     * The current part's token while its open waits for a setup thread ([AbandonedSetups] at its limit), with no player
-     * and no setup yet; 0 with none. Stop, a move and the end drop the wait as they drop an opening.
+     * The current part's token while its open waits for a stuck setup to return ([AbandonedSetups] at its limit), with
+     * no player and no setup yet; 0 with none. Stop, a move and the end drop the wait as they drop an opening.
      */
     private var waiting = 0L
     private var prepared = false
@@ -907,16 +917,14 @@ class RecordingPlayer(
     }
 
     /**
-     * The current part's setup is dropped with its result still out: its thread is given up at once
-     * ([Opener.abandonSetup]), so nothing ever queues behind a read that does not return, and it is counted until its
-     * work returns.
+     * The current part's setup is dropped with its result still out: it is counted until its work returns, and its
+     * player is released when its result is delivered. Its read holds only its own player's thread.
      */
     private fun dropOpening() {
         waiting = 0L
         val dropped = opening ?: return
         opening = null
         abandoned.abandoned(dropped.work)
-        opener.abandonSetup()
     }
 
     /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
@@ -983,8 +991,8 @@ class RecordingPlayer(
     }
 
     /**
-     * Build the candidate's player here (its callbacks come to this thread), guarded: one that cannot be built ends
-     * the play. Then hand it to the setup thread, with the prepare timeout already armed, so it covers the setup too.
+     * Build the candidate's player here, guarded: one that cannot be built (its thread cannot start) ends the play.
+     * Then hand its setup to its own thread, with the prepare timeout already armed, so it covers the setup too.
      * With [AbandonedSetups.LIMIT] setups given up still running, no player is made and no setup started: the open
      * waits ([waiting]) until a setup returns ([onSetUp]), its prepare timeout armed as usual, so storage that stalls
      * costs one timeout per recording, never a burst of failures.
@@ -993,7 +1001,7 @@ class RecordingPlayer(
         index = candidate
         token = tokens.incrementAndGet()
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
-        // and a later open's player is never failed by it. It covers a wait for a setup thread too.
+        // and a later open's player is never failed by it. It covers a wait for a stuck setup to return too.
         val opened = token
         schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
             // schedule() has checked the paused deadline first: a playlist past it ends "timeout", with no skip.
@@ -1010,12 +1018,12 @@ class RecordingPlayer(
         startSetup(candidate)
     }
 
-    /** Make the current part's player here and hand it to the setup thread. */
+    /** Make the current part's player here and hand its setup to the player's own thread. */
     private fun startSetup(candidate: Int) {
         val made = try {
             players(token)
-        } catch (_: Exception) {
-            null
+        } catch (_: Throwable) {
+            null // An Error too: a thread that cannot start is out of memory for it.
         }
         if (made == null) {
             failItem(REASON_PLAYER)
@@ -1025,10 +1033,10 @@ class RecordingPlayer(
         opening = setup
         publish()
         val item = items[candidate]
-        // The work returning, on the setup thread, takes it off the count before its result is posted. It never
+        // The work returning, on the player's thread, takes it off the count before its result is posted. It never
         // throws: anything thrown (an Error such as running out of memory in the data source) is a failed setup, so
-        // a result is posted on every path, its player is released and an open waiting for a setup thread is woken.
-        opener.setup({
+        // a result is posted on every path, its player is released and an open waiting for a stuck setup is woken.
+        made.setup({
             try {
                 setUp(opener, item, made)
             } catch (_: Throwable) {
@@ -1053,7 +1061,7 @@ class RecordingPlayer(
         if (opening !== setup) {
             setup.player.release()
             if (waiting != 0L && waiting == token && !abandoned.full) {
-                // A setup thread came free: the open waiting for one goes on, under its own token and timeout.
+                // A stuck setup returned: the open waiting for one goes on, under its own token and timeout.
                 waiting = 0L
                 startSetup(index)
             } else if (recheck.serial != serial) {

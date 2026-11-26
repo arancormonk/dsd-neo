@@ -25,21 +25,18 @@ import java.io.File
 import java.io.FileDescriptor
 import java.io.FileInputStream
 import java.io.FileNotFoundException
-import java.util.concurrent.ExecutorService
-import java.util.concurrent.Executors
-import java.util.concurrent.RejectedExecutionException
 import java.util.concurrent.atomic.AtomicBoolean
 
 /**
  * Call recording playback (#708, D6/D7/D10; #909): the Android half that DecoderHostAndroid calls over JNI.
  *
- * One looper thread owns a [RecordingPlayer] and the MediaPlayer it drives, so the player's calls and callbacks never
- * race. The Qt thread's calls only post there and return; the host polls [status], which reads the state the looper
- * published. Blocking file I/O never runs on the looper: each part's MediaPlayer is made there (its callbacks come
- * there) and handed to one setup thread, which opens the file, sets it as the data source, starts the prepare and posts
- * the result back with the part's token. The audio focus is speech, transient for a sheet's play and lasting for a
- * History playlist: other media
- * pauses while a recording plays, and the decoder's live audio, which asks for no focus, plays on beside it (D7).
+ * One looper thread owns a [RecordingPlayer], so the machine's calls and callbacks never race. The Qt thread's calls
+ * only post there and return; the host polls [status], which reads the state the looper published. Each part's
+ * MediaPlayer lives on a thread of its own ([MediaItem]), which makes it, calls it and receives its callbacks, as
+ * MediaPlayer's threading contract asks; the looper never touches it. Blocking file I/O never runs on the looper: the
+ * part's own thread opens the file, sets it as the data source and starts the prepare, and posts the result back with
+ * the part's token. The audio focus is speech, transient for a sheet's play and lasting for a History playlist: other
+ * media pauses while a recording plays, and the decoder's live audio, which asks for no focus, plays on beside it (D7).
  * DsdNeoActivity reports the foreground, whose loss pauses a sheet's play (D10), and [release]s playback when the app
  * ends. Headphones unplugged pause any play.
  *
@@ -74,8 +71,9 @@ object RecordingPlayback {
 
     /**
      * The setups given up while their work still runs, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
-     * thread and a MediaPlayer each, stuck in a read that may never return) an open fails at once, so stalled storage
-     * cannot pile up threads; Stop never waits for one. The work leaves the count on its setup thread as it returns.
+     * player's own thread and its MediaPlayer each, stuck in a read that may never return) an open waits, bounded by
+     * its prepare timeout, so stalled storage cannot pile up threads; Stop never waits for one. The work leaves the
+     * count on its player's thread as it returns.
      */
     private val abandonedSetups = AbandonedSetups()
 
@@ -87,17 +85,6 @@ object RecordingPlayback {
 
     /** The playlist whose media session the service last rendered active (#909): the Activity's media key handoff. */
     private val activeSession = ActiveSession<MediaSession.Token>()
-
-    /**
-     * The setup thread, beside the looper: each part's blocking open, data source and prepare start
-     * ([RecordingPlayer.Opener.setup]), one after another. A thread whose setup was dropped with its result still out
-     * is replaced ([RecordingPlayer.Opener.abandonSetup]); under [setupLock].
-     */
-    private var setupThread: ExecutorService? = null
-    private val setupLock = Any()
-
-    private fun newSetupThread(): ExecutorService =
-        Executors.newSingleThreadExecutor { work -> Thread(work, "dsd-neo-playback-setup").apply { isDaemon = true } }
 
     /** Looper only: the playlist's wake lock and the receivers' registrations. */
     private var wakeLock: PowerManager.WakeLock? = null
@@ -540,6 +527,7 @@ object RecordingPlayback {
         override fun close() = RecordingDescriptor.close(fd)
     }
 
+    /** Opens a part's file on its player's own thread ([MediaItem]), inside its setup. */
     private object Opener : RecordingPlayer.Opener {
         override fun open(item: RecordingPlayer.Item): RecordingPlayer.OpenResult {
             if (item.size < 0) {
@@ -552,35 +540,6 @@ object RecordingPlayback {
                 RecordingDescriptor.Result.Gone -> RecordingPlayer.OpenResult.Refused(RecordingPlayer.REASON_GONE)
                 RecordingDescriptor.Result.Changed -> RecordingPlayer.OpenResult.Refused(RecordingPlayer.REASON_CHANGED)
             }
-        }
-
-        /**
-         * [work] on the setup thread, its result posted to the looper; [work] never throws (the machine turns anything
-         * thrown into a failed setup), so the thread always posts. A refused hand-off fails as the player.
-         */
-        override fun setup(
-            work: () -> RecordingPlayer.SetupResult,
-            deliver: (RecordingPlayer.SetupResult) -> Unit,
-        ) {
-            try {
-                val thread = synchronized(setupLock) { setupThread ?: newSetupThread().also { setupThread = it } }
-                thread.execute {
-                    val result = work()
-                    post { deliver(result) }
-                }
-            } catch (e: RejectedExecutionException) {
-                Log.w(TAG, "could not hand a call recording to its setup", e)
-                post { deliver(RecordingPlayer.SetupResult(RecordingPlayer.REASON_PLAYER)) }
-            }
-        }
-
-        /**
-         * The thread of a dropped setup is given up: shut down, it takes no new work but finishes what it holds (a
-         * stuck read, whose late result the looper releases); the next setup starts a fresh one.
-         */
-        override fun abandonSetup() {
-            val stuck = synchronized(setupLock) { setupThread.also { setupThread = null } }
-            stuck?.shutdown()
         }
 
         private fun openUnchecked(path: String): RecordingPlayer.OpenResult = try {
@@ -603,40 +562,88 @@ object RecordingPlayback {
     }
 
     /**
-     * One recording in a MediaPlayer, made (inside the player's guard) and called on the looper, which its callbacks
-     * also arrive on; only [prepare] runs on the setup thread, before the looper touches it. A media server that died
-     * is the player's fault and ends the play; any other error is the file's.
+     * One recording's MediaPlayer on a thread of its own, its owner (#909). "MediaPlayer is not thread-safe. Creation
+     * of and all access to player instances should be on the same thread. If registering callbacks, the thread must
+     * have a Looper." So the owner does everything for this player: it runs the setup (the file opened and checked,
+     * then [create] and [prepare]), and every later call is posted to it, in order. The player's callbacks arrive on
+     * the owner's Looper and are forwarded to the playback looper with the part's token; the duration is read there in
+     * onPrepared, before the forward. The playback looper never touches the MediaPlayer. [release] posts the release,
+     * then lets the thread end once it has run: a setup stuck in a read releases and ends when the read returns. A
+     * media server that died is the player's fault and ends the play; any other error is the file's.
      */
     private class MediaItem(private val token: Long) : RecordingPlayer.Player {
-        private val media = MediaPlayer()
+        private val thread = HandlerThread("dsd-neo-playback-player").apply { start() }
+        private val owner = Handler(thread.looper)
 
-        override fun prepare(source: RecordingPlayer.Source) {
-            media.setAudioAttributes(attributes)
-            media.setDataSource((source as DescriptorSource).fd)
-            media.setOnPreparedListener { onLooper { it.onPrepared(token) } }
-            media.setOnCompletionListener { onLooper { it.onCompleted(token) } }
-            media.setOnErrorListener { _, what, _ ->
+        /** The owner's only. */
+        private var media: MediaPlayer? = null
+
+        /** Written on the owner in onPrepared, before its forward; read on the looper after it. */
+        @Volatile
+        private var duration = 0L
+
+        override fun setup(
+            work: () -> RecordingPlayer.SetupResult,
+            deliver: (RecordingPlayer.SetupResult) -> Unit,
+        ) {
+            // The work never throws (the machine turns anything thrown into a failed setup), so the owner always posts.
+            val handed = owner.post {
+                val result = work()
+                post { deliver(result) }
+            }
+            if (!handed) {
+                Log.w(TAG, "could not hand a call recording to its player's thread")
+                post { deliver(RecordingPlayer.SetupResult(RecordingPlayer.REASON_PLAYER)) }
+            }
+        }
+
+        override fun create() {
+            val made = MediaPlayer()
+            media = made // Released with the item, also when what follows throws.
+            made.setAudioAttributes(attributes)
+            made.setOnPreparedListener { prepared ->
+                duration = prepared.duration.toLong()
+                post { it.onPrepared(token) }
+            }
+            made.setOnCompletionListener { post { it.onCompleted(token) } }
+            made.setOnErrorListener { _, what, _ ->
                 val reason = if (what == MediaPlayer.MEDIA_ERROR_SERVER_DIED) {
                     RecordingPlayer.REASON_PLAYER
                 } else {
                     RecordingPlayer.REASON_DAMAGED
                 }
-                onLooper { it.onFailed(token, reason) }
+                post { it.onFailed(token, reason) }
                 true
             }
-            media.prepareAsync()
         }
 
-        override fun start() = media.start()
+        override fun prepare(source: RecordingPlayer.Source) {
+            val made = checkNotNull(media) { "no MediaPlayer to prepare" }
+            made.setDataSource((source as DescriptorSource).fd)
+            made.prepareAsync()
+        }
 
-        override fun pause() = media.pause()
+        override fun start() = onOwner { it.start() }
 
-        override fun seekTo(positionMs: Long) = media.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
+        override fun pause() = onOwner { it.pause() }
+
+        override fun seekTo(positionMs: Long) = onOwner { it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST) }
 
         override val durationMs: Long
-            get() = media.duration.toLong()
+            get() = duration
 
-        override fun release() = media.release()
+        override fun release() {
+            owner.post {
+                media?.release()
+                media = null
+            }
+            thread.quitSafely() // after what is posted already, the release included
+        }
+
+        /** [call] on the owner, after everything posted before it; nothing once the player is released. */
+        private fun onOwner(call: (MediaPlayer) -> Unit) {
+            owner.post { media?.let(call) }
+        }
     }
 
     /**

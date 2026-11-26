@@ -208,16 +208,17 @@ and after the play, refused, timed out and late, PARTS's failure rule and durati
 prepare that never answers (skipped at 10 s in a playlist and in PARTS, where part 2 then plays, Failed alone, none at
 9.9 s or after a move, its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast
 error to a part prepared
-after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), the setup
-thread (a fake setup held, run late or failed: a setup stuck in a read failing its part at 10 s with Stop working
-meanwhile and the late results released, every part stuck ending "unplayable", a result after a move released, a
-prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), a stuck setup thread
-replaced at its timeout, or at once when Stop or Next leaves it (the next item and a later sheet play set up on a fresh
-one, never failing; a hung prepare keeps its thread), at most two setups given up still running at once (a third open
-waits with no player made: it goes on when one returns, and times out and is skipped one at a time when both are stuck;
-Stop drops the wait; five quick moves whose setups are done but not delivered skip nothing; five Next then five Previous
-with every setup in flight fail nothing), a prepare timeout past a paused deadline ending "timeout" at once,
-a setup's gone file rechecked when its result comes after Stop or Next, Previous while a part opens opening it
+after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), each
+player's own thread (a fake setup held, run late, failed or refused: a setup stuck in a read failing its part at 10 s
+with Stop working meanwhile and the late results released, every part stuck ending "unplayable", a result after a move
+released, a prepare answering before the result, an error before it, SINGLE and PARTS on the same path, and a player
+that cannot be made on its thread, a thread that cannot start and a refused hand-off ending the play), a stuck setup
+holding only its own thread, at its timeout or when Stop or Next leaves it (the next item and a later sheet play set up
+at once, never failing; a hung prepare is not counted as stuck), at most two setups given up still running at once (a
+third open waits with no player made: it goes on when one returns, and times out and is skipped one at a time when both
+are stuck; Stop drops the wait; five quick moves whose setups are done but not delivered skip nothing; five Next then
+five Previous with every setup in flight fail nothing), a prepare timeout past a paused deadline ending "timeout" at
+once, a setup's gone file rechecked when its result comes after Stop or Next, Previous while a part opens opening it
 again (deleted meanwhile: skipped),
 no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the gap
 opening the call again, and staying paused in a paused gap; an error from a part completed or left reaching nothing; the

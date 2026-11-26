@@ -19921,34 +19921,38 @@ Qt Quick frontend (`src/ui/qt`):
       listed size and mtime; the check RecordingExport's selected open uses), and the player keeps its own copy of the
       descriptor, so the file playing plays to its end when it is deleted under it. What plays is decided by the file
       found at its turn: one whose delete waits on an export or upload and that is still there unchanged plays.
-    - Setup off the looper (every mode): blocking file I/O never runs on the playback looper. The looper makes each
-      part's `MediaPlayer` (so its callbacks come to the looper), arms the prepare timeout and hands the player to the
-      setup thread (`RecordingPlayer.Opener.setup()`; in `RecordingPlayback.kt` a single-thread executor, a daemon
-      thread `dsd-neo-playback-setup` beside the looper and as long-lived), which opens the file
-      (`RecordingDescriptor.open()`, or a plain open for SINGLE), calls `setDataSource(fd)` and `prepareAsync()`, closes
-      what it opened and posts its result (done, or failed with the reason) with the part's token; the work never throws
-      (anything thrown, an Error included, is a failed setup, `player`), so a result is posted on every path. Until then
-      the looper never touches that player (a prepare answering first is noted and applied at adoption; an error drops
-      the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement) only
-      releases its player; one that found its file gone or changed still puts the path it tried (carried in the result)
-      on the recheck list, leaving the play now open alone. A setup dropped with its result still out (its prepare
-      timeout, a move, Stop, the end, a replacement, an error while it runs) gives its thread up at once
-      (`Opener.abandonSetup()`: that executor is shut down, so it takes no new work, and finishes on its own, its late
-      result released as any), and the next setup starts a fresh thread, so nothing ever queues behind a read that does
-      not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
+    - One owner thread per player (every mode, R37): `MediaPlayer` is not thread-safe, and its creation, every call and
+      its callbacks must be on one thread with a Looper. Each part's player (`MediaItem` in `RecordingPlayback.kt`) has
+      a `HandlerThread` of its own, `dsd-neo-playback-player`, made by the looper with the part's player and token; the
+      playback looper never touches the `MediaPlayer`. The looper arms the prepare timeout and hands the setup to the
+      owner (`RecordingPlayer.Player.setup()`), which opens the file (`RecordingDescriptor.open()`, or a plain open for
+      SINGLE), makes the `MediaPlayer` (`Player.create()`: the attributes and every listener), calls `setDataSource(fd)`
+      and `prepareAsync()`, closes what it opened and posts its result (done, or failed with the reason) to the looper
+      with the part's token. The work never throws (anything thrown, an Error included, is a failed setup, `player`, as
+      is a `MediaPlayer` that cannot be made, a thread that cannot start and a hand-off the owner refuses because it
+      has quit), so a result is posted on every path. The player's callbacks arrive on the owner's Looper and are
+      forwarded to the looper with the token; the duration is read on the owner in `onPrepared`, before the forward.
+      Start, pause, seek and release are posted to the owner in order; release posts the release, then `quitSafely()`.
+      Until the result is back the looper never touches that player (a prepare answering first is noted and applied at
+      adoption; an error drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end,
+      a replacement) only releases its player; one that found its file gone or changed still puts the path it tried
+      (carried in the result) on the recheck list, leaving the play now open alone. A setup stuck in a read holds only
+      its own player's thread, so nothing ever queues behind it; it releases its player and ends once the read
+      returns and its result is delivered.
       Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
-      `LIMIT`): while two are running, each holding a thread and a `MediaPlayer` in a read that may never return, an
-      open makes no player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the
-      wait. One leaves the count when its work returns on its setup thread, before its result is posted, so a setup that
-      is done and waits only for delivery counts for nothing; the looper hears it when that result is delivered, which
-      releases its player and lets the waiting open go on under its own token. Only the current part waits, and Stop, a
-      move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
-      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
-      a setup. The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
+      `LIMIT`): while two owner threads are still running setup work whose open was dropped, each holding a
+      `MediaPlayer` in a read that may never return, an open makes no player and starts no setup and waits (R35), its
+      own prepare timeout armed as usual and bounding the wait to 10 s. One leaves the count when its work returns on
+      its owner thread, before its result is posted, so a setup that is done and waits only for delivery counts for
+      nothing; the looper hears it when that result is delivered, which releases its player and lets the waiting open
+      go on under its own token. Only the current part waits, and Stop, a move or the end drop the wait as they drop an
+      opening, so stalled storage costs one ten-second timeout per recording, one at a time, never a burst of failures,
+      and quick moves never fail a recording. Stop never waits for a setup. The JVM tests drive it with fake owner
+      threads, numbered per setup, that hold a setup, run it late, fail it or refuse it.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
-      before the hand-off to the setup thread and cancelled on prepare, error, a move and the end: a SINGLE play then
+      before the hand-off to the owner thread and cancelled on prepare, error, a move and the end: a SINGLE play then
       reads Failed, PARTS and PLAYLIST skip it, a resume waiting for it still waiting for the next, and the hung part's
       late callbacks reach nothing); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is not the file's
       fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play (never its whole
@@ -19977,7 +19981,7 @@ Qt Quick frontend (`src/ui/qt`):
       recording failed), and at the last call it is dropped. Previous (D7): restart the call when a playable part of it
       comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or it is in the gap, else the previous
       call's first playable part, and at the first call restart. A restart opens the part again, as any move does (R31:
-      a new `MediaPlayer` and play token, through the setup thread), also a part still opening, so nothing of the pass
+      a new `MediaPlayer` and play token, set up on its own thread), also a part still opening, so nothing of the pass
       before reaches it, and a part deleted while it played or opened is then a failed open, skipped and counted (D9
       still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
       backward move whose every candidate fails goes on forward. Next/Previous while paused stay paused. A transient
