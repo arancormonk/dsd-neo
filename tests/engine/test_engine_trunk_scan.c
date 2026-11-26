@@ -28200,13 +28200,9 @@ static int
 test_scan_quiet_capture_policies(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* const opts = qt_shared_opts();
     dsd_state* const state = qt_shared_state();
-    if (!opts) {
-        return 1;
-    }
     if (quiet_rig_start(opts, state, dir, sizeof dir, path, sizeof path) != 0) {
-        free(opts);
         return 1;
     }
     dsd_signal_capture shifted = g_tap.capture;
@@ -28277,7 +28273,6 @@ test_scan_quiet_capture_policies(void) {
     rc |= qt_expect("a SoapySDR device of unknown identity at an RTL rate is refused (a proxy can resample an Airspy)",
                     quiet_measures_capture(opts, state, &c) == 0);
     quiet_rig_finish(opts, state, dir, path);
-    free(opts);
     return rc;
 }
 
@@ -28288,16 +28283,12 @@ static int
 test_scan_quiet_policy_change_declines(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* const opts = qt_shared_opts();
     dsd_state* const state = qt_shared_state();
-    if (!opts) {
-        return 1;
-    }
     g_qt_centred = 1;
     const int started = quiet_rig_start(opts, state, dir, sizeof dir, path, sizeof path);
     g_qt_centred = 0;
     if (started != 0) {
-        free(opts);
         return 1;
     }
     quiet_publish(opts, state);
@@ -28325,7 +28316,6 @@ test_scan_quiet_policy_change_declines(void) {
     rc |= qt_expect("the same policy: applied", quiet_apply(opts, state, SCAN_QUIET_OWNER_TRUNK) == 1);
     g_qt_centred = 0;
     quiet_rig_finish(opts, state, dir, path);
-    free(opts);
     return rc;
 }
 
@@ -30455,13 +30445,9 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
                                     "b,dmr-conventional,453000000,,2000,1000,,\n";
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* const opts = qt_shared_opts();
     dsd_state* const state = qt_shared_state();
-    if (!opts) {
-        return 1;
-    }
     if (qt_warn_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
-        free(opts);
         return 1;
     }
     qt_warns_watch();
@@ -30501,7 +30487,6 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
     rc |= qt_expect("another SoapySDR device at an RTL rate is measured",
                     scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED && g_tap.requests == 1);
     quiet_rig_finish(opts, state, dir, path);
-    free(opts);
     return rc;
 }
 
@@ -30537,15 +30522,11 @@ static int
 test_scan_quiet_trunk_native_airspy_users_case(void) {
     char dir[DSD_TEST_PATH_MAX];
     char path[DSD_TEST_PATH_MAX];
-    dsd_opts* const opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_opts* const opts = qt_shared_opts();
     dsd_state* const state_p = qt_shared_state();
-    if (!opts) {
-        return 1;
-    }
     g_qt_centred = 1;
     if (qt_warn_rig_start(opts, state_p, dir, sizeof dir, path, sizeof path, k_qt_warn_targets) != 0) {
         g_qt_centred = 0;
-        free(opts);
         return 1;
     }
     DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
@@ -30608,7 +30589,6 @@ test_scan_quiet_trunk_native_airspy_users_case(void) {
                     strstr(g_qt_warn, "SoapySDR") == NULL && strstr(g_qt_warn, "soapy") == NULL);
     g_qt_centred = 0;
     quiet_rig_finish(opts, state_p, dir, path);
-    free(opts);
     return rc;
 }
 
