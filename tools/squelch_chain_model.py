@@ -7,11 +7,12 @@ runs it. tools/squelch_model.py, tools/squelch_paths_model.py and tools/noise_sq
     (rtl_downsample_passes_for_rate_in(), rate_plan_passes(), the rate converter's ratio, the general replay plan) and
     of iq_resampler.c's design.
   - Streaming ports of the chain's stages (FirStream, ChainStream: the reader's polyphase bank, the half-band
-    decimators, the channel FIR), every stage's history and the reader's phase kept across pushes.
+    decimators centred and looking ahead as simd_hb_decim2_complex() runs them, the channel FIR), every stage's
+    history and the reader's phase kept across pushes.
   - The tracker's 20 ms sub-windows and the shipped 40 ms decisions (SubWindowStream, FrozenStream,
     classify_windows(): src/dsp/squelch_floor.c).
-  - The noise model: the half-band recursion, the channel taps, every output phase of a reader chain, and the floor
-    plan designed from them (plan_from_cov(): dsd_squelch_floor_plan_design_periodic_mean(), the averaged or the full
+  - The noise model: the half-band recursion, the channel taps, every output phase of a reader chain (impulses
+    streamed through the ported chain in bounded pushes), and the floor plan designed from them (plan_from_cov(): dsd_squelch_floor_plan_design_periodic_mean(), the averaged or the full
     periodic design chosen on the C reader model's bound).
 
 Not a script; offline, CI does not run it.
@@ -294,30 +295,58 @@ def white_noise(rng: np.random.Generator, count: int) -> np.ndarray:
 
 
 class FirStream:
-    """A streaming FIR with rational rate change, as the chain's stages run: output n = sum_j h[j] x_up[n down - j],
-    x_up the input with up - 1 zeros after each sample (upfirdn's convention, the reader's phase walk; a half-band
-    stage's output q is the sum at input 2q). The stream starts on silence, keeps its history across pushes, and
-    takes pushes of a whole number of `down` samples."""
+    """A streaming FIR with rational rate change, as the chain's stages run: output n = sum_j h[j] x_up[n down +
+    advance - j], x_up the input with up - 1 zeros after each sample (upfirdn's convention, the reader's phase walk).
+    The stream starts on silence and keeps its history across pushes. Without a rate change up (up 1), output n is made
+    once input n down + advance is in, so a push of any length returns the outputs it completes; with one (the reader),
+    advance is 0 and a push holds a whole number of `down` samples."""
 
-    def __init__(self, h: np.ndarray, up: int = 1, down: int = 1):
+    def __init__(self, h: np.ndarray, up: int = 1, down: int = 1, advance: int = 0):
         self.h = np.asarray(h, dtype=np.float64)
-        self.up, self.down = up, down
+        self.up, self.down, self.advance = up, down, advance
+        if up == 1:
+            # The inputs from absolute index `base` on (silence before the stream), and the next output to make.
+            self.base = -(len(self.h) - 1)
+            self.buf = np.zeros(len(self.h) - 1, dtype=np.complex128)
+            self.n_in = 0
+            self.n_out = 0
+            return
+        if advance:
+            raise ValueError("a look-ahead needs up 1")
         span = -(-len(self.h) // up)
         self.hist_len = down * -(-span // down)
         self.hist = np.zeros(self.hist_len, dtype=np.complex128)
 
     def push(self, x: np.ndarray) -> np.ndarray:
+        if self.up == 1:
+            return self._push_decimating(np.asarray(x, dtype=np.complex128))
         if len(x) % self.down:
             raise ValueError("a push must hold whole output periods")
         buf = np.concatenate((self.hist, np.asarray(x, dtype=np.complex128)))
         self.hist = buf[len(buf) - self.hist_len :]
-        if self.up == 1 and self.down == 1:
-            if len(self.h) == 1:
-                return buf[self.hist_len :] * self.h[0]
-            return sps.oaconvolve(buf, self.h, mode="full")[self.hist_len : self.hist_len + len(x)]
         y = sps.upfirdn(self.h, buf, self.up, self.down)
         start = self.hist_len * self.up // self.down
         return y[start : start + len(x) * self.up // self.down]
+
+    def _push_decimating(self, x: np.ndarray) -> np.ndarray:
+        self.buf = np.concatenate((self.buf, x))
+        self.n_in += len(x)
+        span = len(self.h) - 1
+        last = self.n_in - 1 - self.advance  # the last input an output can end on
+        end = last // self.down + 1 if last >= 0 else 0
+        if end <= self.n_out:
+            return np.zeros(0, dtype=np.complex128)
+        lo = self.n_out * self.down + self.advance - span
+        seg = self.buf[lo - self.base : (end - 1) * self.down + self.advance - self.base + 1]
+        if span == 0:
+            y = seg * self.h[0]
+        else:
+            y = sps.oaconvolve(seg, self.h, mode="valid")
+        self.n_out = end
+        keep = min(end * self.down + self.advance - span, self.n_in)
+        self.buf = self.buf[keep - self.base :]
+        self.base = keep
+        return y[:: self.down]
 
 
 def stage_taps(passes: int, hb_taps: dict) -> list[np.ndarray]:
@@ -325,9 +354,26 @@ def stage_taps(passes: int, hb_taps: dict) -> list[np.ndarray]:
     return [hb_taps["hb31"] if i == 0 else hb_taps["hb15"] for i in range(passes)]
 
 
+def halfband_advance(h: np.ndarray) -> int:
+    """simd_hb_decim2_complex()'s look-ahead: its output q is centred on input 2q (counted from a reset), the causal sum
+    at 2q + (len - 1) / 2, made once that input is in."""
+    return (len(h) - 1) // 2
+
+
+def chain_look_ahead(plan: RatePlan, hb_taps: dict) -> int:
+    """Channel-rate outputs the half-bands' look-ahead holds back at most: a stage of advance c makes at least
+    (N - c - 1) / 2 outputs for N inputs, so the shortfall halves at each later stage."""
+    short = 0.0
+    for h in stage_taps(plan.passes, hb_taps):
+        short = short / 2.0 + (halfband_advance(h) + 1) / 2.0
+    return math.ceil(short) + 1
+
+
 class ChainStream:
     """A chain's stages ahead of the channel filter, streaming: the reader (when the row has one), then the half-band
-    passes. A push takes a whole number of `unit` source samples and returns the cascade's output at the complex rate."""
+    passes, each centred as the decoder centres it (halfband_advance()), so a reader's phases reach the channel filter
+    as the decoder's decimators pick them. A push takes a whole number of `unit` source samples and returns the outputs
+    the cascade completes at the complex rate."""
 
     def __init__(self, plan: RatePlan, hb_taps: dict):
         self.stages = []
@@ -336,7 +382,7 @@ class ChainStream:
             L, M = plan.reader.L, plan.reader.M
             self.stages.append(FirStream(reader_prototype(plan.reader), L, M))
         for h in stage_taps(plan.passes, hb_taps):
-            self.stages.append(FirStream(h, 1, 2))
+            self.stages.append(FirStream(h, 1, 2, halfband_advance(h)))
         self.unit = M << plan.passes
         self.ratio = (L, M << plan.passes)  # outputs per source sample, as a fraction
 
@@ -375,8 +421,10 @@ def through_chain(plan: RatePlan, hb_taps: dict, taps: np.ndarray, x: np.ndarray
 def chain_signal(plan: RatePlan, hb_taps: dict, taps: np.ndarray, make, outputs: int) -> np.ndarray:
     """@p outputs channel outputs of the source-rate signal make(count) through the chain, past its lead."""
     lead = chain_lead(plan, taps)
-    count = source_count(plan, outputs + lead)
+    count = source_count(plan, outputs + lead + chain_look_ahead(plan, hb_taps))
     y = through_chain(plan, hb_taps, taps, make(count))
+    if len(y) < lead + outputs:
+        raise ValueError("the chain made fewer outputs than its source count promised")
     return y[lead : lead + outputs]
 
 
@@ -556,11 +604,38 @@ def through_taps_cov(r: np.ndarray, taps: np.ndarray) -> np.ndarray:
     return c[(len(r) - 1) + (len(taps) - 1) :]
 
 
+IMPULSE_CHUNK = 1 << 20  # source samples an impulse_cov() push takes: the workspace's bound
+
+
+def impulse_spacing(n_in: int, per_in: float, spacing_out: int) -> int:
+    """The source-sample spacing of impulse_cov()'s impulses: the first that keeps consecutive responses
+    @p spacing_out outputs apart and is coprime to the @p n_in source phases, so impulses j x spacing,
+    j = 0 .. n_in - 1, land on every phase once."""
+    gap = max(1, math.ceil(spacing_out / per_in))
+    while math.gcd(gap, n_in) != 1:
+        gap += 1
+    return gap
+
+
+def add_phase_products(cov: np.ndarray, y: np.ndarray, first: int, count: int) -> None:
+    """R(q, m) += y_n y_{n+m} for the @p count outputs n from the start of @p y, which holds outputs from absolute
+    index @p first on (q = n mod the period) and at least len(cov[0]) - 1 more past them."""
+    period, lags = cov.shape
+    offset = first % period
+    rows = -(-(offset + count) // period)
+    padded = np.zeros(rows * period)
+    for m in range(lags):
+        padded[offset : offset + count] = y[:count] * y[m : m + count]
+        cov[:, m] += padded.reshape(rows, period).sum(axis=0)
+
+
 def impulse_cov(plan: RatePlan, hb_taps: dict, taps: np.ndarray) -> np.ndarray:
     """Every output phase's covariance at the channel output of a reader chain, for unit white noise at the source
     rate: unit impulses at each of the N source phases the chain repeats over, far enough apart that no two responses
-    meet, through the ported chain; R(q, m) is the sum of y_n y_{n+m} over outputs n = q mod P (a shift of N inputs
-    shifts the responses by P outputs). Rows are phases, columns lags."""
+    meet (impulse_spacing()), through the ported chain; R(q, m) is the sum of y_n y_{n+m} over outputs n = q mod P,
+    n counted from the stream's start (a shift of N inputs shifts the responses by P outputs). The impulses stream in
+    pushes of IMPULSE_CHUNK source samples, the products accumulating as they come with the last lags - 1 outputs
+    carried, so the workspace stays bounded whatever N. Rows are phases, columns lags."""
     L = plan.reader.L if plan.reader else 1
     M = plan.reader.M if plan.reader else 1
     period_in = 1 << plan.passes
@@ -569,20 +644,32 @@ def impulse_cov(plan: RatePlan, hb_taps: dict, taps: np.ndarray) -> np.ndarray:
     n_out = L // g
     lags = chain_lead(plan, taps)
     per_in = L / (M * period_in)
-    spacing = 2 * lags + 16
-    gap = n_in + 1
-    while gap * per_in < spacing:
-        gap += n_in
-    lead = source_count(plan, lags)
-    total = source_count(plan, int((lead + n_in * gap + 4 * gap) * per_in) + 2 * lags)
-    x = np.zeros(total, dtype=np.complex128)
-    x[lead + gap * np.arange(n_in)] = 1.0
-    y = through_chain(plan, hb_taps, taps, x).real
+    gap = impulse_spacing(n_in, per_in, 2 * lags + 16)
+    # The first impulse a whole number of input periods in, past the stages' start (a response there would lose the
+    # outputs before the stream's first); past the last, its response and the look-ahead the stages hold back.
+    lead = -(-source_count(plan, lags) // n_in) * n_in
+    total = lead + (n_in - 1) * gap + 1 + source_count(plan, 2 * lags + 16 + chain_look_ahead(plan, hb_taps))
+    chain = ChainStream(plan, hb_taps)
+    fir = FirStream(taps)
+    chunk = max(chain.unit, IMPULSE_CHUNK // chain.unit * chain.unit)
+    total = -(-total // chunk) * chunk
     cov = np.zeros((n_out, lags))
-    index = np.arange(len(y)) % n_out
-    for m in range(lags):
-        prod = y[: len(y) - m] * y[m:]
-        cov[:, m] = np.bincount(index[: len(prod)], weights=prod, minlength=n_out)
+    carry = np.zeros(0)
+    first = 0  # the absolute output index of carry[0]
+    for pos in range(0, total, chunk):
+        x = np.zeros(chunk, dtype=np.complex128)
+        j = np.arange(max(0, -(-(pos - lead) // gap)), min(n_in, -(-(pos + chunk - lead) // gap)))
+        x[lead + j * gap - pos] = 1.0
+        buf = np.concatenate((carry, fir.push(chain.push(x)).real))
+        count = len(buf) - (lags - 1)
+        if count > 0:
+            add_phase_products(cov, buf, first, count)
+            carry = buf[count:]
+            first += count
+        else:
+            carry = buf
+    if len(carry):
+        add_phase_products(cov, np.concatenate((carry, np.zeros(lags - 1))), first, len(carry))
     return cov
 
 
