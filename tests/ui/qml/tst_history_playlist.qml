@@ -81,8 +81,9 @@ Item {
             verify(found !== null, name);
             return found;
         }
+        // The line under the name, its parts' no-break spaces read as spaces.
         function line(screen) {
-            return part(screen, "nowPlayingLine").text;
+            return part(screen, "nowPlayingLine").text.replace(/\u00a0/g, " ");
         }
         function hostCallsNamed(name) {
             return testContext.hostCalls().filter(function (call) {
@@ -281,7 +282,7 @@ Item {
                     {tag: "paused", reading: {playbackState: 3, playbackPausedReason: "user"}, line: "Paused", pause: false},
                     {tag: "headphones", reading: {playbackState: 3, playbackPausedReason: "noisy"}, line: "Paused: headphones unplugged", pause: false},
                     {tag: "interrupted", reading: {playbackState: 3, playbackInterrupted: true, playbackPausedReason: "focus"}, line: "Paused for another app's audio", pause: true},
-                    {tag: "refused resume", reading: {playbackState: 3, playbackPausedReason: "unavailable"}, line: "Can't play right now.", pause: false},
+                    {tag: "refused resume", reading: {playbackState: 3, playbackPausedReason: "unavailable"}, line: "Can't play right now. Another app has the audio, such as a phone call.", pause: false},
                     {tag: "opening", reading: {playbackState: 1}, line: "Opening…", pause: true}];
         }
         function test_bar_lines(data) {
@@ -405,7 +406,9 @@ Item {
                 compare(result.text, data.text);
                 compare(String(result.color), String(data.alert ? Ui.Theme.alert : Ui.Theme.textPrimary));
                 compare(part(s, "nowPlayingClose").Accessible.name, "Close");
-                verify(!part(s, "nowPlayingPlay").enabled && !part(s, "nowPlayingNext").enabled && !part(s, "nowPlayingPrevious").enabled);
+                verify(!part(s, "nowPlayingPlay").visible && !part(s, "nowPlayingNext").visible && !part(s, "nowPlayingPrevious").visible,
+                       "the result takes the transport's room");
+                verify(!result.truncated, "the whole result");
             }
             verify(!findChild(screen, "callLogList").itemAtIndex(0).playback, "the marker leaves the row");
             // Another play after the end does not take the result away; ✕ sends nothing, so it never stops that play.
@@ -478,8 +481,11 @@ Item {
             var rowRect = rectIn(list.itemAtIndex(row), list);
             verify(rowRect.y >= -0.5 && rowRect.y + rowRect.height <= list.height + 0.5, "scrolled into view: " + describe(rowRect));
 
-            historyView.filterText = "no call matches this";
+            // A search still being typed counts: it is flushed first, as Play all's is.
+            findChild(screen, "historySearch").text = "no call matches this";
+            compare(historyView.filterText, "", "still in the debounce");
             show.activate();
+            compare(historyView.filterText, "no call matches this", "flushed by the press");
             verify(!sheet.visible);
             compare(line(screen), "This call isn't in the list now.");
             compare(bar(screen).announced, "This call isn't in the list now.");
@@ -500,6 +506,22 @@ Item {
             compare(stops[0].generation, generation);
             verify(!bar(sessionLoader.item).visible);
             compare(callHistory.count, 0);
+        }
+
+        // Clear history also lets go of an ended playlist's result: its rows are gone. Nothing is sent.
+        function test_clear_dismisses_an_ended_result() {
+            var calls = logCalls(2);
+            var screen = sessionLoader.item;
+            playAll(screen, calls);
+            testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
+            verify(bar(screen).visible);
+            var before = testContext.hostCalls().length;
+            var confirm = findChild(screen, "clearHistoryConfirm");
+            confirm.open();
+            confirm.confirmed();
+            compare(testContext.hostCalls().length, before, "nothing sent");
+            for (var s of screens())
+                verify(!bar(s).visible, "the result goes with the rows");
         }
 
         // The playing row: two magenta bars in place of the recording glyph, named playing or paused, from the
@@ -533,6 +555,7 @@ Item {
             playing({playbackState: 3, playbackPausedReason: "user"});
             compare(row.playback, 2);
             compare(row.node.Accessible.name, row.accessibleName + ", paused");
+            compare(String(findChild(row, "rowRecordingGlyph").color), String(Ui.Theme.textSubdued), "dimmed while paused");
             testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
             compare(row.playback, 0);
             verify(!findChild(row, "rowRecordingGlyph").visible);
@@ -649,11 +672,10 @@ Item {
             }
         }
 
-        // The bar docks at the bottom of the screen, keeps one height in every state, and never covers the last
-        // row: the list ends above it with at least 40% of the room, and the last row scrolls into view above it.
-        // While the keyboard is up the room ends at its top: the bar is under it (out of the way, as the bottom
-        // navigation is), the list ends at the keyboard and the field being typed in stays in view. Both screens,
-        // normal and 2x text, keyboard down and up.
+        // The bar docks at the bottom, keeps one height in every state, and never covers the last row: the list
+        // ends above it, and the bar comes out of the list's 40% share (down to one row of list) before the header
+        // gives room up, so at 360x640 and normal text the whole header, filters included, still shows. While the
+        // keyboard is up the bar hides and History is laid out as without one. Both screens, normal and 2x text.
         function test_bar_never_covers_the_last_row_data() {
             var rows = [];
             for (var session of [false, true])
@@ -666,64 +688,133 @@ Item {
             var calls = logCalls(25);
             var screen = data.session ? sessionLoader.item : idle();
             Ui.Theme.fontScale = data.scale;
+            var scroll = findChild(screen, "historyHeaderScroll");
             playAll(screen, calls);
             var barItem = bar(screen);
             var opening = barItem.height;
             playing({item: 3});
             compare(barItem.height, opening, "one height opening and playing");
-            if (data.keyboard) {
-                var search = findChild(screen, "historySearch");
-                // Laid out at the text size first: the header's column places its children at polish time.
-                verify(waitForPolish(screen));
-                waitForRendering(screen);
-                search.input.forceActiveFocus();
+            if (data.keyboard)
                 decoderHost.keyboardTop = screen.mapToItem(null, 0, 0).y + 360;
-            }
             verify(waitForPolish(screen));
             waitForRendering(screen);
-            var room = data.keyboard ? 360 : screen.height;
-            compare(screen.roomHeight, room);
-            compare(barItem.visible, !data.keyboard, "under the keyboard, out of the way");
-            var bottom = data.keyboard ? room : rectIn(barItem, screen).y;
-            var barRect = rectIn(barItem, screen);
-            if (!data.keyboard)
-                verify(Math.abs(barRect.y + barRect.height - screen.height) < 0.5, "docked at the bottom: " + describe(barRect));
             var list = findChild(screen, "callLogList");
             var listRect = rectIn(list, screen);
-            verify(listRect.y + listRect.height <= bottom + 0.5, "the list ends above the bar or the keyboard: " + describe(listRect) + " " + bottom);
-            verify(list.height >= Math.ceil(room * 0.4) - 0.5, "the list keeps its room: " + list.height);
-            var scroll = findChild(screen, "historyHeaderScroll");
-            verify(listRect.y >= scroll.y + scroll.height, "the list starts under the header");
+            var share = Math.ceil(screen.height * 0.4);
             if (data.keyboard) {
-                var typing = search.input;
-                verify(typing.activeFocus, "the search has the keyboard");
-                tryVerify(function () {
-                    var r = rectIn(typing, screen);
-                    return r.y >= scroll.y - 0.5 && r.y + r.height <= scroll.y + scroll.height + 0.5;
-                }, 2000, "the field being typed in stays in view: " + describe(rectIn(typing, screen)) + " in " + scroll.y + "+" + scroll.height);
+                verify(!barItem.visible, "hidden while the keyboard is up");
+                verify(Math.abs(listRect.y + listRect.height - screen.height) < 0.5, "the list as without a bar: " + describe(listRect));
+                compare(scroll.height, Math.min(scroll.contentHeight, screen.height - share - 4), "the header as without a bar");
+                decoderHost.keyboardTop = -1;
+                verify(barItem.visible, "back with the keyboard down");
+                verify(waitForPolish(screen));
+                listRect = rectIn(list, screen);
+            }
+            var barRect = rectIn(barItem, screen);
+            verify(Math.abs(barRect.y + barRect.height - screen.height) < 0.5, "docked at the bottom: " + describe(barRect));
+            verify(listRect.y + listRect.height <= barRect.y + 0.5, "the list ends above the bar: " + describe(listRect) + " " + describe(barRect));
+            verify(list.height + barItem.height >= share - 0.5, "list and bar keep the list's share: " + list.height + "+" + barItem.height);
+            verify(list.height >= screen.rowHeight - 0.5, "at least a row of list: " + list.height);
+            verify(listRect.y >= scroll.y + scroll.height, "the list starts under the header");
+            if (barItem.height + screen.rowHeight <= share)
+                compare(scroll.height, Math.min(scroll.contentHeight, screen.height - share - 4), "the bar took nothing from the header");
+            if (data.scale === 1.0 && !data.session) {
+                verify(scroll.contentHeight <= scroll.height + 0.5, "the whole header shows at normal text: " + scroll.contentHeight + " in " + scroll.height);
+                var pill = rectIn(findChild(screen, "historyActivityFilter"), screen);
+                verify(pill.y + pill.height <= scroll.y + scroll.height + 0.5, "the filters fully shown: " + describe(pill));
             }
             list.positionViewAtEnd();
             waitForRendering(list);
             var last = list.itemAtIndex(list.count - 1);
             verify(last !== null, "the last row is built");
             var lastRect = rectIn(last, screen);
-            verify(lastRect.y + lastRect.height <= bottom + 0.5, "the last row above the bar or the keyboard: " + describe(lastRect) + " " + bottom);
-            if (data.keyboard) {
-                decoderHost.keyboardTop = -1;
-                verify(barItem.visible, "back with the keyboard down");
-                verify(waitForPolish(screen));
-                barRect = rectIn(barItem, screen);
-                listRect = rectIn(list, screen);
-                verify(listRect.y + listRect.height <= barRect.y + 0.5, "the list ends above the bar again");
-            }
-            for (var reading of [{playbackState: 3, playbackPausedReason: "noisy"}, {playbackState: 0, playbackEndedReason: "focus"}])
-                testContext.publishPlaybackReading(reading);
-            compare(barItem.height, opening, "one height ended");
+            verify(lastRect.y + lastRect.height <= barRect.y + 0.5, "the last row above the bar: " + describe(lastRect) + " " + describe(barRect));
             for (var name of ["nowPlayingPrevious", "nowPlayingPlay", "nowPlayingNext", "nowPlayingClose", "nowPlayingShowInList"]) {
                 var control = part(screen, name);
                 verify(control.width >= 48 && control.height >= 48, name + " is a 48 px target");
                 var c = rectIn(control, screen);
                 verify(c.x >= 0 && c.x + c.width <= screen.width && c.y >= barRect.y && c.y + c.height <= barRect.y + barRect.height + 0.5, name + " inside the bar: " + describe(c));
+            }
+            for (var reading of [{playbackState: 3, playbackPausedReason: "noisy"}, {playbackState: 0, playbackEndedReason: "focus"}])
+                testContext.publishPlaybackReading(reading);
+            compare(barItem.height, opening, "one height ended");
+        }
+
+        // Nothing the bar says is cut short at 360 px, at normal or 2x text: the line under the name wraps in a box
+        // as tall as its longest status, and the result takes the transport's room; the bar's height never moves.
+        // On a wide bar too.
+        function test_bar_text_is_never_cut_data() {
+            return [{tag: "360 1x", width: 360, scale: 1.0}, {tag: "360 2x", width: 360, scale: 2.0},
+                    {tag: "360 1.6x", width: 360, scale: 1.6}, {tag: "900 1x", width: 900, scale: 1.0}, {tag: "900 2x", width: 900, scale: 2.0}];
+        }
+        function test_bar_text_is_never_cut(data) {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            root.width = data.width;
+            idleLoader.width = data.width;
+            Ui.Theme.fontScale = data.scale;
+            try {
+                playAll(screen, calls, [1, 8, 1]);
+                var barItem = bar(screen);
+                verify(waitForPolish(screen));
+                var height = barItem.height;
+                var lineItem = part(screen, "nowPlayingLine");
+                var lines = [{reading: {item: 1, playbackState: 2, playbackDurationMs: 600000, playbackPositionMs: 599000}},
+                             {reading: {playbackState: 3, playbackPausedReason: "unavailable"}, text: "Can't play right now. Another app has the audio, such as a phone call."},
+                             {reading: {playbackState: 3, playbackPausedReason: "noisy"}, text: "Paused: headphones unplugged"},
+                             {reading: {playbackState: 3, playbackInterrupted: true}, text: "Paused for another app's audio"},
+                             {reading: {item: 2, playbackState: 2, playbackInterrupted: false, playbackPausedReason: "", playbackSkipped: 12}, text: "Skipped 12 recordings that couldn't be played"}];
+                for (var l of lines) {
+                    testContext.publishPlaybackReading(l.reading);
+                    verify(waitForPolish(lineItem));
+                    if (l.text)
+                        compare(line(screen), l.text);
+                    verify(!lineItem.truncated, "the whole line: " + line(screen));
+                    compare(barItem.height, height, "one height: " + line(screen));
+                }
+                var result = part(screen, "nowPlayingResult");
+                for (var end of [{playbackState: 4, playbackError: "unavailable", playbackEndedReason: "failed"},
+                                 {playbackState: 0, playbackEndedReason: "finished", playbackSkipped: 1234}]) {
+                    status.forget();
+                    playAll(screen, calls);
+                    testContext.publishPlaybackReading(end);
+                    verify(waitForPolish(result));
+                    verify(result.visible);
+                    verify(!result.truncated, "the whole result: " + result.text);
+                    compare(barItem.height, height, "one height ended");
+                }
+            } finally {
+                root.width = 360;
+                idleLoader.width = 360;
+            }
+        }
+
+        // The keyboard's order is what is seen: stacked (a phone), ✕ ends the top row before the transport under
+        // it; on one line (wide), ✕ comes last.
+        function test_bar_tab_order_data() {
+            return [{tag: "stacked", width: 360, order: ["nowPlayingShowInList", "nowPlayingClose", "nowPlayingPrevious", "nowPlayingPlay", "nowPlayingNext"]},
+                    {tag: "one line", width: 900, order: ["nowPlayingShowInList", "nowPlayingPrevious", "nowPlayingPlay", "nowPlayingNext", "nowPlayingClose"]}];
+        }
+        function test_bar_tab_order(data) {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            root.width = data.width;
+            idleLoader.width = data.width;
+            try {
+                playAll(screen, calls);
+                playing({item: 0});
+                compare(bar(screen).stacked, data.width < 400);
+                var item = part(screen, data.order[0]);
+                for (var n = 1; n < data.order.length; n++) {
+                    var next = item.nextItemInFocusChain(true);
+                    compare(next ? next.objectName : "", data.order[n], "after " + data.order[n - 1]);
+                    item = next;
+                }
+            } finally {
+                root.width = 360;
+                idleLoader.width = 360;
             }
         }
     }

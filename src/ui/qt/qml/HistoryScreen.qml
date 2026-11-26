@@ -260,20 +260,22 @@ Item {
         else
             setExportMessage(qsTr("Couldn't start playing. Try again."), true);
     }
-    // Clear history ends a History playlist that plays, as the bar's ✕ does.
+    // Clear history ends a History playlist that plays, as the bar's ✕ does,
+    // and lets go of an ended one's result: its rows are gone.
     function endPlaylist() {
-        if (playlistStatus) {
-            playlistStatus.stop();
+        if (!playlistStatus)
             return;
-        }
-        var state = decoderHost.playbackState;
-        if (decoderHost.playbackOrigin === "history" && decoderHost.playbackMode === 2 && state >= 1 && state <= 3)
-            decoderHost.stopPlaybackGeneration(decoderHost.playbackGeneration);
+        if (playlistStatus.live)
+            playlistStatus.stop();
+        else
+            playlistStatus.dismiss();
     }
     // The bar's Show in list: the row logged under @p uid, looked up through
     // the list's filter now, scrolled into view and its sheet opened (which
     // follows what plays by itself). False when the list does not show it.
     function showPlaying(uid) {
+        // Text typed less than the debounce ago is part of what the list shows.
+        flushPendingSearch();
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return false;
@@ -299,16 +301,15 @@ Item {
     // header that fits does not move.
     //
     // Issue #909: the now-playing bar docks at the bottom and the list ends
-    // above it, so the bar never covers the last row; the header's share is
-    // what the list and the bar leave. While the keyboard is up (a search
-    // being typed) the screen's room ends at the keyboard's top: the bar is
-    // under the keyboard there, where the bottom navigation is, and out of the
-    // way until it goes down, so the list's last row and the field being typed
-    // in keep the room above it.
-    readonly property real roomHeight: Math.max(0, Math.min(height, Theme.keyboardTop(screen)))
-    readonly property bool keyboardUp: roomHeight < height - 0.5
+    // above it, so the bar never covers the last row. The bar's height comes
+    // out of the list's share, down to one row of list above it, before the
+    // header gives any room up. While the keyboard is up (a search being
+    // typed) the bar hides and History is laid out as it is without one; the
+    // notification keeps the playlist's controls, and its events wait.
+    readonly property real listMinHeight: Math.ceil(height * 0.4)
+    readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
-    readonly property real listMinHeight: Math.ceil(roomHeight * 0.4)
+    readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + rowHeight : 0)
 
     PlexFlickable {
         id: headerScroll
@@ -318,7 +319,7 @@ Item {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: Math.min(contentHeight, Math.max(0, screen.roomHeight - screen.listMinHeight - screen.barHeight - logList.anchors.topMargin))
+        height: Math.min(contentHeight, Math.max(0, screen.height - screen.listShare - logList.anchors.topMargin))
         contentWidth: width
         // A few pixels under the filters for their focus ring, which the clip
         // would otherwise cut; the list's top margin gives them back.
@@ -672,8 +673,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
-        // Above the keyboard and the now-playing bar (issue #909).
-        anchors.bottomMargin: screen.height - screen.roomHeight + screen.barHeight
+        // Above the now-playing bar (issue #909).
+        anchors.bottomMargin: screen.barHeight
         clip: true
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.

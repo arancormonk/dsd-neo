@@ -19,10 +19,12 @@ import "Util.js" as Util
 // One height for every state: from its fonts and its width only. Where the
 // text would have less than a "Call 88 of 88 · 0:00 / 0:00" beside the four
 // controls (a phone), the controls take their own line under the text, ✕
-// staying beside it; wider, everything shares one line. Where even that line
-// is too narrow for "Call 88 of 88 · part 8 of 8 · 0:00 / 0:00" (a phone at a
-// large text size), the time or the status takes a third line, so it is
-// never the part the elide takes.
+// staying beside it; wider, everything shares one line. The line under the
+// name wraps, between its parts ("Call 3 of 41", "part 2 of 3", the time),
+// never inside one; its box holds as many lines as the longest status it can
+// show takes at this width, so no status is cut short and the bar keeps its
+// height whatever it says. Once ended, the result takes the transport's room
+// as well, the transport gone.
 Rectangle {
     id: bar
 
@@ -87,29 +89,27 @@ Rectangle {
             return qsTr("Opening…");
         if (playState === 3) {
             var reason = decoderHost.playbackPausedReason;
-            return reason === "noisy" ? qsTr("Paused: headphones unplugged") : reason === "unavailable" ? qsTr("Can't play right now.") : qsTr("Paused");
+            return reason === "noisy" ? qsTr("Paused: headphones unplugged") : reason === "unavailable" ? status.unavailableText : qsTr("Paused");
         }
         if (status.skipCount > 0 && status.skipCall === callIndex)
             return status.skippedText(status.skipCount);
         return "";
     }
-    // The line under the name, and the third line where there is one.
+    // Parts joined so a wrap falls only between them, after a dot (as the
+    // detail sheet's site line wraps).
+    function wholeParts(parts) {
+        return parts.filter(function (part) {
+            return part.length > 0;
+        }).map(function (part) {
+            return part.replace(/ /g, "\u00a0");
+        }).join("\u00a0· ");
+    }
+    // The line under the name: what it is doing, else where it is.
     readonly property string lineText: {
         if (!live)
             return notice;
         var state = statusText();
-        var place = placeText();
-        if (threeLines)
-            return place.length > 0 ? place : state;
-        if (state.length > 0)
-            return state;
-        return place.length > 0 ? place + " · " + timeText(positionMs) : timeText(positionMs);
-    }
-    readonly property string thirdLineText: {
-        if (!threeLines || placeText().length === 0)
-            return "";
-        var state = statusText();
-        return state.length > 0 ? state : timeText(positionMs);
+        return state.length > 0 ? state : wholeParts([placeText(), timeText(positionMs)]);
     }
     readonly property string resultText: notice.length > 0 ? notice : end ? status.endedText(end) : ""
     // Show in list's description: the call, where it is, and what it is doing.
@@ -218,14 +218,24 @@ Rectangle {
         font: bar.lineFont
         text: qsTr("Call 88 of 88 · 0:00 / 0:00")
     }
-    TextMetrics {
-        id: partsProbe
-        font: bar.lineFont
-        text: qsTr("Call 88 of 88 · part 8 of 8 · 0:00 / 0:00")
+    // The longest things the line under the name can say, wrapped at its
+    // width: its box is as tall as the tallest (never fewer than one line).
+    readonly property var lineProbes: [status ? status.unavailableText : "", status ? status.skippedText(88) : "",
+        qsTr("Paused for another app's audio"), qsTr("Paused: headphones unplugged"), qsTr("This call isn't in the list now."),
+        wholeParts([qsTr("Call %1 of %2 · part %3 of %4").arg("888").arg("888").arg("8").arg("8"), qsTr("%1 / %2").arg("00:00").arg("00:00")])]
+    // The line's width while it plays (never the wider one an ended bar has),
+    // so the box, and the bar, keep one height.
+    readonly property real lineWidth: Math.max(0, (stacked ? closeX : previousX) - Theme.gap + 6 - showButton.x - 12)
+    readonly property real lineBoxHeight: {
+        var tallest = Math.ceil(lineMetrics.height);
+        for (var i = 0; i < probes.count; i++) {
+            var probe = probes.itemAt(i);
+            if (probe)
+                tallest = Math.max(tallest, Math.ceil(probe.implicitHeight));
+        }
+        return tallest;
     }
-    readonly property real stackedTextWidth: width - sideInset - controlInset - 48 - Theme.gap
-    readonly property bool threeLines: stacked && stackedTextWidth < Math.ceil(partsProbe.advanceWidth)
-    readonly property real textBoxHeight: Math.ceil(nameMetrics.height) + (threeLines ? 2 : 1) * (3 + Math.ceil(lineMetrics.height))
+    readonly property real textBoxHeight: Math.ceil(nameMetrics.height) + 3 + lineBoxHeight
     readonly property real transportWidth: 48 + controlGap + 52 + controlGap + 48
     readonly property bool stacked: width - sideInset - controlInset - transportWidth - 2 * controlGap - 48 - Theme.gap < Math.ceil(lineProbe.advanceWidth)
     readonly property real topRow: Math.max(textBoxHeight, 48)
@@ -239,6 +249,15 @@ Rectangle {
     readonly property real playX: previousX + 48 + (stacked ? stackedGap : controlGap)
     readonly property real nextX: playX + 52 + (stacked ? stackedGap : controlGap)
     readonly property real transportY: stacked ? padding + topRow + rowGap : (height - 52) / 2
+    // The text area: the top row beside ✕ (or the line, beside the transport),
+    // and once ended the transport's room too.
+    readonly property real textRight: (stacked || end ? closeX : previousX) - Theme.gap + 6
+    readonly property real textHeight: end && stacked ? topRow + rowGap + 52 : stacked ? topRow : Math.max(textBoxHeight, 52)
+
+    // The result's type: the name's, unless the longest result would not fit
+    // the room in it (a wide bar is one row high).
+    readonly property bool resultInNameFont: resultProbe.implicitHeight <= textHeight
+    readonly property font resultFont: resultInNameFont ? nameFont : lineFont
 
     // The top edge: a hairline, and the part's progress over it.
     Rectangle {
@@ -262,9 +281,9 @@ Rectangle {
         readonly property bool navigationAllowed: Navigation.allows(showButton)
 
         x: bar.sideInset - 6
-        y: bar.padding + (bar.stacked ? 0 : (bar.height - 2 * bar.padding - height) / 2)
-        width: Math.max(0, (bar.stacked ? bar.closeX : bar.previousX) - Theme.gap + 6 - x)
-        height: bar.stacked ? bar.topRow : Math.max(bar.textBoxHeight, 48)
+        y: bar.padding
+        width: Math.max(0, bar.textRight - x)
+        height: bar.textHeight
 
         // Held while it has the focus (see OutlineButton).
         activeFocusOnTab: (navigationAllowed && visible && enabled) || activeFocus
@@ -317,28 +336,19 @@ Rectangle {
             Text {
                 objectName: "nowPlayingLine"
                 width: parent.width
-                height: Math.ceil(lineMetrics.height)
-                verticalAlignment: Text.AlignVCenter
+                height: bar.lineBoxHeight
                 text: bar.lineText
                 textFormat: Text.PlainText
                 font: bar.lineFont
                 color: Theme.textSecondary
-                elide: Text.ElideRight
-            }
-            Text {
-                objectName: "nowPlayingThirdLine"
-                visible: bar.threeLines
-                width: parent.width
-                height: Math.ceil(lineMetrics.height)
-                verticalAlignment: Text.AlignVCenter
-                text: bar.thirdLineText
-                textFormat: Text.PlainText
-                font: bar.lineFont
-                color: Theme.textSecondary
+                // Between words only, so the line breaks between its parts.
+                wrapMode: Text.WordWrap
+                maximumLineCount: Math.max(1, Math.floor(bar.lineBoxHeight / lineMetrics.height))
                 elide: Text.ElideRight
             }
         }
-        // Ended: how, in the name's type, on as many lines as the same box holds.
+        // Ended: how, over the text's and the transport's room, in the name's
+        // type where the longest result fits there.
         Text {
             objectName: "nowPlayingResult"
             visible: !!bar.end
@@ -348,9 +358,9 @@ Rectangle {
             text: bar.resultText
             textFormat: Text.PlainText
             wrapMode: Text.Wrap
-            maximumLineCount: Math.max(1, Math.floor(bar.textBoxHeight / nameMetrics.height))
+            maximumLineCount: Math.max(1, Math.floor(parent.height / (bar.resultInNameFont ? nameMetrics.height : lineMetrics.height)))
             elide: Text.ElideRight
-            font: bar.nameFont
+            font: bar.resultFont
             color: bar.failedEnd && bar.notice.length === 0 ? Theme.alert : Theme.textPrimary
         }
 
@@ -361,12 +371,17 @@ Rectangle {
         }
     }
 
+    // ✕'s place when stacked: after the text area, before the transport.
+    Item {
+        id: topRowSlot
+    }
     MapControlButton {
         id: previousButton
         objectName: "nowPlayingPrevious"
         framed: false
         shape: "previous"
         accessibleName: qsTr("Previous call")
+        visible: !bar.end
         enabled: bar.live
         x: bar.previousX
         y: bar.transportY + 2
@@ -377,6 +392,7 @@ Rectangle {
         objectName: "nowPlayingPlay"
         featured: bar.wanted
         showPause: bar.wanted
+        visible: !bar.end
         enabled: bar.live
         accessibleName: bar.wanted ? qsTr("Pause") : qsTr("Resume")
         x: bar.playX
@@ -389,19 +405,59 @@ Rectangle {
         framed: false
         shape: "next"
         accessibleName: qsTr("Next call")
+        visible: !bar.end
         // Not offered at the last call.
         enabled: bar.live && bar.callIndex >= 0 && bar.callIndex < bar.callCount - 1
         x: bar.nextX
         y: bar.transportY + 2
         onClicked: decoderHost.nextPlayback()
     }
+    // The keyboard's order is what is seen (Tab, and a screen reader's swipe):
+    // stacked, ✕ ends the top row, before the transport under it; on one line
+    // it comes last. ✕ sits in the slot that gives it that place in the
+    // bar's children, which both orders follow.
+    Item {
+        id: lastSlot
+    }
     IconButton {
         id: closeButton
+        parent: bar.stacked ? topRowSlot : lastSlot
         objectName: "nowPlayingClose"
         icon: "close"
         accessibleName: bar.live ? qsTr("Stop playing") : qsTr("Close")
         x: bar.closeX
         y: bar.stacked ? bar.padding + (bar.topRow - height) / 2 : (bar.height - height) / 2
         onClicked: bar.close()
+    }
+
+    // The probes the line's box (lineBoxHeight) and the result's type
+    // (resultInNameFont) are measured from: laid out, never drawn or read.
+    Item {
+        opacity: 0
+        width: bar.lineWidth
+        Accessible.ignored: true
+        Text {
+            id: resultProbe
+            // The result's width: the text area's once ended.
+            width: Math.max(0, bar.closeX - Theme.gap + 6 - showButton.x - 12)
+            text: bar.status ? bar.status.unavailableText : ""
+            textFormat: Text.PlainText
+            font: bar.nameFont
+            wrapMode: Text.Wrap
+            Accessible.ignored: true
+        }
+        Repeater {
+            id: probes
+            model: bar.lineProbes
+            Text {
+                required property string modelData
+                width: bar.lineWidth
+                text: modelData
+                textFormat: Text.PlainText
+                font: bar.lineFont
+                wrapMode: Text.WordWrap
+                Accessible.ignored: true
+            }
+        }
     }
 }

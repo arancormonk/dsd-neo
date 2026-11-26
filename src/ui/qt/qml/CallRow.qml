@@ -8,7 +8,8 @@ import "Util.js" as Util
 // Encrypted rows carry the ENC tag while retaining readable text contrast. A
 // call with a recording carries a small play glyph before the time or ENC tag
 // (issue #708); a row without one is unchanged. The call a History playlist
-// is on carries two magenta bars in that place instead (issue #909), from
+// is on carries two magenta bars in that place instead (dimmed while it is
+// paused; issue #909), from
 // `playback` alone: the file that plays can be deleted under it, which takes
 // `hasRecording` away while it plays on.
 //
@@ -249,7 +250,8 @@ Item {
                 objectName: "rowRecordingGlyph"
                 visible: row.plan.recording
                 bars: row.playback > 0
-                color: row.playback > 0 ? Theme.magenta : Theme.cyan
+                // Paused, the bars are dimmed: the playlist is on this call but silent.
+                color: row.playback === 1 ? Theme.magenta : row.playback === 2 ? Theme.textSubdued : Theme.cyan
                 anchors.right: encTag.visible ? encTag.left : timeText.visible ? timeText.left : parent.right
                 anchors.rightMargin: encTag.visible || timeText.visible ? 8 : 0
                 anchors.verticalCenter: parent.verticalCenter
