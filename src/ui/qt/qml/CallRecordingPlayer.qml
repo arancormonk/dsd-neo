@@ -282,13 +282,19 @@ Column {
     // Ask the host for a play of this block (@p ask answers its generation),
     // its first recording @p path: a failure published before the answer is
     // said, and so is a refusal with no reading, as @p refusedText when given.
+    // A refusal that left this block's own play playing (the host refused the
+    // new one before taking it) keeps it this block's, so the sheet's close
+    // still stops it.
     function startOwned(path, ask, refusedText) {
         failureKey = "";
         failureNotice = "";
         startingPath = path;
         var generation = ask();
         startingPath = "";
-        ownedGeneration = generation > 0 ? generation : 0;
+        if (generation > 0)
+            ownedGeneration = generation;
+        else if (ownedGeneration !== decoderHost.playbackGeneration)
+            ownedGeneration = 0;
         refusedPath = generation <= 0 && refusedReading(path) ? path : "";
         if (generation <= 0 && failureKey === "")
             say(refusedText !== undefined ? refusedText : qsTr("Couldn't start playing. Try again."), true);

@@ -1528,6 +1528,29 @@ Item {
             compare(stopCalls(), stops, "the close stops nothing");
         }
 
+        // The sheet owns a play of part A; part B is gone at its press: the host refuses B before taking it and A
+        // plays on, still the sheet's, so closing the sheet stops it.
+        function test_gone_at_the_press_keeps_its_own_play() {
+            openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            tap("recordingPlayButton");
+            var own = decoderHost.playbackGeneration;
+            verify(own > 0);
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 3, playbackDurationMs: 12000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            compare(player.ownedGeneration, own);
+            testContext.setPlaybackRefusal("missing");
+            tap("recordingPart1");
+            testContext.setPlaybackRefusal("");
+            compare(lastHostCall().name, "playRecordingOwned");
+            compare(lastHostCall().path, pathB);
+            compare(item("recordingNotice").text, "This recording is gone.");
+            compare(decoderHost.playbackGeneration, own, "A plays on");
+            compare(player.ownedGeneration, own, "and is still the sheet's");
+            sheet().visible = false;
+            compare(lastHostCall().name, "stopPlaybackGeneration");
+            compare(lastHostCall().generation, own, "closing the sheet stops it");
+        }
+
         // A sheet's own start the host refused with a failed reading (generation 0, the platform refused it) is
         // cleared at the close, as no one owns it.
         function test_refused_start_cleared_at_close_data() {
