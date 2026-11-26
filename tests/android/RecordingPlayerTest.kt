@@ -1817,23 +1817,77 @@ private fun aPrepareThatNeverAnswersFailsItsPart() {
     moved.elapse(limit)
     check(moved.state == PLAYING && moved.status.skipped == 0 && moved.status.call == 1) { "the old part's timeout is gone" }
 
-    // M2 with a hung prepare: paused 599.8 s, Next, Resume; the part never prepares. At 10 s it fails, which ends the
-    // resume's hold-off, and the deadline, long past, ends the play "timeout".
+    // A: paused 599.8 s, Next, Resume; the part never prepares. At 10 s it is skipped, the resume still waiting with
+    // the deadline held off, and the next call that prepares plays.
     val waits = Rig()
-    val g = waits.queue(1, 1, 1)
+    waits.queue(1, 1, 1)
     waits.prepared()
     waits.machine.pause()
     waits.elapse(599_800)
     waits.machine.next()
     waits.machine.resume()
     waits.elapse(limit - 1)
-    check(waits.state == PREPARING && waits.status.endedReason.isEmpty()) { "the resume waits for the prepare" }
+    check(waits.state == PREPARING && waits.status.endedReason.isEmpty()) { "A: the resume waits for the prepare" }
     waits.elapse(1)
-    check(waits.state == STOPPED && waits.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
-        "the part failed, the hold-off ends and the deadline has passed: timeout"
+    check(waits.status.skipped == 1 && waits.status.endedReason.isEmpty()) { "A: the hung part is skipped, not ended" }
+    waits.turn()
+    check(waits.status.call == 2 && waits.state == PREPARING) { "A: the next call opens, the resume still wanted" }
+    waits.prepared()
+    check(waits.state == PLAYING && waits.scheduler.live().none { it.delayMs == RecordingPlayer.PAUSED_LIMIT_MS }) {
+        "A: it plays, and the stretch is over"
     }
-    check(waits.service.ends == listOf(g to RecordingPlayer.ENDED_TIMEOUT)) { "once" }
-    // Before the deadline, the failed part's hold-off ends and the play goes on, the deadline from the pause.
+
+    // B: paused 599.0 s, Next, Resume; call 2's file errors at once, and call 3 prepares after 600 s: it plays.
+    val fast = Rig()
+    fast.queue(1, 1, 1)
+    fast.prepared()
+    fast.machine.pause()
+    fast.elapse(599_000)
+    fast.machine.next()
+    fast.machine.resume()
+    fast.nowMs += 50
+    fast.machine.onFailed(fast.current.token, RecordingPlayer.REASON_DAMAGED)
+    fast.turn()
+    check(fast.status.call == 2 && fast.state == PREPARING) { "B: call 2 skipped, call 3 opens" }
+    fast.elapse(1_050)
+    check(fast.status.endedReason.isEmpty()) { "B: 600.1 s from the pause, still waiting" }
+    fast.prepared()
+    check(fast.state == PLAYING) { "B: call 3 prepared after the deadline plays" }
+
+    // Every remaining part fails: the play ends as the search ends (finished), not "timeout".
+    val none = Rig()
+    val ng = none.queue(1, 1, 1)
+    none.prepared()
+    none.machine.pause()
+    none.elapse(599_800)
+    none.machine.next()
+    none.machine.resume()
+    none.elapse(limit)
+    none.turn()
+    none.elapse(limit)
+    none.turn()
+    check(none.state == STOPPED && none.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "the search ended: finished, though the deadline has passed (${none.status.endedReason})"
+    }
+    check(none.service.ends == listOf(ng to RecordingPlayer.ENDED_FINISHED)) { "once" }
+
+    // A refusal after a skip puts the deadline back, and past it the play ends then.
+    val refused = Rig()
+    refused.queue(1, 1, 1)
+    refused.prepared()
+    refused.machine.pause()
+    refused.elapse(599_800)
+    refused.machine.next()
+    refused.machine.resume()
+    refused.elapse(limit)
+    refused.turn()
+    refused.focus.grants = false
+    refused.prepared()
+    check(refused.state == STOPPED && refused.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "refused after the skip: timeout from the pause"
+    }
+
+    // Before the deadline the same skip goes on to a call that plays.
     val early = Rig()
     early.queue(1, 1, 1)
     early.prepared()

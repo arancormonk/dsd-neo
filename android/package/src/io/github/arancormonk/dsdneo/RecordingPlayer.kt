@@ -97,9 +97,10 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * ([onAwake]) against the elapsed clock.
  * Neither navigating while paused, the app's Pause during an interruption nor a refused resume restarts or extends
  * it; only audio carrying on ends the stretch (a resume ends it once the focus is granted, not when it is pressed, and
- * one pressed in time holds the deadline off until its focus answer: refused, the deadline counts from the start). A
- * focus request refused for the play's own start ends it as unavailable; one refused for a resume leaves it paused (any
- * mode). A transient focus loss interrupts (the request stays outstanding, Play is a no-op, the app's Pause cancels the
+ * one pressed in time holds the deadline off, across parts that fail on the way, until a part plays, the focus is
+ * refused or it is paused again (the deadline then counts from the start), or the search ends). A focus request
+ * refused for the play's own start ends it as unavailable; one refused for a resume leaves it paused (any mode). A
+ * transient focus loss interrupts (the request stays outstanding, Play is a no-op, the app's Pause cancels the
  * carry-on); a lasting one ends a PLAYLIST and pauses SINGLE and PARTS. Headphones unplugged ([onNoisy]) pause every
  * mode. An ended play keeps its terminal reading (generation, reason, the item it ended on) until the next play, so
  * the host reads a Stop it did not ask for.
@@ -445,9 +446,12 @@ class RecordingPlayer(
     private var startRequest = true
 
     /**
-     * A PLAYLIST resume pressed before its paused deadline waits for its focus answer (the part preparing first): the
-     * deadline does not end the play meanwhile. A grant ends the stretch; a refusal or another pause puts the deadline
-     * back, from the stretch's start.
+     * A PLAYLIST resume pressed before its paused deadline holds the deadline off: the play does not end "timeout"
+     * while that resume waits, across parts that fail or are skipped on the way. It ends when a part is granted the
+     * focus and plays (the stretch ends), when the focus is refused or the play is paused again (the deadline is back
+     * from the stretch's start, and ends the play at once if it has passed), or with the search (finished,
+     * unplayable). Each recording is visited once and each open waits at most [PREPARE_TIMEOUT_MS], so the search
+     * bounds it.
      */
     private var resumeSuspended = false
     private var focusEpoch = 0
@@ -874,14 +878,6 @@ class RecordingPlayer(
     /** The current recording cannot be played: end the play, or (PLAYLIST) mark it and search on, next turn. */
     private fun failItem(reason: String) {
         cancel(Slot.PREPARE)
-        if (resumeSuspended) {
-            // The part a resume waited for failed: the hold-off ends, and the deadline counts from the pause again.
-            resumeSuspended = false
-            if (expireIfDue()) {
-                return
-            }
-            scheduleDeadline((PAUSED_LIMIT_MS - (clock.elapsedMs() - pausedSinceMs)).coerceAtLeast(0))
-        }
         val wasOpen = prepared
         positionMs = currentPositionMs()
         player?.release()

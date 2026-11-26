@@ -206,8 +206,9 @@ ends it, `onAwake()`), play tokens (Pause and Resume for the item in a gap with 
 seek there), task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before
 and after the play, refused, timed out and late, PARTS's failure rule and duration 0, a throwing player factory, a
 prepare that never answers (skipped at 10 s in a playlist, Failed alone, ended in PARTS, none at 9.9 s or after a move,
-its late prepare ignored, and a resume waiting for it ending "timeout" past the deadline), and `FocusRequests` (only a
-granted focus request kept; a refused one given back at once, every time). A second build of the
+its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast error to a part prepared
+after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), and
+`FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build of the
 same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
