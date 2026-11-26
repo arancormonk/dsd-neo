@@ -24,6 +24,9 @@ import android.os.Bundle
 import android.os.IBinder
 import android.os.SystemClock
 import android.util.Log
+import android.view.KeyEvent
+import android.view.ViewConfiguration
+import androidx.core.content.IntentCompat
 
 /**
  * The History playlist's foreground service (#909, D3/D10): it keeps a playlist playing with the app in the
@@ -40,8 +43,9 @@ import android.util.Log
  * The session is made in [onCreate], so the first startForeground() already carries its token: MediaStyle with a
  * session is what exempts the notification from the notification permission. Its callbacks run on the playback looper.
  * A callback is installed for each target the session shows (a playlist and its item, [SessionTarget]) and acts only on
- * that one, so a command the framework had queued for the target before (a headset's double-tap wait) cannot reach a
- * later playlist or item.
+ * that one, so a command the framework had queued for the target before cannot reach a later playlist or item. The
+ * headset's play/pause taps are counted here ([PlayPauseTaps], for the playlist, across its parts), not by the
+ * framework, whose waiting single tap a callback swap at a part change would drop.
  */
 class RecordingPlaybackService : Service() {
     /** This instance, as PlaybackServicePhases knows it. */
@@ -54,6 +58,14 @@ class RecordingPlaybackService : Service() {
 
     /** The playlist and item the session's state was last published for, and its callback installed for. */
     private var published = SessionTarget.NONE
+
+    /** The headset's play/pause taps, waiting for a double tap on the playback looper; for the instance's playlists. */
+    private val taps = PlayPauseTaps(
+        RecordingPlayback.playbackScheduler(),
+        ViewConfiguration.getDoubleTapTimeout().toLong(),
+        { generation -> RecordingPlayback.sessionCommand(generation) { player, g -> PlayPauseTaps.toggle(player, g) } },
+        { generation -> RecordingPlayback.sessionCommand(generation) { player, g -> PlayPauseTaps.next(player, g) } },
+    )
 
     /** The metadata last set on the session, so a state change with the same item sets none. */
     private var shownMetadata: List<Any>? = null
@@ -68,7 +80,7 @@ class RecordingPlaybackService : Service() {
         super.onCreate()
         ensureNotificationChannel()
         session = MediaSession(this, SESSION_TAG)
-        session.setCallback(SessionCallbacks(published), RecordingPlayback.playbackHandler())
+        session.setCallback(SessionCallbacks(published, taps), RecordingPlayback.playbackHandler())
         serial = RecordingPlayback.serviceCreated(this)
     }
 
@@ -97,6 +109,7 @@ class RecordingPlaybackService : Service() {
     override fun onDestroy() {
         // Settles only the playlist this instance served, if it is still open: never a newer one.
         RecordingPlayback.serviceDestroyed(this, serial)
+        taps.drop()
         // Released with the playlist: a later media key no longer restarts it.
         session.release()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
@@ -123,6 +136,7 @@ class RecordingPlaybackService : Service() {
      * no longer takes media keys while the instance waits to retire or for the next owner. Main thread.
      */
     internal fun ended(generation: Int) {
+        taps.ended(generation)
         if (generation != 0 && generation == published.generation && session.isActive) {
             session.isActive = false
         }
@@ -133,11 +147,13 @@ class RecordingPlaybackService : Service() {
         if (!RecordingPlayback.isOwner(status.generation)) {
             return
         }
+        // A tap waiting for its double tap is the playlist's: another playlist drops it, a part change keeps it.
+        taps.follow(status.generation)
         if (!published.shows(status)) {
             // A callback of its own for the new target: what the framework queued for the old one (setCallback()
             // drops it, or it runs on the old callback) still names the old playlist and item, and is dropped.
             published = SessionTarget(status.generation, status.playToken)
-            session.setCallback(SessionCallbacks(published), RecordingPlayback.playbackHandler())
+            session.setCallback(SessionCallbacks(published, taps), RecordingPlayback.playbackHandler())
         }
         val title = title(status)
         val subtitle = subtitle(status)
@@ -344,8 +360,33 @@ class RecordingPlaybackService : Service() {
         getSystemService(NotificationManager::class.java).createNotificationChannel(channel)
     }
 
-    /** The session's commands, on the playback looper, for the [target] this callback was installed for only. */
-    private class SessionCallbacks(private val target: SessionTarget) : MediaSession.Callback() {
+    /**
+     * The session's commands, on the playback looper, for the [target] this callback was installed for only. The
+     * headset hook and play/pause keys are counted by [taps] (single, double and long press as the framework counts
+     * them); every other key goes to the framework, after a waiting tap counts as single.
+     */
+    private class SessionCallbacks(
+        private val target: SessionTarget,
+        private val taps: PlayPauseTaps,
+    ) : MediaSession.Callback() {
+        override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
+            val key = if (mediaButtonIntent.action == Intent.ACTION_MEDIA_BUTTON) {
+                IntentCompat.getParcelableExtra(mediaButtonIntent, Intent.EXTRA_KEY_EVENT, KeyEvent::class.java)
+            } else {
+                null
+            }
+            if (key != null && key.keyCode in TAP_KEYS) {
+                if (key.action == KeyEvent.ACTION_DOWN) {
+                    taps.keyDown(target.generation, key.repeatCount)
+                }
+                return true
+            }
+            if (key != null && key.action == KeyEvent.ACTION_DOWN) {
+                taps.otherKey()
+            }
+            return super.onMediaButtonEvent(mediaButtonIntent)
+        }
+
         override fun onPlay() = command(target::play)
 
         override fun onPause() = command(target::pause)
@@ -385,6 +426,9 @@ class RecordingPlaybackService : Service() {
         private const val EXTRA_PROCESS = "io.github.arancormonk.dsdneo.extra.PLAYBACK_PROCESS"
         private const val EXTRA_GENERATION = "io.github.arancormonk.dsdneo.extra.PLAYBACK_GENERATION"
         private const val EXTRA_COMMAND = "io.github.arancormonk.dsdneo.extra.PLAYBACK_COMMAND"
+
+        /** The keys whose taps [PlayPauseTaps] counts. */
+        private val TAP_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
         private const val COMMAND_PLAY = 1
         private const val COMMAND_PAUSE = 2

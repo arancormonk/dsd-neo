@@ -274,3 +274,115 @@ class SessionTarget(val generation: Int, val token: Long) {
         val NONE = SessionTarget(0, 0)
     }
 }
+
+/**
+ * The headset's play/pause taps on the playlist's media session (#909), held here instead of by the framework: the
+ * service installs a session callback per target ([SessionTarget]), and the framework keeps a single tap waiting for a
+ * double tap on the callback's own handler, so a tap pending as one part gave way to the next was lost. The rules are
+ * the framework's (MediaSession.Callback.onMediaButtonEvent): a tap waits [timeoutMs] (the double-tap timeout), a
+ * second within it is Next, and once it runs out the tap toggles play and pause; a long press (a repeat) or another
+ * media key counts a waiting tap as single at once, so keys act in order. A tap belongs to its playlist (generation),
+ * never to a part: a part change keeps it, while another playlist, the end or the service going drops it, and its
+ * timeout with it. [toggle] and [next] run on the scheduler's thread or the caller's, outside the lock.
+ */
+class PlayPauseTaps(
+    private val scheduler: RecordingPlayer.Scheduler,
+    private val timeoutMs: Long,
+    private val toggle: (generation: Int) -> Unit,
+    private val next: (generation: Int) -> Unit,
+) {
+    private class Tap(val generation: Int) {
+        var timeout: RecordingPlayer.Cancellable? = null
+    }
+
+    private val lock = Any()
+    private var pending: Tap? = null
+
+    /** A play/pause key (headset hook, play/pause) went down for playlist [generation], [repeat] its repeat count. */
+    fun keyDown(generation: Int, repeat: Int) {
+        if (repeat > 0) {
+            settle()
+            return
+        }
+        val second = synchronized(lock) {
+            val waiting = pending
+            if (waiting != null && waiting.generation == generation) {
+                clear(waiting)
+                true
+            } else {
+                waiting?.let(::clear) // another playlist's tap: not this one's to count
+                if (generation != 0) {
+                    val tap = Tap(generation)
+                    pending = tap
+                    tap.timeout = scheduler.post(timeoutMs) { timedOut(tap) }
+                }
+                false
+            }
+        }
+        if (second) {
+            next(generation)
+        }
+    }
+
+    /** Another media key went down: a waiting tap counts as single first. */
+    fun otherKey() = settle()
+
+    /** The session now shows playlist [generation]: a tap of another one is dropped. */
+    fun follow(generation: Int) = synchronized(lock) {
+        pending?.takeIf { it.generation != generation }?.let(::clear)
+    }
+
+    /** Playlist [generation] ended: its tap is dropped. */
+    fun ended(generation: Int) = synchronized(lock) {
+        pending?.takeIf { it.generation == generation }?.let(::clear)
+    }
+
+    /** The service is going: any tap is dropped. */
+    fun drop() = synchronized(lock) {
+        pending?.let(::clear)
+    }
+
+    private fun settle() {
+        val tap = synchronized(lock) { pending?.also(::clear) } ?: return
+        toggle(tap.generation)
+    }
+
+    private fun timedOut(tap: Tap) {
+        val mine = synchronized(lock) {
+            (pending === tap).also { if (it) pending = null }
+        }
+        if (mine) {
+            toggle(tap.generation)
+        }
+    }
+
+    private fun clear(tap: Tap) {
+        pending = null
+        tap.timeout?.cancel()
+    }
+
+    companion object {
+        /** A single tap, as the framework's: Pause while the session plays and offers it, else Play when offered. */
+        fun toggle(player: RecordingPlayer, generation: Int) {
+            val status = player.status
+            if (status.generation != generation) {
+                return
+            }
+            if (status.sessionState == RecordingPlayer.SESSION_PLAYING) {
+                if (status.allows(RecordingPlayer.ACTION_PAUSE)) {
+                    player.pause(generation)
+                }
+            } else if (status.allows(RecordingPlayer.ACTION_PLAY)) {
+                player.resume(generation)
+            }
+        }
+
+        /** A double tap: Next when the session offers it. */
+        fun next(player: RecordingPlayer, generation: Int) {
+            val status = player.status
+            if (status.generation == generation && status.allows(RecordingPlayer.ACTION_NEXT)) {
+                player.next(generation)
+            }
+        }
+    }
+}

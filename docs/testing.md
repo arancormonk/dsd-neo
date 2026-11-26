@@ -210,12 +210,13 @@ same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
 the retire check after every delivery, `onDestroy` fenced to its generation, `release()` with a promoted service and
-with a start issued but not delivered, and a media session command acting only on the target it was queued for
-(`SessionTarget`: another playlist's commands, or another item's seek, dropped). A third build runs `MediaKeys.kt` with
-`MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media session while a playlist's session is open,
-the same keys left with Qt while none is, and every other key (Back, volume, typing, the microphone mute) left with Qt
-either way.
-`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
+with a start issued but not delivered, a media session command acting only on the target it was queued for
+(`SessionTarget`: another playlist's commands, or another item's seek, dropped), and the headset's taps
+(`PlayPauseTaps`: a tap kept across a part change and toggling at its timeout, a double tap as Next, a long press or
+another key settling it, another playlist, the end and the teardown dropping it with its timeout). A third build runs
+`MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media session while a
+playlist's session is open, the same keys left with Qt while none is, and every other key (Back, volume, typing, the
+microphone mute) left with Qt either way. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
 `RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
 against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
 export after it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;

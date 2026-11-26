@@ -227,6 +227,9 @@ object RecordingPlayback {
     /** The looper's Handler, made if no play made it yet: the service's session callbacks run there. */
     internal fun playbackHandler(): Handler = synchronized(lock) { looperLocked() }
 
+    /** Tasks on the playback looper (the session's tap timeout), cancelled by taking their message back. */
+    internal fun playbackScheduler(): RecordingPlayer.Scheduler = LooperScheduler(playbackHandler())
+
     internal fun serviceCreated(instance: RecordingPlaybackService): Int {
         service = instance
         return phases.created()

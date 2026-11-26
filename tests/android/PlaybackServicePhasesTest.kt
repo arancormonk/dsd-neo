@@ -511,6 +511,117 @@ fun aSessionCommandActsOnTheTargetItWasQueuedFor() {
     check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the current target's Pause pauses" }
 }
 
+/** The session's play/pause taps against the player, as the service counts them on the looper (#909). */
+private class Taps(val playing: Playing) {
+    val toggles = mutableListOf<Int>()
+    val nexts = mutableListOf<Int>()
+
+    /** The taps' own timeouts, apart from the player's tasks: (due, task). */
+    val timeouts = mutableListOf<Pair<Long, () -> Unit>>()
+    val taps = PlayPauseTaps(
+        { delayMs, task ->
+            val entry = (playing.nowMs + delayMs) to task
+            timeouts += entry
+            RecordingPlayer.Cancellable { timeouts.remove(entry) }
+        },
+        TAP_TIMEOUT_MS,
+        { g ->
+            toggles += g
+            if (playing.rig.phases.isOwner(g)) PlayPauseTaps.toggle(playing.machine, g)
+        },
+        { g ->
+            nexts += g
+            if (playing.rig.phases.isOwner(g)) PlayPauseTaps.next(playing.machine, g)
+        },
+    )
+
+    fun elapse(ms: Long) {
+        playing.elapse(ms)
+        for (entry in timeouts.filter { it.first <= playing.nowMs }) {
+            if (timeouts.remove(entry)) entry.second()
+        }
+    }
+
+    companion object {
+        const val TAP_TIMEOUT_MS = 300L
+    }
+}
+
+/**
+ * A headset tap waits for a double tap on the playlist, not on its part: a part change keeps it and its timeout toggles
+ * play and pause; a second tap is Next; another playlist, the end or the service going drops it.
+ */
+fun headsetTapsBelongToThePlaylistNotThePart() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val t = Taps(playing)
+    val g = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays call 1" }
+
+    // A tap on call 1's part, the playlist on to the next part before the timeout: the tap still pauses.
+    t.taps.keyDown(g, 0)
+    machine.next(g)
+    machine.onPrepared(playing.tokens.last())
+    t.taps.follow(g)
+    check(machine.status.call == 1 && t.toggles.isEmpty()) { "the part changed, the tap still waits" }
+    t.elapse(Taps.TAP_TIMEOUT_MS - 1)
+    check(t.toggles.isEmpty()) { "not before the double-tap timeout" }
+    t.elapse(1)
+    check(t.toggles == listOf(g) && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+        "the timeout toggles: paused"
+    }
+    t.taps.keyDown(g, 0)
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "a single tap again: playing" }
+
+    // Two taps within the timeout: Next, and no toggle after.
+    machine.previous(g)
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.call == 0) { "back on call 1" }
+    t.taps.keyDown(g, 0)
+    t.elapse(Taps.TAP_TIMEOUT_MS / 2)
+    t.taps.keyDown(g, 0)
+    check(t.nexts == listOf(g) && machine.status.call == 1) { "a double tap is Next" }
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.size == 2 && t.timeouts.isEmpty()) { "and its timeout is gone" }
+
+    // A long press, or another media key, counts the waiting tap as single at once.
+    t.taps.keyDown(g, 0)
+    t.taps.keyDown(g, 1)
+    check(t.toggles.size == 3 && t.timeouts.isEmpty()) { "a repeat settles the tap now" }
+    t.taps.keyDown(g, 1)
+    check(t.toggles.size == 3) { "a repeat with no tap waiting does nothing" }
+    t.taps.keyDown(g, 0)
+    t.taps.otherKey()
+    check(t.toggles.size == 4 && t.timeouts.isEmpty()) { "another key settles it first" }
+
+    // Another playlist takes the session: the tap goes, with its timeout.
+    t.taps.keyDown(g, 0)
+    val b = playing.playlist()
+    t.taps.follow(b)
+    check(t.timeouts.isEmpty()) { "the timeout is removed" }
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.size == 4 && t.nexts.size == 1) { "a tap for the old playlist is dropped" }
+    t.taps.keyDown(g, 0)
+    t.taps.keyDown(b, 0)
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.nexts.size == 1 && t.toggles == listOf(g, g, g, g, b)) { "a tap of each playlist is no double tap" }
+
+    // The playlist's end, and the service going, drop it too.
+    t.taps.keyDown(b, 0)
+    t.taps.ended(g)
+    check(t.timeouts.size == 1) { "another playlist's end leaves it" }
+    t.taps.ended(b)
+    t.taps.keyDown(b, 0)
+    t.taps.drop()
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.size == 5 && t.timeouts.isEmpty()) { "ended or torn down, nothing toggles" }
+    t.taps.keyDown(0, 0)
+    check(t.timeouts.isEmpty()) { "no playlist, no tap" }
+}
+
 fun main() {
     aPromoteForTheCurrentRequestMakesItTheOwner()
     aPromoteForASettledRequestOnlyRetires()
@@ -527,5 +638,6 @@ fun main() {
     aNewInstanceEndsTheRetiringPhase()
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
+    headsetTapsBelongToThePlaylistNotThePart()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

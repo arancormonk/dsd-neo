@@ -20010,13 +20010,20 @@ Qt Quick frontend (`src/ui/qt`):
       `startForeground()` already carries its token (`Notification.MediaStyle().setMediaSession()`: the
       POST_NOTIFICATIONS exemption); callbacks on the playback looper, one callback object per target the session shows
       (`SessionTarget` in `PlaybackServicePhases.kt`: the playlist's generation and the item's play token, installed
-      with `setCallback()` at each change), so a command the framework queued for the target before (a headset's
-      double-tap wait, a seek) names that one and is dropped (play, pause, next, previous and stop by its generation,
-      while it owns the service; a seek by its token too); metadata (title the call name, subtitle the line and "Call 3
-      of 41", the part's duration) and a PlaybackState with exactly the table's action bits plus a Stop custom action
-      (`onCustomAction`); the session goes inactive when its play ends and is released in `onDestroy`. Channel
-      `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen
-      visibility, tap opens the launcher intent.
+      with `setCallback()` at each change), so a command the framework queued for the target before (a seek, a
+      transport command) names that one and is dropped (play, pause, next, previous and stop by its generation,
+      while it owns the service; a seek by its token too; `setCallback()` also drops a command still queued at an item
+      change, a small window). The headset hook and play/pause keys are not left to the framework, whose single tap
+      waits on the old callback's handler: `onMediaButtonEvent` hands them to `PlayPauseTaps` (plain Kotlin, the
+      instance's, for the playlist's generation, not its item), which counts them as the framework does (a second tap
+      within `ViewConfiguration.getDoubleTapTimeout()` is Next when offered; else the timeout, posted on the playback
+      looper, toggles Pause while the session plays or Play; a long-press repeat or another media key settles a waiting
+      tap at once); another playlist, its end or `onDestroy` drop the tap and its timeout, a part change keeps it; every
+      other key goes to the framework; metadata (title the call name, subtitle the line and "Call 3 of 41", the part's
+      duration) and a PlaybackState with exactly the table's action bits plus a Stop custom action (`onCustomAction`);
+      the session goes inactive when its play ends and is released in `onDestroy`. Channel `dsdneo_playback` ("Call
+      recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen visibility, tap opens the
+      launcher intent.
       On 29-32 the compact Previous / Play-Pause / Next and Stop are immutable `getService` PendingIntents (a request
       code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A
       partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the
