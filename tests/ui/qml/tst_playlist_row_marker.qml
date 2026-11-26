@@ -101,6 +101,15 @@ Item {
             compare(row.playback, 2, "opening, paused");
             testContext.publishPlaybackReading({playbackState: 1, playbackPausedReason: ""});
             compare(row.playback, 1, "opening, wanted");
+            // Halted for another app's audio while the part opens: still wanted (no paused reason), but the bar and
+            // the sheet say "Paused for another app's audio", and so does the row.
+            testContext.publishPlaybackReading({playbackState: 1, playbackInterrupted: true});
+            compare(row.playback, 2, "opening, interrupted: paused");
+            compare(row.node.Accessible.name, row.accessibleName + ", paused");
+            testContext.publishPlaybackReading({playbackState: 3});
+            compare(row.playback, 2, "interrupted once prepared: paused");
+            testContext.publishPlaybackReading({playbackState: 2, playbackInterrupted: false});
+            compare(row.playback, 1, "carried on: playing");
 
             testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
             compare(row.playback, 0, "gone once it ends");
