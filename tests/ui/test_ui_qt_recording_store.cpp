@@ -5709,7 +5709,7 @@ test_entry_names_batch(void) {
     expect("one read: each row its own names, in order", s.store.recordingEntryNames(rows) == want);
 }
 
-/* --- History playlist (issue #909): every row's recordings in one read. --- */
+/* --- History playlist (issue #909): every row's recordings in one read, and the delete of the file pressed. --- */
 
 /* The value under @p key of each of @p maps, as text. */
 QStringList
@@ -5841,6 +5841,58 @@ test_recording_map_identity_is_the_indexed_one(void) {
     expect("map identity: the playlist read gives the same",
            batched.value(QStringLiteral("identitySize")).toLongLong() == 600000
                && batched.value(QStringLiteral("bytes")).toLongLong() == 100000);
+}
+
+/* B11: a delete carries the file the user pressed it on. A read again that put another file under the id while the
+ * confirmation was open makes it refused as "changed", queuing and deleting nothing; an id no longer indexed is refused
+ * as "gone", where the plain delete answers as asked; the file pressed is deleted. */
+void
+test_checked_delete_refuses_another_file(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("000000000000090B-1");
+    const QString path = folder + QStringLiteral("/r.wav");
+    record_at(folder, id, QStringLiteral("r.wav"), 1754000000, 1, 1000, 1754000004);
+    s.pass();
+    const QVariantMap pressed = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    const qint64 size = pressed.value(QStringLiteral("identitySize")).toLongLong();
+    const qint64 sec = pressed.value(QStringLiteral("mtimeSec")).toLongLong();
+    const int nanos = pressed.value(QStringLiteral("mtimeNanos")).toInt();
+    expect("checked delete: the identity pressed", size == 1000 && sec == 1754000004);
+
+    // Another file under the id: rewritten, then read again with its folder.
+    make_file(path, 1500);
+    set_mtime(path, 1754000100);
+    s.store.recheckRecordings({id});
+    s.pass();
+    s.pass();
+    const QVariantMap now = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked delete: the read again indexed the other file",
+           now.value(QStringLiteral("id")).toString() == id
+               && now.value(QStringLiteral("identitySize")).toLongLong() == 1500);
+    expect("checked delete: the file pressed is no longer there: refused",
+           !s.store.deleteRecordingChecked(id, size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("changed"));
+    expect("checked delete: nothing queued", s.taken().isEmpty());
+    s.pass();
+    expect("checked delete: nothing deleted", QFileInfo::exists(path) && s.store.recordingCount() == 1);
+
+    expect("checked delete: an id not indexed is gone",
+           !s.store.deleteRecordingChecked(QStringLiteral("000000000000090B-9"), size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("gone"));
+    expect("checked delete: the plain delete of it answers as before",
+           s.store.deleteRecording(QStringLiteral("000000000000090B-9")) && s.store.deleteRefusal().isEmpty());
+    s.pass();
+
+    expect("checked delete: the file as it is now is deleted",
+           s.store.deleteRecordingChecked(id, now.value(QStringLiteral("identitySize")).toLongLong(),
+                                          now.value(QStringLiteral("mtimeSec")).toLongLong(),
+                                          now.value(QStringLiteral("mtimeNanos")).toInt())
+               && s.store.deleteRefusal().isEmpty());
+    s.pass();
+    expect("checked delete: gone from disk and the index", !QFileInfo::exists(path) && s.store.recordingCount() == 0);
 }
 
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
@@ -6110,6 +6162,7 @@ main(int argc, char** argv) {
     test_entry_names_batch();
     test_playlist_recordings_per_row();
     test_recording_map_identity_is_the_indexed_one();
+    test_checked_delete_refuses_another_file();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

@@ -3121,6 +3121,36 @@ RecordingStore::deleteRecording(const QString& id) {
 }
 
 bool
+RecordingStore::deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos) {
+    dsd_file_identity_t pressed{};
+    pressed.kind = 1;
+    pressed.size = size;
+    pressed.mtime_s = mtimeSec;
+    pressed.mtime_ns = mtimeNanos;
+    bool queued = false;
+    bool wake = false;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        // The entry under the id is the one queueDeletesLocked() would take. Its file is checked here, with the request,
+        // so a read again between the press and now never sends the delete to another file it put under the id.
+        const auto entry = m_entries.constFind(id);
+        if (!storageSettledLocked()) {
+            m_deleteRefusal = DeleteRefusal::Loading;
+        } else if (entry == m_entries.cend()) {
+            m_deleteRefusal = DeleteRefusal::Gone;
+        } else if (dsd_file_identity_equal(&entry->identity, &pressed) == 0) {
+            m_deleteRefusal = DeleteRefusal::Changed;
+        } else {
+            queued = queueDeletesLocked({id}, &wake);
+        }
+    }
+    if (wake) {
+        m_wake.notify_all();
+    }
+    return queued;
+}
+
+bool
 RecordingStore::deleteFolder(const QString& uid) {
     return requestDeletes(true, [this, &uid] {
         QStringList ids;
@@ -3157,6 +3187,8 @@ RecordingStore::deleteRefusal() const {
     switch (m_deleteRefusal) {
         case DeleteRefusal::Loading: return QStringLiteral("loading");
         case DeleteRefusal::StorageAway: return QStringLiteral("storageAway");
+        case DeleteRefusal::Changed: return QStringLiteral("changed");
+        case DeleteRefusal::Gone: return QStringLiteral("gone");
         case DeleteRefusal::None: break;
     }
     return QString();

@@ -295,6 +295,15 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * but not done yet (its file held by an export) is dropped when the worker reads storage again. */
     Q_INVOKABLE bool deleteRecordings(const QStringList& ids);
     Q_INVOKABLE bool deleteRecording(const QString& id);
+    /**
+     * @brief deleteRecording() of the file the user pressed Delete on (issue #909): @p id with the identity its map
+     * gave then (`identitySize`, `mtimeSec`, `mtimeNanos`).
+     *
+     * Checked under the store's lock as the request is taken: refused, queuing nothing, with deleteRefusal() "changed"
+     * when the recording under @p id is another file now (a read again put another file under the id), and "gone"
+     * when no recording has @p id now; otherwise as deleteRecording().
+     */
+    Q_INVOKABLE bool deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos);
     /** @brief Delete every recording of the owner @p uid, unfinished ones in its folders included. */
     Q_INVOKABLE bool deleteFolder(const QString& uid);
     /** @brief Delete the unfinished recordings earlier runs left. */
@@ -302,7 +311,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Delete every managed recording. */
     Q_INVOKABLE bool deleteAll();
     /** @brief Why the last delete request refused (GUI thread): "loading" (the index is not settled), "storageAway"
-     * (it named a recording on storage that is not there), or empty after one that was asked. */
+     * (it named a recording on storage that is not there), "changed" or "gone" (deleteRecordingChecked() only), or
+     * empty after one that was asked. */
     Q_INVOKABLE QString deleteRefusal() const;
 
     /**
@@ -816,7 +826,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QHash<QString, CommittedFolder> m_committed;
     QSet<QString> m_active;
     /* Why the last delete request refused (deleteRefusal()). */
-    enum class DeleteRefusal { None, Loading, StorageAway };
+    enum class DeleteRefusal { None, Loading, StorageAway, Changed, Gone };
     DeleteRefusal m_deleteRefusal = DeleteRefusal::None;
     /* Every journal held: until the host's state is known, and while a session no starter began here is active. */
     bool m_allActive = true;
