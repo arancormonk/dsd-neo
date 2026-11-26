@@ -84,6 +84,7 @@ import numpy as np
 from scipy import signal as sps
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import squelch_chain_model as cm
 import squelch_model as sm  # noqa: E402
 
 EDGE_DB = -1.0
@@ -284,7 +285,7 @@ class Plan:
             if hi - HIGH_BAND_HZ >= BAND_LO_HZ - 200.0:
                 self.filters["high1200"] = [self.bp(hi - HIGH_BAND_HZ, hi)]
         rng = np.random.default_rng(sm.job_seed("noise_sq_pch", self.key))
-        probe = sm.channel_filter(self.front_end(rng, self.fs + len(self.taps)), self.taps)
+        probe = cm.channel_filter(self.front_end(rng, self.fs + len(self.taps)), self.taps)
         self.p_noise_ch = float(np.mean(np.abs(probe) ** 2))
 
     def bp(self, lo: float, hi: float):
@@ -294,13 +295,13 @@ class Plan:
         """count channel-filter inputs: white noise, plus sig(n, rate) * scale when given, made at the rate it enters
         and through the half-band cascade with the noise (the stages ahead of the last as self.pre)."""
         if self.hb is None or not cascade:
-            x = sm.white_noise(rng, count)
+            x = cm.white_noise(rng, count)
             if sig is not None:
                 x = x + sig(count, self.fs).astype(np.complex64) * np.float32(scale)
             return x
         pre_len = 0 if self.pre is None else len(self.pre) - 1
         n = 2 * count + len(self.hb) - 1 + pre_len
-        x = sm.white_noise(rng, n)
+        x = cm.white_noise(rng, n)
         if sig is not None:
             x = x + sig(n, 2 * self.fs).astype(np.complex64) * np.float32(scale)
         return self.through(x)[:count]
@@ -321,7 +322,7 @@ class Plan:
             corner = min(self.width / 2.0, NYQUIST_FRACTION * self.fs)
             b, a = sps.butter(1, corner, btype="low" if tilt > 0 else "high", fs=self.fs)
             x = np.asarray(sps.lfilter(b, a, x)).astype(np.complex64)
-        return disc(sm.channel_filter(x, self.taps))
+        return disc(cm.channel_filter(x, self.taps))
 
     def halves(self, d: np.ndarray) -> dict[str, np.ndarray]:
         """Per filter group, the 20 ms half-window powers (rows: band-passes) after the settle time."""
@@ -512,7 +513,7 @@ def run_plan(job: dict) -> dict:
                 x = raw_capture_at_rate(name, fs)
             else:
                 x = plan.through(raw_capture_at_rate(name, 2 * fs))
-            measure("real", name, disc(sm.channel_filter(x, plan.taps)))
+            measure("real", name, disc(cm.channel_filter(x, plan.taps)))
     out["seconds"] = time.time() - t0
     return out
 
@@ -719,7 +720,7 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
             rec = harness_plans.get((plan.complex_rate, width, sm.FM_KIND))
             if not rec or not rec["realizable"]:
                 continue
-            taps_key = sm.taps_key(np.asarray(rec["taps"]))
+            taps_key = cm.taps_key(np.asarray(rec["taps"]))
             key = f"{plan.chain_key}:{taps_key}:{width}"
             members.setdefault(key, []).append(f"NFM {width} (custom) on {plan.name}")
             if key in known:
@@ -748,7 +749,7 @@ def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, job
             continue
         rec = harness_plans[(plan.complex_rate, 0, sm.FM_KIND)]
         width = rec["legacy_wide_width_hz"]
-        taps_key = sm.taps_key(np.asarray(rec["taps"]))
+        taps_key = cm.taps_key(np.asarray(rec["taps"]))
         key = f"{plan.chain_key}:{taps_key}:{width}"
         members.setdefault(key, []).append(f"M17 encoder legacy WIDE on {plan.name}")
         if key in known:

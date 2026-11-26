@@ -83,10 +83,11 @@ import numpy as np
 import scipy
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
+import squelch_chain_model as cm
 import squelch_model as sm  # noqa: E402
 
 # The shipped classifier, frozen (src/dsp/squelch_floor.c): tools/squelch_model.py's port decides every window.
-UNDECIDED, NOISE, CARRIER = sm.UNDECIDED, sm.NOISE, sm.CARRIER
+UNDECIDED, NOISE, CARRIER = cm.UNDECIDED, cm.NOISE, cm.CARRIER
 
 PROFILE_WIDE = 0  # DSD_CH_LPF_PROFILE_WIDE
 PROFILE_PROVOICE = 3  # DSD_CH_LPF_PROFILE_PROVOICE
@@ -168,7 +169,7 @@ def edacs_hold_s() -> float:
     return max(hold, EDACS_MIN_HOLD_MS / 1000.0)
 
 
-def path_filters(plans: list[sm.RatePlan]) -> list[dict]:
+def path_filters(plans: list[cm.RatePlan]) -> list[dict]:
     """Every (path, chain, filter) the two paths run: the filter as a harness request. Stepped chains are scoped out
     (tools/squelch_model.py has no port of the live step; DSP_SQUELCH_STEP_MODEL holds it)."""
     out = []
@@ -263,12 +264,12 @@ def run_profile_harness(exe: Path, filters: list[dict], hb_taps: dict) -> None:
             f["protected_hz"] = float(rec["legacy_wide_width_hz"])
         else:
             f["protected_hz"] = 2.0 * float(rec["protected_edge_hz"])
-        f["fkey"] = f"{plan.chain_key}:{sm.taps_key(f['taps'])}"
-        cov, model = sm.filter_model(plan, f["taps"], hb_taps, models)
+        f["fkey"] = f"{plan.chain_key}:{cm.taps_key(f['taps'])}"
+        cov, model = cm.filter_model(plan, f["taps"], hb_taps, models)
         f["model_plan"] = model
         f["noise_power"] = float(np.mean(cov[:, 0]))
         f["floor_plan"] = f["decoder_plan"]
-        f["model_off"] = sm.plan_distance(model, f["decoder_plan"])
+        f["model_off"] = cm.plan_distance(model, f["decoder_plan"])
         f["band_half_hz"] = plan.reader.pass_hz if plan.reader else None
         f["hold_s"] = edacs_hold_s() if f["path"] == "edacs" else VOX_HOLD_S
 
@@ -448,14 +449,14 @@ def carrier_job(job: dict) -> dict:
     rng = np.random.default_rng(sm.job_seed("paths-carrier", job["key"]))
     rows = []
     for variant in path_variants(f, job["quick"]):
-        n_sub = 2 * max(1, round(variant["seconds"] * sm.WINDOW_PER_S / 2))
-        outputs = (n_sub * rate) // sm.WINDOW_PER_S
-        s = sm.chain_signal(plan, hb, taps, lambda n, v=variant: synth(v, plan.source_hz, n, rng), outputs)
-        noise = sm.chain_noise(plan, hb, taps, rng, outputs)
+        n_sub = 2 * max(1, round(variant["seconds"] * cm.WINDOW_PER_S / 2))
+        outputs = (n_sub * rate) // cm.WINDOW_PER_S
+        s = cm.chain_signal(plan, hb, taps, lambda n, v=variant: synth(v, plan.source_hz, n, rng), outputs)
+        noise = cm.chain_noise(plan, hb, taps, rng, outputs)
         sig_power = float(np.mean(np.abs(s[fp["lag"] :]) ** 2))
         for cnr in sm.CNRS_DB:
             gain = math.sqrt(sig_power / (f["noise_power"] * 10.0 ** (cnr / 10.0)))
-            cls = sm.frozen_classes(s + gain * noise, rate, fp)
+            cls = cm.frozen_classes(s + gain * noise, rate, fp)
             rows.append({"variant": variant, "cnr": cnr, "counts": np.bincount(cls, minlength=3).tolist()})
     return {"kind": "carrier", "key": job["key"], "rows": rows}
 
@@ -513,10 +514,10 @@ def timing_job(job: dict) -> dict:
     # Every case draws noise of its own through the chain (a fresh stream each time); each variant's carrier goes
     # through the chain once and is mixed at each CNR and margin.
     def noise_only(count):
-        return sm.chain_noise(plan, hb, taps, rng, count)
+        return cm.chain_noise(plan, hb, taps, rng, count)
 
     def carrier_of(variant, count):
-        s = sm.chain_signal(plan, hb, taps, lambda n: synth(variant, plan.source_hz, n, rng), count)
+        s = cm.chain_signal(plan, hb, taps, lambda n: synth(variant, plan.source_hz, n, rng), count)
         return s, float(np.mean(np.abs(s) ** 2))
 
     def plus_noise(carrier, count, cnr=None, cnr_lin=None):
