@@ -379,7 +379,9 @@ int dsd_demod_squelch_reader_model_sync(struct demod_state* d);
  * controller thread before samples arrive. A reader with thousands of output phases (8,046 Hz read into 72 kHz: 4000)
  * takes tens of milliseconds to design from every phase, which the demod thread then does not spend on its first
  * block; a block whose plan key is the same designs nothing. No-op with the reader off, and on a chain the dynamic
- * squelches never run on (dsd_demod_dynamic_squelch_path()).
+ * squelches never run on (dsd_demod_dynamic_squelch_path()); under any squelch setting, since the demod thread takes the
+ * setting at every block and a later switch to AUTO or NOISE then finds the plan designed. The plan is kept with the
+ * others (demod_state::floor_plan_cache).
  */
 void dsd_demod_squelch_prime_reader_plan(struct demod_state* d);
 

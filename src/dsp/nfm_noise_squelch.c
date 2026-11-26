@@ -225,7 +225,8 @@ nsq_ring_fir_d(const nsq_cplx* ring, int pos, const double* h, int len) {
     return nsq_c(re, im);
 }
 
-/* One noise sample at twice the rate, through the cascade FIR when the plan has one. */
+/* One noise sample at the cascade FIR's rate (twice the channel rate ahead of a last stage, the channel rate with no
+   stage: a reader's FIR alone), through that FIR when the plan has one. */
 static nsq_cplx
 nsq_noise_wide(nsq_noise_source* src) {
     const nsq_cplx x = nsq_rng_complex(&src->rng);

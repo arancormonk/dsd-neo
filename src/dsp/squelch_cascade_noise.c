@@ -271,3 +271,19 @@ dsd_squelch_cascade_noise_floor_plan(dsd_squelch_floor_plan* out, const float* t
     }
     return dsd_squelch_floor_plan_design_periodic_mean(out, taps, taps_len, &noise, rate_hz);
 }
+
+/* The bound's limit, relative to the output power. It reaches 1.1e-3 on the Airspy grid (72 kHz, NFM 25k), where the
+   two plans differ by under 2e-8; an upsampling reader's phases stray by about 2 % and take every phase in full. */
+static const double k_mean_bound = 1e-2;
+
+int
+dsd_squelch_cascade_mean_suffices(double cyclo_dev, const float* taps, int taps_len, double power) {
+    if (!taps || taps_len < 1 || !(power > 0.0)) {
+        return 0;
+    }
+    double abs_sum = 0.0;
+    for (int d = 0; d < taps_len; d++) {
+        abs_sum += fabs((double)taps[d]);
+    }
+    return cyclo_dev * abs_sum * abs_sum / power <= k_mean_bound;
+}

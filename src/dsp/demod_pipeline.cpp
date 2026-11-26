@@ -2240,20 +2240,72 @@ squelch_floor_design(struct demod_state* d, const dsd_demod_squelch_plan_key* k,
     }
 }
 
+/* Whether the model a key's plan comes from is the one built: none needed without a step or a reader. A kept plan is
+   taken only then, so a model that failed to build leaves the plan not valid, as a design would. */
+static int
+squelch_plan_model_ready(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    if (k->reader.enabled) {
+        return !k->step.enabled && squelch_reader_model_for(d, k) != NULL;
+    }
+    return !k->step.enabled || squelch_step_model_for(d, k) != NULL;
+}
+
+/* The kept floor plan designed for @p k, now taken; NULL when none is kept. */
+static const dsd_squelch_floor_plan*
+squelch_floor_cached_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    for (int i = 0; i < DSD_DEMOD_FLOOR_PLAN_CACHE; i++) {
+        dsd_demod_floor_plan_entry* e = &d->floor_plan_cache[i];
+        if (e->used != 0U && squelch_plan_key_same(&e->key, k)) {
+            e->used = ++d->floor_plan_cache_clock;
+            return &e->plan;
+        }
+    }
+    return NULL;
+}
+
+/* Keep @p plan, designed for @p k, in an empty entry or in place of the one taken longest ago. */
+static void
+squelch_floor_keep_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k,
+                        const dsd_squelch_floor_plan* plan) {
+    dsd_demod_floor_plan_entry* slot = &d->floor_plan_cache[0];
+    for (int i = 1; i < DSD_DEMOD_FLOOR_PLAN_CACHE && slot->used != 0U; i++) {
+        dsd_demod_floor_plan_entry* e = &d->floor_plan_cache[i];
+        if (e->used < slot->used) {
+            slot = e;
+        }
+    }
+    slot->key = *k;
+    slot->plan = *plan;
+    slot->used = ++d->floor_plan_cache_clock;
+}
+
+/* The tracker takes the plan for the channel plan in force: the one it has, one kept from before (a channel alternating
+   widths), or one designed now and kept. */
 static void
 squelch_floor_ensure_plan(struct demod_state* d) {
     const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
     if (squelch_plan_key_same(&d->squelch_plan, &k)) {
         return;
     }
-    /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. */
+    const dsd_squelch_floor_plan* kept = squelch_plan_model_ready(d, &k) ? squelch_floor_cached_plan(d, &k) : NULL;
+    if (kept != NULL) {
+        dsd_squelch_floor_set_plan(&d->squelch_floor, kept);
+        d->squelch_plan = k;
+        return;
+    }
+    /* A plan that cannot be designed is not valid (not kept), and the tracker then keeps the gate open. */
     dsd_squelch_floor_plan plan;
     squelch_floor_design(d, &k, &plan);
     d->squelch_plan_designs++;
+    if (plan.valid) {
+        squelch_floor_keep_plan(d, &k, &plan);
+    }
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
     d->squelch_plan = k;
 }
 
+/* Whatever the squelch setting: it is taken at every block from the IO layer's word, so one switched to AUTO or NOISE
+   after the open finds its plan designed rather than stalling a block for it. */
 extern "C" void
 dsd_demod_squelch_prime_reader_plan(struct demod_state* d) {
     if (!d || !d->iq_reader.enabled || !dsd_demod_dynamic_squelch_path(d)) {

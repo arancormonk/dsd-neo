@@ -89,6 +89,18 @@ int dsd_squelch_cascade_noise_through_taps(const dsd_squelch_floor_periodic_nois
 int dsd_squelch_cascade_noise_floor_plan(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
                                          const dsd_noise_squelch_stage* stages, int count, int rate_hz);
 
+/**
+ * @brief Whether periodic noise whose phases' covariances stray from their period mean by at most @p cyclo_dev (the
+ * largest absolute distance at any phase and lag) may be designed from that mean after the channel taps (@p taps,
+ * @p taps_len): the bound on how far any output phase's covariance can then stray, cyclo_dev x (sum |c|)^2, stays
+ * under 1e-2 of the mean output power @p power. The per-phase results then average to the mean's within about the
+ * square of it. The rule the step model and the reader model both apply (issues #806, #899).
+ *
+ * @return 1 when the mean suffices, 0 when every output phase must be taken in full (a bound past 1e-2, no power, or
+ * no taps).
+ */
+int dsd_squelch_cascade_mean_suffices(double cyclo_dev, const float* taps, int taps_len, double power);
+
 #ifdef __cplusplus
 }
 #endif

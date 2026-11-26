@@ -21,9 +21,6 @@
    responses, and the exact plan's covariance. 8,046 Hz read into a 72 kHz chain (L = 4000) takes at most about 2.9 Mi
    (the cascade's workspace). */
 static const size_t k_max_table_doubles = (size_t)8 << 20;
-/* The floor plan takes the phase-averaged covariance while the bound on how far any output phase's covariance strays
-   from it after the channel taps stays under this (relative): the step model's rule (squelch_step_model.c). */
-static const double k_cyclo_negligible = 1e-2;
 
 void
 dsd_squelch_reader_model_init(dsd_squelch_reader_model* m) {
@@ -34,6 +31,20 @@ dsd_squelch_reader_model_init(dsd_squelch_reader_model* m) {
     dsd_iq_resampler_init(&m->reader);
 }
 
+/* The every-phase plan's tables: freed, and that plan not available. */
+static void
+srm_release_exact(dsd_squelch_reader_model* m) {
+    dsd_neo_aligned_free(m->resp_phase);
+    dsd_neo_aligned_free(m->resp);
+    dsd_neo_aligned_free(m->cov);
+    dsd_neo_aligned_free(m->chan);
+    m->resp_phase = NULL;
+    m->resp = NULL;
+    m->cov = NULL;
+    m->chan = NULL;
+    m->exact_ready = 0;
+}
+
 void
 dsd_squelch_reader_model_release(dsd_squelch_reader_model* m) {
     if (!m) {
@@ -41,11 +52,8 @@ dsd_squelch_reader_model_release(dsd_squelch_reader_model* m) {
     }
     dsd_iq_resampler_free(&m->reader);
     dsd_neo_aligned_free(m->mean);
-    dsd_neo_aligned_free(m->resp_phase);
-    dsd_neo_aligned_free(m->resp);
-    dsd_neo_aligned_free(m->cov);
-    dsd_neo_aligned_free(m->chan);
     dsd_neo_aligned_free(m->mean_chan);
+    srm_release_exact(m);
     dsd_squelch_reader_model_init(m);
 }
 
@@ -159,7 +167,8 @@ srm_mean_and_distance(dsd_squelch_reader_model* m, const dsd_squelch_floor_perio
     m->period = out->period;
     m->lags = out->lags;
     m->mean = srm_doubles((size_t)out->lags);
-    if (!m->mean) {
+    m->mean_chan = srm_doubles((size_t)out->lags + DSD_NOISE_SQUELCH_MAX_TAPS - 1U);
+    if (!m->mean || !m->mean_chan) {
         return -1;
     }
     const size_t lags = (size_t)out->lags;
@@ -282,8 +291,7 @@ srm_allocate(dsd_squelch_reader_model* m, int64_t inputs, int bound) {
     m->resp = srm_doubles(resp_n);
     m->chan = srm_doubles(chan_n);
     m->cov = srm_doubles(cov_n);
-    m->mean_chan = srm_doubles((size_t)m->lags + DSD_NOISE_SQUELCH_MAX_TAPS - 1U);
-    return (m->resp_phase && m->resp && m->chan && m->cov && m->mean_chan) ? 0 : -1;
+    return (m->resp_phase && m->resp && m->chan && m->cov) ? 0 : -1;
 }
 
 /* Input @p i's response through the reader and every stage, alternating between @p a and @p b (resp_len each), into its
@@ -361,9 +369,16 @@ dsd_squelch_reader_model_build(dsd_squelch_reader_model* m, const dsd_iq_reader_
     }
     m->plan = *plan;
     m->passes = stage_count;
-    if (srm_cascade_stats(m, stages, stage_count) != 0 || srm_responses(m, stages, stage_count) != 0) {
+    if (srm_cascade_stats(m, stages, stage_count) != 0) {
         dsd_squelch_reader_model_release(m);
         return -1;
+    }
+    /* The every-phase tables past the size limit (a reader that decimates by a large M ahead of many passes: Q of
+       hundreds of thousands) leave the averaged plan, which such a reader's small spread takes anyway. */
+    if (srm_responses(m, stages, stage_count) == 0) {
+        m->exact_ready = 1;
+    } else {
+        srm_release_exact(m);
     }
     m->ready = 1;
     return 0;
@@ -444,7 +459,7 @@ dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squel
     DSD_MEMSET(out, 0, sizeof(*out));
     const float* run_taps = taps;
     int run_len = taps_len;
-    if (!srm_floor_args(m, &run_taps, &run_len, rate_hz)) {
+    if (!srm_floor_args(m, &run_taps, &run_len, rate_hz) || !m->exact_ready) {
         return -1;
     }
     const int lags = m->resp_len + run_len - 1;
@@ -457,24 +472,20 @@ dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squel
 }
 
 /* The phase-averaged covariance behind the channel taps into mean_chan (exact: the taps are time-invariant),
-   described by @p noise. Returns the bound on how far any output phase's covariance can be from it, relative to its
-   power: the largest per-phase distance times (sum |c|)^2, over R(0); infinite when it cannot be formed. */
-static double
+   described by @p noise. Returns whether it may stand for every output phase (dsd_squelch_cascade_mean_suffices(), the
+   step model's rule); 0 when it cannot be formed. */
+static int
 srm_mean_through_taps(dsd_squelch_reader_model* m, const float* taps, int len,
                       dsd_squelch_floor_periodic_noise* noise) {
-    double abs_sum = 0.0;
-    for (int d = 0; d < len; d++) {
-        abs_sum += fabs((double)taps[d]);
-    }
     const dsd_squelch_floor_periodic_noise mean = {1, m->lags, m->mean};
     /* Not reachable (the scratch holds DSD_NOISE_SQUELCH_MAX_TAPS taps, which srm_floor_args() holds them to): should
-       it happen, the bound is infinite and the plan takes every output phase in full. */
+       it happen, the plan takes every output phase in full. */
     if (dsd_squelch_cascade_noise_through_taps(&mean, taps, len, m->rc, sizeof(m->rc) / sizeof(m->rc[0]), m->mean_chan,
                                                (size_t)(m->lags + DSD_NOISE_SQUELCH_MAX_TAPS - 1), noise)
         != 0) {
-        return INFINITY;
+        return 0;
     }
-    return m->mean_chan[0] > 0.0 ? m->cyclo_dev * abs_sum * abs_sum / m->mean_chan[0] : INFINITY;
+    return dsd_squelch_cascade_mean_suffices(m->cyclo_dev, taps, len, m->mean_chan[0]);
 }
 
 int
@@ -490,7 +501,7 @@ dsd_squelch_reader_model_floor_plan(dsd_squelch_reader_model* m, dsd_squelch_flo
         return -1;
     }
     dsd_squelch_floor_periodic_noise noise;
-    if (srm_mean_through_taps(m, run_taps, run_len, &noise) > k_cyclo_negligible) {
+    if (!srm_mean_through_taps(m, run_taps, run_len, &noise)) {
         return dsd_squelch_reader_model_floor_plan_exact(m, out, taps, taps_len, rate_hz);
     }
     return dsd_squelch_floor_plan_design_periodic_mean(out, taps, taps_len, &noise, rate_hz);

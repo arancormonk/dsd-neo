@@ -1620,9 +1620,9 @@ bench_one_cascade_floor_plan(const BenchOptions& opts, const char* name, int tar
         &meta);
 }
 
-/* How a bench block takes the floor plan: designed afresh each block (the plan key cleared, as at a stream's first
-   block), alternating widths (the channel taps and the plan designed each block, a scan alternating NFM widths), or the
-   same key every block (no design). */
+/* How a bench block takes the floor plan: designed afresh each block (the plan key and the kept plans cleared, as at a
+   stream's first block), alternating widths (the channel taps designed each block, the plan of each width once and
+   then taken from the kept plans, a scan alternating NFM widths), or the same key every block (no design). */
 enum { BENCH_BLOCK_FIRST_BUILD = 0, BENCH_BLOCK_ALTERNATING = 1, BENCH_BLOCK_SAME_KEY = 2 };
 
 /* One small block (8 channel samples) through full_demod() on the FM monitor under AUTO with no step, the cascade of
@@ -1669,6 +1669,7 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
         blocks++;
         if (kind == BENCH_BLOCK_FIRST_BUILD) {
             s->squelch_plan.set = 0;
+            DSD_MEMSET(s->floor_plan_cache, 0, sizeof(s->floor_plan_cache));
         } else if (kind == BENCH_BLOCK_ALTERNATING) {
             turn ^= 1;
             s->channel_lpf_width_hz = turn ? width_alt : width_hz;
@@ -1693,9 +1694,14 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
     const uint64_t designs = s->squelch_plan_designs;
     blocks = 0U;
     const int ran = run_named_case(opts, name, "block", 1.0, block, &meta);
-    /* The same key every block designs nothing; the others design once at every block (warm-up and timed calls). */
+    /* The same key every block designs nothing; a first build designs at every block (warm-up and timed calls, the key
+       and the kept plans cleared); alternating widths design the width the warm-up did not visit once, then take both
+       from the kept plans (issue #899). */
     const uint64_t made = s->squelch_plan_designs - designs;
-    const uint64_t want = kind == BENCH_BLOCK_SAME_KEY ? 0U : blocks;
+    uint64_t want = kind == BENCH_BLOCK_FIRST_BUILD ? blocks : 0U;
+    if (kind == BENCH_BLOCK_ALTERNATING && blocks > 0U) {
+        want = 1U;
+    }
     if (ran > 0 && !opts.list_cases && made != want) {
         DSD_FPRINTF(stderr, "%s: %llu floor plan designs over %llu blocks, %llu expected\n", name,
                     (unsigned long long)made, (unsigned long long)blocks, (unsigned long long)want);

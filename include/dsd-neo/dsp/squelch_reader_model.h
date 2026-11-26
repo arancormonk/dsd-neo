@@ -70,7 +70,9 @@ typedef struct dsd_squelch_reader_model {
     double* mean;            /**< The covariance averaged over the period (lags of it) */
     double cyclo_dev;        /**< The largest absolute distance of any phase's covariance from it */
     /* The responses: one per input phase k (an input at k), resp_len outputs from an output at phase resp_phase[k] of
-       the period. */
+       the period. exact_ready is 1 when they and the exact plan's scratch below were built: past the size limit they
+       are not, and only the averaged plan is available (a plan its bound refuses is then not valid). */
+    int exact_ready;
     int inputs; /**< Q: the input phases */
     int resp_len;
     int* resp_phase;
@@ -103,7 +105,9 @@ int dsd_squelch_reader_model_matches(const dsd_squelch_reader_model* m, const ds
  * refusal leaves @p m empty. Run it on the controller thread while the demod thread is idle.
  *
  * @return 0, or -1: bad arguments (a disabled plan, a stage with no taps or more than 64), a design the resampler
- * refuses, a model past the size limit (8 Mi doubles for any one table), or no memory.
+ * refuses, a reader covariance or cascade workspace past the size limit (8 Mi doubles for any one table), or no
+ * memory. Responses and every-phase tables past the limit (or with no memory for them) leave the model ready for the
+ * averaged plan only (exact_ready 0).
  */
 int dsd_squelch_reader_model_build(dsd_squelch_reader_model* m, const dsd_iq_reader_plan* plan,
                                    const dsd_noise_squelch_stage* stages, int stage_count);
@@ -125,7 +129,7 @@ int dsd_squelch_reader_model_floor_plan(dsd_squelch_reader_model* m, dsd_squelch
  * @brief dsd_squelch_reader_model_floor_plan() from every output phase's covariance in full, whatever the bound: the
  * reference the averaged path is held to, and its fallback. Allocates nothing.
  *
- * @return As dsd_squelch_reader_model_floor_plan().
+ * @return As dsd_squelch_reader_model_floor_plan(), and -1 when the every-phase tables were not built (exact_ready 0).
  */
 int dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out,
                                               const float* taps, int taps_len, int rate_hz);

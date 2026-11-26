@@ -139,6 +139,18 @@ typedef struct {
     uint64_t used;
 } dsd_demod_noise_plan_entry;
 
+/* Floor plans kept for the channel plans run last (issue #899): behind a reader with thousands of output phases a design
+   takes tens of milliseconds on the demod thread (8,046 Hz read into 72 kHz: about 41 ms), so a channel alternating
+   NFM widths designs each one once. Bounded like the noise squelch's. */
+enum { DSD_DEMOD_FLOOR_PLAN_CACHE = 4 };
+
+/* One kept floor plan: what it was designed for, and when it was last taken (0: empty). */
+typedef struct {
+    dsd_demod_squelch_plan_key key;
+    dsd_squelch_floor_plan plan;
+    uint64_t used;
+} dsd_demod_floor_plan_entry;
+
 struct demod_state {
 #ifdef __cplusplus
     demod_state() noexcept { DSD_MEMSET(this, 0, sizeof(*this)); }
@@ -353,9 +365,13 @@ struct demod_state {
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
     double squelch_floor_active_s;
     /* What the tracker's plan was designed for, and how many plans it designed (a count for tests and the bench; a
-       block whose key is the same designs none). */
+       block whose key is the same designs none, nor one whose key a kept plan was designed for). */
     dsd_demod_squelch_plan_key squelch_plan;
     uint64_t squelch_plan_designs;
+    /* The valid floor plans designed for the last channel plans, the one taken longest ago giving way. Demod thread
+       only (and the rate plan's commit, with the demod thread idle). */
+    dsd_demod_floor_plan_entry floor_plan_cache[DSD_DEMOD_FLOOR_PLAN_CACHE];
+    uint64_t floor_plan_cache_clock;
     dsd_squelch_floor squelch_floor;
     dsd_squelch_floor_cache squelch_cache;
     /* The NFM noise squelch: a NOISE setting on the FM monitor whose channel plan has a band above voice runs it on

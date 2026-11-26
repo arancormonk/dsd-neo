@@ -535,7 +535,11 @@ rows_distance(const double* got, int got_lags, const Oracle& want) {
 
 /* The reader model against the impulses, unfiltered: every output phase's covariance (its exact plan's table, from the
    responses), the period, and the mean over it and the largest distance from it (from the reader's covariance carried
-   through the cascade phase by phase). Within 1e-6 of the power: the float chain's rounding. */
+   through the cascade phase by phase). Within 1e-6 of the power: the float chain's rounding. That bound checks the
+   reader-to-cascade alignment only to about 1e-6 of the power: on these chains the cosets of the reader's phases the
+   decimators keep differ that little (a one-sample shift moves the 250 to 192 kHz mean by 1.2e-6, the 40 to 32 kHz
+   rows not at all, their cosets mirroring each other), so a misalignment could not move a plan either, and the rows
+   are compared up to a rotation of the period (a constant shift of the output count moves nothing a plan uses). */
 void
 test_model_is_the_chain(void) {
     const ReaderChain chains[] = {
@@ -708,12 +712,86 @@ test_noise_behind_the_reader(void) {
     }
 }
 
+/* A reader whose passband edge cuts into the noise band but leaves more than its 1200 Hz (issue #899): 12 kHz read into
+   48 kHz (edge 5.4 kHz) under NFM 12.5k and with no channel filter. The band ends at the reader's edge, and the plan's
+   calibration noise carries the reader's magnitude, so idle noise reads no quieting: shut from cold start at noise+3
+   and noise+10, and a carrier inside the source band (25 dB over the noise, 1.0 to 1.5 s) opens it. Calibrated on noise
+   that runs flat to the channel's edge (the magnitude left out of the cascade FIR), the band's idle noise reads as
+   quieting and opens. */
+/* Idle noise reads about 0 dB of quieting when the calibration saw the same noise: within 0.17 dB on these rows with
+   the reader's magnitude folded in, 0.77 to 6.2 dB without it. */
+constexpr double kIdleQuietingDb = 0.5;
+
+void
+test_noise_band_clipped_by_the_reader(void) {
+    const ReaderChain chains[] = {
+        {"12 kHz read into 48 kHz, NFM 12.5k", 12000U, 48000U, 0, 12500},
+        {"12 kHz read into 48 kHz unfiltered", 12000U, 48000U, 0, 0},
+    };
+    const int margins[] = {3, 10};
+    for (const ReaderChain& c : chains) {
+        for (const int margin : margins) {
+            const DemodBox box;
+            demod_state* s = box.s;
+            configure(s, c, DSD_SQUELCH_MODE_NOISE);
+            s->squelch_margin_db = margin;
+            Reader rd(c, 0);
+            const double var = 1e-3;
+            SourceNoise src{Rng{0x89A50000ULL + (uint64_t)margin + (uint64_t)c.width}, std::sqrt(var / 2.0),
+                            std::sqrt(std::pow(10.0, 2.5) * var), 1.0, 1.5};
+            long at = 0;
+            std::vector<uint8_t> flags;
+            /* The idle quieting the windows read from 0.2 s to 1 s (10 ms pieces, the last window's each time). */
+            double q_sum = 0.0;
+            int q_count = 0;
+            for (int piece = 0; piece < 250; piece++) {
+                run_source(s, rd, &src, c.source_hz, &at, 0.01, &flags, NULL);
+                dsd_noise_squelch_status st;
+                dsd_noise_squelch_get_status(&s->noise_squelch, &st);
+                if (piece >= 20 && piece < 100) {
+                    q_sum += st.quieting_db;
+                    q_count++;
+                }
+            }
+            const double idle_q = q_count > 0 ? q_sum / (double)q_count : 0.0;
+            const int rate = c.rate();
+            const size_t burst_from = (size_t)(1.05 * rate);
+            const size_t burst_to = (size_t)(1.5 * rate);
+            long idle_open = 0;
+            long burst_open = 0;
+            for (size_t k = 0; k < flags.size(); k++) {
+                const int open = (flags[k] & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+                if (k < (size_t)rate) {
+                    idle_open += open;
+                } else if (k >= burst_from && k < burst_to) {
+                    burst_open += open;
+                }
+            }
+            const dsd_noise_squelch_plan* plan = &s->noise_squelch.plan;
+            const double edge = s->squelch_reader_model.ready ? s->squelch_reader_model.reader.passband_hz : 0.0;
+            printf("DSP_SQUELCH_READER: %s, noise+%d: band %.0f to %.0f Hz (reader edge %.0f Hz), idle quieting "
+                   "%.2f dB, %ld idle samples open, carrier %.1f %% open\n",
+                   c.name, margin, plan->lo_hz, plan->hi_hz, edge, idle_q, idle_open,
+                   100.0 * (double)burst_open / (double)(burst_to - burst_from));
+            CHECK(plan->valid && s->squelch_noise_ran && edge > 0.0 && std::fabs(plan->hi_hz - edge) <= 1e-9 * edge
+                      && plan->hi_hz - plan->lo_hz >= 1200.0 && flags.size() >= burst_to && idle_open == 0
+                      && std::fabs(idle_q) <= kIdleQuietingDb
+                      && burst_open >= (long)((burst_to - burst_from) * 95U / 100U),
+                  "%s, noise+%d: the band is not the reader's clipped one, the idle channel opened, or the carrier did "
+                  "not open",
+                  c.name, margin);
+        }
+    }
+}
+
 /* -------------------------------------------------------------------------------------------------- identity */
 
 /* The reader names the plan and the floor's context (issue #899): one demod reopens the same replay path as 8 kHz read
    into 16 kHz (learns its floor), as a native 16 kHz source (another plan, designed once, learned afresh: the 8 kHz
-   floor is not the native channel's), then as 8 kHz into 16 kHz again (its plan designed again, its floor seeded from
-   the density stored when it left, times the gain). */
+   floor is not the native channel's), then as 8 kHz into 16 kHz again (its kept plan taken, nothing designed, its floor
+   seeded from the density stored when it left, times the gain). Each leg opens as production does: the reader model's
+   sync and the plan's prime at the commit, then blocks, so the new plan is in before the first block takes the
+   context. */
 void
 test_reader_names_the_context(void) {
     const ReaderChain read = {"8 kHz read into 16 kHz", 8000U, 16000U, 0, 0};
@@ -721,6 +799,7 @@ test_reader_names_the_context(void) {
     const DemodBox box;
     demod_state* s = box.s;
     configure(s, read, DSD_SQUELCH_MODE_AUTO);
+    dsd_demod_squelch_prime_reader_plan(s);
     {
         Reader rd(read, 0);
         SourceNoise src{Rng{0x89A1ULL}, std::sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0};
@@ -735,8 +814,10 @@ test_reader_names_the_context(void) {
           "8 kHz into 16 kHz: no floor (state %d), or not one design (%llu)", s->squelch_floor.state,
           (unsigned long long)designs_read);
 
-    /* The native source: its own plan, and a context the 8 kHz floor does not belong to. */
+    /* The native source: its own plan, and a context the 8 kHz floor does not belong to. The prime does nothing with
+       the reader off; the first block designs. */
     configure(s, native, DSD_SQUELCH_MODE_AUTO);
+    dsd_demod_squelch_prime_reader_plan(s);
     {
         Reader rd(native, 0);
         SourceNoise src{Rng{0x89A2ULL}, std::sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0};
@@ -755,20 +836,169 @@ test_reader_names_the_context(void) {
           "stored at its density",
           (unsigned long long)s->squelch_plan_designs, s->squelch_floor.state);
 
-    /* Back to 8 kHz into 16 kHz: its plan again, its floor seeded from the stored density times the gain. */
+    /* Back to 8 kHz into 16 kHz: its kept plan (the model built again for the same reader), its floor seeded from the
+       stored density times the gain. */
     configure(s, read, DSD_SQUELCH_MODE_AUTO);
+    dsd_demod_squelch_prime_reader_plan(s);
     {
         Reader rd(read, 0);
         SourceNoise src{Rng{0x89A3ULL}, std::sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0};
         long at = 0;
         run_source(s, rd, &src, read.source_hz, &at, 0.01, NULL, NULL);
     }
-    CHECK(s->squelch_plan_designs == designs_read + 2U
+    CHECK(s->squelch_plan_designs == designs_read + 1U
               && std::fabs(s->squelch_floor.plan.noise_gain - gain_read) <= 1e-12 * gain_read
               && s->squelch_floor.state == DSD_SQUELCH_FLOOR_SEEDED
               && std::fabs(s->squelch_floor.floor_power - floor_read) <= 1e-12 * floor_read,
-          "back to 8 kHz into 16 kHz: not its plan again (designs %llu), or not seeded from its floor (state %d)",
+          "back to 8 kHz into 16 kHz: not its kept plan (designs %llu), or not seeded from its floor (state %d)",
           (unsigned long long)s->squelch_plan_designs, s->squelch_floor.state);
+}
+
+/* 10 ms of noise at the source rate through the reader and @p s. */
+void
+run_piece(demod_state* s, const ReaderChain& c, uint64_t seed) {
+    Reader rd(c, 0);
+    SourceNoise src{Rng{seed}, std::sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0};
+    long at = 0;
+    run_source(s, rd, &src, c.source_hz, &at, 0.01, NULL, NULL);
+}
+
+/* The floor plans are kept by plan key (issue #899), as the noise squelch's are: a channel alternating NFM widths behind
+   a reader designs each width once; another reader identity or pass count is another key and designs; the last
+   DSD_DEMOD_FLOOR_PLAN_CACHE plans stay, the one taken longest ago giving way. */
+void
+test_floor_plans_kept_by_key(void) {
+    const DemodBox box;
+    demod_state* s = box.s;
+    ReaderChain c = {"8 kHz read into 48 kHz", 8000U, 48000U, 0, 12500};
+    configure(s, c, DSD_SQUELCH_MODE_AUTO);
+    const int widths[] = {12500, 16000, 12500, 16000};
+    const uint64_t want[] = {1U, 2U, 2U, 2U};
+    for (int i = 0; i < 4; i++) {
+        s->channel_lpf_width_hz = widths[i];
+        run_piece(s, c, 0x89A60000ULL + (uint64_t)i);
+        CHECK(s->squelch_plan_designs == want[i] && s->squelch_floor.plan.valid,
+              "8 kHz into 48 kHz, NFM %d: %llu designs, %llu expected", widths[i],
+              (unsigned long long)s->squelch_plan_designs, (unsigned long long)want[i]);
+    }
+    /* The same width read from another rate (another reader identity), then natively: other keys. */
+    c = ReaderChain{"12 kHz read into 48 kHz", 12000U, 48000U, 0, 16000};
+    configure(s, c, DSD_SQUELCH_MODE_AUTO);
+    run_piece(s, c, 0x89A60010ULL);
+    const ReaderChain native = {"native 48 kHz", 48000U, 48000U, 0, 16000};
+    configure(s, native, DSD_SQUELCH_MODE_AUTO);
+    run_piece(s, native, 0x89A60011ULL);
+    CHECK(s->squelch_plan_designs == 4U, "another reader identity took a kept plan (%llu designs)",
+          (unsigned long long)s->squelch_plan_designs);
+    /* Another pass count at the same channel rate (96 kHz and one pass): another key. */
+    const ReaderChain one_pass = {"native 96 kHz, 1 pass", 96000U, 96000U, 1, 16000};
+    configure(s, one_pass, DSD_SQUELCH_MODE_AUTO);
+    run_piece(s, one_pass, 0x89A60012ULL);
+    CHECK(s->squelch_plan_designs == 5U, "another pass count took a kept plan (%llu designs)",
+          (unsigned long long)s->squelch_plan_designs);
+    /* The bound: five widths natively, then the first again (given way), then the last (kept). */
+    configure(s, native, DSD_SQUELCH_MODE_AUTO);
+    const int cycle[] = {10000, 12500, 20000, 25000, 11000};
+    for (int i = 0; i < 5; i++) {
+        s->channel_lpf_width_hz = cycle[i];
+        run_piece(s, native, 0x89A60020ULL + (uint64_t)i);
+    }
+    const uint64_t filled = s->squelch_plan_designs;
+    s->channel_lpf_width_hz = cycle[0];
+    run_piece(s, native, 0x89A60030ULL);
+    const uint64_t evicted = s->squelch_plan_designs;
+    s->channel_lpf_width_hz = cycle[4];
+    run_piece(s, native, 0x89A60031ULL);
+    CHECK(filled == 10U && evicted == 11U && s->squelch_plan_designs == 11U,
+          "the kept plans are not bounded at %d (%llu, %llu, %llu designs)", (int)DSD_DEMOD_FLOOR_PLAN_CACHE,
+          (unsigned long long)filled, (unsigned long long)evicted, (unsigned long long)s->squelch_plan_designs);
+}
+
+/* A reader whose every-phase tables pass the size limit (2,097,152 Hz read into 2,096,640 Hz by 4095/4096 ahead of
+   seven passes: 524,288 input phases) builds for the averaged plan only; its spread is small, so the plan is valid, and
+   the every-phase design refuses rather than run without its tables. */
+void
+test_model_past_the_table_limit(void) {
+    dsd_iq_reader_plan plan;
+    (void)dsd_iq_reader_plan_for(&plan, 2097152U, 2096640U, 16380U);
+    dsd_noise_squelch_stage st[7];
+    for (int i = 0; i < 7; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    dsd_squelch_reader_model m;
+    dsd_squelch_reader_model_init(&m);
+    const int built = dsd_squelch_reader_model_build(&m, &plan, st, 7);
+    dsd_squelch_floor_plan averaged;
+    dsd_squelch_floor_plan exact;
+    const int rc_avg = dsd_squelch_reader_model_floor_plan(&m, &averaged, NULL, 0, 16380);
+    const int rc_exact = dsd_squelch_reader_model_floor_plan_exact(&m, &exact, NULL, 0, 16380);
+    printf("reader model: 2,097,152 Hz into 2,096,640 Hz, 7 passes: built %d, %d input phases, every-phase tables %d, "
+           "averaged plan %d (beta %.5f)\n",
+           built, m.inputs, m.exact_ready, rc_avg, averaged.beta);
+    CHECK(built == 0 && m.ready && !m.exact_ready && rc_avg == 0 && averaged.valid && rc_exact == -1 && !exact.valid,
+          "a model past the table limit did not keep the averaged plan alone");
+    dsd_squelch_reader_model_release(&m);
+}
+
+/* The reader and the live step never run together (the IO layer refuses such an open): should both be on, the DSP
+   side designs no plan either way. 2.5 MS/s through five passes and the 384/625 step to 48 kHz with a reader plan
+   published beside it, NFM 16k under NOISE: no noise plan, no floor plan, and the gate open on every sample (the fail-
+   open the gate keeps without a plan). The reader model is built for that chain, so only the guard keeps a plan out. */
+void
+test_reader_and_step_design_nothing(void) {
+    const int modes[] = {DSD_SQUELCH_MODE_NOISE, DSD_SQUELCH_MODE_AUTO};
+    for (const int mode : modes) {
+        const DemodBox box;
+        demod_state* s = box.s;
+        configure(s, ReaderChain{"48 kHz", 48000U, 48000U, 0, 16000}, mode);
+        s->downsample_passes = 5;
+        dsd_live_iq_step_plan step;
+        DSD_MEMSET(&step, 0, sizeof step);
+        step.enabled = 1;
+        step.passes = 5;
+        step.hb_out_num = 78125;
+        step.L = 384;
+        step.M = 625;
+        step.target_hz = 48000;
+        step.protect_hz = 21600;
+        step.stop_hz = 26400;
+        int rc = dsd_demod_live_step_prepare(s, &step);
+        if (rc == DSD_LIVE_IQ_STEP_OK) {
+            rc = dsd_live_iq_step_commit(&s->live_iq_step);
+        }
+        dsd_live_iq_step_finish(&s->live_iq_step);
+        /* A reader the model can design for this chain (1.6 MS/s read into 48 kHz x 2^5), so only the guard stands
+           between it and a plan. */
+        (void)dsd_iq_reader_plan_for(&s->iq_reader, 1600000U, 1536000U, 48000U);
+        const int synced = dsd_demod_squelch_reader_model_sync(s);
+        CHECK(rc == DSD_LIVE_IQ_STEP_OK && s->live_iq_step.enabled && s->iq_reader.enabled && synced == 0
+                  && s->squelch_reader_model.ready,
+              "the step did not commit, or the reader model did not build");
+        Rng rng(0x89A7ULL + (uint64_t)mode);
+        std::vector<float> block((size_t)kBlockPairs * 2U);
+        long closed = 0;
+        long flagged = 0;
+        for (int b = 0; b < 32; b++) {
+            for (float& v : block) {
+                v = (float)(std::sqrt(1e-3 / 2.0) * rng.gauss());
+            }
+            DSD_MEMCPY(s->input_cb_buf, block.data(), block.size() * sizeof(float));
+            s->lowpassed = s->input_cb_buf;
+            s->lp_len = kBlockPairs * 2;
+            full_demod(s);
+            for (int i = 0; i < s->result_len; i++) {
+                closed += (s->result_flags[i] & DSD_SQUELCH_FLAG_CLOSED) != 0U;
+                flagged++;
+            }
+        }
+        const char* name = mode == DSD_SQUELCH_MODE_AUTO ? "AUTO" : "NOISE";
+        CHECK(s->squelch_auto_ran && s->squelch_plan_designs >= 1U && !s->squelch_floor.plan.valid
+                  && !s->noise_squelch.plan.valid && flagged > 0 && closed == 0,
+              "%s with the reader and the step both on: a plan was designed (floor %d, noise %d), or the gate closed "
+              "(%ld of %ld)",
+              name, s->squelch_floor.plan.valid, s->noise_squelch.plan.valid, closed, flagged);
+    }
 }
 
 /* The plan is designed when the rate plan commits (dsd_demod_squelch_prime_reader_plan(), after the model's sync),
@@ -807,7 +1037,11 @@ main(void) {
     test_model_is_the_chain();
     test_cold_start_stays_shut();
     test_noise_behind_the_reader();
+    test_noise_band_clipped_by_the_reader();
     test_reader_names_the_context();
+    test_floor_plans_kept_by_key();
+    test_model_past_the_table_limit();
+    test_reader_and_step_design_nothing();
     test_plan_designed_at_commit();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "DSP_SQUELCH_READER: %d failure(s)\n", g_failures);

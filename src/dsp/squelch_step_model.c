@@ -32,11 +32,6 @@ static const double k_factor_residual = 1e-6;
 static const double k_factor_kaiser_beta = 3.3952;
 /* The most doubles the floor model's covariance table may take (64 MB): a ratio past any device's would need more. */
 static const size_t k_max_cov_doubles = (size_t)8 << 20;
-/* The floor plan takes the phase-averaged covariance while the bound on how far any output phase's covariance strays
-   from it after the channel taps stays under this (relative): the per-phase results then average to its results within
-   about the square of it (1e-4). The bound reaches 1.1e-3 on the Airspy grid (72 kHz, NFM 25k), where the two plans
-   differ by under 2e-8; a step past it takes every output phase in full. */
-static const double k_cyclo_negligible = 1e-2;
 
 void
 dsd_squelch_step_model_init(dsd_squelch_step_model* m) {
@@ -443,28 +438,24 @@ dsd_squelch_step_model_floor_plan_exact(dsd_squelch_step_model* m, dsd_squelch_f
 
 /* The phase-averaged covariance behind the channel taps into chan (@p lags of it), exact because the channel taps are
    time-invariant: R(m) = sum_d R_c(d) R_y(m - d), R_c the taps' autocorrelation and R_y the step's averaged covariance.
-   Returns the bound on how far any output phase's covariance can be from it, relative to its power: the step's largest
-   per-phase distance times (sum |c|)^2, over R(0). */
-static double
+   Returns whether it may stand for every output phase (dsd_squelch_cascade_mean_suffices(): the step's largest
+   per-phase distance times (sum |c|)^2 under 1e-2 of R(0)). */
+static int
 ssm_mean_cov_through_taps(dsd_squelch_step_model* m, const float* taps, int len, int lags) {
-    double abs_sum = 0.0;
-    for (int d = 0; d < len; d++) {
-        abs_sum += fabs((double)taps[d]);
-    }
     dsd_squelch_floor_periodic_noise ry;
     ry.period = 1;
     ry.lags = m->resp_len;
     ry.cov = m->ry_mean;
     dsd_squelch_floor_periodic_noise chan;
     /* Not reachable (the scratch holds DSD_NOISE_SQUELCH_MAX_TAPS taps, which ssm_floor_args() holds them to): should
-       it happen, the bound is infinite and the plan takes every output phase in full. */
+       it happen, the plan takes every output phase in full. */
     if (dsd_squelch_cascade_noise_through_taps(&ry, taps, len, m->rc, sizeof(m->rc) / sizeof(m->rc[0]), m->chan,
                                                (size_t)m->cov_lags, &chan)
             != 0
         || chan.lags != lags) {
-        return INFINITY;
+        return 0;
     }
-    return m->chan[0] > 0.0 ? m->cyclo_dev * abs_sum * abs_sum / m->chan[0] : INFINITY;
+    return dsd_squelch_cascade_mean_suffices(m->cyclo_dev, taps, len, m->chan[0]);
 }
 
 int
@@ -480,7 +471,7 @@ dsd_squelch_step_model_floor_plan(dsd_squelch_step_model* m, dsd_squelch_floor_p
         return -1;
     }
     const int lags = m->resp_len + run_len - 1;
-    if (ssm_mean_cov_through_taps(m, run_taps, run_len, lags) > k_cyclo_negligible) {
+    if (!ssm_mean_cov_through_taps(m, run_taps, run_len, lags)) {
         return dsd_squelch_step_model_floor_plan_exact(m, out, taps, taps_len, rate_hz);
     }
     dsd_squelch_floor_periodic_noise noise;
