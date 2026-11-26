@@ -83,6 +83,7 @@ target_sources(
         text_order.cpp
         call_history_export.cpp
         call_history_exporter.cpp
+        call_history_playlist.cpp # Issue #909
         csv_text.cpp
         document_export_writer.cpp
         pending_export.cpp

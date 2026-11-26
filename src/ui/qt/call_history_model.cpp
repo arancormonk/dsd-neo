@@ -754,6 +754,37 @@ CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
     return rows;
 }
 
+QList<CallHistoryModel::PlaylistRow>
+CallHistoryModel::playlistRows(const QList<int>& sourceRows) const {
+    QList<PlaylistRow> rows;
+    QList<QStringList> fragments;
+    rows.reserve(sourceRows.size());
+    fragments.reserve(sourceRows.size());
+    for (const int source : sourceRows) {
+        if (source < 0 || source >= m_rows.size()) {
+            continue;
+        }
+        const QModelIndex idx = index(source);
+        PlaylistRow row;
+        row.uid = m_rows.at(source).uid;
+        row.name = data(idx, NameRole).toString();
+        row.timeText = data(idx, TimeTextRole).toString();
+        rows.append(row);
+        fragments.append(recording_fragments(m_rows.at(source)));
+    }
+    if (m_recordings == nullptr) {
+        return rows;
+    }
+    // One read for every row: the store takes its lock once. An answer that does not cover every row lists none.
+    const QList<QVariantList> recordings = m_recordings->recordingsForFragmentLists(fragments);
+    if (recordings.size() == rows.size()) {
+        for (qsizetype i = 0; i < rows.size(); i++) {
+            rows[i].recordings = recordings.at(i);
+        }
+    }
+    return rows;
+}
+
 void
 CallHistoryModel::setRecordingProvider(const CallRecordingProvider* provider) {
     if (provider == m_recordings) {

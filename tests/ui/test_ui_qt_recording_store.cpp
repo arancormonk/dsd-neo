@@ -5709,6 +5709,140 @@ test_entry_names_batch(void) {
     expect("one read: each row its own names, in order", s.store.recordingEntryNames(rows) == want);
 }
 
+/* --- History playlist (issue #909): every row's recordings in one read. --- */
+
+/* The value under @p key of each of @p maps, as text. */
+QStringList
+values_of(const QVariantList& maps, const QString& key) {
+    QStringList values;
+    for (const QVariant& map : maps) {
+        values.append(map.toMap().value(key).toString());
+    }
+    return values;
+}
+
+/* Each row's list is its own recordings, oldest first by start then publish order within the row (two rows whose starts
+ * interleave are never sorted together), each once, the same as recordingsForFragments() gives the row, all under one
+ * hold of the lock; every map carries the file's indexed identity, its duration, whether it plays now and whether a
+ * delete waits for it. */
+void
+test_playlist_recordings_per_row(void) {
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const qint64 base = 1754800000;
+    // Row 1's parts start at +0 and +30 (a later publish at +30 too), row 2's at +10 and +40.
+    record_at(folder, QStringLiteral("0000000000000909-1"), QStringLiteral("a1.wav"), base, 1, 1100, base + 4);
+    record_at(folder, QStringLiteral("0000000000000909-2"), QStringLiteral("b1.wav"), base + 10, 2, 1200, base + 14);
+    record_at(folder, QStringLiteral("0000000000000909-3"), QStringLiteral("a2.wav"), base + 30, 1, 1300, base + 34);
+    record_at(folder, QStringLiteral("0000000000000909-4"), QStringLiteral("a3.wav"), base + 30, 1, 1400, base + 35);
+    record_at(folder, QStringLiteral("0000000000000909-5"), QStringLiteral("b2.wav"), base + 40, 2, 1500, base + 44);
+    s.pass();
+    const QStringList rowOne{fragment(1)};
+    const QStringList rowTwo{fragment(2)};
+    const QStringList merged{fragment(2), fragment(1), fragment(2)};
+    const QList<QStringList> asked{rowOne, rowTwo, {}, merged, {fragment(77)}};
+
+    const int locks = s.store.readerLocksForTest();
+    const QList<QVariantList> rows = s.store.recordingsForFragmentLists(asked);
+    expect("playlist read: one hold of the lock", s.store.readerLocksForTest() == locks + 1);
+    expect("playlist read: one list per row", rows.size() == asked.size());
+    if (rows.size() != asked.size()) {
+        return;
+    }
+    expect("playlist read: a row's parts in its own order",
+           values_of(rows.at(0), QStringLiteral("path"))
+               == QStringList{folder + QStringLiteral("/a1.wav"), folder + QStringLiteral("/a2.wav"),
+                              folder + QStringLiteral("/a3.wav")});
+    expect("playlist read: the other row's in its own",
+           values_of(rows.at(1), QStringLiteral("path"))
+               == QStringList{folder + QStringLiteral("/b1.wav"), folder + QStringLiteral("/b2.wav")});
+    expect("playlist read: a row without fragments or recordings lists none",
+           rows.at(2).isEmpty() && rows.at(4).isEmpty());
+    expect("playlist read: a merged row's parts in start order, each once",
+           ids_of(rows.at(3))
+               == QStringList{QStringLiteral("0000000000000909-1"), QStringLiteral("0000000000000909-2"),
+                              QStringLiteral("0000000000000909-3"), QStringLiteral("0000000000000909-4"),
+                              QStringLiteral("0000000000000909-5")});
+    for (int i = 0; i < asked.size(); i++) {
+        expect("playlist read: the same recordings as the row's own read",
+               ids_of(rows.at(i)) == ids_of(s.store.recordingsForFragments(asked.at(i))));
+    }
+    const QVariantMap a3 = rows.at(0).value(2).toMap();
+    expect("playlist read: the map's identity is the file's",
+           a3.value(QStringLiteral("identitySize")).toLongLong() == 1400
+               && a3.value(QStringLiteral("mtimeSec")).toLongLong() == base + 35
+               && a3.value(QStringLiteral("mtimeNanos")).toInt() == 0
+               && a3.value(QStringLiteral("durationMs")).toLongLong() == 4000);
+    expect("playlist read: plays now, no delete waits", a3.value(QStringLiteral("available")).toBool()
+                                                            && a3.contains(QStringLiteral("deleteQueued"))
+                                                            && !a3.value(QStringLiteral("deleteQueued")).toBool());
+
+    // A delete waiting on an export's hold: that recording, and only it, says so.
+    const int held =
+        s.store.selectRecordings({QStringLiteral("0000000000000909-3")}).value(QStringLiteral("selection")).toInt();
+    expect("playlist read: a delete held by an export", s.store.deleteRecording(QStringLiteral("0000000000000909-3")));
+    s.pass();
+    expect("playlist read: it waits", s.store.deletesWaiting() == 1);
+    const QVariantList waiting = s.store.recordingsForFragmentLists({rowOne}).value(0);
+    expect("playlist read: the waiting delete is told",
+           values_of(waiting, QStringLiteral("deleteQueued"))
+               == QStringList{QStringLiteral("false"), QStringLiteral("true"), QStringLiteral("false")});
+    s.store.releaseSelection(held);
+    s.pass();
+    s.pass();
+    expect("playlist read: done once released",
+           ids_of(s.store.recordingsForFragmentLists({rowOne}).value(0))
+               == QStringList{QStringLiteral("0000000000000909-1"), QStringLiteral("0000000000000909-4")});
+
+    // Storage away: still listed, none plays.
+    expect("playlist read: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    const QVariantList gone = s.store.recordingsForFragmentLists({rowTwo}).value(0);
+    expect("playlist read: storage away keeps them listed, not playable",
+           gone.size() == 2
+               && values_of(gone, QStringLiteral("available"))
+                      == QStringList{QStringLiteral("false"), QStringLiteral("false")});
+    const RolesOnlyProvider rolesOnly;
+    expect("playlist read: a provider without them gives one empty list per row",
+           rolesOnly.recordingsForFragmentLists({rowOne, {}, rowTwo}) == QList<QVariantList>(3)
+               && rolesOnly.recordingsForFragmentLists({}).isEmpty());
+}
+
+/* A map's identity is the file as the read that indexed it saw it, not the size the limit accounts: the limit's check
+ * found the older file shrunk (600 kB indexed, 100 kB found) and counts it at 100 kB, while the map's identity still
+ * names the 600 kB file, which a playlist then finds changed at its turn. */
+void
+test_recording_map_identity_is_the_indexed_one(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("map identity: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    record_at(folder, QStringLiteral("000000000000090A-1"), QStringLiteral("old.wav"), 1754000000, 1, 600000,
+              1754000004);
+    record(folder, QStringLiteral("000000000000090A-2"), QStringLiteral("new.wav"), 1754000100, 2, 600000);
+    Store s(roots.list(), false);
+    std::atomic<bool> shrunk{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !shrunk.exchange(true)) {
+            make_file(path, 100000);
+        }
+        return false;
+    });
+    s.limitQuietly(1);
+    expect("map identity: shrunk right before its unlink, skipped", shrunk.load() && s.store.deletesSkipped() == 1);
+    const QVariantMap map = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("map identity: the accounting moved", map.value(QStringLiteral("bytes")).toLongLong() == 100000);
+    expect("map identity: the identity did not", map.value(QStringLiteral("identitySize")).toLongLong() == 600000
+                                                     && map.value(QStringLiteral("mtimeSec")).toLongLong() == 1754000004
+                                                     && map.value(QStringLiteral("mtimeNanos")).toInt() == 0);
+    const QVariantMap batched = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
+    expect("map identity: the playlist read gives the same",
+           batched.value(QStringLiteral("identitySize")).toLongLong() == 600000
+               && batched.value(QStringLiteral("bytes")).toLongLong() == 100000);
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -5974,6 +6108,8 @@ main(int argc, char** argv) {
     test_requests_wait_for_a_recheck();
     test_entry_names_match_zip_selection();
     test_entry_names_batch();
+    test_playlist_recordings_per_row();
+    test_recording_map_identity_is_the_indexed_one();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

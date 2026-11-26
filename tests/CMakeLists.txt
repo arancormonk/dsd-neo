@@ -30363,6 +30363,37 @@ if(DSD_ENABLE_QT_UI)
             PRIVATE "LINKER:--as-needed"
         )
     endif()
+
+    # Issue #909: History's playlist builder over the real filter view: the rows shown, oldest first from the start
+    # row, every row's recordings in one provider read, the playable parts with their place in the call, every result
+    # code, and the base host's play. Linked as the History export test is.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_playlist
+        ui/test_ui_qt_call_history_playlist.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_playlist
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_playlist
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    add_test(
+        NAME UI_QT_CALL_HISTORY_PLAYLIST
+        COMMAND dsd-neo_test_ui_qt_call_history_playlist
+    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_ui_qt_call_history_playlist
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
 endif()
 
 # dsd-neo_ui_terminal takes the curses include directories as system

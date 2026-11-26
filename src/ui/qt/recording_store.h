@@ -220,6 +220,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Every row's names under one hold of the store's lock (a History export), each named by
      * recording_entry_name() as selectForExport() names it. */
     QList<QStringList> recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override;
+    /** @brief Every row's recordings under one hold of the store's lock (a History playlist, issue #909): each row's
+     * maps as recordingsForFragments() gives them, plus `deleteQueued` (a delete asked for it waits). */
+    QList<QVariantList> recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const override;
 
     /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
      * `search`), those on storage that is away included. */
@@ -397,6 +400,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void setPassEndHookForTest(std::function<void()> hook);
     /** @brief The ids waiting to be deleted, sorted, and none waiting after. Test hook. */
     QStringList takeDeleteQueueForTest();
+    /** @brief How many times a History read has taken the store's lock (ReaderLock). Test hook. */
+    int readerLocksForTest() const;
 #endif
 
   Q_SIGNALS:
@@ -789,6 +794,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     mutable std::mutex m_mutex;
     /* History reads waiting for m_mutex (ReaderLock). */
     mutable std::atomic<int> m_readersWaiting{0};
+#ifdef DSD_NEO_TEST_HOOKS
+    /* History reads that took m_mutex (readerLocksForTest()). */
+    mutable std::atomic<int> m_readerLocks{0};
+#endif
     std::condition_variable m_wake;
     std::condition_variable m_passed;
     std::condition_variable m_settled;

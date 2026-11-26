@@ -274,6 +274,15 @@ DecoderHost::playRecording(const QString& path) {
     beginPlayback(path);
 }
 
+int
+DecoderHost::playRecordings(const QVariantList& items, int mode, const QString& origin) {
+    (void)mode;
+    (void)origin;
+    const QString path = items.isEmpty() ? QString() : items.first().toMap().value(QStringLiteral("path")).toString();
+    publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
+    return 0;
+}
+
 void
 DecoderHost::beginPlayback(const QString& path) {
     publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));

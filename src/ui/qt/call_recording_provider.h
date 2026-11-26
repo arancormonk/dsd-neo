@@ -65,6 +65,20 @@ class CallRecordingProvider {
         return QList<QStringList>(fragmentsPerRow.size());
     }
 
+    /**
+     * @brief For each row's fragments in @p fragmentsPerRow, its recordings as recordingsForFragments() lists them
+     * (oldest first within the row, by start then publish order, each recording once), one list per row, in order.
+     *
+     * One read for every row, so a History playlist (issue #909) takes the provider's lock once. Each map carries
+     * `id`, `path`, `identitySize`, `mtimeSec` and `mtimeNanos` (the file as the provider indexed it), `durationMs`,
+     * `available` and `deleteQueued` (a delete asked for it has not run yet). A provider without recordings lists none:
+     * one empty list per row.
+     */
+    virtual QList<QVariantList>
+    recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const {
+        return QList<QVariantList>(fragmentsPerRow.size());
+    }
+
   protected:
     CallRecordingProvider() = default;
     CallRecordingProvider(const CallRecordingProvider&) = default;

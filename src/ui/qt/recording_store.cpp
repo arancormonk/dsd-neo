@@ -2750,6 +2750,11 @@ RecordingStore::entryMap(const Entry& entry) const {
         {QStringLiteral("durationMs"), entry.durationMs},
         {QStringLiteral("rate"), entry.rate},
         {QStringLiteral("bytes"), entry.bytes},
+        // The file as the read that indexed it saw it (issue #909): what a playlist checks the file against at its
+        // turn. Never bytes, which the limit moves to the size it finds while the identity stays.
+        {QStringLiteral("identitySize"), static_cast<qint64>(entry.identity.size)},
+        {QStringLiteral("mtimeSec"), static_cast<qint64>(entry.identity.mtime_s)},
+        {QStringLiteral("mtimeNanos"), static_cast<int>(entry.identity.mtime_ns)},
         {QStringLiteral("failed"), entry.failed},
         {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)},
     };
@@ -2762,6 +2767,9 @@ class RecordingStore::ReaderLock {
         m_store.m_readersWaiting++;
         m_store.m_mutex.lock();
         m_store.m_readersWaiting--;
+#ifdef DSD_NEO_TEST_HOOKS
+        m_store.m_readerLocks++;
+#endif
     }
 
     ~ReaderLock() { m_store.m_mutex.unlock(); }
@@ -2821,6 +2829,23 @@ RecordingStore::recordingEntryNames(const QList<QStringList>& fragmentsPerRow) c
             names.append(recording_entry_name(entry->folder, entry->file));
         }
         rows.append(names);
+    }
+    return rows;
+}
+
+QList<QVariantList>
+RecordingStore::recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const {
+    const ReaderLock lock(*this);
+    QList<QVariantList> rows;
+    rows.reserve(fragmentsPerRow.size());
+    for (const QStringList& fragments : fragmentsPerRow) {
+        QVariantList list;
+        for (const Entry* entry : fragmentEntriesLocked(fragments)) {
+            QVariantMap map = entryMap(*entry);
+            map.insert(QStringLiteral("deleteQueued"), m_deleteQueue.contains(entry->id));
+            list.append(map);
+        }
+        rows.append(list);
     }
     return rows;
 }
@@ -3513,6 +3538,11 @@ RecordingStore::takeDeleteQueueForTest() {
     m_deleteQueue.clear();
     std::sort(ids.begin(), ids.end());
     return ids;
+}
+
+int
+RecordingStore::readerLocksForTest() const {
+    return m_readerLocks.load();
 }
 #endif
 

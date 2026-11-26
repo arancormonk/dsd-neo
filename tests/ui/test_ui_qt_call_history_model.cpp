@@ -3946,6 +3946,24 @@ class FakeRecordings : public dsd_qt::CallRecordingProvider {
         }
         return names;
     }
+
+    QList<QVariantList>
+    recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const override {
+        batchReads++;
+        lastBatch = fragmentsPerRow;
+        QList<QVariantList> rows;
+        if (shortAnswer) {
+            return rows;
+        }
+        for (const QStringList& fragments : fragmentsPerRow) {
+            rows.append(recordingsForFragments(fragments));
+        }
+        return rows;
+    }
+
+    mutable int batchReads = 0;
+    mutable QList<QStringList> lastBatch;
+    bool shortAnswer = false;
 };
 
 /* The fragment key of the newest row @p slot committed. */
@@ -7383,6 +7401,10 @@ test_withdrawn_fragment_recordings(void) {
         ring.touchCommitted(0);
         model.refresh(ring.state);
         const QList<CallHistoryModel::ExportRow> exported = model.exportRows({0});
+        const QList<CallHistoryModel::PlaylistRow> playlist = model.playlistRows({0});
+        expect("withdrawn recording: a playlist takes no recording of it",
+               playlist.size() == 1 && playlist.at(0).uid == uid && playlist.at(0).recordings.isEmpty()
+                   && recordings.lastBatch.size() == 1 && !recordings.lastBatch.at(0).contains(joined));
         expect("withdrawn recording: the row no longer offers the other system's recording",
                model.count() == 1 && !has_recording(model, 0)
                    && model.data(model.index(0), CallHistoryModel::RecordingsRole).toList().isEmpty()
@@ -7407,6 +7429,56 @@ test_withdrawn_fragment_recordings(void) {
                reloaded.count() == 1 && has_recording(reloaded, 0) && reloaded.recordingsForUid(uid).size() == 1
                    && qRound64(reloaded.uidForFragment(joined)) == uid);
     }
+}
+
+/* Issue #909: a playlist's rows say what the row shows (its uid, its name as data() gives it, its time text) and carry
+ * every row's recordings from one provider read, in the order asked, rows out of range skipped; no provider, or one
+ * that answers for fewer rows than asked, lists none rather than another row's. */
+void
+test_playlist_rows(void) {
+    const time_t when = 1754707200;
+    resetStorage();
+    RingFixture ring;
+    FakeRecordings recordings;
+    CallHistoryModel model;
+    ring.commit(0, 90901U, 9091U, when, when + 3);
+    const QString older = newest_fragment(ring, 0);
+    ring.commit(0, 90902U, 9092U, when + 60, when + 64);
+    const QString newer = newest_fragment(ring, 0);
+    model.refresh(ring.state);
+    expect("playlist rows: two calls", model.count() == 2);
+    const QList<CallHistoryModel::PlaylistRow> bare = model.playlistRows({0, 1});
+    expect("playlist rows: without a provider, rows without recordings",
+           bare.size() == 2 && bare.at(0).recordings.isEmpty() && bare.at(1).recordings.isEmpty());
+
+    model.setRecordingProvider(&recordings);
+    recordings.recorded = {older, newer};
+    const QList<CallHistoryModel::PlaylistRow> rows = model.playlistRows({1, -1, 0, 2});
+    expect("playlist rows: one read for every row kept, in the order asked",
+           recordings.batchReads == 1 && recordings.lastBatch == (QList<QStringList>{{older}, {newer}}));
+    expect("playlist rows: the rows kept", rows.size() == 2);
+    if (rows.size() != 2) {
+        return;
+    }
+    for (int i = 0; i < 2; i++) {
+        const QModelIndex idx = model.index(1 - i);
+        expect("playlist rows: what the row shows",
+               rows.at(i).uid == uid_at(model, 1 - i)
+                   && rows.at(i).name == model.data(idx, CallHistoryModel::NameRole).toString()
+                   && rows.at(i).timeText == model.data(idx, CallHistoryModel::TimeTextRole).toString()
+                   && !rows.at(i).timeText.isEmpty());
+    }
+    expect("playlist rows: each row its own recordings",
+           rows.at(0).recordings.size() == 1 && rows.at(1).recordings.size() == 1
+               && rows.at(0).recordings.at(0).toMap().value(QStringLiteral("fragment")).toString() == older
+               && rows.at(1).recordings.at(0).toMap().value(QStringLiteral("fragment")).toString() == newer);
+
+    recordings.shortAnswer = true;
+    const QList<CallHistoryModel::PlaylistRow> shortRows = model.playlistRows({0, 1});
+    expect("playlist rows: a short answer lists none",
+           shortRows.size() == 2 && shortRows.at(0).recordings.isEmpty() && shortRows.at(1).recordings.isEmpty());
+    expect("playlist rows: no rows, one empty read", model.playlistRows({}).isEmpty());
+    model.setRecordingProvider(nullptr);
 }
 
 /** Everything row @p row shows that a fragment can give it: its sender, label and detail (message and GPS) beside the
@@ -8704,6 +8776,7 @@ main(int argc, char** argv) {
     test_fragment_on_another_system_withdraws_payload();
     test_fragment_on_another_system_withdraws_call_fields();
     test_withdrawn_fragment_recordings();
+    test_playlist_rows();
     test_fragment_contributions_withdraw_together();
     test_fragment_withdrawal_keeps_other_ring_payload();
     test_fragment_update_rechecks_destination();

@@ -148,6 +148,13 @@ class DecoderHost : public QObject {
     Q_ENUM(PlaybackState)
 
     /**
+     * @brief What a playRecordings() call plays (issue #909). Single: one recording, as playRecording(). Parts: a
+     * sheet's parts of one call, in order. Playlist: History's calls, oldest first, each call's parts in order.
+     */
+    enum PlaybackMode { PlaybackSingle = 0, PlaybackParts = 1, PlaybackPlaylist = 2 };
+    Q_ENUM(PlaybackMode)
+
+    /**
      * @brief How a recording export or save ended (recordingTransferFinished()). Missing: every file it named was
      * gone. Busy: another transfer was running. Unsupported: this host cannot write it (the base host has no zip).
      * Changed: a file it named is not the one selected any more (another size or modification time, a link, no file),
@@ -388,6 +395,20 @@ class DecoderHost : public QObject {
      * to beginPlayback(), which replaces what plays.
      */
     Q_INVOKABLE void playRecording(const QString& path);
+
+    /**
+     * @brief Play @p items in order as @p mode (a PlaybackMode), started from @p origin ("history" for History's
+     *        playlist), replacing what plays.
+     *
+     * Each item is a map: `path`, `size`, `mtimeSec` and `mtimeNanos` (the file as the recording store indexed it;
+     * one found another file at its turn is not played), `call` (the call's index in @p items, from 0), `partOrdinal`
+     * and `partCount` (its part's place among all the call's recordings, from 1, and their number), `title` and `line`
+     * (the call's name and time text) and `key` (its History row uid).
+     *
+     * @return The play's generation, above 0, once accepted; 0 when refused, with what played left playing. The base
+     *         host has no player: it publishes the first item's path Failed "unsupported" and returns 0.
+     */
+    Q_INVOKABLE virtual int playRecordings(const QVariantList& items, int mode, const QString& origin);
 
     Q_INVOKABLE virtual void
     pausePlayback() {}
