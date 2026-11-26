@@ -953,9 +953,9 @@ apply_recording_rdio_mode(dsdneoUserConfig* cfg, const char* val) {
    credential; the warning names the key, never the value, which can carry a credential. --validate-config reports it
    as an error. */
 static void
-apply_recording_rdio_credential(const char* key_lc, char* dst, size_t dst_size, const char* val) {
+apply_recording_rdio_credential(const char* field, char* dst, size_t dst_size, const char* val) {
     if (strlen(val) >= dst_size) {
-        LOG_WARN("Config: invalid %s; too long (at most %zu bytes), keeping previous/default value\n", key_lc,
+        LOG_WARN("Config: invalid %s; too long (at most %zu bytes), keeping previous/default value\n", field,
                  dst_size - 1U);
         return;
     }
