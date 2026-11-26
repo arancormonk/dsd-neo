@@ -44,6 +44,7 @@
 #include <dsd-neo/runtime/mem.h>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "squelch_cascade_noise.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -517,8 +518,8 @@ cascade_plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor
     return std::fmax(rel, std::fmax(std::fabs(got.beta - want.beta), std::fabs(got.rho_lag - want.rho_lag)));
 }
 
-/* The float cascade's rounding against the oracle's: its impulses are float, the plans double. */
-constexpr double kCascadeTolerance = 1e-5;
+/* The float cascade's rounding against the oracle's: its impulses are float, the plans double (under 1e-7 on x86). */
+constexpr double kCascadeTolerance = 1e-6;
 
 /* Without a step the auto squelch's plan models the whole half-band cascade (issue #899): at every row of the DSP
    bandwidth table (unfiltered 4 to 16 kHz, the widths 16 kHz takes, 24/48/72 kHz with the default 16 kHz design and
@@ -1213,6 +1214,209 @@ test_period_one_is_todays_model(void) {
     printf("period one: the periodic design is today's stationary model within 1e-12\n");
 }
 
+/* White noise of variance var[n % period] at sample n: periodic noise with no correlation between samples. */
+dsd_squelch_floor_periodic_noise
+white_rows(const std::vector<double>& var) {
+    dsd_squelch_floor_periodic_noise r;
+    r.period = (int)var.size();
+    r.lags = 1;
+    r.cov = var.data();
+    return r;
+}
+
+/* The largest distance of two covariances of the same shape, relative to the first's largest value. */
+double
+cov_distance(const dsd_squelch_floor_periodic_noise& a, const dsd_squelch_floor_periodic_noise& b) {
+    if (a.period != b.period || a.lags != b.lags) {
+        return INFINITY;
+    }
+    double peak = 0.0;
+    double off = 0.0;
+    for (size_t i = 0; i < (size_t)a.period * (size_t)a.lags; i++) {
+        peak = std::fmax(peak, std::fabs(a.cov[i]));
+        off = std::fmax(off, std::fabs(a.cov[i] - b.cov[i]));
+    }
+    return peak > 0.0 ? off / peak : INFINITY;
+}
+
+/* The shared cascade covariance (src/dsp/squelch_cascade_noise.c, issue #899) on periodic noise, against the formula
+   for white noise of a periodic variance: a stage takes y_q = sum_i h_i x_{2q - i}, so E{y_q y_{q+m}} = sum_i h_i
+   h_{i+2m} var((2q - i) mod P); the channel taps E{z_n z_{n+m}} = sum_i c_i c_{i+m} var((n - i) mod P). A period of 2
+   becomes 1 after a stage, 3 stays 3; stationary noise tiled to a period of 2 gives the stationary result; and the
+   floor plan helper with one stage is the stationary design (within 1e-12) at a rate 25 divides and at an odd one. */
+void
+test_cascade_noise_helper(void) {
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    (void)stages_for(2, st);
+    for (const std::vector<double>& var : {std::vector<double>{1.0, 0.25}, std::vector<double>{1.0, 0.5, 2.0}}) {
+        const dsd_squelch_floor_periodic_noise in = white_rows(var);
+        const int period = (int)var.size();
+        for (int s = 0; s < 2; s++) {
+            std::vector<double> work(dsd_squelch_cascade_noise_work_len(period, 1, &st[s], 1));
+            dsd_squelch_floor_periodic_noise out;
+            const int rc = dsd_squelch_cascade_noise(&in, &st[s], 1, work.data(), work.size(), &out);
+            const int want_period = period % 2 == 0 ? period / 2 : period;
+            std::vector<double> want((size_t)want_period * (size_t)out.lags, 0.0);
+            for (int q = 0; q < want_period; q++) {
+                for (int m = 0; m < out.lags; m++) {
+                    for (int i = 0; i + (2 * m) < st[s].len; i++) {
+                        const int phase = (((2 * q) - i) % period + period) % period;
+                        want[((size_t)q * (size_t)out.lags) + (size_t)m] +=
+                            (double)st[s].taps[i] * (double)st[s].taps[i + (2 * m)] * var[(size_t)phase];
+                    }
+                }
+            }
+            dsd_squelch_floor_periodic_noise ref = out;
+            ref.cov = want.data();
+            CHECK(rc == 0 && out.period == want_period && out.lags == ((st[s].len - 1) / 2) + 1
+                      && cov_distance(ref, out) <= 1e-12,
+                  "a %d-tap stage on a period of %d: rc %d, period %d, lags %d, off %.3e", st[s].len, period, rc,
+                  out.period, out.lags, cov_distance(ref, out));
+        }
+        /* The channel taps keep the period. */
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(24000, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> chan((size_t)period * (size_t)len);
+        dsd_squelch_floor_periodic_noise out;
+        const int rc =
+            dsd_squelch_cascade_noise_through_taps(&in, taps.data(), len, NULL, chan.data(), chan.size(), &out);
+        std::vector<double> want(chan.size(), 0.0);
+        for (int n = 0; n < period; n++) {
+            for (int m = 0; m < len; m++) {
+                for (int i = 0; i + m < len; i++) {
+                    want[((size_t)n * (size_t)len) + (size_t)m] +=
+                        (double)taps[(size_t)i] * (double)taps[(size_t)(i + m)]
+                        * var[(size_t)(((n - i) % period + period) % period)];
+                }
+            }
+        }
+        dsd_squelch_floor_periodic_noise ref = out;
+        ref.cov = want.data();
+        CHECK(rc == 0 && out.period == period && out.lags == len && cov_distance(ref, out) <= 1e-12,
+              "the channel taps on a period of %d: rc %d, off %.3e", period, rc, cov_distance(ref, out));
+    }
+
+    /* Stationary noise tiled to a period of 2: the periodic paths give the stationary results. */
+    {
+        dsd_squelch_floor_periodic_noise hb;
+        std::vector<double> work(dsd_squelch_cascade_noise_work_len(1, 1, st, 2));
+        CHECK(dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size(), &hb) == 0 && hb.period == 1,
+              "white noise through two stages");
+        std::vector<double> tiled(hb.cov, hb.cov + hb.lags);
+        tiled.insert(tiled.end(), hb.cov, hb.cov + hb.lags);
+        dsd_squelch_floor_periodic_noise two;
+        two.period = 2;
+        two.lags = hb.lags;
+        two.cov = tiled.data();
+        std::vector<double> w1(dsd_squelch_cascade_noise_work_len(1, hb.lags, &st[1], 1));
+        std::vector<double> w2(dsd_squelch_cascade_noise_work_len(2, hb.lags, &st[1], 1));
+        dsd_squelch_floor_periodic_noise a;
+        dsd_squelch_floor_periodic_noise b;
+        const int rc_a = dsd_squelch_cascade_noise(&hb, &st[1], 1, w1.data(), w1.size(), &a);
+        const int rc_b = dsd_squelch_cascade_noise(&two, &st[1], 1, w2.data(), w2.size(), &b);
+        CHECK(rc_a == 0 && rc_b == 0 && cov_distance(a, b) <= 1e-12, "tiled stationary noise through a stage: %.3e",
+              cov_distance(a, b));
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(48000, 25000, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> rc(DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> c1((size_t)(hb.lags + len - 1));
+        std::vector<double> c2(2U * c1.size());
+        const int rc_c =
+            dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), c1.data(), c1.size(), &a);
+        const int rc_d = dsd_squelch_cascade_noise_through_taps(&two, taps.data(), len, NULL, c2.data(), c2.size(), &b);
+        dsd_squelch_floor_periodic_noise b0 = b;
+        b0.period = 1;
+        CHECK(rc_c == 0 && rc_d == 0 && b.period == 2 && cov_distance(a, b0) <= 1e-12
+                  && std::equal(c2.begin(), c2.begin() + (long)c1.size(), c2.begin() + (long)c1.size()),
+              "tiled stationary noise through the channel taps: %.3e", cov_distance(a, b0));
+        /* Refusals: too little workspace, a stage too long, a period of none, no rc for stationary noise. */
+        dsd_squelch_floor_periodic_noise none;
+        dsd_noise_squelch_stage longest = st[0];
+        longest.len = DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS + 1;
+        dsd_squelch_floor_periodic_noise zero = hb;
+        zero.period = 0;
+        CHECK(dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size() - 1U, &none) == -1
+                  && dsd_squelch_cascade_noise(NULL, &longest, 1, work.data(), work.size(), &none) == -1
+                  && dsd_squelch_cascade_noise(&zero, st, 1, work.data(), work.size(), &none) == -1
+                  && dsd_squelch_cascade_noise_work_len(1, 1, &longest, 1) == 0U
+                  && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, NULL, c1.data(), c1.size(), &none)
+                         == -1
+                  && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), c1.data(), c1.size() - 1U,
+                                                            &none)
+                         == -1,
+              "a refusal went through");
+    }
+
+    /* One stage: the stationary design, at a rate 25 divides and at an odd one (both windows rate / 25.0). */
+    for (const int rate : {24000, 39062}) {
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(rate, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        for (const int width : {0, 12500}) {
+            const float* run = width > 0 ? taps.data() : NULL;
+            const int run_len = width > 0 ? len : 0;
+            dsd_squelch_floor_plan helper;
+            dsd_squelch_floor_plan today;
+            const int rc_h = dsd_squelch_cascade_noise_floor_plan(&helper, run, run_len, st, 1, rate);
+            const int rc_t = dsd_squelch_floor_plan_design(&today, run, run_len, hb31_q15_taps, 31, rate);
+            const bool same = rc_h == 0 && rc_t == 0 && helper.lag == today.lag
+                              && close_rel(helper.rho_lag, today.rho_lag, 1e-12)
+                              && close_rel(helper.beta, today.beta, 1e-12) && close_rel(helper.neff, today.neff, 1e-12)
+                              && close_rel(helper.noise_gain, today.noise_gain, 1e-12);
+            CHECK(same, "%d Hz width %d: one-stage helper N_eff %.15g beta %.15g, today's %.15g %.15g", rate, width,
+                  helper.neff, helper.beta, today.neff, today.beta);
+        }
+    }
+    dsd_squelch_floor_plan refused;
+    CHECK(dsd_squelch_cascade_noise_floor_plan(&refused, NULL, DSD_NOISE_SQUELCH_MAX_TAPS + 1, st, 2, 16000) == -1
+              && !refused.valid,
+          "more channel taps than the helper holds planned");
+    printf("cascade noise: periodic stages and channel taps match the formula, tiled stationary noise the stationary "
+           "path, and one stage today's design\n");
+}
+
+/* The periodic design over the tracker's mean window: where 25 divides the rate it is the periodic design bit for bit
+   (a period of one and of three); at 39,062 Hz the window is 1,562.48 samples, so at a period of one N_eff scales by
+   1,562.48 / 1,562 and beta and rho stay. */
+void
+test_periodic_mean_window(void) {
+    std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+    const int len = dsd_channel_lpf_design_analog(48000, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+    std::vector<double> cov((size_t)len, 0.0);
+    for (int m = 0; m < len; m++) {
+        cov[(size_t)m] = taps_autocorr(taps.data(), len, m);
+    }
+    std::vector<double> three;
+    for (int n = 0; n < 3; n++) {
+        for (int m = 0; m < len; m++) {
+            three.push_back(cov[(size_t)m] * (1.0 + (0.25 * n)));
+        }
+    }
+    dsd_squelch_floor_periodic_noise one;
+    one.period = 1;
+    one.lags = len;
+    one.cov = cov.data();
+    dsd_squelch_floor_periodic_noise per3 = one;
+    per3.period = 3;
+    per3.cov = three.data();
+    for (const dsd_squelch_floor_periodic_noise* noise : {&one, &per3}) {
+        dsd_squelch_floor_plan a;
+        dsd_squelch_floor_plan b;
+        const int rc_a = dsd_squelch_floor_plan_design_periodic(&a, taps.data(), len, noise, 48000);
+        const int rc_b = dsd_squelch_floor_plan_design_periodic_mean(&b, taps.data(), len, noise, 48000);
+        CHECK(rc_a == 0 && rc_b == 0 && same_floor_plan(a, b), "period %d at 48 kHz: the mean window moved the plan",
+              noise->period);
+    }
+    dsd_squelch_floor_plan whole;
+    dsd_squelch_floor_plan mean;
+    const int rc_w = dsd_squelch_floor_plan_design_periodic(&whole, taps.data(), len, &one, 39062);
+    const int rc_m = dsd_squelch_floor_plan_design_periodic_mean(&mean, taps.data(), len, &one, 39062);
+    CHECK(rc_w == 0 && rc_m == 0 && close_rel(mean.neff, whole.neff * (39062.0 / 25.0) / 1562.0, 1e-12)
+              && close_rel(mean.sqrt_neff, std::sqrt(mean.neff), 1e-12) && close_rel(mean.beta, whole.beta, 1e-12)
+              && close_rel(mean.rho_lag, whole.rho_lag, 1e-12) && close_rel(mean.noise_gain, whole.noise_gain, 1e-12),
+          "39,062 Hz: mean-window N_eff %.15g, whole windows %.15g", mean.neff, whole.neff);
+    printf("mean window: the periodic design where 25 divides the rate, fractional N_eff at 39,062 Hz\n");
+}
+
 /* The step plans the averaged floor path is held to: every planned Airspy grid point, and a SoapySDR ratio near the
    4096-term limit (hb_out 65,488 Hz, 2,095,616 Hz over 32, to 48 kHz: L/M 3000/4093, 4093 prime). */
 std::vector<dsd_live_iq_step_plan>
@@ -1455,6 +1659,8 @@ main(int argc, char** argv) {
         test_plan_key_follows_the_step();
         test_window_statistics();
         test_period_one_is_todays_model();
+        test_cascade_noise_helper();
+        test_periodic_mean_window();
         test_floor_plan_matches_every_phase();
         test_no_step_floor_plans_pinned();
         test_no_step_noise_plans_pinned();

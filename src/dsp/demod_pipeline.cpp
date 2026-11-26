@@ -41,6 +41,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/dsp/tetra_uplink_timing.h"
+#include "squelch_cascade_noise.h"
 #ifdef DSD_NEO_TEST_HOOKS
 #include "demod_pipeline_test_support.h"
 #endif
@@ -2103,7 +2104,8 @@ squelch_auto_wanted(const struct demod_state* d) {
     return dsd_squelch_mode_is_dynamic(d->squelch_mode) && dsd_demod_dynamic_squelch_path(d);
 }
 
-/* What the squelch plans follow: the channel filter in force, the half-band stage ahead of it and the channel rate. */
+/* What the squelch plans follow: the channel filter in force, the half-band cascade ahead of it (its pass count) and the
+   channel rate. */
 static dsd_demod_squelch_plan_key
 squelch_plan_key_of(const struct demod_state* d) {
     const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
@@ -2173,11 +2175,6 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
     return dsd_squelch_step_model_build(&d->squelch_step_model, &d->live_iq_step.plan, stages, count);
 }
 
-static const float*
-squelch_plan_hb(const dsd_demod_squelch_plan_key* k) {
-    return k->hb_taps == 31 ? hb31_q15_taps : (k->hb_taps > 0 ? hb_q15_taps : NULL);
-}
-
 static void
 squelch_floor_ensure_plan(struct demod_state* d) {
     const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
@@ -2187,16 +2184,24 @@ squelch_floor_ensure_plan(struct demod_state* d) {
     dsd_squelch_floor_plan plan;
     const float* taps = k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
     /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. Behind the live rate
-       step the plan comes from the noise through the step itself (issue #806). */
+       step the plan comes from the noise through the step itself (issue #806). Without one it comes from white noise
+       at the capture rate through the whole cascade (issue #899; RTL-SDR runs 4 to 8 passes): with no pass or one
+       that is the stage's own design, as before, bit for bit. */
     if (k.step.enabled) {
         dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
         DSD_MEMSET(&plan, 0, sizeof plan);
         if (model != NULL) {
             (void)dsd_squelch_step_model_floor_plan(model, &plan, taps, k.taps_len, k.rate_hz);
         }
+    } else if (k.passes <= 1) {
+        (void)dsd_squelch_floor_plan_design(&plan, taps, k.taps_len, k.passes == 1 ? hb31_q15_taps : NULL,
+                                            k.passes == 1 ? 31 : 0, k.rate_hz);
     } else {
-        (void)dsd_squelch_floor_plan_design(&plan, taps, k.taps_len, squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
+        dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+        const int count = squelch_cascade_stages(k.passes, stages);
+        (void)dsd_squelch_cascade_noise_floor_plan(&plan, taps, k.taps_len, stages, count, k.rate_hz);
     }
+    d->squelch_plan_designs++;
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
     d->squelch_plan = k;
 }

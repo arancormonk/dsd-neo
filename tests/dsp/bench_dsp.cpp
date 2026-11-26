@@ -57,6 +57,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/sync_patterns.h"
 #include "frame_sync_level.h"
+#include "squelch_cascade_noise.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -1585,7 +1586,8 @@ bench_one_squelch_plan(const BenchOptions& opts, const char* name, int target_hz
 }
 
 /* The floor plan the demod thread designs at a squelch plan key change on a chain with no step (issue #899): the
-   cascade of @p passes ahead of NFM @p width_hz (0: no channel filter) at @p target_hz. */
+   cascade of @p passes ahead of NFM @p width_hz (0: no channel filter) at @p target_hz, the production design
+   (dsd_squelch_cascade_noise_floor_plan(), what squelch_floor_ensure_plan() runs with two passes or more). */
 static int
 bench_one_cascade_floor_plan(const BenchOptions& opts, const char* name, int target_hz, int width_hz, int passes) {
     std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
@@ -1596,6 +1598,11 @@ bench_one_cascade_floor_plan(const BenchOptions& opts, const char* name, int tar
         return 0;
     }
     const float* run = taps_len > 0 ? taps.data() : NULL;
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    for (int i = 0; i < passes; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
     dsd_squelch_floor_plan fp;
     BenchMeta meta;
     meta.rate_hz = target_hz;
@@ -1605,7 +1612,7 @@ bench_one_cascade_floor_plan(const BenchOptions& opts, const char* name, int tar
     return run_named_case(
         opts, name, "plan", 1.0,
         [&]() -> float {
-            (void)dsd_squelch_floor_plan_design(&fp, run, taps_len, hb_q15_taps, HB_TAPS, target_hz);
+            (void)dsd_squelch_cascade_noise_floor_plan(&fp, run, taps_len, st, passes, target_hz);
             return (float)fp.neff;
         },
         &meta);
@@ -1659,15 +1666,26 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
         full_demod(s);
         return (float)s->squelch_floor.plan.neff + (float)s->result_len;
     };
-    /* The first block designs the channel taps and the plan. */
-    (void)block();
+    /* The first block that leaves channel samples designs the channel taps and the plan (the cascade's look-ahead can
+       hold a first block's few samples). */
+    for (int i = 0; i < 16 && s->squelch_plan_designs == 0U; i++) {
+        (void)block();
+    }
     BenchMeta meta;
     meta.rate_hz = rate_hz;
     meta.profile = "floor_plan_block";
     meta.tap_count = s->channel_lpf_enable ? s->channel_lpf_plan_taps_len : 0;
     meta.variant = kind == BENCH_BLOCK_FIRST_BUILD ? "first_build"
                                                    : (kind == BENCH_BLOCK_ALTERNATING ? "alternating" : "same_key");
-    return run_named_case(opts, name, "block", 1.0, block, &meta);
+    const uint64_t designs = s->squelch_plan_designs;
+    const int ran = run_named_case(opts, name, "block", 1.0, block, &meta);
+    /* The same key every block designs nothing; the others design at every block. */
+    if (ran > 0 && !opts.list_cases && (kind == BENCH_BLOCK_SAME_KEY) != (s->squelch_plan_designs == designs)) {
+        DSD_FPRINTF(stderr, "%s: %llu floor plan designs over the run\n", name,
+                    (unsigned long long)(s->squelch_plan_designs - designs));
+        return 0;
+    }
+    return ran;
 }
 
 static int

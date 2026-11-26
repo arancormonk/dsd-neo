@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "squelch_cascade_noise.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -66,46 +67,19 @@ dsd_squelch_step_model_matches(const dsd_squelch_step_model* m, const dsd_live_i
 
 /* ------------------------------------------------------------------------------------------- the cascade's noise */
 
-/* R_hb: white complex noise of variance 2^(count - 1) (1 with no stage) at the capture rate through every stage. A
-   stage maps R to R'[k] = sum_j g[j] R[2k - j], g its taps' autocorrelation; the support after it is
-   (support + taps - 1) / 2 lags. */
+/* R_hb: white complex noise of variance 2^(count - 1) (1 with no stage) at the capture rate through every stage, the
+   half-band recursion the floor plan without a step runs too (dsd_squelch_cascade_noise()). */
 static int
 ssm_halfband_recursion(dsd_squelch_step_model* m, const dsd_noise_squelch_stage* stages, int count) {
-    double r[DSD_SQUELCH_STEP_MAX_HB_LAGS];
-    double next[DSD_SQUELCH_STEP_MAX_HB_LAGS];
-    double g[64];
-    DSD_MEMSET(r, 0, sizeof(r));
-    r[0] = count > 0 ? ldexp(1.0, count - 1) : 1.0;
-    int support = 0;
-    for (int i = 0; i < count; i++) {
-        const int len = stages[i].len;
-        for (int j = 0; j < len; j++) {
-            double sum = 0.0;
-            for (int t = 0; t + j < len; t++) {
-                sum += (double)stages[i].taps[t] * (double)stages[i].taps[t + j];
-            }
-            g[j] = sum;
-        }
-        const int out_support = (support + len - 1) / 2;
-        if (out_support >= DSD_SQUELCH_STEP_MAX_HB_LAGS) {
-            return -1;
-        }
-        for (int k = 0; k <= out_support; k++) {
-            double sum = 0.0;
-            for (int j = -(len - 1); j <= len - 1; j++) {
-                const int at = abs(2 * k - j);
-                if (at <= support) {
-                    sum += g[abs(j)] * r[at];
-                }
-            }
-            next[k] = sum;
-        }
-        support = out_support;
-        DSD_MEMCPY(r, next, (size_t)(support + 1) * sizeof(double));
+    double work[2 * DSD_SQUELCH_STEP_MAX_HB_LAGS];
+    dsd_squelch_floor_periodic_noise r;
+    if (dsd_squelch_cascade_noise(NULL, stages, count, work, sizeof(work) / sizeof(work[0]), &r) != 0 || r.period != 1
+        || r.lags > DSD_SQUELCH_STEP_MAX_HB_LAGS) {
+        return -1;
     }
     DSD_MEMSET(m->r_hb, 0, sizeof(m->r_hb));
-    DSD_MEMCPY(m->r_hb, r, (size_t)(support + 1) * sizeof(double));
-    m->hb_lags = support + 1;
+    DSD_MEMCPY(m->r_hb, r.cov, (size_t)r.lags * sizeof(double));
+    m->hb_lags = r.lags;
     return 0;
 }
 
@@ -475,25 +449,18 @@ static double
 ssm_mean_cov_through_taps(dsd_squelch_step_model* m, const float* taps, int len, int lags) {
     double abs_sum = 0.0;
     for (int d = 0; d < len; d++) {
-        double r = 0.0;
-        for (int i = 0; i + d < len; i++) {
-            r += (double)taps[i] * (double)taps[i + d];
-        }
-        m->rc[d] = r;
         abs_sum += fabs((double)taps[d]);
     }
-    const int ry_lags = m->resp_len;
-    for (int lag = 0; lag < lags; lag++) {
-        double sum = 0.0;
-        const int lo = lag - (len - 1);
-        const int hi = lag + (len - 1);
-        for (int k = lo; k <= hi; k++) {
-            const int at = abs(k);
-            if (at < ry_lags) {
-                sum += m->ry_mean[at] * m->rc[abs(lag - k)];
-            }
-        }
-        m->chan[lag] = sum;
+    dsd_squelch_floor_periodic_noise ry;
+    ry.period = 1;
+    ry.lags = m->resp_len;
+    ry.cov = m->ry_mean;
+    dsd_squelch_floor_periodic_noise chan;
+    /* Not reachable (the scratch holds DSD_NOISE_SQUELCH_MAX_TAPS taps, which ssm_floor_args() holds them to): should
+       it happen, the bound is infinite and the plan takes every output phase in full. */
+    if (dsd_squelch_cascade_noise_through_taps(&ry, taps, len, m->rc, m->chan, (size_t)m->cov_lags, &chan) != 0
+        || chan.lags != lags) {
+        return INFINITY;
     }
     return m->chan[0] > 0.0 ? m->cyclo_dev * abs_sum * abs_sum / m->chan[0] : INFINITY;
 }

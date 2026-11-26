@@ -111,8 +111,9 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 /* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan, the
-   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs, and the live I/Q rate
-   step between them (issue #806; zeroed with no step). set is 0 until a plan was designed. */
+   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs (both plans model every
+   stage, issue #899), and the live I/Q rate step between them (issue #806; zeroed with no step). set is 0 until a plan
+   was designed. */
 typedef struct {
     int rate_hz;
     int rate_out;
@@ -344,8 +345,10 @@ struct demod_state {
     dsd_squelch_floor_key squelch_context_applied;
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
     double squelch_floor_active_s;
-    /* What the tracker's plan was designed for. */
+    /* What the tracker's plan was designed for, and how many plans it designed (a count for tests and the bench; a
+       block whose key is the same designs none). */
     dsd_demod_squelch_plan_key squelch_plan;
+    uint64_t squelch_plan_designs;
     dsd_squelch_floor squelch_floor;
     dsd_squelch_floor_cache squelch_cache;
     /* The NFM noise squelch: a NOISE setting on the FM monitor whose channel plan has a band above voice runs it on

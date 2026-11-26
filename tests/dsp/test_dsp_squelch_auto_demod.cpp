@@ -1642,7 +1642,8 @@ pass_change_moves_the_floor(void) {
 }
 
 /* A width change at the same context keeps a known floor, rescaled by the plans' gains, both the cascade's (6 passes
-   to 24 kHz, NFM 12.5k to 20k; issue #899). */
+   to 24 kHz, NFM 12.5k to 20k; issue #899). The plan is designed once for each key: a second of blocks at one key
+   designs it once, the width change once more. */
 int
 width_change_rescales_the_cascade_floor(void) {
     const CascadeChain c = {6, 24000, 12500, DSD_SQUELCH_MODE_AUTO};
@@ -1659,11 +1660,15 @@ width_change_rescales_the_cascade_floor(void) {
     const dsd_squelch_floor_plan want_a =
         cascade_plan(6, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, 24000);
     if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN
-        || !dsd_squelch_floor_plan_equal(&want_a, &s->squelch_floor.plan)) {
-        rc |= fail("NFM 12.5k at 24 kHz: no floor, or not the cascade's plan");
+        || !dsd_squelch_floor_plan_equal(&want_a, &s->squelch_floor.plan) || s->squelch_plan_designs != 1U) {
+        rc |=
+            fail("NFM 12.5k at 24 kHz: no floor, not the cascade's plan, or a block of the same key designed it again");
     }
     s->channel_lpf_width_hz = 20000;
     run_capture(s, &src, &at, 100.0 / 24000.0, NULL, NULL);
+    if (s->squelch_plan_designs != 2U) {
+        rc |= fail("a width change did not design the plan once");
+    }
     const dsd_squelch_floor_plan want = cascade_plan(6, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, 24000);
     if (!want.valid || !dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)
         || s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN

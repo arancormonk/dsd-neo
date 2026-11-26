@@ -280,9 +280,31 @@ sqf_periodic_phase_means(const dsd_squelch_floor_periodic_noise* noise, int lag,
     return 0;
 }
 
-int
-dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
-                                       const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+/* The means over every window start phase for windows of @p window samples, and when @p longer is above 0 that share
+   of the windows one sample longer (the tracker's windows, floor(k fs / 25) boundaries, are fs / 25 samples on average,
+   floor(fs / 25) or one more): N_eff, beta and rho of both lengths weighted by how often each runs. */
+static int
+sqf_periodic_window_means(const dsd_squelch_floor_periodic_noise* noise, int lag, int window, double longer,
+                          dsd_squelch_floor_plan* out) {
+    if (sqf_periodic_phase_means(noise, lag, window, out) != 0) {
+        return -1;
+    }
+    if (longer > 0.0) {
+        dsd_squelch_floor_plan more;
+        if (sqf_periodic_phase_means(noise, lag, window + 1, &more) != 0) {
+            return -1;
+        }
+        out->neff = ((1.0 - longer) * out->neff) + (longer * more.neff);
+        out->beta = ((1.0 - longer) * out->beta) + (longer * more.beta);
+        out->rho_lag = ((1.0 - longer) * out->rho_lag) + (longer * more.rho_lag);
+    }
+    return 0;
+}
+
+/* The periodic design over windows of rate_hz / 25 samples (integer division), @p longer of them one sample longer. */
+static int
+sqf_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                         const dsd_squelch_floor_periodic_noise* noise, int rate_hz, double longer) {
     if (!out) {
         return -1;
     }
@@ -302,7 +324,7 @@ dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float*
     for (int n = 0; n < noise->period; n++) {
         gain += sqf_periodic_cov(noise, n, 0);
     }
-    if (!(gain > 0.0) || sqf_periodic_phase_means(noise, lag, rate_hz / SQF_WINDOWS_PER_S, out) != 0) {
+    if (!(gain > 0.0) || sqf_periodic_window_means(noise, lag, rate_hz / SQF_WINDOWS_PER_S, longer, out) != 0) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }
@@ -312,6 +334,19 @@ dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float*
     out->noise_gain = gain / (double)noise->period;
     out->valid = 1;
     return 0;
+}
+
+int
+dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                       const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+    return sqf_plan_design_periodic(out, taps, taps_len, noise, rate_hz, 0.0);
+}
+
+int
+dsd_squelch_floor_plan_design_periodic_mean(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                            const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+    const double longer = rate_hz > 0 ? (double)(rate_hz % SQF_WINDOWS_PER_S) / (double)SQF_WINDOWS_PER_S : 0.0;
+    return sqf_plan_design_periodic(out, taps, taps_len, noise, rate_hz, longer);
 }
 
 static int
