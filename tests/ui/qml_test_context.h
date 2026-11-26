@@ -3635,7 +3635,7 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     playRecording(const QString& path) {
         noteCall(QStringLiteral("playRecording"), {{QStringLiteral("path"), path}});
-        if (!playAccepted || path.isEmpty()) {
+        if (refusePlay(path) || !playAccepted || path.isEmpty()) {
             return;
         }
         (void)openPlay({QVariantMap{{QStringLiteral("path"), path}}}, dsd_qt::DecoderHost::PlaybackSingle, QString());
@@ -3644,7 +3644,7 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE int
     playRecordingOwned(const QString& path) {
         noteCall(QStringLiteral("playRecordingOwned"), {{QStringLiteral("path"), path}});
-        if (!playAccepted || path.isEmpty()) {
+        if (refusePlay(path) || !playAccepted || path.isEmpty()) {
             return 0;
         }
         return openPlay({QVariantMap{{QStringLiteral("path"), path}}}, dsd_qt::DecoderHost::PlaybackSingle, QString());
@@ -3672,6 +3672,10 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     resumePlayback() {
         noteCall(QStringLiteral("resumePlayback"), {});
+        if (resumeRefused) {
+            refuseResume();
+            return;
+        }
         publishPlayback(value(QStringLiteral("playbackPath")).toString(), 2,
                         value(QStringLiteral("playbackPositionMs")).toLongLong(),
                         value(QStringLiteral("playbackDurationMs")).toLongLong(), QString());
@@ -3720,7 +3724,9 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE void
     resumePlaybackFor(qint64 token) {
         noteCall(QStringLiteral("resumePlaybackFor"), {{QStringLiteral("token"), token}});
-        if (tokenCurrent(token)) {
+        if (tokenCurrent(token) && resumeRefused) {
+            refuseResume();
+        } else if (tokenCurrent(token)) {
             publishPlaybackReading(
                 {{QStringLiteral("playbackState"), 2}, {QStringLiteral("playbackPausedReason"), QString()}});
         }
@@ -4056,6 +4062,28 @@ class ReadingMap : public QQmlPropertyMap {
                single && state >= 1 && state <= 3 ? value(QStringLiteral("playbackPath")).toString() : QString());
     }
 
+    /* A single play refused with a failed reading of its own (generation 0, @p path, refuseWith), as the base host's
+     * missing file and the Android host's refused start publish one; false while refuseWith is empty. */
+    bool
+    refusePlay(const QString& path) {
+        if (refuseWith.isEmpty()) {
+            return false;
+        }
+        const QVariantMap idle = idlePlaybackReadings();
+        for (auto it = idle.cbegin(); it != idle.cend(); ++it) {
+            insert(it.key(), it.value());
+        }
+        publishPlayback(path, 4, 0, 0, refuseWith);
+        return true;
+    }
+
+    /* A resume the platform refused the audio: it stays paused, the same reading published again. */
+    void
+    refuseResume() {
+        publishPlaybackReading({{QStringLiteral("playbackState"), 3},
+                                {QStringLiteral("playbackPausedReason"), QStringLiteral("unavailable")}});
+    }
+
     bool
     tokenCurrent(qint64 token) const {
         return token > 0 && token == value(QStringLiteral("playbackToken")).toLongLong();
@@ -4070,6 +4098,10 @@ class ReadingMap : public QQmlPropertyMap {
     bool seekApplied = true;
     /* Issue #909: false for a host that refuses every play before taking it (0, nothing changes). */
     bool playAccepted = true;
+    /* Issue #909: non-empty, a single play is refused with a failed reading of this error under generation 0. */
+    QString refuseWith;
+    /* Issue #909: true, every resume is refused the audio (paused, "unavailable"). */
+    bool resumeRefused = false;
     /* Issue #909: the last play's generation (each play takes the next one) and items. */
     int lastGeneration = 0;
     QVariantList playedItems;
@@ -6292,6 +6324,8 @@ class Setup : public QObject {
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
         m_host_readings->playAccepted = true;
+        m_host_readings->refuseWith.clear();
+        m_host_readings->resumeRefused = false;
         m_host_readings->playedItems.clear();
         m_host_readings->publishIdlePlayback();
         if (m_history_playlist != nullptr) {
@@ -6343,6 +6377,18 @@ class Setup : public QObject {
     Q_INVOKABLE int
     lastPlaybackGeneration() const {
         return m_host_readings->lastGeneration;
+    }
+
+    /** @brief Issue #909: a single play refused with a failed reading of @p error under generation 0 (empty: none). */
+    Q_INVOKABLE void
+    setPlaybackRefusal(const QString& error) {
+        m_host_readings->refuseWith = error;
+    }
+
+    /** @brief Issue #909: whether every resume is refused the audio (it stays paused, "unavailable"). */
+    Q_INVOKABLE void
+    setResumeRefused(bool refused) {
+        m_host_readings->resumeRefused = refused;
     }
 
     /** @brief Issue #909: whether the decoderHost map takes plays (false: each is refused, answering 0). */

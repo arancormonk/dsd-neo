@@ -61,6 +61,10 @@ Column {
     // The recording a play of this block is being asked for, while the host is
     // asked: a failure it publishes before it answers is this block's.
     property string startingPath: ""
+    // A play of this block the host refused at once with a failed reading of
+    // its own (generation 0, on the path asked for): cleared with the sheet, as
+    // no one owns it, so a "missing" one does not hide the part next time.
+    property string refusedPath: ""
     // The failure last said ("" while none stands), so each is said once.
     property string failureKey: ""
     property string failureNotice: ""
@@ -101,6 +105,10 @@ Column {
     // after it: wanted still, so its button pauses it (that cancels the carry-on).
     readonly property bool interrupted: loaded && decoderHost.playbackInterrupted
     readonly property bool wantsPlay: playState === 1 || playState === 2 || (playState === 3 && interrupted)
+    // A play of someone else's (a playlist) still opening, with no recording
+    // token yet: a pause or resume from here could reach nothing, so none is
+    // offered until it has one.
+    readonly property bool awaitingToken: loaded && playState >= 1 && playState <= 3 && !ownsPlay && Number(decoderHost.playbackToken) <= 0
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
     readonly property real positionMs: seekBar.dragging ? seekBar.dragMs : loaded ? Math.min(decoderHost.playbackPositionMs, durationMs) : 0
     readonly property bool storageAway: part !== null && part.available === false
@@ -213,7 +221,9 @@ Column {
     function noteFailure() {
         var text = failureText();
         var key = text.length === 0 ? "" : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath].join("|");
-        if (key === failureKey)
+        // The same failure again is news only after a press asked once more
+        // (failureKey cleared, its sentence still up).
+        if (key === failureKey && (key.length > 0 || failureNotice.length === 0))
             return;
         var said = failureNotice;
         failureKey = key;
@@ -231,7 +241,7 @@ Column {
     // the token of the recording open when they were pressed: one pressed on a
     // recording that has moved on since does nothing.
     function toggle() {
-        if (!supported || !part || storageAway)
+        if (!supported || !part || storageAway || awaitingToken)
             return;
         var token = decoderHost.playbackToken;
         if (wantsPlay) {
@@ -243,9 +253,11 @@ Column {
             return;
         }
         if (playState === 3) {
-            // A resume refused before is asked again; its sentence stays while it stands.
+            // A resume refused before is asked again; its sentence stays while
+            // it stands, and a refusal read again is said again.
             if (decoderHost.playbackPausedReason !== "unavailable")
                 say("", false);
+            failureKey = "";
             if (token > 0)
                 decoderHost.resumePlaybackFor(token);
             else if (ownsPlay)
@@ -274,6 +286,7 @@ Column {
         var generation = ask();
         startingPath = "";
         ownedGeneration = generation > 0 ? generation : 0;
+        refusedPath = generation <= 0 && refusedReading(path) ? path : "";
         if (generation <= 0 && failureKey === "")
             say(qsTr("Couldn't start playing. Try again."), true);
     }
@@ -339,7 +352,16 @@ Column {
     // The sheet went away: the play this block started stops with it, since
     // nothing else shows it (a playlist it follows plays on). A failed one's
     // reading is cleared, as it is no one's now.
+    function refusedReading(path) {
+        return decoderHost.playbackState === 4 && decoderHost.playbackGeneration === 0 && decoderHost.playbackPath === path;
+    }
     function stopOwnPlayback() {
+        var refused = refusedPath;
+        refusedPath = "";
+        if (refused.length > 0 && refusedReading(refused)) {
+            decoderHost.stopPlayback();
+            return;
+        }
         if (!ownsPlay)
             return;
         if (hostOpen)
@@ -352,6 +374,7 @@ Column {
         currentPath = "";
         picked = false;
         ownedGeneration = 0;
+        refusedPath = "";
         failureKey = "";
         failureNotice = "";
         missingAway = "";
@@ -585,7 +608,7 @@ Column {
             visible: player.supported
             featured: player.wantsPlay
             showPause: player.wantsPlay
-            enabled: !player.storageAway
+            enabled: !player.storageAway && !player.awaitingToken
             accessibleName: player.wantsPlay ? qsTr("Pause recording") : player.playState === 3 ? qsTr("Resume recording") : qsTr("Play recording")
             onClicked: player.toggle()
         }
@@ -675,10 +698,14 @@ Column {
                     }
                     // A seek carries the token of the recording open when its gesture
                     // began (@p token): one that has moved on since drops it.
+                    // Only a seek the host takes (its token still the one open) is
+                    // waited for as a landing.
                     function seekTo(ms, token) {
                         if (seekable && Navigation.allows(seekBar)) {
-                            player.seekTargetMs = Math.max(0, Math.min(player.durationMs, ms));
-                            decoderHost.seekPlaybackFor(token, player.seekTargetMs);
+                            var target = Math.max(0, Math.min(player.durationMs, ms));
+                            if (token > 0 && token === decoderHost.playbackToken)
+                                player.seekTargetMs = target;
+                            decoderHost.seekPlaybackFor(token, target);
                         }
                     }
                     // A step a screen reader sends a covered or hidden slider it still

@@ -1075,7 +1075,15 @@ Item {
             verify(item("recordingSeekBar").enabled);
             testContext.publishPlaybackReading({item: 1, playbackToken: 8, playbackPositionMs: 0, playbackDurationMs: 4000});
             compare(checkedParts(3), [2], "and on to the next");
+            // Moved off it (not by a chip, which would end following), a position tick leaves it there; the next
+            // item brings it back.
+            item("historyRecording").select(1);
             testContext.publishPlaybackReading({playbackPositionMs: 1000});
+            testContext.publishPlaybackReading({playbackPositionMs: 1500, playbackDurationMs: 4000});
+            compare(checkedParts(3), [1], "never on a position tick");
+            testContext.publishPlaybackReading({item: 0, playbackToken: 9});
+            compare(checkedParts(3), [1], "an item change follows");
+            testContext.publishPlaybackReading({item: 1, playbackToken: 10});
             compare(checkedParts(3), [2]);
             sheet().visible = false;
             compare(stopCalls(), 0, "closing a sheet that follows a playlist stops nothing");
@@ -1427,6 +1435,8 @@ Item {
             press("historyPlayFromHere");
             verify(sheet().visible, "the sheet stays");
             compare(item("recordingNotice").text, data.text);
+            waitForRendering(sheet());
+            verify(item("recordingNotice").mapToItem(sheet(), 0, 0).y < item("historyPlayFromHere").mapToItem(sheet(), 0, 0).y, "the reason right under the recording, above the button");
             compare(player.announcements, said + 1, "read out");
             compare(decoderHost.playbackGeneration, own, "what played plays on");
             compare(stopCalls(), 0);
@@ -1440,6 +1450,100 @@ Item {
             press("historyPlayFromHere");
             verify(sheet().visible);
             compare(item("recordingNotice").text, "Couldn't start playing. Try again.");
+        }
+
+        // A seek the host drops (its token not the one open) leaves no landing to wait for; one it takes does.
+        function test_dropped_seek_waits_for_no_landing() {
+            openWith([rec("t-1", pathA, 60000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 60000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            var bar = item("recordingSeekBar");
+            testContext.setSeekApplied(false);
+            bar.seekTo(30000, 4);
+            compare(lastHostCall().token, 4);
+            compare(player.seekTargetMs, -1, "a stale token: nothing to wait for");
+            bar.seekTo(30000, 5);
+            compare(player.seekTargetMs, 30000, "the open one's: waited for");
+            testContext.setSeekApplied(true);
+        }
+
+        // A playlist's part still opening, with no token yet: the sheet offers no pause or resume that would reach
+        // nothing, until the part has one.
+        function test_no_control_before_the_token() {
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([b]);
+            playPlaylist([itemOf(b, 0, 1, 1, uid)]);
+            openRow(uid);
+            verify(item("historyRecording").loaded);
+            verify(!item("recordingPlayButton").enabled, "opening, no token");
+            item("historyRecording").toggle();
+            compare(hostCallsNamed("pausePlaybackFor").length + hostCallsNamed("pausePlayback").length, 0);
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 3});
+            verify(item("recordingPlayButton").enabled);
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "pausePlaybackFor");
+        }
+
+        // A sheet's own start the host refused with a failed reading (generation 0) is cleared at the close, so a
+        // recording found missing shows again when the sheet opens next (until the store drops it).
+        function test_refused_start_cleared_at_close_data() {
+            return [{tag: "missing", error: "missing"}, {tag: "failed", error: "failed"}];
+        }
+        function test_refused_start_cleared_at_close(data) {
+            var uid = openWith([rec("t-1", pathA, 12000)]);
+            testContext.setPlaybackRefusal(data.error);
+            tap("recordingPlayButton");
+            compare(decoderHost.playbackState, 4);
+            compare(decoderHost.playbackGeneration, 0);
+            verify(item("recordingNotice").visible, "said");
+            testContext.setPlaybackRefusal("");
+            var stops = hostCallsNamed("stopPlayback").length;
+            sheet().visible = false;
+            compare(hostCallsNamed("stopPlayback").length, stops + 1, "its reading is cleared");
+            compare(decoderHost.playbackState, 0);
+            openRow(uid);
+            verify(item("historyRecording").visible, "the part shows again");
+            // Another play's reading at the close is not this sheet's to clear.
+            testContext.setPlaybackRefusal(data.error);
+            tap("recordingPlayButton");
+            testContext.setPlaybackRefusal("");
+            playPlaylist([itemOf(rec("t-9", pathC, 4000), 0, 1, 1, 0)]);
+            stops = stopCalls();
+            sheet().visible = false;
+            compare(stopCalls(), stops, "a playlist that replaced it plays on");
+        }
+
+        // A failure standing when the sheet opens (a resume refused) is said, and read out, as it opens.
+        function test_standing_failure_said_on_open() {
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([b]);
+            playPlaylist([itemOf(b, 0, 1, 1, uid)]);
+            testContext.publishPlaybackReading({playbackState: 3, playbackToken: 4, playbackPausedReason: "unavailable"});
+            var said = item("historyRecording").announcements;
+            openRow(uid);
+            compare(item("recordingNotice").text, "Can't play right now. Another app has the audio, such as a phone call.");
+            compare(item("historyRecording").announcements, said + 1);
+        }
+
+        // Asked again and refused again with the same reading, the refusal is said again.
+        function test_repeated_refusal_said_again() {
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([b]);
+            playPlaylist([itemOf(b, 0, 1, 1, uid)]);
+            testContext.publishPlaybackReading({playbackState: 3, playbackToken: 4, playbackPausedReason: "user", playbackDurationMs: 8000});
+            openRow(uid);
+            testContext.setResumeRefused(true);
+            var player = item("historyRecording");
+            var said = player.announcements;
+            tap("recordingPlayButton");
+            compare(player.announcements, said + 1, "refused");
+            testContext.publishPlaybackReading({playbackPositionMs: 0});
+            compare(player.announcements, said + 1, "a tick says nothing");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "resumePlaybackFor");
+            compare(player.announcements, said + 2, "refused again: said again");
+            compare(item("recordingNotice").text, "Can't play right now. Another app has the audio, such as a phone call.");
         }
     }
 }

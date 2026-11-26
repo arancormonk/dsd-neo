@@ -81,6 +81,8 @@ ModalSheet {
         recordingsRevision++;
         visible = true;
         recordingPlayer.follow();
+        // What stands for the part shown now (a resume refused) is said as it opens.
+        recordingPlayer.noteFailure();
     }
     // The calls History shows, from this one: closed once the host took them
     // (the bar under the list shows them from then on); a press refused says
@@ -173,18 +175,9 @@ ModalSheet {
         noticeLine: recordingNotice
         title: sheet.record.when > 0 ? Util.fill(qsTr("%1 · %2"), [sheet.record.name || "", Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")]) : (sheet.record.name || "")
     }
-    OutlineButton {
-        id: playFromHereButton
-        objectName: "historyPlayFromHere"
-        width: parent.width
-        visible: sheet.showPlayFromHere && decoderHost.playbackSupported && sheet.rowPlayable && sheet.rowShown
-        text: qsTr("Play from here")
-        Accessible.description: !navigationAllowed || !visible ? "" : qsTr("Plays this call, then each newer call History shows")
-        onClicked: sheet.playFromHere()
-    }
     // What the recording's last action came to, and why Play from here could
-    // not start: under the recording, and shown when the recording has gone
-    // too (B3).
+    // not start: right under the recording, and shown when the recording has
+    // gone too (B3).
     ReadableText {
         id: recordingNotice
         objectName: "recordingNotice"
@@ -198,6 +191,15 @@ ModalSheet {
         font.pixelSize: Theme.fontSize(13)
         color: recordingPlayer.noticeProblem ? Theme.alert : Theme.textSecondary
         Accessible.role: !reachable ? Accessible.Pane : (recordingPlayer.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
+    }
+    OutlineButton {
+        id: playFromHereButton
+        objectName: "historyPlayFromHere"
+        width: parent.width
+        visible: sheet.showPlayFromHere && decoderHost.playbackSupported && sheet.rowPlayable && sheet.rowShown
+        text: qsTr("Play from here")
+        Accessible.description: !navigationAllowed || !visible ? "" : qsTr("Plays this call, then each newer call History shows")
+        onClicked: sheet.playFromHere()
     }
     OutlineButton {
         id: holdButton
