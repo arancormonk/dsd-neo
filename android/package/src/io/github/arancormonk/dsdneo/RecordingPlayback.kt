@@ -74,6 +74,9 @@ object RecordingPlayback {
     private var wakeLock: PowerManager.WakeLock? = null
     private var noisyRegistered = false
 
+    /** The play whose noisy receiver could not be registered: not tried again (nor logged again) until the next. */
+    private var noisyRefusedFor = 0
+
     internal val attributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -274,6 +277,11 @@ object RecordingPlayback {
 
     // ---- inside
 
+    /**
+     * Accept a play and start what it needs. Plays arrive from one thread, the host's (Qt) thread, so no other play is
+     * accepted between a playlist's ISSUE and its startForegroundService(); only the teardown can come in between,
+     * which the phases order.
+     */
     private fun begin(context: Context, mode: Int, play: (RecordingPlayer, Int) -> Unit): Int {
         val app = context.applicationContext
         application = app
@@ -296,8 +304,9 @@ object RecordingPlayback {
             }
         }
         if (issue && !issueStart(app, generation)) {
-            phases.startFailed(generation)
-            post { it.onPromotionRefused(generation) }
+            for (refused in phases.startFailed(generation)) {
+                post { it.onPromotionRefused(refused) }
+            }
         }
         return generation
     }
@@ -346,13 +355,13 @@ object RecordingPlayback {
     private fun sync(machine: RecordingPlayer) {
         val status = machine.status
         val open = status.allows(RecordingPlayer.ACTION_STOP)
-        listenForNoisy(open)
+        listenForNoisy(open, status.generation)
         keepAwake(open && status.mode == RecordingPlayer.MODE_PLAYLIST && status.allows(RecordingPlayer.ACTION_PAUSE))
     }
 
-    private fun listenForNoisy(listen: Boolean) {
+    private fun listenForNoisy(listen: Boolean, generation: Int) {
         val context = application ?: return
-        if (listen == noisyRegistered) {
+        if (listen == noisyRegistered || (listen && generation == noisyRefusedFor)) {
             return
         }
         try {
@@ -365,7 +374,13 @@ object RecordingPlayback {
             }
             noisyRegistered = listen
         } catch (e: RuntimeException) {
-            Log.w(TAG, "could not ${if (listen) "register" else "unregister"} the headphones receiver", e)
+            if (listen) {
+                noisyRefusedFor = generation
+                Log.w(TAG, "could not register the headphones receiver; this play will not pause on unplugging", e)
+            } else {
+                noisyRegistered = false // gone anyway: never try to unregister it again
+                Log.w(TAG, "could not unregister the headphones receiver", e)
+            }
         }
     }
 
@@ -407,6 +422,7 @@ object RecordingPlayback {
         override fun ended(generation: Int, reason: String) {
             main.post {
                 phases.ended(generation)
+                service?.ended(generation)
                 service?.retireCheck()
             }
         }

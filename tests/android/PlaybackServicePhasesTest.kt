@@ -45,7 +45,7 @@ private class ServiceRig {
         if (generation != 0 && starts.last() == Start.ISSUE && refuseNextStart) {
             refuseNextStart = false
             inFlight.removeLast()
-            phases.startFailed(generation)
+            refused += phases.startFailed(generation).toList()
         }
     }
 
@@ -389,13 +389,42 @@ fun aRefusedStartSettlesItsOwnRequest() {
     check(a > 0 && rig.phases.currentPhase == Phase.NONE && rig.phases.currentRequest == 0) {
         "the generation stands and nothing is outstanding"
     }
+    check(rig.refused == listOf(a)) { "A is told it could not start" }
     val b = rig.play()
     check(b > a && rig.starts.last() == Start.ISSUE) { "the next playlist issues its own start" }
 
     // startForeground() refused on delivery (API 31+): its request is told, and the instance retires.
     rig.deliverStart(allowed = false)
-    check(rig.refused == listOf(b) && rig.promoted.isEmpty() && rig.phases.currentOwner == 0) { "B is refused" }
+    check(rig.refused == listOf(a, b) && rig.promoted.isEmpty() && rig.phases.currentOwner == 0) { "B is refused" }
     check(rig.retired) { "and the instance retires" }
+}
+
+fun aRefusedStartSettlesWhateverWaitedForIt() {
+    // Plays come from one thread, so none joins between an ISSUE and its refusal; the phases settle one anyway.
+    val phases = PlaybackServicePhases(TOKEN)
+    val a = phases.accept(true) { _, _ -> }
+    val b = phases.accept(true) { _, start -> check(start == Start.JOIN) }
+    check(phases.startFailed(a).toList() == listOf(a, b)) { "both A and the request that joined its start are told" }
+    check(phases.currentRequest == 0 && phases.currentPhase == Phase.NONE) { "nothing waits on a start that never ran" }
+    check(phases.startFailed(a).toList() == listOf(a)) { "a repeated refusal settles nothing more" }
+    val c = phases.accept(true) { _, start -> check(start == Start.ISSUE) { "the next playlist issues: $start" } }
+    check(phases.currentRequest == c)
+}
+
+fun aNewInstanceEndsTheRetiringPhase() {
+    // The retired instance's destroy is reported only after the next instance was created.
+    val rig = ServiceRig()
+    val a = rig.play()
+    rig.deliverStart()
+    rig.ended(a)
+    check(rig.retired && rig.phases.currentPhase == Phase.RETIRING)
+    val old = rig.instance
+    val fresh = rig.phases.created()
+    check(rig.phases.currentPhase == Phase.NONE) { "a new instance means the old one is gone" }
+    check(rig.phases.destroyed(old) == 0 && rig.phases.currentPhase == Phase.NONE) { "its late destroy is a no-op" }
+    rig.instance = fresh
+    rig.play()
+    check(rig.starts.last() == Start.ISSUE) { "the next playlist issues a start, never waits on a phase left stuck" }
 }
 
 fun theTaskRemovedEndsWhatTheServiceServesOrWaitsFor() {
@@ -456,6 +485,8 @@ fun main() {
     releaseStopsAPromotedServiceAndLeavesAnIssuedStart()
     aRefusedStartSettlesItsOwnRequest()
     theTaskRemovedEndsWhatTheServiceServesOrWaitsFor()
+    aRefusedStartSettlesWhateverWaitedForIt()
+    aNewInstanceEndsTheRetiringPhase()
     thePlayersEndsDriveTheServiceOrder()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

@@ -120,6 +120,16 @@ class RecordingPlaybackService : Service() {
         }
     }
 
+    /**
+     * Playlist [generation] ended, before the retire check: the session it was last published for goes inactive, so it
+     * no longer takes media keys while the instance waits to retire or for the next owner. Main thread.
+     */
+    internal fun ended(generation: Int) {
+        if (generation != 0 && generation == publishedFor && session.isActive) {
+            session.isActive = false
+        }
+    }
+
     /** Show [status] on the session and the notification, if its playlist still owns the service. Main thread. */
     internal fun render(status: RecordingPlayer.Status) {
         if (!RecordingPlayback.isOwner(status.generation)) {
@@ -142,7 +152,8 @@ class RecordingPlaybackService : Service() {
             )
         }
         session.setPlaybackState(playbackState(status))
-        if (!session.isActive) {
+        if (!session.isActive && status.allows(RecordingPlayer.ACTION_STOP)) {
+            // A playlist open takes the instance (again): media keys and transport controls reach it.
             session.isActive = true
         }
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
@@ -227,7 +238,6 @@ class RecordingPlaybackService : Service() {
             .setOnlyAlertOnce(true)
             .setShowWhen(false)
             .setCategory(Notification.CATEGORY_TRANSPORT)
-            .setVisibility(Notification.VISIBILITY_PUBLIC)
         openPendingIntent?.let { builder.setContentIntent(it) }
         if (status == null) {
             return builder.setStyle(style)

@@ -116,20 +116,31 @@ class PlaybackServicePhases(private val processToken: Long) {
         generation
     }
 
-    /** The start issued for [generation] was refused as it was asked for: nothing is outstanding. */
-    fun startFailed(generation: Int) = synchronized(lock) {
-        if (phase == Phase.ISSUED && issuedFor == generation) {
-            phase = Phase.NONE
-            issuedFor = 0
-            if (reserved == generation) {
-                reserved = 0
-            }
+    /**
+     * The start issued for [generation] was refused as it was asked for: nothing is outstanding, and whatever request
+     * waited for that start is settled with it. The plays to tell they could not start: [generation] and the request
+     * that waited, if another (each once, none 0).
+     */
+    fun startFailed(generation: Int): IntArray = synchronized(lock) {
+        if (phase != Phase.ISSUED || issuedFor != generation) {
+            return intArrayOf(generation)
         }
+        phase = Phase.NONE
+        issuedFor = 0
+        val waited = reserved
+        reserved = 0
+        if (waited == 0 || waited == generation) intArrayOf(generation) else intArrayOf(generation, waited)
     }
 
-    /** A service instance was created: its serial, which its later calls name. */
+    /**
+     * A service instance was created: its serial, which its later calls name. The instance before it is gone, so a
+     * retiring phase ends here, even when that instance's destroy is reported late.
+     */
     fun created(): Int = synchronized(lock) {
         alive = ++instances
+        if (phase == Phase.RETIRING) {
+            phase = Phase.NONE
+        }
         alive
     }
 
