@@ -5,8 +5,9 @@
  *
  * Pinned: every block the demod takes is exactly one block of dsd_iq_live_block_samples() under a backlog, across the
  * ring's wrap, with the reader's resampler (whose plan the demodulator's squelches model, issue #899) and after a gap;
- * a ring the demod leaves full drops whole blocks with a gap mark only; a TCP reconnect, a UDP sender's re-lock and a resume after a stall run the stream boundary (the
- * discontinuity count and the output generation move, the resampler starts over, the demod resets with StreamGap);
+ * a ring the demod leaves full drops whole blocks with a gap mark only; a TCP reconnect, a UDP sender's re-lock and a
+ * resume after a stall run the stream boundary (the discontinuity count and the output generation move, the resampler
+ * starts over, the demod resets with StreamGap);
  * the stream has no stream while it reconnects or stalls, so a read waiting for samples gives way to a queued command,
  * and has one again once the first block after the boundary is written; stops are prompt in a silent read, a backoff
  * and a reconnect that hangs; every tuner setter refuses (an unchanged PPM too) and a tune fails; the samples are

@@ -1019,8 +1019,8 @@ typedef struct {
     int step_l;
     int step_m;
     int squelch_step_model; /* the squelches' noise model is the running step's (dsd_demod_squelch_step_model_sync()) */
-    /* The reader's resampler ahead of the cascade (demod_state::iq_reader, issue #899): on, its plan, and the squelches'
-       noise model built for it (dsd_demod_squelch_reader_model_sync()). Never on with the step. */
+    /* The reader's resampler ahead of the cascade (demod_state::iq_reader, issue #899): on, its plan, and the
+       squelches' noise model built for it (dsd_demod_squelch_reader_model_sync()). Never on with the step. */
     int reader_enabled;
     int reader_in_hz;
     int reader_out_hz;

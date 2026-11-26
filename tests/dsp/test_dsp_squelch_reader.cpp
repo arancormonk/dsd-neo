@@ -863,8 +863,8 @@ run_piece(demod_state* s, const ReaderChain& c, uint64_t seed) {
     run_source(s, rd, &src, c.source_hz, &at, 0.01, NULL, NULL);
 }
 
-/* The floor plans are kept by plan key (issue #899), as the noise squelch's are: a channel alternating NFM widths behind
-   a reader designs each width once; another reader identity or pass count is another key and designs; the last
+/* The floor plans are kept by plan key (issue #899), as the noise squelch's are: a channel alternating NFM widths
+   behind a reader designs each width once; another reader identity or pass count is another key and designs; the last
    DSD_DEMOD_FLOOR_PLAN_CACHE plans stay, the one taken longest ago giving way. */
 void
 test_floor_plans_kept_by_key(void) {

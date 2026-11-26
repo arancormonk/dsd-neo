@@ -2171,8 +2171,8 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
         return 0;
     }
     /* A new model, or none after a failed build: the plans taken under this key (from no model, or another one) are
-       taken again at the next block. The floor plan is designed again; the noise plan is designed again, or taken from
-       the kept plans, which hold only valid plans designed from the model their key's step names. */
+       taken again at the next block: each is designed again, or taken from its kept plans, which hold only valid plans
+       designed from the model their key's step names, taken only while that model is the one built. */
     d->squelch_plan.set = 0;
     d->noise_plan.set = 0;
     dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];

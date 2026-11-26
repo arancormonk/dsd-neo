@@ -139,9 +139,9 @@ typedef struct {
     uint64_t used;
 } dsd_demod_noise_plan_entry;
 
-/* Floor plans kept for the channel plans run last (issue #899): behind a reader with thousands of output phases a design
-   takes tens of milliseconds on the demod thread (8,046 Hz read into 72 kHz: about 41 ms), so a channel alternating
-   NFM widths designs each one once. Bounded like the noise squelch's. */
+/* Floor plans kept for the channel plans run last (issue #899): behind a reader with thousands of output phases a
+   design takes tens of milliseconds on the demod thread (8,046 Hz read into 72 kHz: about 41 ms), so a channel
+   alternating NFM widths designs each one once. Bounded like the noise squelch's. */
 enum { DSD_DEMOD_FLOOR_PLAN_CACHE = 4 };
 
 /* One kept floor plan: what it was designed for, and when it was last taken (0: empty). */

@@ -10284,7 +10284,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   input phase (M of them, spaced coprime to M, each checked to lie in its window); and from them the step's output
   covariance averaged over its period with the largest distance of any output phase's from it. It runs in the rate
   chain's transaction (`dsd_demod_squelch_step_model_sync()`, `demod_state::squelch_step_model`, released by
-  `rtl_demod_cleanup()`), does nothing for the plan it holds, and has the plans of a new model designed again. The plans
+  `rtl_demod_cleanup()`), does nothing for the plan it holds, and has the plans of a new model taken again (designed,
+  or from the kept floor and noise plans for their key, which an equal model would design the same). The plans
   then come from it on the demod thread when a squelch plan key changes, allocating nothing.
   `dsd_squelch_step_model_floor_plan()` gives `dsd_squelch_floor_plan_design_periodic()` the covariance behind the
   channel taps averaged over the period, exact because the taps are time-invariant (the taps' autocorrelation convolved
