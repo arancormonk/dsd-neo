@@ -1855,6 +1855,78 @@ test_config_line_too_long_validation(void) {
     return rc;
 }
 
+/* Issue #931 (gate r2): --validate-config reads lines by the loader's rule. A line holding a NUL is one error that
+ * quotes none of it, and so is an oversized line in an included file, reported against that file
+ * (child.ini:1, never the root's include line). */
+int
+test_config_line_invalid_validation(void) {
+    int rc = 0;
+    std::string nul_ini = "[recording]\nrdio_api_key = \"PRIVATE";
+    nul_ini.push_back('\0');
+    nul_ini += "SUFFIX=value\"\nno_such_key = 1\n";
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_config_val_nul");
+    if (fd < 0) {
+        return 1;
+    }
+    const ssize_t wr = dsd_write(fd, nul_ini.data(), nul_ini.size());
+    (void)dsd_close(fd);
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    if (wr < 0 || (size_t)wr != nul_ini.size()) {
+        (void)remove(path);
+        return 1;
+    }
+    (void)dsd_user_config_validate(path, &diags);
+    int nul_error = 0;
+    bool leaked = false;
+    for (int i = 0; i < diags.count; i++) {
+        leaked = leaked || strstr(diags.items[i].message, "PRIVATE") || strstr(diags.items[i].key, "PRIVATE")
+                 || strstr(diags.items[i].message, "SUFFIX") || strstr(diags.items[i].key, "SUFFIX");
+        nul_error += diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 2
+                     && strstr(diags.items[i].message, "NUL byte") != nullptr;
+    }
+    if (leaked || nul_error != 1) {
+        DSD_FPRINTF(stderr, "FAIL: a line with a NUL: leaked=%d errors=%d\n", leaked ? 1 : 0, nul_error);
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    /* An oversized first line of an included file is that file's line 1. */
+    char child[DSD_TEST_PATH_MAX];
+    const std::string child_ini = std::string("rdio_api_key = \"") + std::string(9000U, 'q') + "\"\n";
+    if (write_temp_config(child_ini.c_str(), child, sizeof child) != 0) {
+        return 1;
+    }
+    char root_ini[DSD_TEST_PATH_MAX + 32];
+    DSD_SNPRINTF(root_ini, sizeof root_ini, "include = \"%s\"\n", child);
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config(root_ini, root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(root, &diags);
+    int attributed = 0;
+    for (int i = 0; i < diags.count; i++) {
+        attributed += diags.items[i].line_number == 1 && strstr(diags.items[i].message, "longer than 8191") != nullptr
+                      && strstr(diags.items[i].source_path, path_basename(child)) != nullptr;
+    }
+    if (attributed != 1) {
+        DSD_FPRINTF(stderr, "FAIL: an included file's oversized line is not reported against it\n");
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s:%d %.80s\n", diags.items[i].source_path, diags.items[i].line_number,
+                        diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(root);
+    (void)remove(child);
+    return rc;
+}
+
 /* Issue #931 (B11): an rdio_api_url or rdio_api_key the loader refuses as too long is an error that never quotes the
  * value; the largest value that fits is none. */
 int
@@ -2666,6 +2738,7 @@ main(void) {
     rc |= test_rdio_system_by_frequency_validation();
     rc |= test_rdio_credential_length_validation();
     rc |= test_config_line_too_long_validation();
+    rc |= test_config_line_invalid_validation();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

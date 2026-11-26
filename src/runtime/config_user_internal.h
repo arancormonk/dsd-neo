@@ -25,10 +25,11 @@ int user_config_parse_bool_value(const char* val, int* out_value);
 int user_config_parse_int_value(const char* val, int* out_value);
 int user_config_parse_double_value(const char* val, double* out_value);
 char* user_config_trim_ascii_whitespace(char* text);
-/* One physical line of an INI stream into @p line (newline kept): 1 while there is one, 0 at the end. A line that does
-   not fit @p line_size is read to its end and dropped whole, @p line left empty and *@p oversized (when given) set, so
-   no part of it, a credential's tail included, is read as a setting or quoted (issue #931). */
-int user_config_read_line(FILE* stream, char* line, size_t line_size, int* oversized);
+/* One physical line of an INI stream into @p line, without its LF or CRLF: 1 while there is one, 0 at the end. Every
+   INI reader reads through it, so all read one rule (issue #931): bytes are counted as read, and a line of more than
+   @p line_size - 1 bytes or holding a NUL is consumed to its end and is one invalid line, @p line left empty and
+   *@p invalid_out (when given) set, never read as a setting or quoted. */
+int user_config_read_line(FILE* stream, char* line, size_t line_size, int* invalid_out);
 void user_config_lowercase_ascii(char* text);
 void user_config_strip_wrapping_quotes(char* val);
 size_t user_config_path_capacity(const char* section, const char* key);

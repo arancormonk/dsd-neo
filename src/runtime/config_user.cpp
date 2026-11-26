@@ -134,32 +134,48 @@ user_config_parse_double_value(const char* val, double* out_value) {
     return 0;
 }
 
+/* One byte of a physical line into @p line: past @p line_size - 1 bytes, or a NUL, the line turns invalid and keeps
+   nothing more. */
+static void
+read_line_put(char* line, size_t line_size, size_t* used, int c, int* invalid) {
+    if (*invalid || c == '\0' || *used + 1U >= line_size) {
+        *invalid = 1;
+        return;
+    }
+    line[(*used)++] = (char)c;
+}
+
 int
-user_config_read_line(FILE* stream, char* line, size_t line_size, int* oversized) {
-    if (oversized) {
-        *oversized = 0;
+user_config_read_line(FILE* stream, char* line, size_t line_size, int* invalid_out) {
+    if (invalid_out) {
+        *invalid_out = 0;
     }
-    if (!stream || !line || line_size < 2U || line_size > (size_t)INT_MAX) {
+    if (!stream || !line || line_size < 2U) {
         return 0;
     }
-    if (!fgets(line, (int)line_size, stream)) {
+    int c = getc(stream);
+    if (c == EOF) {
+        line[0] = '\0';
         return 0;
     }
-    const size_t len = strlen(line);
-    if (len + 1U < line_size || line[len - 1U] == '\n') {
-        return 1;
-    }
-    /* The buffer is full without a newline: the line ends here only if the stream does or a newline follows. */
-    int c = fgetc(stream);
-    if (c == EOF || c == '\n') {
-        return 1;
-    }
+    size_t used = 0U;
+    int invalid = 0;
     while (c != EOF && c != '\n') {
-        c = fgetc(stream);
+        if (c == '\r') {
+            const int next = getc(stream);
+            if (next == '\n') {
+                break; /* CRLF ends the line as LF does: the CR is no content byte */
+            }
+            read_line_put(line, line_size, &used, c, &invalid);
+            c = next;
+            continue;
+        }
+        read_line_put(line, line_size, &used, c, &invalid);
+        c = getc(stream);
     }
-    line[0] = '\0';
-    if (oversized) {
-        *oversized = 1;
+    line[invalid ? 0U : used] = '\0';
+    if (invalid_out) {
+        *invalid_out = invalid;
     }
     return 1;
 }

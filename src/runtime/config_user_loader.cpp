@@ -1237,10 +1237,10 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     char current_section[64];
     current_section[0] = '\0';
 
-    int oversized = 0;
-    while (user_config_read_line(fp, line, sizeof line, &oversized)) {
-        if (oversized) {
-            LOG_WARN("Config: ignored a line longer than %zu bytes, whole\n", sizeof line - 1U);
+    int invalid = 0;
+    while (user_config_read_line(fp, line, sizeof line, &invalid)) {
+        if (invalid) {
+            LOG_WARN("Config: ignored a line longer than %zu bytes or holding a NUL byte, whole\n", sizeof line - 1U);
             continue;
         }
         user_config_trim_ascii_whitespace(line);

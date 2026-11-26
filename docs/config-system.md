@@ -40,8 +40,10 @@ We use a minimal INI-style format:
 - Key-value pairs: `key = value`
 - Comments: lines starting with `#` or `;`, plus quote-aware inline comments
   introduced by either character.
-- Lines: at most 8191 bytes each. A longer line is ignored whole, with a warning
-  that quotes none of it; `--validate-config` reports it as an error.
+- Lines: at most 8191 bytes each, not counting the line ending (LF or CRLF, read
+  alike). A longer line, or one holding a NUL byte, is ignored whole, with a
+  warning that quotes none of it; `--validate-config` reports it as an error
+  against the file it is in, an included one too.
 - Values:
   - Strings (unquoted or double-quoted).
   - Integers (parsed with `strtol`).

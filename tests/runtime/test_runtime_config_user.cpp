@@ -5820,6 +5820,61 @@ test_config_line_too_long_dropped_whole(void) {
     return rc;
 }
 
+/* @p ini (any bytes, NULs included) written to a temporary config and loaded. */
+static int
+load_config_bytes(const std::string& ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_config_user_bytes");
+    if (fd < 0) {
+        return 1;
+    }
+    const ssize_t wr = dsd_write(fd, ini.data(), ini.size());
+    (void)dsd_close(fd);
+    const int load_rc = (wr >= 0 && (size_t)wr == ini.size()) ? dsd_user_config_load(path, cfg) : 1;
+    (void)remove(path);
+    return load_rc;
+}
+
+/* Issue #931 (gate r2): the reader counts the bytes it reads. A line holding a NUL is one invalid line, consumed whole:
+   neither the part before the NUL nor, in an oversized line, the bytes past the buffer are read as a setting, and the
+   warning quotes none of it. A line of exactly 8191 bytes loads the same with LF and with CRLF after it. */
+static int
+test_config_line_nul_and_crlf(void) {
+    int rc = 0;
+    const std::string base = "[recording]\nrdio_system_id = 7\nrdio_api_key = \"kept\"\n";
+    std::string nul_long = "rdio_api_key = \"SECRETMARK";
+    nul_long.push_back('\0');
+    nul_long += std::string(9000U, 'k') + "rdio_system_id=91\n";
+    std::string nul_short = "rdio_system_id = 5";
+    nul_short.push_back('\0');
+    nul_short += "SECRETMARK\n";
+    for (const std::string& bad : {nul_long, nul_short}) {
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_bytes(base + bad + "rdio_mode = \"api\"\n", &cfg) != 0 || cfg.rdio_system_id != 7
+            || strcmp(cfg.rdio_api_key, "kept") != 0 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || strstr(g_log_text, "NUL byte") == nullptr || strstr(g_log_text, "SECRETMARK") != nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: a line with a NUL (%zu bytes): system=%d key=%.16s mode=%d (log: '%.200s')\n",
+                        bad.size(), cfg.rdio_system_id, cfg.rdio_api_key, cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+    }
+    std::string max_line = "rdio_system_id = 9 #";
+    max_line += std::string(8191U - max_line.size(), 'c');
+    for (const char* eol : {"\n", "\r\n"}) {
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        const std::string ini = std::string("[recording]") + eol + max_line + eol + "rdio_mode = \"api\"" + eol;
+        if (load_config_bytes(ini, &cfg) != 0 || cfg.rdio_system_id != 9 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || g_log_text[0] != '\0') {
+            DSD_FPRINTF(stderr, "FAIL: an 8191-byte line ending %s: system=%d mode=%d (log: '%.200s')\n",
+                        eol[0] == '\r' ? "CRLF" : "LF", cfg.rdio_system_id, cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 /* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
    fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
    stays, instead of a value cut to another endpoint or key. */
@@ -7534,6 +7589,7 @@ main(void) {
     rc |= test_recording_rdio_mode_refused();
     rc |= test_recording_rdio_credentials_too_long();
     rc |= test_config_line_too_long_dropped_whole();
+    rc |= test_config_line_nul_and_crlf();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();

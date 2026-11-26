@@ -1284,15 +1284,19 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
     scan.scan_includes = 1;
     int line_num = 0;
 
-    int oversized = 0;
-    while (user_config_read_line(stream, line, sizeof line, &oversized)) {
+    int invalid = 0;
+    while (user_config_read_line(stream, line, sizeof line, &invalid)) {
         line_num++;
-        if (oversized) {
-            /* Never quoted, nor any part of it read as a key: it can be a credential (issue #931). */
+        if (invalid) {
+            /* Never quoted, nor any part of it read as a key: it can be a credential (issue #931). Reported against
+               the file it is in, an included one too. */
             char msg[128];
-            DSD_SNPRINTF(msg, sizeof msg, "Line is longer than %zu bytes; the loader ignores it whole",
+            DSD_SNPRINTF(msg, sizeof msg,
+                         "Line is longer than %zu bytes or holds a NUL byte; the loader ignores it whole",
                          sizeof line - 1U);
+            const int first_diag = diags->count;
             dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, "", "", msg);
+            set_scan_diagnostic_sources(&scan, diags, first_diag);
             continue;
         }
         validate_config_stream_line(line, line_num, &scan, diags);
