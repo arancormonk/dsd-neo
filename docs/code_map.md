@@ -20156,8 +20156,9 @@ Qt Quick frontend (`src/ui/qt`):
       px), it scrolls the row's controls whole into view when its height changes and nothing in it has the focus
       (`alignTopRow()`), so Map and Play all show whole and Search, the filters, Export and Clear are reached by
       scrolling (a field taller than the room shows in part, and focusing it raises the keyboard, which hides the
-      bar). Where the bar leaves under 48 px, no control row fits whole. The floor applies only while the bar takes
-      room (`barHeight > 0`): with no bar the list keeps main's 40% share (`listMinHeight`), however tall the header.
+      bar). Where the bar leaves under 48 px, no control row fits whole. The floor applies only while the bar takes room
+      (`barHeight > 0`): with no bar the list keeps the 40% share it has without the playlist (`listMinHeight`), however
+      tall the header.
     - Documented limits: calls recorded after the press are not added; the limit or a delete can take a queued
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is

@@ -536,8 +536,8 @@ class RecordingPlayer(
     private class Pending(val id: Int, val handle: Cancellable)
 
     /**
-     * The readings of the part that played last (completed, or left by a move), its player already released: the gap
-     * after its call and a forward move that finds nothing name it.
+     * The readings of the part that played last (completed, failed while it played, or left by a move), its player
+     * already released: the gap after its call and a forward move that finds nothing name it.
      */
     private class Left(val index: Int, val token: Long, val durationMs: Long, val positionMs: Long)
 
@@ -974,7 +974,7 @@ class RecordingPlayer(
         move = null
         when {
             search.gapAfter && hasCallAfter(currentCall()) -> {
-                // The gap names the part that completed (none when it failed while playing): no player is kept.
+                // The gap names the part that completed or failed while it played ([left]): no player is kept.
                 showLeft()
                 enterGap()
             }
