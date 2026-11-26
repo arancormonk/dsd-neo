@@ -185,7 +185,7 @@ class RecordingPlaybackService : Service() {
             session.isActive = true
         }
         // The Activity hands media keys past Qt only from here on, for this playlist (RecordingPlayback).
-        RecordingPlayback.sessionRendered(status.generation, open && session.isActive)
+        RecordingPlayback.sessionRendered(status.generation, open && session.isActive, session.sessionToken)
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
     }
 

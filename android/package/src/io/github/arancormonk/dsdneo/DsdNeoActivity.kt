@@ -7,6 +7,7 @@ package io.github.arancormonk.dsdneo
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.media.session.MediaController
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewTreeObserver
@@ -224,16 +225,22 @@ class DsdNeoActivity : QtActivity() {
     // path here so each physical press reaches the shell exactly once. Gesture
     // Back uses the dispatcher above; QML dismisses the IME before navigation.
     // While a History playlist's session is open, media keys (a headset's
-    // button, Bluetooth or car controls) skip Qt, which would consume them:
-    // left unhandled, Android hands them to that media session (#909). With
-    // no playlist open they stay with Qt, as before.
+    // button, Bluetooth or car controls) skip Qt, which would consume them,
+    // and go to that playlist's own session through a controller on its
+    // token, then are consumed: left unhandled, Android would give them to
+    // whichever session it routes media buttons to, another app's while the
+    // playlist is paused (#909). With no playlist open they stay with Qt.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) ScreenSupport.userInteraction(this)
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) AppSupport.requestBack()
             return true
         }
-        if (MediaKeys.routedToSession(event.keyCode, RecordingPlayback.playlistSessionOpen())) return false
+        val session = MediaKeys.sessionFor(event.keyCode, RecordingPlayback.playlistSession())
+        if (session != null) {
+            MediaController(this, session).dispatchMediaButtonEvent(event)
+            return true
+        }
         return super.dispatchKeyEvent(event)
     }
 

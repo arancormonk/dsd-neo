@@ -8,9 +8,11 @@ package io.github.arancormonk.dsdneo
 /**
  * The media keys DsdNeoActivity hands past Qt while a History playlist's media session is open (#909): a headset's
  * button, a Bluetooth headset's or a car's transport controls, a keyboard's media keys. Qt's activity consumes every
- * key it is given, so with DSD-neo in front these never reached the playlist's session; left unhandled, Android
- * delivers them to the media button session, which is the playlist's while it is open. With no playlist open they stay
- * with Qt, as before, so a headset's Play never resumes another app over the live audio or a sheet's play.
+ * key it is given, so with DSD-neo in front these never reached the playlist's session. Left unhandled, Android would
+ * give them to its media button session, which need not be the playlist's (paused, it stays active while another app
+ * plays), so the Activity sends each one to the playlist's own session (a MediaController on its token) and consumes
+ * it. With no playlist open they stay with Qt, as before, so a headset's Play never resumes another app over the live
+ * audio or a sheet's play.
  *
  * The codes are KeyEvent's, the same on every API level the app runs on (KeyEvent.isMediaSessionKey() is API 31+).
  * KEYCODE_MUTE, which that method also counts, mutes the microphone and stays with Qt. Plain Kotlin with no Android
@@ -37,46 +39,51 @@ object MediaKeys {
     fun isSessionKey(keyCode: Int): Boolean = keyCode in SESSION_KEYS
 
     /**
-     * Whether the key with [keyCode] goes to Android's media session routing instead of Qt: a media session key while
-     * a History playlist's session is open ([playlistSessionOpen], RecordingPlayback.playlistSessionOpen()).
+     * The session the key with [keyCode] is handed to instead of Qt: [playlistSession], the open History playlist's
+     * (RecordingPlayback.playlistSession(), null with none), for a media session key; null when the key stays with Qt.
      */
-    fun routedToSession(keyCode: Int, playlistSessionOpen: Boolean): Boolean =
-        playlistSessionOpen && isSessionKey(keyCode)
+    fun <T : Any> sessionFor(keyCode: Int, playlistSession: T?): T? =
+        if (isSessionKey(keyCode)) playlistSession else null
 }
 
 /**
- * Which playlist the media session is active for, as the playback service last rendered it (#909). The service owns a
- * playlist (it is promoted) before the looper has started it and before the service has rendered its session active;
- * a key handed past Qt in between would reach no session of this app, and Android could give Play to the media app
- * whose session was active before. So the handoff waits for [rendered] with the session active for the owner, and
- * stops at the playlist's end, at a render with the session inactive, and when the session is released; another
- * playlist taking the service is not the one rendered until its own render. Any thread.
+ * Which playlist the media session is active for, as the playback service last rendered it (#909), and that session
+ * ([T], its token on Android), which the Activity hands media keys to. The service owns a playlist (it is promoted)
+ * before the looper has started it and before the service has rendered its session active; a key handed past Qt in
+ * between would reach no session of this app. So the handoff waits for [rendered] with the session active for the
+ * owner, and stops at the playlist's end, at a render with the session inactive, and when the session is released;
+ * another playlist taking the service is not the one rendered until its own render. Any thread.
  */
-class ActiveSession {
+class ActiveSession<T : Any> {
     private val lock = Any()
     private var generation = 0
+    private var session: T? = null
 
-    /** The service rendered playlist [generation], its session active or not ([active]). */
-    fun rendered(generation: Int, active: Boolean) = synchronized(lock) {
+    /** The service rendered playlist [generation] on [session], active or not ([active]). */
+    fun rendered(generation: Int, active: Boolean, session: T) = synchronized(lock) {
         if (active) {
             this.generation = generation
+            this.session = session
         } else if (this.generation == generation) {
-            this.generation = 0
+            clear()
         }
     }
 
     /** Playlist [generation] ended: its session no longer takes keys. */
     fun ended(generation: Int) = synchronized(lock) {
         if (this.generation == generation) {
-            this.generation = 0
+            clear()
         }
     }
 
-    /** The session was released with its service. */
-    fun released() = synchronized(lock) {
-        generation = 0
-    }
+    /** The session was released with its service (the instance alive then: PlaybackServicePhases.Destroyed). */
+    fun released() = synchronized(lock) { clear() }
 
-    /** Whether the session is active for [owner], the playlist that owns the service now (0: none). */
-    fun activeFor(owner: Int): Boolean = synchronized(lock) { owner != 0 && generation == owner }
+    /** The session active for [owner], the playlist that owns the service now (0: none); null when there is none. */
+    fun sessionFor(owner: Int): T? = synchronized(lock) { if (owner != 0 && generation == owner) session else null }
+
+    private fun clear() {
+        generation = 0
+        session = null
+    }
 }

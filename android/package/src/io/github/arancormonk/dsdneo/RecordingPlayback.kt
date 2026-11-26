@@ -13,6 +13,7 @@ import android.media.AudioAttributes
 import android.media.AudioFocusRequest
 import android.media.AudioManager
 import android.media.MediaPlayer
+import android.media.session.MediaSession
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.Looper
@@ -85,7 +86,7 @@ object RecordingPlayback {
     private var service: RecordingPlaybackService? = null
 
     /** The playlist whose media session the service last rendered active (#909): the Activity's media key handoff. */
-    private val activeSession = ActiveSession()
+    private val activeSession = ActiveSession<MediaSession.Token>()
 
     /**
      * The setup thread, beside the looper: each part's blocking open, data source and prepare start
@@ -217,11 +218,11 @@ object RecordingPlayback {
     fun takeRecheck(): Array<String> = recheck.take()
 
     /**
-     * Whether the media session is active for the History playlist that owns the promoted playback service: the media
-     * keys the Activity then hands past Qt reach it. Not before the service has rendered the owner's session active,
-     * so a key in between stays with Qt rather than going to whichever app's session Android finds. Any thread.
+     * The media session of the History playlist that owns the promoted playback service, while it is active: the
+     * Activity hands media keys past Qt to it (a MediaController on this token). Null before the service has rendered
+     * the owner's session active, so a key in between stays with Qt. Any thread.
      */
-    fun playlistSessionOpen(): Boolean = activeSession.activeFor(phases.currentOwner)
+    fun playlistSession(): MediaSession.Token? = activeSession.sessionFor(phases.currentOwner)
 
     /** The Activity started or stopped (not for a configuration change). */
     fun setForeground(foreground: Boolean) {
@@ -259,7 +260,8 @@ object RecordingPlayback {
     internal fun playbackScheduler(): RecordingPlayer.Scheduler = LooperScheduler(playbackHandler())
 
     /** The service rendered playlist [generation] with its session [active] or not, or the session went ([ended]). */
-    internal fun sessionRendered(generation: Int, active: Boolean) = activeSession.rendered(generation, active)
+    internal fun sessionRendered(generation: Int, active: Boolean, session: MediaSession.Token) =
+        activeSession.rendered(generation, active, session)
 
     internal fun sessionEnded(generation: Int) = activeSession.ended(generation)
 

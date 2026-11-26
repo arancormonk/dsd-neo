@@ -232,8 +232,8 @@ with a start issued but not delivered, a media session command acting only on th
 another key settling it, another playlist, the end and the teardown dropping it with its timeout), and the transport
 keys (`SessionKeys`: paused, a tap, then a dedicated Pause within the wait: the tap plays, then the Pause pauses; ups
 and repeats ignored; each key its command on the player's state). A third build runs
-`MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media session while a
-playlist's session is open, the same keys left with Qt while none is, every other key (Back, volume, typing, the
+`MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the playlist's own media session
+while it is open, the same keys left with Qt while none is, every other key (Back, volume, typing, the
 microphone mute) left with Qt either way, and `ActiveSession` (not before the owner's session is rendered active, nor
 for another playlist, nor after its end, an inactive render or the release).
 `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
