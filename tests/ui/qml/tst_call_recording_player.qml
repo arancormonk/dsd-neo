@@ -1750,6 +1750,91 @@ Item {
             compare(hostCallsNamed("resumePlaybackFor").length, 1, "a press begun now resumes");
         }
 
+        // Share, Save to file and Delete pressed on part 1 while the sheet follows the play to part 2 before the
+        // release: the tap is dropped, never taken for part 2. A keyboard or screen reader activation acts on the part
+        // shown then, and a press begun on part 2 acts on it.
+        function test_file_action_press_keeps_its_part_data() {
+            return [{tag: "share", name: "recordingShare"}, {tag: "save", name: "recordingSave"}, {tag: "delete", name: "recordingDelete"}];
+        }
+        function test_file_action_press_keeps_its_part(data) {
+            testContext.setHostReading("shareSupported", true);
+            openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            recordings.setSelection(1, 96000, [pathB]);
+            tap("recordingPlayAll");
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 1});
+            compare(checkedParts(2), [0]);
+            var player = item("historyRecording");
+            var picker = findChild(player, "recordingSavePicker");
+            var confirm = item("recordingDeleteConfirm");
+            var acted = function () {
+                return data.tag === "share" ? hostCallsNamed("shareRecording").length
+                    : data.tag === "save" ? recordings.calls().filter(function (call) { return call.name === "selectRecordings"; }).length
+                    : (confirm.visible ? 1 : 0);
+            };
+            var button = item(data.name);
+            mousePress(button, button.width / 2, button.height / 2);
+            testContext.publishPlaybackReading({item: 1, playbackToken: 2});
+            compare(checkedParts(2), [1], "the sheet followed to part 2 while the press was held");
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(acted(), 0, data.tag + ": the press began on part 1, so nothing is done to part 2");
+            verify(!picker.visible && !confirm.visible && player.saveSelection === 0, "no picker, no confirmation");
+
+            button.activate();
+            compare(acted(), 1, data.tag + ": an activation acts on the part shown");
+            if (data.tag === "share") {
+                compare(lastHostCall().path, pathB);
+            } else if (data.tag === "save") {
+                compare(lastStoreCall().ids, ["t-2"]);
+                picker.cancel();
+                compare(player.saveSelection, 0);
+            } else {
+                compare(confirm.target.path, pathB);
+                findChild(confirm, "confirmCancelButton").activate();
+            }
+            testContext.publishPlaybackReading({item: 0, playbackToken: 3});
+            compare(checkedParts(2), [0], "back on part 1");
+            mouseClick(button, button.width / 2, button.height / 2);
+            // Delete counts its confirmation out; the others their calls.
+            compare(acted(), data.tag === "delete" ? 1 : 2, data.tag + ": a press begun and ended on part 1 acts on it");
+            if (data.tag === "share")
+                compare(lastHostCall().path, pathA);
+            else if (data.tag === "save")
+                compare(lastStoreCall().ids, ["t-1"]);
+            else
+                compare(confirm.target.path, pathA);
+        }
+
+        // A drag's preview belongs to the part it began on: the play moving to the next part mid-drag shows that
+        // part's own position, a keyboard or screen reader step seeks from it (never from the drag's preview), and the
+        // release seeks nothing on the new part.
+        function test_seek_preview_stays_on_its_part() {
+            openWith([rec("t-1", pathA, 10000), rec("t-2", pathB, 10000)]);
+            tap("recordingPlayAll");
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 10000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            var bar = item("recordingSeekBar");
+            var y = bar.height / 2;
+            mousePress(bar, bar.width * 0.2, y);
+            for (var i = 1; i <= 8; ++i)
+                mouseMove(bar, bar.width * (0.2 + i * 0.075), y);
+            verify(bar.dragging, "a drag is under way");
+            verify(player.positionMs > 7000, "it previews where it would land: " + player.positionMs);
+            bar.nudge(5000);
+            compare(lastHostCall().token, 5);
+            compare(lastHostCall().ms, 6000, "a step during the drag is from the part's own position, not the preview");
+            testContext.publishPlaybackReading({item: 1, playbackToken: 6, playbackPositionMs: 2000});
+            compare(player.positionMs, 2000, "part 2 shows its own position, not part 1's preview");
+            compare(item("recordingTime").text, "0:02 / 0:10");
+            bar.nudge(5000);
+            compare(lastHostCall().name, "seekPlaybackFor");
+            compare(lastHostCall().token, 6, "the step is part 2's");
+            compare(lastHostCall().ms, 7000, "from part 2's own position");
+            mouseMove(bar, bar.width * 0.9, y);
+            verify(Math.abs(player.positionMs - 7000) < 1, "a moving drag does not bring the preview back: " + player.positionMs);
+            mouseRelease(bar, bar.width * 0.9, y);
+            compare(lastHostCall().token, 5, "the release names part 1, which the host drops");
+        }
+
         // A sheet's own Play all parts offers Pause and seek only once the host has published its first part's
         // token: before that a pause would be the queue's, and could reach the next part (the first already done).
         function test_parts_wait_for_a_token() {

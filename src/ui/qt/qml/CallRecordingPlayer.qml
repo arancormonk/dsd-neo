@@ -129,7 +129,10 @@ Column {
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
     // Issue #909: a seek waiting for its landing shows where it goes (the host shows nothing until the player's
     // record), so the thumb does not jump back to the old position for a poll.
-    readonly property real positionMs: seekBar.dragging ? seekBar.dragMs : !loaded ? 0 : seekTargetMs >= 0 ? Math.min(seekTargetMs, durationMs) : Math.min(decoderHost.playbackPositionMs, durationMs)
+    readonly property real openPositionMs: !loaded ? 0 : seekTargetMs >= 0 ? Math.min(seekTargetMs, durationMs) : Math.min(decoderHost.playbackPositionMs, durationMs)
+    // A drag shows where it would seek, only on the recording it began on (its token): once another one is open, the
+    // bar shows that one's own position.
+    readonly property real positionMs: seekBar.previewing ? seekBar.dragMs : openPositionMs
     readonly property bool storageAway: part !== null && part.available === false
     // Issue #909 (B6): a host with no player offers no play; the parts only
     // select, for Share, Save and Delete.
@@ -282,6 +285,13 @@ Column {
         }
     }
 
+    // Issue #909: what a tap on Share, Save to file or Delete acts on (their
+    // pressKey): the part shown, by its id and the identity the store
+    // indexed, so a part shown in its place while the press is held (the
+    // sheet following a playlist to its next part) drops the tap.
+    function shownKey() {
+        return part ? [part.id, part.path, String(part.identitySize), String(part.mtimeSec), String(part.mtimeNanos)].join("|") : "";
+    }
     // Issue #909: what a tap on the play button acts on (its pressKey): its
     // action and what it would do it to. A play is of the part shown, its
     // path and the identity the store indexed (a reread that put another
@@ -736,8 +746,10 @@ Column {
                     readonly property bool seekable: player.loaded && decoderHost.playbackCanSeek && !player.ownQueueAwaitingToken
                     property bool dragging: false
                     property real dragMs: 0
-                    // The recording a drag began on: its seek is dropped once another one is open.
+                    // The recording a drag began on: its seek is dropped once another one is open, and so is its
+                    // preview of where it would land.
                     property real dragToken: 0
+                    readonly property bool previewing: dragging && dragToken > 0 && dragToken === Number(decoderHost.playbackToken)
                     // Issue #909: the recording open when a press on the bar began; a tap or a drag that
                     // starts once another one is open does nothing.
                     property real pressToken: 0
@@ -792,11 +804,12 @@ Column {
                         }
                     }
                     // A step a screen reader sends a covered or hidden slider it still
-                    // holds does nothing.
+                    // holds does nothing. A step is from the open recording's own
+                    // position, never from a pointer drag's preview.
                     function nudge(delta) {
                         if (!Navigation.allows(seekBar) || !seekBar.visible)
                             return;
-                        seekTo(player.positionMs + delta, decoderHost.playbackToken);
+                        seekTo(player.openPositionMs + delta, decoderHost.playbackToken);
                     }
 
                     Rectangle {
@@ -952,6 +965,9 @@ Column {
             width: (parent.width - parent.spacing) / 2
             text: qsTr("Share")
             enabled: !player.storageAway
+            pressKey: function () {
+                return player.shownKey();
+            }
             onClicked: player.share()
         }
         OutlineButton {
@@ -959,6 +975,9 @@ Column {
             width: decoderHost.shareSupported ? (parent.width - parent.spacing) / 2 : parent.width
             text: qsTr("Save to file")
             enabled: !player.storageAway && player.saveSelection === 0
+            pressKey: function () {
+                return player.shownKey();
+            }
             onClicked: player.saveToFile()
         }
     }
@@ -969,6 +988,9 @@ Column {
         text: player.parts.length > 1 ? qsTr("Delete part %1").arg(player.current + 1) : qsTr("Delete recording")
         textColor: Theme.magenta
         enabled: !player.storageAway
+        pressKey: function () {
+            return player.shownKey();
+        }
         onClicked: player.askDelete()
     }
 

@@ -19816,15 +19816,19 @@ Qt Quick frontend (`src/ui/qt`):
     missing-file stop, `decoder_host_test_hooks.h` taking the file between them in `UI_QT_ANDROID_HOST`) and the sheet
     says "This recording is gone.". Item commands carry the play token captured when the gesture began
     (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`). One press rule holds for the pointer controls whose
-    target moves with the play (`GatedTapHandler.pressKey`, passed through by `PlayCircle`, `MapControlButton` and
-    `IconButton`): the sheet's Play, Pause/Resume and seek bar, and the bar's Pause/Resume, Previous, Next, ✕ and Show
-    in list. The others (the part chips, Play all parts, Share, Save, Delete, Play from here and History's Play all) act
-    on a fixed target. The press takes a key, the action the control would perform and the identity of what it shows,
+    target moves with the play (`GatedTapHandler.pressKey`, passed through by `PlayCircle`, `MapControlButton`,
+    `IconButton` and `OutlineButton`): the sheet's Play, Pause/Resume, seek bar, Share, Save to file and Delete, and
+    the bar's Pause/Resume, Previous, Next, ✕ and Show in list. The others (the part chips, Play all parts, Play from
+    here and History's Play all) act on a fixed target. The press takes a key, the action the control would perform and
+    the identity of what it shows,
     and the tap acts only if the same key is current at the release, else it is dropped; a release with no press taken
     is dropped too. The sheet's Play keys on the part shown (its path and the indexed size and mtime, so a reread that
     put another recording under the same id and path drops it, while a playlist moving elsewhere does not), its
-    Pause/Resume on the action, the generation and the token, and the seek bar on its token
-    (`GatedTapHandler.pressBegan`, a drag's start included). The bar's Pause/Resume keys on whether it would pause and
+    Pause/Resume on the action, the generation and the token, Share, Save to file and Delete on the part shown (its id,
+    path and indexed size and mtime: a sheet that follows the play to the next part during the press drops the tap),
+    and the seek bar on its token (`GatedTapHandler.pressBegan`, a drag's start included; a drag's preview shows only
+    while its token is the one open, and a keyboard or screen reader step seeks from the open recording's own
+    position, never from a drag's preview). The bar's Pause/Resume keys on whether it would pause and
     the playlist, and Previous, Next and ✕ on the playlist, the action and whether it has ended, so a press held on one
     playlist never moves or stops the next one, nor a press on an ended result stops a new one; Show in list keys on the
     playlist and the call it names (`playbackKey`, or the ended reading's key). A keyboard or screen reader activation
