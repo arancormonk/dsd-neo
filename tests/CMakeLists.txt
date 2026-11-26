@@ -15490,6 +15490,21 @@ add_test(
 )
 set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 300)
 
+# The dynamic squelches behind a replay or network I/Q reader's resampler (issue #899): the installed floor plan against
+# the impulses of the production reader and full_demod() at every output phase, the reader model against them, cold
+# start under AUTO, NOISE on reader chains, and the reader in the plan key and the floor's context.
+add_executable(dsd-neo_test_dsp_squelch_reader dsp/test_dsp_squelch_reader.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SQUELCH_READER COMMAND dsd-neo_test_dsp_squelch_reader)
+set_tests_properties(DSP_SQUELCH_READER PROPERTIES TIMEOUT 120)
+
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
 target_include_directories(

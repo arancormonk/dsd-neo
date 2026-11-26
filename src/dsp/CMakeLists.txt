@@ -55,6 +55,7 @@ target_sources(
         noise_squelch_bank.c
         nfm_noise_squelch.c
         squelch_step_model.c
+        squelch_reader_model.c
         squelch_cascade_noise.c
         pcm_noise_squelch.c
 )
@@ -222,6 +223,7 @@ set(_dsd_neo_dsp_ieee_c_sources
     noise_squelch_bank.c
     nfm_noise_squelch.c
     squelch_step_model.c
+    squelch_reader_model.c
     squelch_cascade_noise.c
     pcm_noise_squelch.c
 )

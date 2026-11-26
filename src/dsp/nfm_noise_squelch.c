@@ -486,6 +486,15 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
     return 0;
 }
 
+/* Not built yet (issue #899): the reader is left out. */
+int
+dsd_noise_squelch_plan_design_reader(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                     const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz,
+                                     const dsd_iq_resampler* reader) {
+    (void)reader;
+    return dsd_noise_squelch_plan_design(out, taps, taps_len, stages, stage_count, rate_hz);
+}
+
 /* Whether the arguments describe a stepped plan the squelch can take: a factor it can ring, a configured step that
    never makes more outputs than a pass's inputs, and the channel taps and rate nsq_design_args_ok() takes. */
 static int

@@ -40,6 +40,7 @@
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
@@ -116,6 +117,7 @@ struct DemodHolder {
         }
         dsd_fsk_modem_release(&s->fsk_modem_state);
         dsd_live_iq_step_disable(&s->live_iq_step);
+        dsd_squelch_reader_model_release(&s->squelch_reader_model);
         if (s->post_polydecim_taps) {
             dsd_neo_aligned_free(s->post_polydecim_taps);
         }
@@ -1625,10 +1627,12 @@ enum { BENCH_BLOCK_FIRST_BUILD = 0, BENCH_BLOCK_ALTERNATING = 1, BENCH_BLOCK_SAM
 
 /* One small block (8 channel samples) through full_demod() on the FM monitor under AUTO with no step, the cascade of
    @p passes ahead of NFM @p width_hz (0: no channel filter) at @p rate_hz, the floor plan taken as @p kind says
-   (@p width_alt: the other width when alternating). What the demod thread spends on a block, design included. */
+   (@p width_alt: the other width when alternating). What the demod thread spends on a block, design included. Behind
+   @p reader (NULL: none) the reader model is built first, as the rate plan's commit builds it (issue #899), so a block
+   designs only the plan from it. */
 static int
 bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_hz, int passes, int width_hz,
-                           int width_alt, int kind) {
+                           int width_alt, int kind, const dsd_iq_reader_plan* reader = NULL) {
     DemodHolder holder;
     demod_state* s = holder.s;
     if (!s) {
@@ -1649,6 +1653,13 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
     s->downsample_passes = passes;
     s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
     s->squelch_margin_db = 10;
+    if (reader != NULL && !opts.list_cases && opts.case_filter && std::strcmp(opts.case_filter, name) == 0) {
+        s->iq_reader = *reader;
+        if (dsd_demod_squelch_reader_model_sync(s) != 0) {
+            DSD_FPRINTF(stderr, "%s: the reader model did not build\n", name);
+            return 0;
+        }
+    }
     const int pairs = 8 << passes;
     std::vector<float> in((size_t)pairs * 2U);
     fill_noise(&in, 0x899u + (uint32_t)passes);
@@ -1690,6 +1701,63 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
                     (unsigned long long)made, (unsigned long long)blocks, (unsigned long long)want);
         return 0;
     }
+    return ran;
+}
+
+/* The reader model's build (issue #899), what the rate plan's commit runs for a replay or I/Q stream the reader
+   resamples from @p source_hz into @p dsp_in_hz ahead of @p passes passes. */
+static int
+bench_one_reader_model_build(const BenchOptions& opts, const char* name, uint32_t source_hz, uint32_t dsp_in_hz,
+                             int passes) {
+    dsd_iq_reader_plan plan;
+    (void)dsd_iq_reader_plan_for(&plan, source_hz, dsp_in_hz, dsp_in_hz >> passes);
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    for (int i = 0; i < passes; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    dsd_squelch_reader_model m;
+    dsd_squelch_reader_model_init(&m);
+    BenchMeta meta;
+    meta.rate_hz = (int)(dsp_in_hz >> passes);
+    meta.profile = "reader_model";
+    meta.variant = "build";
+    const int ran = run_named_case(
+        opts, name, "build", 1.0,
+        [&]() -> float {
+            dsd_squelch_reader_model_release(&m);
+            return dsd_squelch_reader_model_build(&m, &plan, st, passes) == 0 ? (float)m.period : -1.0f;
+        },
+        &meta);
+    dsd_squelch_reader_model_release(&m);
+    return ran;
+}
+
+/* bench_one_floor_plan_block() behind a reader from @p source_hz into @p rate_hz << @p passes. */
+static int
+bench_one_reader_floor_plan_block(const BenchOptions& opts, const char* name, uint32_t source_hz, int rate_hz,
+                                  int passes, int width_hz, int width_alt, int kind) {
+    dsd_iq_reader_plan plan;
+    (void)dsd_iq_reader_plan_for(&plan, source_hz, (uint32_t)rate_hz << passes, (uint64_t)rate_hz);
+    return bench_one_floor_plan_block(opts, name, rate_hz, passes, width_hz, width_alt, kind, &plan);
+}
+
+static int
+bench_reader_plans(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8k_16k", 8000U, 16000U, 0);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_250k_192k_2pass", 250000U, 192000U, 2);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8046_72k", 8046U, 72000U, 0);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8k_16k", 8000U, 16000, 0, 0,
+                                             0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_250k_192k_nfm12k5", 250000U,
+                                             48000, 2, 12500, 0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8046_72k_nfm16k", 8046U,
+                                             72000, 0, 16000, 0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_alternating_8046_72k_nfm16k_25k", 8046U,
+                                             72000, 0, 16000, 25000, BENCH_BLOCK_ALTERNATING);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_same_key_8046_72k_nfm16k", 8046U, 72000,
+                                             0, 16000, 0, BENCH_BLOCK_SAME_KEY);
     return ran;
 }
 
@@ -2059,6 +2127,7 @@ main(int argc, char** argv) {
     ran += bench_full_demod(opts);
     ran += bench_live_step(opts);
     ran += bench_squelch_plans(opts);
+    ran += bench_reader_plans(opts);
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);

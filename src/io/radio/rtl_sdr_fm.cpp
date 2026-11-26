@@ -18457,6 +18457,13 @@ post_chain_test_capture(const dsd_opts* opts, rtl_stream_test_post_chain_result*
     out->squelch_step_model = demod.live_iq_step.enabled
                                   ? dsd_squelch_step_model_matches(&demod.squelch_step_model, &demod.live_iq_step.plan)
                                   : 0;
+    out->reader_enabled = demod.iq_reader.enabled;
+    out->reader_in_hz = demod.iq_reader.in_hz;
+    out->reader_out_hz = demod.iq_reader.out_hz;
+    out->reader_protect_hz = demod.iq_reader.protect_hz;
+    out->squelch_reader_model =
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes);
+    out->squelch_plan_valid = demod.squelch_plan.set ? demod.squelch_floor.plan.valid : -1;
     out->complex_rate_hz = demod.complex_rate;
     out->rate_out_hz = demod.rate_out;
     out->ted_sps = demod.ted_sps;
@@ -18500,11 +18507,13 @@ post_chain_test_open_and_run(const dsd_opts* opts, const dsd_iq_replay_config* c
     const int prev_rate_out2 = demod.rate_out2;
     test_stream_set(NULL);
     int rc = family_test_seed_open(opts, 48000, 0);
+    const uint64_t designs_before = demod.squelch_plan_designs;
     if (rc == 0 && controller_apply_replay_settings(&controller, opts, cfg) != 0) {
         rc = -1;
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     post_chain_test_capture(opts, out);
+    out->squelch_plan_designs = (long long)(demod.squelch_plan_designs - designs_before);
     if (rc == 0 && g_test_post_chain_probe) {
         g_test_post_chain_probe(out, g_test_post_chain_probe_ctx);
     }
@@ -20236,6 +20245,33 @@ squelch_test_step_context_check(void) {
                : 15;
 }
 
+/* A replay or I/Q stream reader's resampler names the squelch context's chain too (issue #899): its rates and protected
+   band while it resamples, nothing once it is off, so an 8 kHz source read into a 16 kHz chain is not a 16 kHz source.
+   Only the plan is read here; the setting goes back to the level squelch. Returns 0 when that held, else 16. */
+static int
+squelch_test_reader_context_check(void) {
+    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    rtl_stream_set_channel_squelch_setting(&auto6);
+    const dsd_iq_reader_plan saved = demod.iq_reader;
+    demod.iq_reader = dsd_iq_reader_plan{};
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key native = demod.squelch_context;
+    const int planned = dsd_iq_reader_plan_for(&demod.iq_reader, 8000U, 16000U, 16000U) == 0;
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key read = demod.squelch_context;
+    demod.iq_reader = dsd_iq_reader_plan{};
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key after = demod.squelch_context;
+    demod.iq_reader = saved;
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    const int named = planned && native.reader_in_hz == 0 && native.reader_out_hz == 0 && native.reader_protect_hz == 0
+                      && read.reader_in_hz == 8000 && read.reader_out_hz == 16000 && read.reader_protect_hz == 7200;
+    return (named && !dsd_squelch_floor_key_equal(&read, &native) && dsd_squelch_floor_key_equal(&after, &native)) ? 0
+                                                                                                                   : 16;
+}
+
 /* The setting reaches the demod: AUTO turns the level off, the margin is clamped, a level comes back whole. Returns the
    first failed check's code, 0 when all held. */
 static int
@@ -20432,6 +20468,9 @@ rtl_stream_test_squelch_plumbing(void) {
     int failed = squelch_test_setting_checks();
     if (!failed) {
         failed = squelch_test_step_context_check();
+    }
+    if (!failed) {
+        failed = squelch_test_reader_context_check();
     }
     if (!failed) {
         failed = squelch_test_noise_setting_checks();

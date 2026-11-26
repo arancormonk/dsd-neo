@@ -162,6 +162,11 @@ typedef struct {
     int32_t chain;     /**< capture chain (live, replay, the decimation cascade) */
     int32_t step_l;    /**< the live I/Q rate step's L/M (issue #806); 0 and 0 with no step */
     int32_t step_m;
+    /** The replay or network reader's resampler ahead of the cascade (dsd_iq_reader_plan, issue #899): its source
+        rate, DSP input rate and protected band; 0, 0 and 0 with none. */
+    int32_t reader_in_hz;
+    int32_t reader_out_hz;
+    int32_t reader_protect_hz;
 } dsd_squelch_floor_key;
 
 /** @brief One remembered floor. */

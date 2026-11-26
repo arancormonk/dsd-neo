@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -2204,6 +2205,17 @@ squelch_floor_ensure_plan(struct demod_state* d) {
     d->squelch_plan_designs++;
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
     d->squelch_plan = k;
+}
+
+/* Not built yet (issue #899): the plans behind a reader are the ones without it. */
+extern "C" int
+dsd_demod_squelch_reader_model_sync(struct demod_state* d) {
+    return d ? 0 : -1;
+}
+
+extern "C" void
+dsd_demod_squelch_prime_reader_plan(struct demod_state* d) {
+    (void)d;
 }
 
 /* The kept noise squelch plan designed for @p k, now taken; NULL when none is kept. */
