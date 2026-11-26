@@ -26,9 +26,20 @@ Item {
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return null;
+        settleListLayout();
         logList.positionViewAtIndex(row, ListView.Contain);
         var item = logList.itemAtIndex(row);
         return item ? item.node : null;
+    }
+    // The list's place and rows as the next frame shows them, for a row to be
+    // brought into view against: the list hangs under the header, whose
+    // Column (and the filters' Flow in it) lays out on its next polish. A
+    // header that changed since the last frame (the log's first calls offer
+    // Export… and Clear on a line of their own) would otherwise leave a row
+    // contained against the old height, and cut off once the list moves.
+    function settleListLayout() {
+        Theme.settlePositioners(chrome);
+        logList.forceLayout();
     }
     // Back from the map when the row it showed has left the log: the focus
     // goes to the list, where the row was.
@@ -279,6 +290,7 @@ Item {
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return false;
+        settleListLayout();
         logList.positionViewAtIndex(row, ListView.Contain);
         detailSheet.open(callHistory.recordFor(uid));
         return true;

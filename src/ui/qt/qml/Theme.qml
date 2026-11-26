@@ -67,6 +67,23 @@ QtObject {
         var start = content === scroll.contentItem ? scroll.originY : 0;
         scroll.contentY = Math.max(start, Math.min(next, start + scroll.contentHeight - scroll.height));
     }
+    // Lays out every positioner (Column, Row, Flow, Grid) in @p item's tree
+    // now, @p item included, innermost first, so each takes its children's
+    // sizes before its parent reads its own. A positioner places its children
+    // and takes its size on its next polish, so until then the geometry built
+    // on it (a list anchored under a header, a row brought into view) is the
+    // last frame's (issue #909).
+    function settlePositioners(item) {
+        if (!item)
+            return;
+        var children = item.children;
+        for (var i = 0; i < children.length; ++i)
+            settlePositioners(children[i]);
+        // Only positioners have this signal. A ListView's forceLayout()
+        // places its rows, which is the caller's to ask for.
+        if (typeof item.positioningComplete === "function")
+            item.forceLayout();
+    }
     function resetFontScale() {
         fontScale = Qt.binding(function () {
             return systemFontScale();

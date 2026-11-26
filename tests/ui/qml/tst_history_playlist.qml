@@ -767,11 +767,27 @@ Item {
             verify(bar(screen).visible);
         }
 
+        // The header's Column laid out for the empty log (one line of controls), then calls logged: Export… and
+        // Clear are offered on a second line, which the Column makes room for only on its next polish, after
+        // whatever the case does before it renders. The rows' list hangs under that Column.
+        function logCallsUnderAPendingHeader(screen, count) {
+            var search = findChild(screen, "historySearch");
+            verify(waitForPolish(search.parent));
+            var calls = logCalls(count);
+            var clear = findChild(screen, "clearHistoryButton");
+            verify(clear.visible);
+            var second = rectIn(clear, search.parent);
+            verify(second.y + second.height > search.y + 0.5, "the Column has not made room for the second line yet: " + describe(second));
+            return calls;
+        }
+
         // Show in list: the playing call's row in view and its sheet open; a row the list does not show now says so.
+        // Play all and the press come with the header's layout pending, as when the log changed since the last
+        // frame: the row is contained against the header the next frame draws, not the last one's.
         function test_show_in_list() {
-            var calls = logCalls(30);
             var screen = idle();
             only(screen);
+            var calls = logCallsUnderAPendingHeader(screen, 30);
             playAll(screen, calls);
             playing({item: 0});
             var list = findChild(screen, "callLogList");
@@ -804,6 +820,25 @@ Item {
             compare(bar(screen).announced, "This call isn't in the list now.");
             playing({item: 1});
             compare(line(screen), "Call 2 of 30 · 0:12 / 0:31", "the next call ends the notice");
+        }
+
+        // Back from the map brings its row into view (rowFocusFor) the same way, against the header the next frame
+        // draws.
+        function test_row_focus_with_the_header_pending() {
+            var screen = idle();
+            only(screen);
+            var calls = logCallsUnderAPendingHeader(screen, 30);
+            var list = findChild(screen, "callLogList");
+            list.positionViewAtBeginning();
+            var node = screen.rowFocusFor(calls[0].uid);
+            verify(node !== null, "the oldest row is built");
+            waitForRendering(list);
+            var row = node;
+            while (row && row.rowUid === undefined)
+                row = row.parent;
+            verify(row !== null && row.rowUid === calls[0].uid);
+            var rowRect = rectIn(row, list);
+            verify(rowRect.y >= -0.5 && rowRect.y + rowRect.height <= list.height + 0.5, "scrolled into view: " + describe(rowRect));
         }
 
         // Clear history (confirmed) ends a History playlist as ✕ does.

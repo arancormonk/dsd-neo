@@ -23590,7 +23590,11 @@ Qt Quick frontend (`src/ui/qt`):
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
     row is still logged and its screen shows, its close then returning to that row found again by uid
     (`rowFocusFor(uid)` on History, Listen and the monitor: the row it first opened from is gone, as a covered list
-    holds no rows); when the row has left the log the focus goes to the History list
+    holds no rows). History (there and in the bar's Show in list) and the monitor lay out the positioners their list
+    hangs from before they bring the row into view (`Theme.settlePositioners()`, then the list's `forceLayout()`): a
+    Column above or below the list that changed since the last frame lays out only on its next polish, and the row
+    would be contained against the old room and cut off once the list moved (issue #909). Listen's list hangs from no
+    positioner. When the row has left the log the focus goes to the History list
     (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
     past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
     `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
