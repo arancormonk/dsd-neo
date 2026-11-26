@@ -49,12 +49,16 @@ noise and neighbours included) through each plan of 12.5 kHz or wider.
 The receiver's half-band cascade. Each chain decimates through `passes` half-band stages ahead of the channel filter
 (src/dsp/demod_pipeline.cpp: the 31-tap stage first, the 15-tap ones after), and the 15-tap stage droops inside the
 band. The passes are the shared chain identity's (tools/squelch_model.py rate_plans(): an RTL-SDR bandwidth's 4 to 8,
-a replay's recorded base decimation). The stepped chains (a fixed-grid device: the passes, then the live step) and the
-reader's chains (a resampler ahead of the passes) are not run here: this model ports neither the step nor the reader.
-DSP_SQUELCH_STEP_MODEL holds the stepped noise plans, and DSP_SQUELCH_READER the reader's (its "NOISE on a reader
-chain" case). The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at
+a replay's recorded base decimation, a reader chain's general plan). The stepped chains (a fixed-grid device: the
+passes, then the live step) are not run here: this model does not port the step, and DSP_SQUELCH_STEP_MODEL holds their
+noise plans. The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at
 twice the channel rate, through the stages before the last (one linear-phase FIR sampled from their composite response,
-CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last stage. With no channel filter the
+CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last stage. A reader row (a replay or network
+source through the reader's resampler ahead of the passes) runs the shared chain model instead: noise and every signal
+made at the source rate (a wanted signal as a recording carries it, made faster and low-passed to just under the
+source's Nyquist) through the reader and the half-bands as the decoder centres them. Its calibration is the C core's:
+the reader's magnitude folded into the cascade FIR, and its measurement band clipped at the reader's pass edge
+(nsq_design_band()). A wanted signal whose band passes that edge is measured as "edge", outside the gate. With no channel filter the
 cascade's roll-off is the channel's edge, and it truncates a signal that reaches the rate's Nyquist into the band: such
 a plan needs the widest NFM signal tested (UNFILTERED_SIGNAL_EDGE_HZ from the carrier) to fit under the Nyquist, and
 has no band otherwise (rtl-12k and rtl-16k with the width unset, an Airspy Mini at 11718 Hz).
@@ -143,6 +147,12 @@ TONE_SECONDS = {"full": 0.5, "quick": 0.15}
 SPEECH_SECONDS = {"full": 4.0, "quick": 1.0}
 PREF_SECONDS = 2.0  # what the C calibration runs per plan
 SETTLE_S = 0.03  # filter start-up excluded from every measurement
+# A reader row's source is a recording at the source rate: its wanted signals are made at twice the channel rate (as
+# every other row's), then low-passed to SOURCE_BAND_FRACTION of the source rate (SOURCE_LPF_TAPS taps) and taken at the
+# source rate, as a recorder's anti-alias filter leaves them. Made at the source rate directly, an FM signal's
+# sidebands past the source's Nyquist would fold back into the band as lines no recording carries.
+SOURCE_BAND_FRACTION = 0.49
+SOURCE_LPF_TAPS = 2047
 
 
 # --------------------------------------------------------------------------------------------- the plan's band
@@ -175,33 +185,50 @@ def stage_rate(stages: list, index: int, fs: float) -> float:
     return fs * 2.0 ** (len(stages) - index)
 
 
-def plan_band(taps: np.ndarray, fs: float, stages: list | None = None) -> tuple[float, float, float] | None:
+def plan_band(
+    taps: np.ndarray, fs: float, stages: list | None = None, reader_edge_hz: float = 0.0
+) -> tuple[float, float, float] | None:
     """(lo, hi, edge) of the measurement band, or None when less than MIN_BAND_HZ fits above voice or no channel filter
-    (one unit tap) runs behind a cascade at a Nyquist of UNFILTERED_SIGNAL_EDGE_HZ or less."""
+    (one unit tap) runs behind a cascade at a Nyquist of UNFILTERED_SIGNAL_EDGE_HZ or less. A reader's resampler passes
+    nothing past its pass edge @p reader_edge_hz (0: no reader), so hi stays under it (nsq_design_band())."""
     if len(taps) <= 1 and stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
         return None
     edge = passband_edge_hz(taps, fs)
     hi = min(edge - EDGE_GUARD_HZ, NYQUIST_FRACTION * fs)
+    if reader_edge_hz > 0.0:
+        hi = min(hi, reader_edge_hz)
     if hi - BAND_LO_HZ < MIN_BAND_HZ:
         return None
     return BAND_LO_HZ, hi, edge
 
 
-def cascade_fir(stages: list, fs: float) -> np.ndarray | None:
-    """The stages ahead of the last as one linear-phase FIR at 2 fs: CASCADE_FIR_TAPS taps sampled (frequency sampling,
-    type I) from their composite response on 0..fs, unit DC gain. None when the last stage is the only one."""
+def reader_gain(reader: cm.Reader, f: float) -> float:
+    """|H(f)| of the reader's prototype (L x taps per phase taps at L times its input rate), against its DC gain
+    (nsq_reader_gain())."""
+    h = cm.reader_prototype(reader)
+    w = 2.0 * math.pi * f / (float(reader.source_hz) * reader.L)
+    return abs(complex(np.sum(h * np.exp(-1j * w * np.arange(len(h)))))) / abs(float(np.sum(h)))
+
+
+def cascade_fir(stages: list, fs: float, reader: cm.Reader | None = None) -> np.ndarray | None:
+    """The stages ahead of the last, and a reader's resampler ahead of them, as one linear-phase FIR at 2 fs (at fs with
+    no stage): CASCADE_FIR_TAPS taps sampled (frequency sampling, type I) from their composite response, unit DC gain;
+    the reader enters by its magnitude (nsq_design_cascade()). None when there is no reader and the last stage is the
+    only one."""
     earlier = stages[:-1]
-    if not earlier:
+    if not earlier and reader is None:
         return None
     n_taps = CASCADE_FIR_TAPS
     half = (n_taps - 1) // 2
-    rate = 2.0 * fs
+    rate = 2.0 * fs if stages else fs
     g = [1.0]
     for k in range(1, half + 1):
         f = k * rate / n_taps
         v = 1.0
         for i, h in enumerate(earlier):
             v *= stage_gain(h, f, stage_rate(stages, i, fs))
+        if reader is not None:
+            v *= reader_gain(reader, f)
         g.append(v)
     n = np.arange(n_taps) - half
     h = np.full(n_taps, g[0])
@@ -256,19 +283,26 @@ def raw_capture_at_rate(name: str, fs: int) -> np.ndarray:
 
 
 class Plan:
-    """One discriminator plan: channel taps, half-band, rate, its band and every candidate's band-passes."""
+    """One discriminator plan: channel taps, half-band, rate, its band and every candidate's band-passes. A reader row
+    (job["chain"] a reader chain) makes its signals at the source rate through the shared chain model (the reader, then
+    the half-bands as the decoder centres them) and calibrates as the C core does: the reader's magnitude folded into
+    the cascade FIR, its pass edge clipping the band."""
 
     def __init__(self, job: dict):
         self.fs = int(job["fs"])
         self.taps = np.asarray(job["taps"], dtype=np.float64)
         self.stages = [np.asarray(h, dtype=np.float64) for h in job.get("stages", [])]
         self.hb = self.stages[-1] if self.stages else None
-        self.pre = cascade_fir(self.stages, self.fs)
+        self.chain = job.get("chain")
+        self.reader = self.chain.reader if self.chain is not None else None
+        if self.reader is not None:
+            self.hb_taps = {name: np.asarray(h, dtype=np.float64) for name, h in job["hb_taps"].items()}
+        self.pre = cascade_fir(self.stages, self.fs, self.reader)
         self.width = job["width"]
         self.key = job["key"]
         self.settle = int(SETTLE_S * self.fs)
         self.edge = passband_edge_hz(self.taps, self.fs)
-        self.band = plan_band(self.taps, self.fs, self.stages)
+        self.band = plan_band(self.taps, self.fs, self.stages, self.reader.pass_hz if self.reader else 0.0)
         self.filters: dict[str, list] = {}
         self.primary: dict[str, int] = {}
         if self.band is not None:
@@ -291,33 +325,83 @@ class Plan:
     def bp(self, lo: float, hi: float):
         return sps.butter(ORDER, [lo, hi], btype="bandpass", fs=self.fs, output="sos")
 
-    def front_end(self, rng: np.random.Generator, count: int, sig=None, scale: float = 0.0, cascade: bool = True):
+    def front_end(
+        self,
+        rng: np.random.Generator,
+        count: int,
+        sig=None,
+        scale: float = 0.0,
+        cascade: bool = True,
+        calibration: bool = False,
+    ):
         """count channel-filter inputs: white noise, plus sig(n, rate) * scale when given, made at the rate it enters
-        and through the half-band cascade with the noise (the stages ahead of the last as self.pre)."""
-        if self.hb is None or not cascade:
+        and through the half-band cascade with the noise (the stages ahead of the last as self.pre). A reader row runs
+        its chain itself (made at the source rate), but its calibration the cascade model as the C core does."""
+        if self.reader is not None and cascade and not calibration:
+            return self.through_chain(rng, count, sig, scale)
+        if not cascade or (self.hb is None and self.pre is None):
             x = cm.white_noise(rng, count)
             if sig is not None:
                 x = x + sig(count, self.fs).astype(np.complex64) * np.float32(scale)
             return x
         pre_len = 0 if self.pre is None else len(self.pre) - 1
-        n = 2 * count + len(self.hb) - 1 + pre_len
+        n = (2 * count + len(self.hb) - 1 if self.hb is not None else count) + pre_len
         x = cm.white_noise(rng, n)
         if sig is not None:
-            x = x + sig(n, 2 * self.fs).astype(np.complex64) * np.float32(scale)
+            x = x + sig(n, 2 * self.fs if self.hb is not None else self.fs).astype(np.complex64) * np.float32(scale)
         return self.through(x)[:count]
 
     def through(self, x2: np.ndarray) -> np.ndarray:
-        """x2 at 2 fs through the cascade model to fs."""
+        """x2 at 2 fs through the cascade model to fs (at fs through the cascade FIR alone with no stage)."""
         if self.pre is not None:
             x2 = np.asarray(sps.oaconvolve(x2, self.pre.astype(np.float32), mode="valid"))
+        if self.hb is None:
+            return np.asarray(x2).astype(np.complex64)
         return np.asarray(sps.oaconvolve(x2, self.hb.astype(np.float32), mode="valid"))[::2].astype(np.complex64)
 
-    def demod(self, sig, count: int, cnr_db: float, seed, hb: bool = True, tilt: float = 0.0):
+    def through_chain(self, rng: np.random.Generator | None, count: int, sig=None, scale: float = 0.0, x=None):
+        """count channel-filter inputs of a reader row, made at the source rate (white noise from @p rng, plus
+        sig(n, rate) * scale; or the source-rate signal @p x) and run through the shared chain model, past its lead."""
+        plan = self.chain
+        lead = cm.chain_lead(plan, np.ones(1))
+        n = cm.source_count(plan, count + lead + cm.chain_look_ahead(plan, self.hb_taps))
+        if x is None:
+            x = cm.white_noise(rng, n)
+            if sig is not None:
+                x = x + self.recorded(sig, n).astype(np.complex64) * np.float32(scale)
+        else:
+            x = np.resize(np.asarray(x, dtype=np.complex64), n)
+        y = cm.ChainStream(plan, self.hb_taps).push(x)
+        return y[lead : lead + count].astype(np.complex64)
+
+    def recorded(self, sig, n: int) -> np.ndarray:
+        """n samples of sig(n, rate) as a recording at the source rate carries them: made at U times the source rate
+        (U the smallest whole factor reaching twice the channel rate), low-passed to SOURCE_BAND_FRACTION of the
+        source rate and taken every U-th sample; made at the source rate directly when it is that fast already."""
+        source_hz = self.chain.source_hz
+        up = max(1, math.ceil(2.0 * self.fs / source_hz))
+        if up == 1:
+            return sig(n, source_hz)
+        lp = sps.firwin(SOURCE_LPF_TAPS, SOURCE_BAND_FRACTION, fs=float(up))
+        x = sig(up * n + SOURCE_LPF_TAPS - 1, up * source_hz)
+        return np.asarray(sps.oaconvolve(x, lp, mode="valid"))[: up * n : up]
+
+    def chain_of(self, x: np.ndarray) -> np.ndarray:
+        """A source-rate recording through a reader row's chain, past its lead."""
+        plan = self.chain
+        chain = cm.ChainStream(plan, self.hb_taps)
+        x = np.asarray(x, dtype=np.complex64)
+        x = np.concatenate((x, np.zeros((-len(x)) % chain.unit, dtype=np.complex64)))
+        return chain.push(x)[cm.chain_lead(plan, np.ones(1)) :].astype(np.complex64)
+
+    def demod(
+        self, sig, count: int, cnr_db: float, seed, hb: bool = True, tilt: float = 0.0, calibration: bool = False
+    ):
         """The discriminator output for count samples of sig (a function (n, rate) -> unit-power baseband, None for
-        noise alone) at cnr_db."""
+        noise alone) at cnr_db; @p calibration runs the C core's calibration front end."""
         rng = np.random.default_rng(sm.job_seed("noise_sq", self.key, seed))
         scale = math.sqrt(self.p_noise_ch * 10.0 ** (cnr_db / 10.0))
-        x = self.front_end(rng, count, sig, scale, cascade=hb)
+        x = self.front_end(rng, count, sig, scale, cascade=hb, calibration=calibration)
         if tilt != 0.0:
             corner = min(self.width / 2.0, NYQUIST_FRACTION * self.fs)
             b, a = sps.butter(1, corner, btype="low" if tilt > 0 else "high", fs=self.fs)
@@ -380,10 +464,16 @@ def run_plan(job: dict) -> dict:
     mode = job["mode"]
     deviation = sm.rated_deviation_hz(width)
     out = {"key": plan.key, "fs": fs, "width": width, "deviation": deviation, "candidates": {}}
+    out["reader"] = plan.reader.key if plan.reader is not None else None
     if plan.band is None:
         out["edge_hz"] = plan.edge
         if len(plan.taps) <= 1 and plan.stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
             out["why"] = "no channel filter behind the half-band cascade at a Nyquist the widest NFM signal reaches"
+        elif plan.reader is not None and plan.reader.pass_hz < plan.edge - EDGE_GUARD_HZ:
+            out["why"] = (
+                f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the reader's pass edge "
+                f"({plan.reader.pass_hz:.0f} Hz)"
+            )
         else:
             out["why"] = (
                 f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the channel edge less "
@@ -396,7 +486,7 @@ def run_plan(job: dict) -> dict:
     # P_ref: a 2 s calibration through the half-band and the channel taps, as the C code runs it; one without the
     # half-band for comparison; and the references the long run measures.
     span = int(PREF_SECONDS * fs) + len(plan.taps) + plan.settle
-    refs = plan.refs_of(plan.demod(None, span, 0.0, "pref"))
+    refs = plan.refs_of(plan.demod(None, span, 0.0, "pref", calibration=True))
     refs_nohb = plan.refs_of(plan.demod(None, span, 0.0, "pref", hb=False))
 
     # Noise alone, in independent chunks.
@@ -447,6 +537,15 @@ def run_plan(job: dict) -> dict:
             }
 
     tone_n = int(TONE_SECONDS[mode] * fs) + len(plan.taps) + plan.settle
+    # A reader row's source carries nothing past the reader's pass edge: a wanted signal whose band (|offset| +
+    # deviation + its highest audio frequency) passes it is measured as "edge", outside the gate (squelch_model.py's
+    # rule for its reader rows).
+    source_half = plan.reader.pass_hz if plan.reader is not None else math.inf
+    if plan.reader is not None:
+        out["source_half_hz"] = source_half
+
+    def gated(reach: float) -> str:
+        return "gate" if reach <= source_half else "edge"
 
     def fm(audio_dev_hz, offset: float):
         """A signal for Plan.demod(): an FM carrier, audio_dev_hz(t) its deviation in Hz, made at the rate asked."""
@@ -468,7 +567,7 @@ def run_plan(job: dict) -> dict:
         for off in offsets:
             sig = fm(tone(f, deviation), off)
             measure(
-                "gate",
+                gated(abs(off) + deviation + f),
                 f"tone {f:.0f} Hz at {off:+.0f} Hz",
                 plan.demod(sig, tone_n, NOISE_FREE_CNR_DB, ("tone", off, f)),
             )
@@ -479,7 +578,7 @@ def run_plan(job: dict) -> dict:
             return deviation * np.resize(sm.source_at_rate(name, "audio", int(rate)), n)
 
         measure(
-            "gate",
+            gated(deviation + sm.VOICE_TOP_HZ),
             f"speech {name}",
             plan.demod(fm(speech, 0.0), speech_n, NOISE_FREE_CNR_DB, ("speech", name)),
         )
@@ -509,7 +608,9 @@ def run_plan(job: dict) -> dict:
         )
     if width >= 2.0 * sm.REAL_CHANNEL_HALF_HZ:
         for name in sm.REAL_FM:
-            if plan.hb is None:
+            if plan.reader is not None:
+                x = plan.chain_of(raw_capture_at_rate(name, plan.chain.source_hz))
+            elif plan.hb is None:
                 x = raw_capture_at_rate(name, fs)
             else:
                 x = plan.through(raw_capture_at_rate(name, 2 * fs))
@@ -528,7 +629,7 @@ def verdict(res: dict, cand: str) -> dict | None:
     gate = c["mod"].get("gate", {})
     tones = [(v["p1"], k) for k, v in gate.items() if k.startswith("tone")]
     speech = [(v["p1"], k) for k, v in gate.items() if k.startswith("speech")]
-    worst = min(tones + speech)
+    worst = min(tones + speech, default=(math.inf, "none gated"))
     fo = c["false_open"][str(N_MIN_DB)]
     return {
         "tone_p1_min": min(tones)[0] if tones else math.inf,
@@ -648,6 +749,42 @@ def plan_row(r: dict, v: dict | None) -> str:
     )
 
 
+def reader_section(results: list[dict], members: dict) -> list[str]:
+    """The reader rows: each plan's band (clipped at the reader's pass edge) or why it runs as auto, and for a band the
+    gate's figures, the signals past the source's band (outside the gate) and the calibration's distance from the
+    long-run reference through the real chain."""
+    rows = sorted((r for r in results if r.get("reader")), key=lambda r: (r["width"], r["fs"], r["key"]))
+    if not rows:
+        return []
+    lines = ["", "## Reader chains", ""]
+    lines.append(
+        "Signals made at the source rate through the reader and the half-bands; the calibration through the cascade "
+        "FIR with the reader's magnitude folded in, as the C core runs it."
+    )
+    lines.append("")
+    for r in rows:
+        who = "; ".join(members[r["key"]])
+        v = verdict(r, CHOSEN)
+        if v is None:
+            lines.append(f"- {who}: no band, runs as auto ({r['why']}; channel edge {r['edge_hz']:.0f} Hz).")
+            continue
+        c = r["candidates"][CHOSEN]
+        edge = c["mod"].get("edge", {})
+        edge_txt = (
+            "none"
+            if not edge
+            else "{:.1f} dB ({})".format(*min(((x["p1"], k) for k, x in edge.items()), key=lambda t: t[0]))
+        )
+        lines.append(
+            f"- {who}: band {r['band'][0]:.0f}-{r['band'][1]:.0f} Hz (source band {r['source_half_hz']:.0f} Hz, "
+            f"channel edge {r['edge_hz']:.0f} Hz); wanted p1 {v['mod_p1_min']:.1f} dB ({v['mod_worst']}); noise "
+            f"false-open at N={N_MIN_DB} {fmt_rate(v['false_open_nmin'])}; calibration within "
+            f"{r['pref_error_db']['c_2s']:.2f} dB; past the source's band (outside the gate) {edge_txt}: "
+            f"{'noise' if v['supported'] else 'FAIL'}."
+        )
+    return lines
+
+
 def report(results: list[dict], members: dict, out_dir: Path, started: float, mode: str) -> str:
     lines = ["# NFM noise squelch design gate", ""]
     lines.append(
@@ -666,6 +803,7 @@ def report(results: list[dict], members: dict, out_dir: Path, started: float, mo
     chosen = [(r, verdict(r, CHOSEN)) for r in results]
     lines += ["", f"## Chosen: {CHOSEN}", ""]
     lines += chosen_summary(results, chosen)
+    lines += reader_section(results, members)
     lines += ["", "## Per plan", "", row(PLAN_HEADER), row(["---"] * len(PLAN_HEADER))]
     for r, v in sorted(chosen, key=lambda rv: (rv[0]["width"], rv[0]["fs"])):
         lines.append(plan_row(r, v))
@@ -685,9 +823,25 @@ def cascade_stages(plan, hb_taps: dict) -> list:
 
 
 def modelled_here(plan) -> bool:
-    """The chains this model runs: the stepped ones (the live step after the passes) and the reader's (a resampler
-    ahead of them) are not modelled here; DSP_SQUELCH_STEP_MODEL holds the stepped noise plans."""
-    return not plan.stepped and plan.reader is None
+    """The chains this model runs: every chain but the stepped ones (the live step after the passes, which this model
+    does not port; DSP_SQUELCH_STEP_MODEL holds their noise plans). A reader row runs through the shared chain model."""
+    return not plan.stepped
+
+
+def plan_job(plan, hb_taps: dict, key: str, taps, width: float, mode: str) -> dict:
+    """One plan's job: its taps and stages, and on a reader row the chain itself (Plan runs it)."""
+    job = {
+        "key": key,
+        "taps": np.asarray(taps).tolist(),
+        "stages": cascade_stages(plan, hb_taps),
+        "fs": plan.channel_rate,
+        "width": width,
+        "mode": mode,
+    }
+    if plan.reader is not None:
+        job["chain"] = plan
+        job["hb_taps"] = {name: np.asarray(h).tolist() for name, h in hb_taps.items()}
+    return job
 
 
 def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict], dict]:
@@ -696,17 +850,7 @@ def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict
         plan = combo["plan"]
         key = f"{combo['fkey']}:{combo['protected_hz']}"
         members.setdefault(key, []).append(sm.combo_id(combo))
-        jobs.setdefault(
-            key,
-            {
-                "key": key,
-                "taps": np.asarray(combo["taps"]).tolist(),
-                "stages": cascade_stages(plan, hb_taps),
-                "fs": plan.channel_rate,
-                "width": combo["protected_hz"],
-                "mode": mode,
-            },
-        )
+        jobs.setdefault(key, plan_job(plan, hb_taps, key, combo["taps"], combo["protected_hz"], mode))
     return sorted(jobs.values(), key=lambda j: -j["fs"]), members
 
 
@@ -726,16 +870,7 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
             if key in known:
                 continue
             known.add(key)
-            jobs.append(
-                {
-                    "key": key,
-                    "taps": np.asarray(rec["taps"]).tolist(),
-                    "stages": cascade_stages(plan, hb_taps),
-                    "fs": plan.channel_rate,
-                    "width": width,
-                    "mode": mode,
-                }
-            )
+            jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode))
 
 
 def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs: list, members: dict) -> set:
@@ -756,16 +891,7 @@ def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, job
             continue
         known.add(key)
         added.add(key)
-        jobs.append(
-            {
-                "key": key,
-                "taps": np.asarray(rec["taps"]).tolist(),
-                "stages": cascade_stages(plan, hb_taps),
-                "fs": plan.channel_rate,
-                "width": width,
-                "mode": mode,
-            }
-        )
+        jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode))
     return added
 
 
@@ -779,6 +905,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--encoder-only", action="store_true", help="run only the M17 encoder's plans that no NFM plan shares"
     )
+    parser.add_argument("--chains", default="", help="run only the plans a chain whose name contains this text runs")
     args = parser.parse_args(argv)
     started = time.time()
     mode = "quick" if args.quick else "full"
@@ -798,7 +925,7 @@ def main(argv: list[str] | None = None) -> int:
         if sm.modelled(c) and modelled_here(c["plan"]) and c["config"].kind == sm.FM_KIND
     ]
     skipped = sorted({p.name for p in plans if not modelled_here(p)})
-    print(f"chains not modelled here (stepped, or through a reader): {', '.join(skipped)}", flush=True)
+    print(f"chains not modelled here (stepped): {', '.join(skipped)}", flush=True)
     jobs, members = unique_jobs(combos, hb_taps, mode)
     custom_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
     encoder_only = encoder_jobs(plans, harness_plans, hb_taps, mode, jobs, members)
@@ -807,6 +934,9 @@ def main(argv: list[str] | None = None) -> int:
         jobs = [j for j in jobs if args.only in j["key"]]
     if args.encoder_only:
         jobs = [j for j in jobs if j["key"] in encoder_only]
+    if args.chains:
+        # Every member names its chain last.
+        jobs = [j for j in jobs if any(args.chains in m.rsplit(" ", 1)[-1] for m in members[j["key"]])]
     print(f"{len(combos)} NFM combinations and the custom widths: {len(jobs)} distinct plans", flush=True)
     sm.real_sources()  # loaded once, before the workers fork
     results = []
