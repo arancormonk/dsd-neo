@@ -8401,7 +8401,7 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"2147483648\" (expected 0..2147483647)",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8409,7 +8409,7 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..2147483647)",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8417,9 +8417,10 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"4294967305\"",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
-        {"--rdio-analog-system-id", "9x", DSD_PARSE_ERROR, 0, 0, "Invalid --rdio-analog-system-id value \"9x\""},
+        {"--rdio-analog-system-id", "9x", DSD_PARSE_ERROR, 0, 0,
+         "Invalid --rdio-analog-system-id value (expected 0..2147483647)"},
         {"--rdio-analog-talkgroup", "4242", DSD_PARSE_CONTINUE, 0, 4242, NULL},
         {"--rdio-analog-talkgroup", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
         {"--rdio-analog-talkgroup", "2147483647", DSD_PARSE_CONTINUE, 0, 2147483647, NULL},
@@ -8726,7 +8727,7 @@ test_enum_options_checked_per_occurrence(void) {
             DSD_PARSE_ERROR,
             -1,
             -1,
-            "Invalid --rdio-mode value \"bad\" (expected off|dirwatch|api|both)",
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
         },
         {
             "--rdio-mode",
@@ -8736,7 +8737,7 @@ test_enum_options_checked_per_occurrence(void) {
             DSD_PARSE_ERROR,
             -1,
             -1,
-            "Invalid --rdio-mode value \"dirwach\" (expected off|dirwatch|api|both)",
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
         },
         {
             "--rdio-mode",
@@ -8746,7 +8747,7 @@ test_enum_options_checked_per_occurrence(void) {
             DSD_PARSE_ERROR,
             -1,
             -1,
-            "Invalid --rdio-mode value \"\" (expected off|dirwatch|api|both)",
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
         },
         {"--frontend", "NATIVE", NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_NONE, "native compatibility alias"},
         {"--frontend=Terminal", NULL, NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_TERMINAL, NULL},
@@ -8758,7 +8759,7 @@ test_enum_options_checked_per_occurrence(void) {
             DSD_PARSE_ERROR,
             -1,
             -1,
-            "Invalid --frontend value \"bad\" (expected none|terminal|native)",
+            "Invalid --frontend value (expected none|terminal|native)",
         },
         {
             "--frontend",
@@ -8768,9 +8769,10 @@ test_enum_options_checked_per_occurrence(void) {
             DSD_PARSE_ERROR,
             -1,
             -1,
-            "Invalid --frontend value \"bad\" (expected none|terminal|native)",
+            "Invalid --frontend value (expected none|terminal|native)",
         },
-        {"--frontend=", NULL, NULL, NULL, DSD_PARSE_ERROR, -1, -1, "Invalid --frontend value \"\""},
+        {"--frontend=", NULL, NULL, NULL, DSD_PARSE_ERROR, -1, -1,
+         "Invalid --frontend value (expected none|terminal|native)"},
     };
 
     int test_rc = 0;
@@ -8873,6 +8875,62 @@ test_rejected_long_option_value_not_echoed(void) {
         free(opts);
         free(state);
     }
+
+    /* Issue #931 (gate r2): a value the option-value checks refuse is never quoted either. A launcher that drops the
+       mode's value makes "--rdio-api-key=SECRET" the value of --rdio-mode: it is refused naming the option and the
+       expected form, and the key is printed nowhere. */
+    static const struct {
+        const char* args[4];
+        const char* want;
+    } swallowed[] = {
+        {{"--rdio-mode", "--rdio-api-key=SENTINELKEY", "--rdio-mode", "api"},
+         "Invalid --rdio-mode value (expected off|dirwatch|api|both)"},
+        {{"--frontend", "--rdio-api-key=SENTINELKEY", "--frontend", "none"},
+         "Invalid --frontend value (expected none|terminal|native)"},
+        {{"--frontend=SENTINELVALUE", "--frontend", "none", NULL},
+         "Invalid --frontend value (expected none|terminal|native)"},
+        {{"--rdio-system-id", "--rdio-api-key=SENTINELKEY", "--rdio-system-id", "7"},
+         "Invalid --rdio-system-id value (expected 0..2147483647)"},
+        {{"--rdio-analog-system-id", "SENTINEL9", NULL, NULL},
+         "Invalid --rdio-analog-system-id value (expected 0..2147483647)"},
+    };
+
+    for (size_t i = 0; i < sizeof swallowed / sizeof swallowed[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char storage[5][64];
+        char* argv[6] = {NULL};
+        int argc = 0;
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", "dsd-neo");
+        argv[argc] = storage[argc];
+        argc++;
+        for (int a = 0; a < 4 && swallowed[i].args[a] != NULL; a++) {
+            DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", swallowed[i].args[a]);
+            argv[argc] = storage[argc];
+            argc++;
+        }
+        int exit_rc = -1;
+        static char out[16384];
+        static char err[16384];
+        const int rc = parse_args_capture_both(argc, argv, opts, state, &exit_rc, out, sizeof out, err, sizeof err);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, swallowed[i].want) == NULL || strstr(err, "SENTINEL")
+            || strstr(out, "SENTINEL")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\nstderr:\n%s\nstdout:\n%s\n", swallowed[i].want, rc, exit_rc, err,
+                        out);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
     return test_rc;
 }
 
@@ -8959,7 +9017,7 @@ test_rdio_system_id_range(void) {
             NULL,
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"2147483648\" (expected 0..2147483647)",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-system-id",
@@ -8968,7 +9026,7 @@ test_rdio_system_id_range(void) {
             NULL,
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"4294967301\" (expected 0..2147483647)",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-system-id",
@@ -8977,7 +9035,7 @@ test_rdio_system_id_range(void) {
             NULL,
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"-1\" (expected 0..2147483647)",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-system-id",
@@ -8986,9 +9044,10 @@ test_rdio_system_id_range(void) {
             NULL,
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"48x\" (expected 0..2147483647)",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
-        {"--rdio-system-id", "", NULL, NULL, DSD_PARSE_ERROR, 0, "Invalid --rdio-system-id value \"\""},
+        {"--rdio-system-id", "", NULL, NULL, DSD_PARSE_ERROR, 0,
+         "Invalid --rdio-system-id value (expected 0..2147483647)"},
         {
             "--rdio-system-id",
             "2147483648",
@@ -8996,7 +9055,7 @@ test_rdio_system_id_range(void) {
             "12",
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"2147483648\" (expected 0..2147483647)",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-system-id",
@@ -9005,7 +9064,7 @@ test_rdio_system_id_range(void) {
             "12",
             DSD_PARSE_ERROR,
             0,
-            "Invalid --rdio-system-id value \"48x\"",
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
         },
         {"--rdio-system-id", "7", "--rdio-system-id", "154437", DSD_PARSE_CONTINUE, 154437, NULL},
         {
@@ -9015,7 +9074,7 @@ test_rdio_system_id_range(void) {
             "12",
             DSD_PARSE_ERROR,
             -1,
-            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..2147483647)",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
     };
 

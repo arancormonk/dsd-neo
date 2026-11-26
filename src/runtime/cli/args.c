@@ -828,7 +828,7 @@ static int
 cli_parse_rdio_system_id_option(const char* option_name, const char* in, int* out, int* out_exit_rc) {
     int parsed = 0;
     if (dsd_parse_int_strict(in, 10, 0, 2147483647, &parsed) != 0) {
-        LOG_ERROR("Invalid %s value \"%s\" (expected 0..2147483647)\n", option_name, in ? in : "");
+        LOG_ERROR("Invalid %s value (expected 0..2147483647)\n", option_name); /* never the value (issue #931) */
         cli_set_exit_rc(out_exit_rc, 1);
         return 0;
     }
@@ -845,7 +845,7 @@ cli_parse_rdio_mode_option(const char* value, int* out, int* out_exit_rc) {
         *out = mode;
         return 1;
     }
-    LOG_ERROR("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", value ? value : "");
+    LOG_ERROR("Invalid --rdio-mode value (expected off|dirwatch|api|both)\n"); /* never the value (issue #931) */
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }
@@ -857,7 +857,7 @@ cli_parse_frontend_option(const char* value, dsd_frontend_kind* out, int* out_ex
     if (cli_parse_frontend_kind(value, out)) {
         return 1;
     }
-    LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", value ? value : "");
+    LOG_ERROR("Invalid --frontend value (expected none|terminal|native)\n"); /* never the value (issue #931) */
     cli_set_exit_rc(out_exit_rc, 1);
     return 0;
 }

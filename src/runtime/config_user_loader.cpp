@@ -942,7 +942,7 @@ static void
 apply_recording_rdio_mode(dsdneoUserConfig* cfg, const char* val) {
     int mode = DSD_RDIO_MODE_OFF;
     if (!val || val[0] == '\0' || dsd_rdio_mode_from_string(val, &mode) != 0) {
-        LOG_WARN("Config: invalid rdio_mode = '%s' (expected off|dirwatch|api|both); keeping %s\n", val ? val : "",
+        LOG_WARN("Config: invalid rdio_mode (expected off|dirwatch|api|both); keeping %s\n",
                  dsd_rdio_mode_to_string(cfg->rdio_mode));
         return;
     }
