@@ -4637,25 +4637,26 @@ apply_cfg_rtl_receive(dsd_opts* opts, const dsd_state* state, const dsdneoUserCo
         dsd_opts_set_rtl_dsp_bw(opts, dsd_analog_rtl_dsp_bw_or_default(cfg->rtl_bw_khz),
                                 DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
     }
-    /* A config's squelch keys are a squelch someone chose (issue #899); without them the analog default comes back
-       over the off this writes wherever it belongs (the drain's dsd_squelch_analog_default_sync()). */
+    /* A config's squelch keys are a squelch someone chose (issue #899): the analog default ends. A config without
+       them leaves the session's squelch, and the level beneath a standing default, as they are (a save while the
+       default stands writes none), as the startup load does. */
     if (cfg->rtl_sql_is_set) {
         dsd_squelch_analog_default_end(opts);
-    }
-    /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
-     * same way: negative is decibels, 0 is off. Storing the raw integer put a
-     * -50 dB request in as a power of -50, which switches the squelch off.
-     * Unlike the sibling keys below, 0 is a real value here rather than "key
-     * omitted", so this applies unconditionally — as the startup loader does. */
-    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
-    /* The mode beside it: rtl_sql_mode = auto or noise puts rtl_sql_margin_db (over the learned floor, or of FM
-       quieting) in force (issue #518 follow-up), the level kept beneath for a switch back. */
-    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    dsd_squelch_analog_default_note_written(opts);
-    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
-        const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(
-            cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
-        dsd_squelch_setting_store(opts, &dynamic);
+        /* rtl_sql is the same setting the CLI `sql` field carries, so it converts the
+         * same way: negative is decibels, 0 is off. Storing the raw integer put a
+         * -50 dB request in as a power of -50, which switches the squelch off.
+         * Unlike the sibling keys below, 0 is a real value here rather than "key
+         * omitted": a config that names rtl_sql = 0 switches the squelch off. */
+        opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)cfg->rtl_sql);
+        /* The mode beside it: rtl_sql_mode = auto or noise puts rtl_sql_margin_db (over the learned floor, or of FM
+           quieting) in force (issue #518 follow-up), the level kept beneath for a switch back. */
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        dsd_squelch_analog_default_note_written(opts);
+        if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+            const dsd_squelch_setting dynamic = dsd_squelch_setting_dynamic(
+                cfg->rtl_sql_mode, cfg->rtl_sql_margin_db > 0 ? cfg->rtl_sql_margin_db : DSD_SQUELCH_MARGIN_DEFAULT_DB);
+            dsd_squelch_setting_store(opts, &dynamic);
+        }
     }
     apply_cfg_push_squelch(opts, state);
     if (cfg->rtl_volume) {

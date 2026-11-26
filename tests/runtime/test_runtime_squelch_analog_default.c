@@ -21,6 +21,7 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
+#include <dsd-neo/runtime/input_spec.h>
 #include <dsd-neo/runtime/rtl_stream_metrics_hooks.h>
 #include <dsd-neo/runtime/scan_mode.h>
 #include <dsd-neo/runtime/scan_options.h>
@@ -375,13 +376,15 @@ save_and_reload(const dsd_opts* o, const dsd_state* s, char* text, size_t text_s
 }
 
 /* The next run of a saved session, given --squelch-analog-default noise+10 again: it loads the save over a fresh
-   session on the -fA monitor of a radio input. */
+   session on the -fA monitor of a radio input, whose level is the startup one (dsd_init), and applies the RTL-SDR spec
+   the load built, as the start does. */
 static void
 next_run(const dsdneoUserConfig* reloaded, dsd_opts** out_opts, dsd_state** out_state) {
-    session_init(out_opts, out_state, 0);
+    session_init(out_opts, out_state, DSD_SQUELCH_STARTUP_DB);
     dsd_apply_user_config_to_opts(reloaded, *out_opts, *out_state);
     (*out_opts)->audio_in_type = AUDIO_IN_RTL;
     (*out_opts)->analog_only = 1;
+    assert(dsd_rtl_input_spec_apply(*out_opts) >= 0);
 }
 
 static int
@@ -457,10 +460,49 @@ test_save_keeps_default(void) {
         session_free(o, s);
         next_run(reloaded, &o, &s);
         assert(dsd_squelch_analog_default_pending(o));
-        /* The spec the reload builds from rtl_freq carries the omitted rtl_sql as 0, which ends nothing. */
+        /* The spec the reload builds from rtl_freq leaves the omitted rtl_sql's field empty, which ends nothing and
+           leaves the level beneath the default as the start has it. */
         const int builds_spec = input == SAVE_ON_RTL || input == SAVE_ON_DIGITAL;
-        assert(!builds_spec || rtl_spec_sql_is(o->audio_in_dev, "0"));
+        assert(!builds_spec || rtl_spec_sql_is(o->audio_in_dev, ""));
         assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
+        session_free(o, s);
+    }
+    free(reloaded);
+}
+
+/* The level beneath a standing default survives the save: a session started with no squelch field (the startup level)
+   saves no squelch key, and the next run, given the option again, still has the startup level beneath the default, so
+   leaving the analog monitor (here for a digital decoder) runs it again, never Off. On an RTL-SDR, whose load builds
+   a spec, and on a SoapySDR, whose load sets the tuning fields itself. */
+static void
+test_save_keeps_base_level(void) {
+    char text[16384];
+    dsdneoUserConfig* reloaded = (dsdneoUserConfig*)calloc(1, sizeof(*reloaded));
+    assert(reloaded);
+    static const char* const devs[] = {"rtl", "soapy"};
+    for (size_t i = 0; i < sizeof devs / sizeof devs[0]; i++) {
+        dsd_opts* o = NULL;
+        dsd_state* s = NULL;
+        session_init(&o, &s, DSD_SQUELCH_STARTUP_DB);
+        DSD_SNPRINTF(o->audio_in_dev, sizeof o->audio_in_dev, "%s", devs[i]);
+        o->rtlsdr_center_freq = 123456000U;
+        assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
+        save_and_reload(o, s, text, sizeof text, reloaded);
+        assert(!saves_squelch_keys(text) && !reloaded->rtl_sql_is_set);
+        session_free(o, s);
+        next_run(reloaded, &o, &s);
+        assert(dsd_squelch_analog_default_pending(o));
+        assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
+        o->analog_only = 0;
+        o->frame_dmr = 1;
+        assert(dsd_squelch_analog_default_sync(o, s) == 1);
+        if (!runs_level(o, DSD_SQUELCH_STARTUP_DB)) {
+            DSD_FPRINTF(stderr,
+                        "%s: the level beneath the default after a save and reload is %.3g (mode %d), not the "
+                        "startup %d dB:\n%s\n",
+                        devs[i], o->rtl_squelch_level, o->rtl_squelch_mode, (int)DSD_SQUELCH_STARTUP_DB, text);
+            assert(0);
+        }
         session_free(o, s);
     }
     free(reloaded);
@@ -492,9 +534,13 @@ test_save_after_explicit_squelch(void) {
         session_free(o, s);
         next_run(reloaded, &o, &s);
         assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED && !dsd_squelch_analog_default_pending(o));
-        assert(dsd_squelch_analog_default_sync(o, s) == 0 && runs_level(o, 0));
-        /* The RTL-SDR spec the reload builds carries the setting, which the stream open applies. */
+        /* The RTL-SDR spec the reload builds carries the setting, which the start applied over the startup level:
+           Off, or auto+12 with Off beneath it. */
         assert(rtl_spec_sql_is(o->audio_in_dev, is_auto ? "auto+12" : "0"));
+        assert(dsd_squelch_analog_default_sync(o, s) == 0);
+        assert(is_auto ? (o->rtl_squelch_mode == DSD_SQUELCH_MODE_AUTO && o->rtl_squelch_margin_db == 12
+                          && level_is(o->rtl_squelch_level, 0.0))
+                       : runs_level(o, 0));
         session_free(o, s);
     }
     free(reloaded);
@@ -617,6 +663,7 @@ main(void) {
     test_scan_rows();
     test_effective_decoder();
     test_save_keeps_default();
+    test_save_keeps_base_level();
     test_save_after_explicit_squelch();
     test_save_without_default();
     test_am_notice();

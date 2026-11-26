@@ -405,14 +405,18 @@ apply_shared_radio_tuning_from_config(const dsdneoUserConfig* cfg, dsd_opts* opt
     if (cfg->rtl_bw_khz) {
         opts->rtl_dsp_bw_source = DSD_RTL_DSP_BW_SOURCE_EXPLICIT;
     }
-    /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. */
-    opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
-    opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
-    dsd_squelch_analog_default_note_written(opts);
-    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
-        const dsd_squelch_setting setting =
-            dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
-        dsd_squelch_setting_store(opts, &setting);
+    /* rtl_sql is the level under every mode, kept for a switch back from auto or noise. A config without the squelch
+       keys leaves the session's (issue #899): a save while the analog default stands writes none, and the level
+       beneath the default must come back as it ran, not as Off. */
+    if (cfg->rtl_sql_is_set) {
+        opts->rtl_squelch_level = dsd_squelch_level_from_sql((double)sql);
+        opts->rtl_squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+        dsd_squelch_analog_default_note_written(opts);
+        if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+            const dsd_squelch_setting setting =
+                dsd_squelch_setting_dynamic(cfg->rtl_sql_mode, user_config_sql_margin_db(cfg));
+            dsd_squelch_setting_store(opts, &setting);
+        }
     }
     opts->rtl_volume_multiplier = dsd_opts_rtl_volume_multiplier_or_default(vol);
 }
@@ -1503,10 +1507,33 @@ dsd_user_config_render_ini(const dsdneoUserConfig* cfg, FILE* stream) {
 
 // Mapping helpers -------------------------------------------------------------
 
-/* The spec's sql field: auto+N or noise+N under rtl_sql_mode = auto or noise, else rtl_sql's whole dB. */
+/* The sql field of the RTL-SDR or rtl_tcp spec @p opts runs, into @p out; empty when it runs none or leaves the field
+   out (or it does not fit). */
 static void
-format_rtl_sql_field(const dsdneoUserConfig* cfg, char* out, size_t out_size) {
-    if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
+running_rtl_sql_field(const dsd_opts* opts, char* out, size_t out_size) {
+    out[0] = '\0';
+    const int rtltcp = dsd_opts_audio_in_dev_is_rtltcp_spec(opts->audio_in_dev);
+    if (!rtltcp && !dsd_opts_audio_in_dev_is_rtl_spec(opts->audio_in_dev)) {
+        return;
+    }
+    char buf[sizeof opts->audio_in_dev];
+    char* fields[16];
+    const int count = dsd_spec_split_fields(opts->audio_in_dev, buf, sizeof buf, fields, 16U);
+    const int at = rtltcp ? 7 : 6; /* the kind, the device or host and port, then freq, gain, ppm, bw, sql */
+    if (count > at && strlen(fields[at]) < out_size) {
+        DSD_SNPRINTF(out, out_size, "%s", fields[at]);
+    }
+}
+
+/* The spec's sql field: auto+N or noise+N under rtl_sql_mode = auto or noise, else rtl_sql's whole dB. A config that
+   sets none of the squelch keys leaves the session's (issue #899), as it does the gain and PPM: the field of the spec
+   running now, else empty, which leaves the squelch as it is. A save while the analog default stands writes none of
+   the keys, and the `0` written in their place turned the level beneath the default Off. */
+static void
+format_rtl_sql_field(const dsdneoUserConfig* cfg, const dsd_opts* opts, char* out, size_t out_size) {
+    if (!cfg->rtl_sql_is_set) {
+        running_rtl_sql_field(opts, out, out_size);
+    } else if (dsd_squelch_mode_is_dynamic(cfg->rtl_sql_mode)) {
         DSD_SNPRINTF(out, out_size, "%s+%d", cfg->rtl_sql_mode == DSD_SQUELCH_MODE_NOISE ? "noise" : "auto",
                      user_config_sql_margin_db(cfg));
     } else {
@@ -1523,7 +1550,7 @@ resolve_rtl_spec_values(const dsdneoUserConfig* cfg, const dsd_opts* opts, int* 
     *gain = dsd_user_config_rtl_gain_is_set(cfg) ? cfg->rtl_gain : opts->rtl_gain_value;
     *ppm = resolve_configured_rtl_ppm(cfg, opts);
     *bw = cfg->rtl_bw_khz ? cfg->rtl_bw_khz : opts->rtl_dsp_bw_khz;
-    format_rtl_sql_field(cfg, sql, sql_size);
+    format_rtl_sql_field(cfg, opts, sql, sql_size);
     *vol = cfg->rtl_volume ? cfg->rtl_volume : opts->rtl_volume_multiplier;
 }
 

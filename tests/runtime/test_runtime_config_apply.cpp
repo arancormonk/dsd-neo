@@ -873,6 +873,7 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     cfg.rtl_gain = 22;
     cfg.rtl_bw_khz = 24;
     cfg.rtl_sql = -50;
+    cfg.rtl_sql_is_set = 1; /* the config names rtl_sql */
     cfg.rtl_volume = 2;
 
     g_wrap_last_channel_squelch = -1.0f;
@@ -887,6 +888,7 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
 
     /* And rtl_sql = 0 still means off, rather than "key omitted". */
     cfg.rtl_sql = 0;
+    cfg.rtl_sql_is_set = 1; /* the config names rtl_sql */
     DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "461.125M");
     g_wrap_last_channel_squelch = -1.0f;
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
@@ -898,6 +900,7 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     /* rtl_sql_mode = auto puts the margin over the learned floor in force, whole, and keeps rtl_sql beneath it for a
        switch back; level again pushes the level. */
     cfg.rtl_sql = -50;
+    cfg.rtl_sql_is_set = 1; /* the config names rtl_sql */
     cfg.rtl_sql_mode = DSD_SQUELCH_MODE_AUTO;
     cfg.rtl_sql_margin_db = 6;
     DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "462.125M");
@@ -918,6 +921,17 @@ test_config_reapply_converts_rtl_squelch_from_db(void) {
     rc |= expect_true("config re-apply of level after auto", opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL);
     rc |= expect_float_near("config re-apply of level after auto pushes the level", g_wrap_last_channel_squelch,
                             (float)pow(10.0, -5.0), 1e-9f);
+
+    /* A config without the squelch keys (a save while --squelch-analog-default stands writes none, issue #899) leaves
+       the session's squelch as it is, never Off. */
+    cfg.rtl_sql = 0;
+    cfg.rtl_sql_is_set = 0;
+    DSD_SNPRINTF(cfg.rtl_freq, sizeof cfg.rtl_freq, "%s", "464.125M");
+    dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
+    (void)dsd_app_drain_cmds(opts, state);
+    rc |= expect_true("config re-apply without a squelch key keeps the level",
+                      opts->rtl_squelch_mode == DSD_SQUELCH_MODE_LEVEL
+                          && fabs(opts->rtl_squelch_level - pow(10.0, -5.0)) < 1e-12);
 
     free_test_runtime(&runtime);
     return rc;
@@ -1424,6 +1438,7 @@ test_pcm_config_over_a_running_radio_is_refused(void) {
         }
         cfg.rtl_sql_is_set = 1; /* a PCM squelch the apply would set */
         cfg.rtl_sql = -30;
+        cfg.rtl_sql_is_set = 1; /* the config names rtl_sql */
         const int stops = g_wrap_stops;
         const int creates = g_wrap_creates;
         dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);
@@ -1760,6 +1775,7 @@ test_config_reapply_under_row_squelch_keeps_the_row(void) {
     cfg.rtl_gain = 22;
     cfg.rtl_bw_khz = 24;
     cfg.rtl_sql = -50;
+    cfg.rtl_sql_is_set = 1; /* the config names rtl_sql */
     cfg.rtl_volume = 2;
     g_wrap_last_channel_squelch = -1.0f;
     dsd_app_command_submit(DSD_APP_CMD_CONFIG_APPLY, &cfg, sizeof cfg);

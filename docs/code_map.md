@@ -6063,7 +6063,10 @@ suite runs under this compiler.
     scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
     ever holds the default; while it is pending the snapshot sets `dsdneoUserConfig::rtl_sql_analog_default`
     (`dsd_snapshot_opts_to_user_config_as_run()`, a replay's retained `[input]` included) and `render_input_squelch()`
-    writes no squelch key for any source, so the save reloads as a config that never set one and does not end it;
+    writes no squelch key for any source, so the save reloads as a config that never set one and does not end it (a
+    radio `[input]` without the keys leaves the session's squelch, the level beneath the default included:
+    `format_rtl_sql_field()` takes the running spec's field or none, `apply_shared_radio_tuning_from_config()` and
+    `apply_cfg_rtl_receive()` write no squelch);
     `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec ended it, and so does a
     failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except that a config apply whose
     squelch keys ended the default keeps it ended over the session's own squelch when its input is rolled back
