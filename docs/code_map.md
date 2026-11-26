@@ -19958,16 +19958,18 @@ Qt Quick frontend (`src/ui/qt`):
       returns its positive generation, which owns every later message, a synchronous service-start exception (published
       as its terminal "start") and an asynchronous service or focus refusal included. A builder refusal changes nothing
       and returns 0. Item commands (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`) carry the play token
-      read when the gesture began, and the host forwards one only while it is the token open (no optimistic position for
-      a dropped seek); the player takes a Pause or Resume for the item also in the gap after its call with no player
-      held (its last part failed while it played), a seek only on the item's open player; the bar's
-      Next/Previous/Pause/Resume are queue-wide, and its Stop names its generation (`stopPlaybackGeneration()`; a Stop
-      for a generation no longer current does nothing). A Delete never stops a queue: only a SINGLE play's own Delete
-      stops it, as before. The playlist belongs to the app (`historyPlaylist`, `playlistStatus` in `Main.qml`), never to
-      a sheet: a sheet stops on close only what it started (a positive generation equal to `playbackGeneration`), and a
-      sheet that follows a playlist item (by path and indexed identity, until the user picks a chip, never while a Save
-      picker or a Delete confirmation is out, never on position ticks) holds none. Part chips and Play all parts start a
-      sheet play, replacing the playlist. D10 (leaving pauses, closing the sheet stops) now applies only to sheet plays.
+      read when the gesture began, and the host forwards one only while it is the token open, showing no position for a
+      seek (the player may be on the next item since the poll the token came from, and drop it): the player's next
+      record moves the position, and the sheet counts a seek as landed from that record; the player takes a Pause or
+      Resume for the item also in the gap after its call with no player held (its last part failed while it played), a
+      seek only on the item's open player; the bar's Next/Previous/Pause/Resume are queue-wide, and its Stop names its
+      generation (`stopPlaybackGeneration()`; a Stop for a generation no longer current does nothing). A Delete never
+      stops a queue: only a SINGLE play's own Delete stops it, as before. The playlist belongs to the app
+      (`historyPlaylist`, `playlistStatus` in `Main.qml`), never to a sheet: a sheet stops on close only what it started
+      (a positive generation equal to `playbackGeneration`), and a sheet that follows a playlist item (by path and
+      indexed identity, until the user picks a chip, never while a Save picker or a Delete confirmation is out, never on
+      position ticks) holds none. Part chips and Play all parts start a sheet play, replacing the playlist. D10 (leaving
+      pauses, closing the sheet stops) now applies only to sheet plays.
     - Service (`RecordingPlaybackService.kt`, `foregroundServiceType="mediaPlayback"`, not exported, `START_NOT_STICKY`;
       the decoder's `DecoderService` may run beside it) and its order (`PlaybackServicePhases.kt`, plain Kotlin, one
       lock over admission, the phase NONE / ISSUED / PROMOTED / RETIRING, the reserved request and the owner).

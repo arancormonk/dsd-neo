@@ -1472,6 +1472,26 @@ Item {
             testContext.setSeekApplied(true);
         }
 
+        // The Android host shows no position for a seek (the player may have moved on since the poll its token came
+        // from): the player's next record moves it, and a position there near the target is the landing.
+        function test_seek_lands_on_the_players_record() {
+            openWith([rec("t-1", pathA, 60000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 60000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            var landed = player.seekLanded;
+            testContext.setSeekApplied(false);
+            item("recordingSeekBar").seekTo(30000, 5);
+            testContext.setSeekApplied(true);
+            compare(decoderHost.playbackPositionMs, 1000, "nothing shown at the seek");
+            compare(player.seekTargetMs, 30000, "waited for");
+            testContext.publishPlaybackReading({playbackPositionMs: 1250});
+            compare(player.seekLanded, landed, "a record from before the seek is no landing");
+            testContext.publishPlaybackReading({playbackPositionMs: 30100});
+            compare(player.seekLanded, landed + 1, "the record that shows it there is");
+            compare(player.seekTargetMs, -1);
+        }
+
         // A playlist's part still opening, with no token yet: the sheet offers no pause or resume that would reach
         // nothing, until the part has one.
         function test_no_control_before_the_token() {

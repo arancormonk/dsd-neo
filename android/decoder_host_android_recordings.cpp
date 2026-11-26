@@ -226,19 +226,13 @@ DecoderHostAndroid::seekPlayback(qint64 positionMs) {
 
 void
 DecoderHostAndroid::seekPlaybackFor(qint64 token, qint64 positionMs) {
-    // A gesture begun on another recording than the one open now says nothing of this one: nothing is sent or shown.
+    // A gesture begun on another recording than the one open now says nothing of this one: nothing is sent.
     if (!playbackTokenCurrent(token)) {
         return;
     }
+    // Nothing is shown here: the token is the one the last poll read, and the player may have moved on since, so
+    // only its next record says where it is (a seek it dropped included).
     platformSeekPlaybackFor(token, positionMs);
-    if (!playbackCanSeek()) {
-        return; // the player drops it too
-    }
-    // Shown at once: the next poll would otherwise show the old position for a moment.
-    PlaybackReading reading = playback();
-    const qint64 length = reading.durationMs;
-    reading.positionMs = length > 0 ? qBound<qint64>(0, positionMs, length) : qMax<qint64>(0, positionMs);
-    publishPlayback(reading);
 }
 
 void

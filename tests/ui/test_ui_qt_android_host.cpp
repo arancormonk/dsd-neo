@@ -2730,7 +2730,7 @@ check_recording_playback() {
     check(r.commands
               == QStringList({QStringLiteral("pause"), QStringLiteral("resume"), QStringLiteral("seekFor 11 90000")}),
           "pause, resume and seek reach the player, the seek for the recording open");
-    check(host.playbackPositionMs() == 60000, "a seek shows its target at once, inside the recording");
+    check(host.playbackPositionMs() == 1500, "a seek shows nothing itself: the player's next record says where it is");
 
     StatusFields end = f;
     end.state = DecoderHost::PlaybackStopped;
@@ -3174,7 +3174,15 @@ check_playlist_commands() {
               == QStringList(
                   {QStringLiteral("seekFor 71 9000"), QStringLiteral("pauseFor 71"), QStringLiteral("resumeFor 71")}),
           "the current token's reach the player");
-    check(host.playbackPositionMs() == 9000 && seen.moved == 1 && seen.changed == 0, "a seek shows its target at once");
+    // The token is the one the last poll read: the player may be on the next recording by now and drop the seek, so the
+    // host shows nothing of it, and only the player's record moves the position.
+    check(host.playbackPositionMs() == 500 && seen.moved == 0 && seen.changed == 0, "a seek shows nothing itself");
+    f.position = 9000;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackPositionMs() == 9000 && seen.moved == 1 && seen.changed == 0,
+          "the player's record shows where it landed");
+    f.position = 500;
     f.canSeek = 0;
     r.status = f.text();
     host.refresh();
