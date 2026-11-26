@@ -15,6 +15,8 @@
 #include <stdio.h>
 
 static constexpr int DSD_USER_CONFIG_MAX_INCLUDE_DEPTH = 3;
+/* A read error part way through a config file (user_config_read_line() returning -1): the file is unreadable. */
+static constexpr int DSD_USER_CONFIG_READ_ERROR = -3;
 
 void user_cfg_reset(dsdneoUserConfig* cfg);
 void user_config_strip_inline_comment(char* line);
@@ -25,7 +27,8 @@ int user_config_parse_bool_value(const char* val, int* out_value);
 int user_config_parse_int_value(const char* val, int* out_value);
 int user_config_parse_double_value(const char* val, double* out_value);
 char* user_config_trim_ascii_whitespace(char* text);
-/* One physical line of an INI stream into @p line, without its LF or CRLF: 1 while there is one, 0 at the end. Every
+/* One physical line of an INI stream into @p line, without its LF or CRLF: 1 while there is one, 0 at the end, -1 on a
+   read error (ferror(), not the end: @p line is left empty, no part of a line kept). Every
    INI reader reads through it, so all read one rule (issue #931): bytes are counted as read, and a line of more than
    @p line_size - 1 bytes or holding a NUL is consumed to its end and is one invalid line, @p line left empty and
    *@p invalid_out (when given) set, never read as a setting or quoted. */

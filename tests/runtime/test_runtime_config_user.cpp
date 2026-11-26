@@ -5875,6 +5875,158 @@ test_config_line_nul_and_crlf(void) {
     return rc;
 }
 
+#if defined(DSD_TEST_FAULT_READS)
+// IWYU pragma: no_include <bits/types/cookie_io_functions_t.h>
+#include <dsd-neo/runtime/path_policy.h>
+
+/* Issue #931 (gate r3): a stream that serves g_fault_content and then, from the g_fault_from_open-th open on (1-based),
+   fails with EIO instead of ending; earlier opens end cleanly after it. Off unless g_fault_reads. */
+static int g_fault_reads;
+static int g_fault_from_open;
+static int g_fault_opens;
+static int g_fault_hits;
+static std::string g_fault_content;
+
+namespace {
+struct fault_stream {
+    size_t offset;
+    int faults;
+};
+} // namespace
+
+static ssize_t
+fault_read(void* cookie, char* buf, size_t size) {
+    fault_stream* fs = static_cast<fault_stream*>(cookie);
+    if (fs->offset >= g_fault_content.size()) {
+        if (!fs->faults) {
+            return 0;
+        }
+        g_fault_hits++;
+        errno = EIO;
+        return -1;
+    }
+    size_t n = g_fault_content.size() - fs->offset;
+    if (n > size) {
+        n = size;
+    }
+    DSD_MEMCPY(buf, g_fault_content.data() + fs->offset, n);
+    fs->offset += n;
+    return (ssize_t)n;
+}
+
+/* The validator rewinds the stream before it reads: only a rewind is needed. */
+static int
+fault_seek(void* cookie, off64_t* pos, int whence) {
+    if (whence != SEEK_SET || *pos < 0 || (size_t)*pos > g_fault_content.size()) {
+        errno = EINVAL;
+        return -1;
+    }
+    static_cast<fault_stream*>(cookie)->offset = (size_t)*pos;
+    return 0;
+}
+
+static int
+fault_close(void* cookie) {
+    delete static_cast<fault_stream*>(cookie);
+    return 0;
+}
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+extern "C" FILE* __real_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+extern "C" FILE* __wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+
+extern "C" FILE*
+__wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size) {
+    if (!g_fault_reads) {
+        return __real_dsd_path_fopen_user_read_file(requested, out, out_size);
+    }
+    if (out && out_size > 0) {
+        DSD_SNPRINTF(out, out_size, "%s", requested ? requested : "");
+    }
+    fault_stream* fs = new fault_stream{0U, ++g_fault_opens >= g_fault_from_open ? 1 : 0};
+    cookie_io_functions_t io{};
+    io.read = fault_read;
+    io.seek = fault_seek;
+    io.close = fault_close;
+    return fopencookie(fs, "r", io);
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static void
+fault_arm(const char* content, int from_open) {
+    g_fault_content = content;
+    g_fault_from_open = from_open;
+    g_fault_opens = 0;
+    g_fault_hits = 0;
+    g_fault_reads = 1;
+}
+
+/* Issue #931 (gate r3): a read error part way through a line is no end of file. "rdio_system_id = 154" then EIO
+   (before "437\n") is no line at all: the load fails with a warning, so a caller keeps the config it had, and no
+   partial value is applied. That holds for the main pass, the include pass before it, a profile overlay, the profile
+   list and --validate-config. A clean end after the same bytes loads 154. */
+static int
+test_config_read_error_mid_line(void) {
+    int rc = 0;
+    static const char k_partial[] = "[recording]\nrdio_system_id = 154";
+    dsdneoUserConfig cfg{};
+    fault_arm(k_partial, 99);
+    int load_rc = dsd_user_config_load("faulted.ini", &cfg);
+    g_fault_reads = 0;
+    if (load_rc != 0 || cfg.rdio_system_id != 154) {
+        DSD_FPRINTF(stderr, "FAIL: a clean end after the bytes: rc=%d system=%d\n", load_rc, cfg.rdio_system_id);
+        rc |= 1;
+    }
+    for (int from_open : {1, 2}) {
+        g_log_text[0] = '\0';
+        fault_arm(k_partial, from_open);
+        load_rc = dsd_user_config_load("faulted.ini", &cfg);
+        g_fault_reads = 0;
+        if (load_rc == 0 || cfg.rdio_system_id == 154 || g_fault_hits == 0
+            || (from_open == 2 && strstr(g_log_text, "read error") == nullptr)) {
+            DSD_FPRINTF(stderr, "FAIL: a read error from open %d: rc=%d system=%d hits=%d (log: '%s')\n", from_open,
+                        load_rc, cfg.rdio_system_id, g_fault_hits, g_log_text);
+            rc |= 1;
+        }
+    }
+    /* The profile overlay is the third open (include pass, base pass, overlay). */
+    fault_arm("[recording]\nrdio_system_id = 12\n\n[profile.p]\nrecording.rdio_system_id = 154", 3);
+    load_rc = dsd_user_config_load_profile("faulted.ini", "p", &cfg);
+    g_fault_reads = 0;
+    if (load_rc == 0 || cfg.rdio_system_id == 154 || g_fault_hits == 0) {
+        DSD_FPRINTF(stderr, "FAIL: a read error in the profile overlay: rc=%d system=%d\n", load_rc,
+                    cfg.rdio_system_id);
+        rc |= 1;
+    }
+    const char* names[4] = {nullptr};
+    char names_buf[256];
+    fault_arm("[profile.a]\nx = 1\n[profile.b", 1);
+    const int listed = dsd_user_config_list_profiles("faulted.ini", names, names_buf, sizeof names_buf, 4);
+    g_fault_reads = 0;
+    if (listed != -1) {
+        DSD_FPRINTF(stderr, "FAIL: a read error in the profile list listed %d\n", listed);
+        rc |= 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    fault_arm(k_partial, 1);
+    const int validated = dsd_user_config_validate("faulted.ini", &diags);
+    g_fault_reads = 0;
+    int read_errors = 0;
+    for (int i = 0; i < diags.count; i++) {
+        read_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "Read error");
+    }
+    if (validated == 0 || read_errors != 1) {
+        DSD_FPRINTF(stderr, "FAIL: --validate-config on a read error: rc=%d read errors=%d\n", validated, read_errors);
+        rc |= 1;
+    }
+    dsdcfg_diags_free(&diags);
+    return rc;
+}
+#endif
+
 /* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
    fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
    stays, instead of a value cut to another endpoint or key. */
@@ -7590,6 +7742,9 @@ main(void) {
     rc |= test_recording_rdio_credentials_too_long();
     rc |= test_config_line_too_long_dropped_whole();
     rc |= test_config_line_nul_and_crlf();
+#if defined(DSD_TEST_FAULT_READS)
+    rc |= test_config_read_error_mid_line();
+#endif
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();

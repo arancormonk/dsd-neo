@@ -1285,7 +1285,8 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
     int line_num = 0;
 
     int invalid = 0;
-    while (user_config_read_line(stream, line, sizeof line, &invalid)) {
+    int got = 0;
+    while ((got = user_config_read_line(stream, line, sizeof line, &invalid)) > 0) {
         line_num++;
         if (invalid) {
             /* Never quoted, nor any part of it read as a key: it can be a credential (issue #931). Reported against
@@ -1300,6 +1301,12 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
             continue;
         }
         validate_config_stream_line(line, line_num, &scan, diags);
+    }
+    if (got < 0) {
+        /* As the loader does, the file counts as unreadable: nothing of the partial line was checked. */
+        const int first_diag = diags->count;
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num + 1, "", "", "Read error; the file cannot be loaded");
+        set_scan_diagnostic_sources(&scan, diags, first_diag);
     }
 
     return diags->error_count > errors_before ? -1 : 0;

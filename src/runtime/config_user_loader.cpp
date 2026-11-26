@@ -1224,6 +1224,13 @@ note_section_present(dsdneoUserConfig* cfg, const char* section) {
     }
 }
 
+/* @p line trimmed in place: nonzero when nothing is left of it but a comment. */
+static int
+config_line_trim_is_blank(char* line) {
+    user_config_trim_ascii_whitespace(line);
+    return line[0] == '\0' || line[0] == '#' || line[0] == ';';
+}
+
 /* Internal loader that does NOT reset the config struct.
  * Used for accumulating values from multiple files (includes). */
 static int
@@ -1238,13 +1245,13 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     current_section[0] = '\0';
 
     int invalid = 0;
-    while (user_config_read_line(fp, line, sizeof line, &invalid)) {
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, &invalid)) > 0) {
         if (invalid) {
             LOG_WARN("Config: ignored a line longer than %zu bytes or holding a NUL byte, whole\n", sizeof line - 1U);
             continue;
         }
-        user_config_trim_ascii_whitespace(line);
-        if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+        if (config_line_trim_is_blank(line)) {
             continue;
         }
 
@@ -1282,6 +1289,10 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
 
         apply_section_key(cfg, current_section, key_lc, val, USER_CFG_PARSE_MODE_BASE);
     }
+    if (got < 0) {
+        LOG_WARN("Config: a read error stopped the load; the config is not used\n");
+        return DSD_USER_CONFIG_READ_ERROR;
+    }
 
     return 0;
 }
@@ -1317,7 +1328,9 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    (void)process_includes(root_path, cfg, 0, stack, 1);
+    if (process_includes(root_path, cfg, 0, stack, 1) == DSD_USER_CONFIG_READ_ERROR) {
+        return -1; /* a read error in the root file: nothing of it is used */
+    }
 
     /* Now load the main config (which overrides included values) */
     return user_config_load_no_reset(root_path, cfg);
@@ -1563,7 +1576,8 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
     }
 
     char line[8192];
-    while (user_config_read_line(fp, line, sizeof line, NULL)) {
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, NULL)) > 0) {
         char inc_path[1024];
         int parse_rc = user_config_parse_include_directive_line(line, inc_path, sizeof inc_path);
         if (parse_rc < 0) {
@@ -1591,13 +1605,14 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
          * discarding values already composed from earlier includes. Nested includes retain their normal precedence
          * below the file that names them. */
         dsdneoUserConfig candidate = *cfg;
-        (void)process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size);
-        if (user_config_load_no_reset(inc_path, &candidate) == 0) {
+        if (process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size)
+                != DSD_USER_CONFIG_READ_ERROR
+            && user_config_load_no_reset(inc_path, &candidate) == 0) {
             *cfg = candidate;
         }
     }
 
-    return 0;
+    return got < 0 ? DSD_USER_CONFIG_READ_ERROR : 0;
 }
 
 static int
@@ -1684,9 +1699,9 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     int in_target_profile = 0;
     int profile_found = 0;
 
-    while (user_config_read_line(fp, line, sizeof line, NULL)) {
-        user_config_trim_ascii_whitespace(line);
-        if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, NULL)) > 0) {
+        if (config_line_trim_is_blank(line)) {
             continue;
         }
 
@@ -1713,6 +1728,10 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
         if (handle_profile_overlay_key(cfg, current_section, in_target_profile, key, val)) {
             continue;
         }
+    }
+    if (got < 0) {
+        LOG_WARN("Config: a read error stopped the profile load; the config is not used\n");
+        return DSD_USER_CONFIG_READ_ERROR;
     }
 
     /* If a profile was requested but not found, return error */
@@ -1760,7 +1779,9 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
 
     /* Process includes first (they provide base values that can be overridden) */
     const char* stack[1] = {root_path};
-    (void)process_includes(root_path, cfg, 0, stack, 1);
+    if (process_includes(root_path, cfg, 0, stack, 1) == DSD_USER_CONFIG_READ_ERROR) {
+        return -1; /* a read error in the root file: nothing of it is used */
+    }
 
     /* Now load the main config (which overrides included values) */
     int rc = user_config_load_no_reset(root_path, cfg);
@@ -1835,7 +1856,8 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
     size_t buf_used = 0;
     char line[8192];
 
-    while (count < max_names && user_config_read_line(stream, line, sizeof line, NULL)) {
+    int got = 0;
+    while (count < max_names && (got = user_config_read_line(stream, line, sizeof line, NULL)) > 0) {
         const char* profile_name = NULL;
         if (!extract_profile_section_name(line, &profile_name)) {
             continue;
@@ -1846,7 +1868,7 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
         }
     }
 
-    return count;
+    return got < 0 ? -1 : count; /* a read error lists nothing */
 }
 
 int

@@ -11479,6 +11479,26 @@ target_link_libraries(
     dsd-neo_test_runtime_config_user
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# Issue #931: the read-error cases fault the stream the config readers open, as CORE_CSV_VALIDATE does; the
+# wrapper delegates to the real opener otherwise. It needs GNU ld's --wrap and fopencookie().
+if(NOT APPLE AND NOT WIN32 AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
+    include(CheckSymbolExists)
+    set(_DSD_CONFIG_USER_DEFS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
+    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
+    check_symbol_exists(fopencookie "stdio.h" DSD_HAVE_FOPENCOOKIE)
+    set(CMAKE_REQUIRED_DEFINITIONS "${_DSD_CONFIG_USER_DEFS_SAVE}")
+    unset(_DSD_CONFIG_USER_DEFS_SAVE)
+    if(DSD_HAVE_FOPENCOOKIE)
+        target_link_options(
+            dsd-neo_test_runtime_config_user
+            PRIVATE "LINKER:--wrap=dsd_path_fopen_user_read_file"
+        )
+        target_compile_definitions(
+            dsd-neo_test_runtime_config_user
+            PRIVATE DSD_TEST_FAULT_READS
+        )
+    endif()
+endif()
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(

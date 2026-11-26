@@ -156,7 +156,7 @@ user_config_read_line(FILE* stream, char* line, size_t line_size, int* invalid_o
     int c = getc(stream);
     if (c == EOF) {
         line[0] = '\0';
-        return 0;
+        return ferror(stream) ? -1 : 0;
     }
     size_t used = 0U;
     int invalid = 0;
@@ -172,6 +172,10 @@ user_config_read_line(FILE* stream, char* line, size_t line_size, int* invalid_o
         }
         read_line_put(line, line_size, &used, c, &invalid);
         c = getc(stream);
+    }
+    if (c == EOF && ferror(stream)) {
+        line[0] = '\0'; /* a read error, not the end: no part of the line is kept (issue #931) */
+        return -1;
     }
     line[invalid ? 0U : used] = '\0';
     if (invalid_out) {
