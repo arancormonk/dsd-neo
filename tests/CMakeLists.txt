@@ -7566,49 +7566,58 @@ target_link_libraries(
 # CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target alike), through generator expressions, so a
 # multi-config build decides per configuration. The cases are skipped there. The definition and the link options
 # follow the same answer, as --wrap without the __wrap_ definitions would not link.
-get_target_property(_dsd_rdio_runtime_type dsd-neo_runtime TYPE)
-get_target_property(_dsd_rdio_platform_type dsd-neo_platform TYPE)
-set(_dsd_rdio_lto_configs "")
-set(_dsd_rdio_cfgs
-    ${CMAKE_CONFIGURATION_TYPES}
-    ${CMAKE_BUILD_TYPE}
-    Debug
-    Release
-    RelWithDebInfo
-    MinSizeRel
-)
-list(REMOVE_DUPLICATES _dsd_rdio_cfgs)
-foreach(_dsd_rdio_cfg IN LISTS _dsd_rdio_cfgs)
-    string(TOUPPER "${_dsd_rdio_cfg}" _dsd_rdio_cfg_upper)
+# The condition, kept in one place (dsd_neo_test_wrap_condition()), as a generator expression in @out_var for
+# @target: empty where --wrap cannot work at all (Apple, Windows, a compiler other than GCC or Clang, LTO asked for,
+# shared runtime or platform libraries, -flto in the common flags), else true in each configuration that builds
+# without IPO or -flto.
+function(dsd_neo_test_wrap_condition target out_var)
+    get_target_property(_runtime_type dsd-neo_runtime TYPE)
+    get_target_property(_platform_type dsd-neo_platform TYPE)
+    set(${out_var} "" PARENT_SCOPE)
     if(
-        "${CMAKE_C_FLAGS_${_dsd_rdio_cfg_upper}} ${CMAKE_CXX_FLAGS_${_dsd_rdio_cfg_upper}}"
-            MATCHES
-            "-flto"
+        APPLE
+        OR WIN32
+        OR NOT (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        OR DSD_ENABLE_LTO
+        OR NOT _runtime_type STREQUAL "STATIC_LIBRARY"
+        OR NOT _platform_type STREQUAL "STATIC_LIBRARY"
+        OR "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
     )
-        list(APPEND _dsd_rdio_lto_configs "${_dsd_rdio_cfg}")
+        return()
     endif()
-endforeach()
-if(
-    NOT APPLE
-    AND NOT WIN32
-    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    AND NOT DSD_ENABLE_LTO
-    AND _dsd_rdio_runtime_type STREQUAL "STATIC_LIBRARY"
-    AND _dsd_rdio_platform_type STREQUAL "STATIC_LIBRARY"
-    AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
-)
-    set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
-    set(_dsd_rdio_ipo
-        "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    set(_lto_configs "")
+    set(_cfgs
+        ${CMAKE_CONFIGURATION_TYPES}
+        ${CMAKE_BUILD_TYPE}
+        Debug
+        Release
+        RelWithDebInfo
+        MinSizeRel
     )
-    set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
-    if(_dsd_rdio_lto_configs)
-        string(REPLACE ";" "," _dsd_rdio_lto_list "${_dsd_rdio_lto_configs}")
-        set(_dsd_rdio_wrap
-            "$<AND:${_dsd_rdio_wrap},$<NOT:$<CONFIG:${_dsd_rdio_lto_list}>>>"
+    list(REMOVE_DUPLICATES _cfgs)
+    foreach(_cfg IN LISTS _cfgs)
+        string(TOUPPER "${_cfg}" _cfg_upper)
+        if(
+            "${CMAKE_C_FLAGS_${_cfg_upper}} ${CMAKE_CXX_FLAGS_${_cfg_upper}}"
+                MATCHES
+                "-flto"
         )
-        unset(_dsd_rdio_lto_list)
+            list(APPEND _lto_configs "${_cfg}")
+        endif()
+    endforeach()
+    set(_ipo
+        "$<OR:$<BOOL:$<TARGET_PROPERTY:${target},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${target},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    )
+    set(_wrap "$<NOT:${_ipo}>")
+    if(_lto_configs)
+        string(REPLACE ";" "," _lto_list "${_lto_configs}")
+        set(_wrap "$<AND:${_wrap},$<NOT:$<CONFIG:${_lto_list}>>>")
     endif()
+    set(${out_var} "${_wrap}" PARENT_SCOPE)
+endfunction()
+
+dsd_neo_test_wrap_condition(dsd-neo_test_runtime_rdio_export _dsd_rdio_wrap)
+if(_dsd_rdio_wrap)
     target_compile_definitions(
         dsd-neo_test_runtime_rdio_export
         PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
@@ -7621,16 +7630,8 @@ if(
             "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private_ex>"
             "$<${_dsd_rdio_wrap}:LINKER:--wrap=pthread_join>"
     )
-    unset(_dsd_rdio_wrap)
-    unset(_dsd_rdio_ipo)
-    unset(_dsd_rdio_tgt)
 endif()
-unset(_dsd_rdio_cfg_upper)
-unset(_dsd_rdio_cfg)
-unset(_dsd_rdio_cfgs)
-unset(_dsd_rdio_lto_configs)
-unset(_dsd_rdio_platform_type)
-unset(_dsd_rdio_runtime_type)
+unset(_dsd_rdio_wrap)
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as
@@ -11480,25 +11481,24 @@ target_link_libraries(
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
 # Issue #931: the read-error cases fault the stream the config readers open, as CORE_CSV_VALIDATE does; the
-# wrapper delegates to the real opener otherwise. It needs GNU ld's --wrap and fopencookie().
-if(NOT APPLE AND NOT WIN32 AND (CMAKE_CXX_COMPILER_ID MATCHES "GNU|Clang"))
-    include(CheckSymbolExists)
-    set(_DSD_CONFIG_USER_DEFS_SAVE "${CMAKE_REQUIRED_DEFINITIONS}")
-    set(CMAKE_REQUIRED_DEFINITIONS -D_GNU_SOURCE)
-    check_symbol_exists(fopencookie "stdio.h" DSD_HAVE_FOPENCOOKIE)
-    set(CMAKE_REQUIRED_DEFINITIONS "${_DSD_CONFIG_USER_DEFS_SAVE}")
-    unset(_DSD_CONFIG_USER_DEFS_SAVE)
-    if(DSD_HAVE_FOPENCOOKIE)
-        target_link_options(
-            dsd-neo_test_runtime_config_user
-            PRIVATE "LINKER:--wrap=dsd_path_fopen_user_read_file"
-        )
-        target_compile_definitions(
-            dsd-neo_test_runtime_config_user
-            PRIVATE DSD_TEST_FAULT_READS
-        )
-    endif()
+# wrapper delegates to the real opener otherwise. They need --wrap where it works (dsd_neo_test_wrap_condition(), as
+# RUNTIME_RDIO_EXPORT) and glibc's fopencookie() with its cookie types (cookie_io_functions_t, off64_t), so they are
+# built only against glibc: musl, Apple and MSVC go without them.
+include(CheckSymbolExists)
+check_symbol_exists(__GLIBC__ "stdio.h" DSD_TEST_HAVE_GLIBC)
+dsd_neo_test_wrap_condition(dsd-neo_test_runtime_config_user _dsd_config_user_wrap)
+if(_dsd_config_user_wrap AND DSD_TEST_HAVE_GLIBC)
+    target_link_options(
+        dsd-neo_test_runtime_config_user
+        PRIVATE
+            "$<${_dsd_config_user_wrap}:LINKER:--wrap=dsd_path_fopen_user_read_file>"
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_config_user
+        PRIVATE "$<${_dsd_config_user_wrap}:DSD_TEST_FAULT_READS=1>"
+    )
 endif()
+unset(_dsd_config_user_wrap)
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(
