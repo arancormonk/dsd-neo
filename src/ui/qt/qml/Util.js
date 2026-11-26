@@ -1152,6 +1152,13 @@ function countText(n) {
     return Number(n || 0).toLocaleString(Qt.locale(), "f", 0)
 }
 
+// Issue #909: the recordings a play skipped, as History's playlist bar and a
+// sheet's Play all parts say it.
+function skippedText(count) {
+    return count === 1 ? qsTr("Skipped 1 recording that couldn't be played")
+        : qsTr("Skipped %1 recordings that couldn't be played").arg(countText(count))
+}
+
 // "312 MB of 1 GB · 1,204 recordings", or without "of …" under no limit.
 function recordingUsageText(usedBytes, limitMb, count) {
     var used = limitMb > 0 ? fill(qsTr("%1 of %2"), [sizeText(usedBytes), limitText(limitMb)]) : sizeText(usedBytes)

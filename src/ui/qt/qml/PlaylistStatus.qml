@@ -53,8 +53,7 @@ QtObject {
         return calls === 1 ? qsTr("Playing 1 call") : qsTr("Playing %1 calls").arg(Util.countText(calls));
     }
     function skippedText(count) {
-        return count === 1 ? qsTr("Skipped 1 recording that couldn't be played")
-            : qsTr("Skipped %1 recordings that couldn't be played").arg(Util.countText(count));
+        return Util.skippedText(count);
     }
     // What the bar says once @p end (an `ended` record) is how it ended.
     function endedText(end) {

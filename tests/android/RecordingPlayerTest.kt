@@ -1968,6 +1968,9 @@ private fun aPrepareThatNeverAnswersFailsItsPart() {
     }
     parts.prepared()
     check(parts.state == PLAYING && parts.last.started && parts.status.partOrdinal == 2) { "part 2 plays" }
+    check(parts.status.skipNoticeCall == 0 && parts.status.skipNoticeCount == 1) {
+        "the skip notice names the part played after it, for the sheet to say"
+    }
     parts.complete()
     check(parts.state == STOPPED && parts.status.endedReason == RecordingPlayer.ENDED_FINISHED) { "and finishes" }
     val allHung = Rig()

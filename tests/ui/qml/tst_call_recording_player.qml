@@ -1750,6 +1750,38 @@ Item {
             compare(hostCallsNamed("resumePlaybackFor").length, 1, "a press begun now resumes");
         }
 
+        // A part of the sheet's own Play all parts skipped (its prepare never answered) is said on the notice line once,
+        // on the part that played after it, in the bar's words; a later skip says the new count. A playlist's skips
+        // are the bar's to say, not a sheet's that follows it.
+        function test_parts_skip_said_on_the_part_after() {
+            var pathD = "/rec/County (12345678)/D.wav";
+            openWith([rec("t-1", pathA, 4000), rec("t-2", pathB, 4000), rec("t-3", pathC, 4000), rec("t-4", pathD, 4000)]);
+            var player = item("historyRecording");
+            tap("recordingPlayAll");
+            var said = player.announcements;
+            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 5, playbackSkipped: 1});
+            verify(!item("recordingNotice").visible, "nothing while part 2 opens");
+            testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackSkipNoticeCall: 0, playbackSkipNoticeCount: 1});
+            compare(item("recordingNotice").text, "Skipped 1 recording that couldn't be played");
+            compare(player.announcements, said + 1, "read out");
+            testContext.publishPlaybackReading({playbackPositionMs: 1500});
+            testContext.publishPlaybackReading({item: 2, playbackState: 1, playbackToken: 6, playbackPositionMs: 0, playbackSkipped: 2});
+            testContext.publishPlaybackReading({playbackState: 3, playbackPausedReason: "user"});
+            compare(player.announcements, said + 1, "said once, not on a tick, an open or a pause");
+            testContext.publishPlaybackReading({item: 3, playbackState: 2, playbackToken: 7, playbackPausedReason: "", playbackSkipNoticeCount: 2});
+            compare(item("recordingNotice").text, "Skipped 2 recordings that couldn't be played", "a later skip: the new count");
+            compare(player.announcements, said + 2);
+            sheet().visible = false;
+
+            var c = rec("t-9", pathC, 4000);
+            var uid = callHistory.pushWithRecordings([c]);
+            playPlaylist([itemOf(c, 0, 1, 1, uid)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 8, playbackSkipped: 1, playbackSkipNoticeCall: 0, playbackSkipNoticeCount: 1});
+            openRow(uid);
+            testContext.publishPlaybackReading({playbackPositionMs: 500});
+            verify(!item("recordingNotice").visible, "a playlist's skips are the bar's");
+        }
+
         // Share, Save to file and Delete pressed on part 1 while the sheet follows the play to part 2 before the
         // release: the tap is dropped, never taken for part 2. A keyboard or screen reader activation acts on the part
         // shown then, and a press begun on part 2 acts on it.

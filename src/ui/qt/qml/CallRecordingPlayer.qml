@@ -75,6 +75,8 @@ Column {
     property string failureNotice: ""
     // The refused resume read out last (its playlist and refusal count).
     property string refusalSaid: ""
+    // The skips said last (this block's play and the count), so each is said once.
+    property string skipSaid: ""
     // What the last share, save, delete or play came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
@@ -285,6 +287,24 @@ Column {
         }
     }
 
+    // Issue #909: a part of this block's own Play all parts skipped (its
+    // prepare never answered) is said on the notice line once, while the part
+    // that played after it plays, as the bar says a playlist's skips: the
+    // player's skip notice names the call that followed them (a PARTS play
+    // is all call 0) and how many. A play another surface started is not
+    // this block's to report.
+    function noteSkips() {
+        if (!ownsPlay || decoderHost.playbackMode !== 1 || decoderHost.playbackState !== 2 || !sheetShown)
+            return;
+        var count = Number(decoderHost.playbackSkipNoticeCount) || 0;
+        if (count <= 0 || Number(decoderHost.playbackSkipNoticeCall) !== Number(decoderHost.playbackCallIndex))
+            return;
+        var key = [decoderHost.playbackGeneration, count].join("|");
+        if (key === skipSaid)
+            return;
+        skipSaid = key;
+        say(Util.skippedText(count), true);
+    }
     // Issue #909: what a tap on Share, Save to file or Delete acts on (their
     // pressKey): the part shown, by its id and the identity the store
     // indexed, so a part shown in its place while the press is held (the
@@ -463,6 +483,7 @@ Column {
         failureKey = "";
         failureNotice = "";
         refusalSaid = "";
+        skipSaid = "";
         missingAway = "";
         notice = "";
         noticeProblem = false;
@@ -656,6 +677,7 @@ Column {
         ignoreUnknownSignals: true
         function onPlaybackChanged() {
             player.noteFailure();
+            player.noteSkips();
         }
         function onPlaybackPositionChanged() {
             if (player.seekTargetMs >= 0 && Math.abs(decoderHost.playbackPositionMs - player.seekTargetMs) < 1000) {
