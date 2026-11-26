@@ -2696,6 +2696,7 @@ check_recording_playback() {
 
     r.nextGeneration = 7;
     check(host.playRecordingOwned(a) == 7, "a sheet's play answers its generation");
+    check(host.playbackSize() == -1, "a single recording's play names its file by path alone");
     check(r.plays == 1 && r.played == a && r.arrayPlays == 0, "a single play reaches the platform's player by path");
     check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == a
               && host.playbackGeneration() == 7 && host.playbackMode() == DecoderHost::PlaybackSingle
@@ -2814,6 +2815,9 @@ check_playlist_arrays() {
               && host.playbackCallCount() == 2 && host.playbackPartOrdinal() == 2 && host.playbackPartCount() == 3
               && host.playbackToken() == 0 && !host.playbackCanSeek(),
           "it reads Preparing at its first item at once, as call 1 of 2, part 2 of 3");
+    check(host.playbackSize() == 1000 && host.playbackMtimeSec() == 1754714002 && host.playbackMtimeNanos() == 502
+              && host.property("playbackSize").toLongLong() == 1000,
+          "with the identity the play listed for it");
     check(host.playbackHoldPath().isEmpty(), "a playlist holds no file in the store");
     check(r.rechecks == 1 && seen.missing == QStringList({QStringLiteral("/r/old.wav")}),
           "the recheck list goes to the store with the play");
@@ -2880,6 +2884,8 @@ check_playlist_record() {
               && host.playbackState() == DecoderHost::PlaybackPlaying && host.playbackPositionMs() == 1200
               && host.playbackDurationMs() == 31000,
           "the item the record names, from the play's items");
+    check(host.playbackSize() == 1001 && host.playbackMtimeSec() == 1754714001 && host.playbackMtimeNanos() == 501,
+          "and the identity the play listed for it");
 
     // A position tick: one read, one parse, a move and no change; the recheck list is not asked.
     const int reads = r.statusReads;

@@ -147,6 +147,16 @@ DecoderHostAndroid::playRecordings(const QVariantList& items, int mode, const QS
 }
 
 void
+DecoderHostAndroid::showPlaybackItem(const PlaybackItem& item, PlaybackReading* reading) {
+    reading->path = item.path;
+    reading->title = item.title;
+    reading->key = item.key;
+    reading->size = item.size;
+    reading->mtimeSec = item.mtimeSec;
+    reading->mtimeNanos = item.mtimeNanos;
+}
+
+void
 DecoderHostAndroid::openPlayback(int generation, const QString& origin, const PlaybackRequest& request) {
     m_playback_generation = generation;
     m_playback_mode = request.mode;
@@ -154,7 +164,9 @@ DecoderHostAndroid::openPlayback(int generation, const QString& origin, const Pl
     m_playback_items.clear();
     m_playback_items.reserve(static_cast<size_t>(request.paths.size()));
     for (qsizetype i = 0; i < request.paths.size(); ++i) {
-        m_playback_items.push_back({request.paths.at(i), request.titles.value(i), request.keys.value(i)});
+        m_playback_items.push_back({request.paths.at(i), request.titles.value(i), request.keys.value(i),
+                                    request.sizes.value(i, -1), request.mtimeSecs.value(i),
+                                    request.mtimeNanos.value(i)});
     }
     const qsizetype first = qBound(qsizetype{0}, static_cast<qsizetype>(request.start), request.paths.size() - 1);
     PlaybackReading reading;
@@ -162,9 +174,7 @@ DecoderHostAndroid::openPlayback(int generation, const QString& origin, const Pl
     reading.state = PlaybackPreparing;
     reading.mode = request.mode;
     reading.origin = origin;
-    reading.path = m_playback_items.at(static_cast<size_t>(first)).path;
-    reading.title = m_playback_items.at(static_cast<size_t>(first)).title;
-    reading.key = m_playback_items.at(static_cast<size_t>(first)).key;
+    showPlaybackItem(m_playback_items.at(static_cast<size_t>(first)), &reading);
     reading.callIndex = request.calls.value(first);
     reading.callCount = request.calls.isEmpty() ? 0 : request.calls.last() + 1;
     reading.partOrdinal = request.partOrdinals.value(first);
@@ -294,10 +304,7 @@ DecoderHostAndroid::applyPlaybackRecord(const PlaybackStatusRecord& record) {
     }
     PlaybackReading reading = playback();
     if (record.itemIndex >= 0) {
-        const PlaybackItem& item = m_playback_items.at(static_cast<size_t>(record.itemIndex));
-        reading.path = item.path;
-        reading.title = item.title;
-        reading.key = item.key;
+        showPlaybackItem(m_playback_items.at(static_cast<size_t>(record.itemIndex)), &reading);
     }
     reading.generation = record.generation;
     reading.state = record.state;

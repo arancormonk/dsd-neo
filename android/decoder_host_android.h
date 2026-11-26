@@ -527,12 +527,19 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         QString path;
         QString title;
         QString key;
+        qint64 size = -1;
+        qint64 mtimeSec = 0;
+        int mtimeNanos = 0;
     };
+
+    /** @brief @p item's path, title, key and identity in @p reading. */
+    static void showPlaybackItem(const PlaybackItem& item, PlaybackReading* reading);
 
     /** @brief Publish the open play's status record (#708, #909); a play that ended is polled no more. True when it
      * took the recheck list. */
     bool refreshPlayback();
-    /** @brief Publish @p record, the open play's, with its item's path, title and key from the play's items. */
+    /** @brief Publish @p record, the open play's, with its item's path, title, key and identity from the play's
+     * items. */
     void applyPlaybackRecord(const PlaybackStatusRecord& record);
     /** @brief The platform took @p request as play @p generation: it is the play open now, published Preparing. */
     void openPlayback(int generation, const QString& origin, const PlaybackRequest& request);

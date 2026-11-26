@@ -301,9 +301,9 @@ playback_item_call(const QVariantMap& item, int* call) {
 /* The readings a change of which is news on playbackChanged: all but the position. */
 auto
 playback_shown(const DecoderHost::PlaybackReading& r) {
-    return std::tie(r.generation, r.state, r.durationMs, r.error, r.mode, r.origin, r.path, r.title, r.key, r.token,
-                    r.callIndex, r.callCount, r.partOrdinal, r.partCount, r.gap, r.interrupted, r.canSeek,
-                    r.pausedReason, r.endedReason, r.skipped);
+    return std::tie(r.generation, r.state, r.durationMs, r.error, r.mode, r.origin, r.path, r.title, r.key, r.size,
+                    r.mtimeSec, r.mtimeNanos, r.token, r.callIndex, r.callCount, r.partOrdinal, r.partCount, r.gap,
+                    r.interrupted, r.canSeek, r.pausedReason, r.endedReason, r.skipped);
 }
 
 } // namespace

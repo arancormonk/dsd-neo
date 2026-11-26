@@ -97,6 +97,9 @@ class DecoderHost : public QObject {
     Q_PROPERTY(qint64 playbackToken READ playbackToken NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackKey READ playbackKey NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackTitle READ playbackTitle NOTIFY playbackChanged)
+    Q_PROPERTY(qint64 playbackSize READ playbackSize NOTIFY playbackChanged)
+    Q_PROPERTY(qint64 playbackMtimeSec READ playbackMtimeSec NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackMtimeNanos READ playbackMtimeNanos NOTIFY playbackChanged)
     Q_PROPERTY(int playbackCallIndex READ playbackCallIndex NOTIFY playbackChanged)
     Q_PROPERTY(int playbackCallCount READ playbackCallCount NOTIFY playbackChanged)
     Q_PROPERTY(int playbackPartOrdinal READ playbackPartOrdinal NOTIFY playbackChanged)
@@ -187,6 +190,9 @@ class DecoderHost : public QObject {
         QString path;
         QString title;
         QString key;
+        qint64 size = -1;
+        qint64 mtimeSec = 0;
+        int mtimeNanos = 0;
         qint64 token = 0;
         int callIndex = -1;
         int callCount = 0;
@@ -412,7 +418,9 @@ class DecoderHost : public QObject {
      * none); a new one is opened under a new token, even the same file again, so a command carrying the token of a
      * gesture begun on another recording is dropped (seekPlaybackFor() and its kin).
      * playbackPath, playbackTitle and playbackKey are the open item's path, call name and History row uid, as the play
-     * listed them. playbackCallIndex and playbackCallCount place its call in the play (-1 and 0: none);
+     * listed them, and playbackSize, playbackMtimeSec and playbackMtimeNanos the file's identity as the play listed it
+     * (the recording store's indexed identity; size -1 for a single recording's play, which names its file by path
+     * alone). playbackCallIndex and playbackCallCount place its call in the play (-1 and 0: none);
      * playbackPartOrdinal and playbackPartCount place the part among all its call's recordings (0: none).
      * playbackGap: the one-second pause after a call's last part. playbackInterrupted: halted for another app's audio
      * (a phone call, a navigation prompt), carrying on by itself after. playbackCanSeek: a seek would move it now.
@@ -482,6 +490,21 @@ class DecoderHost : public QObject {
     QString
     playbackTitle() const {
         return m_playback.title;
+    }
+
+    qint64
+    playbackSize() const {
+        return m_playback.size;
+    }
+
+    qint64
+    playbackMtimeSec() const {
+        return m_playback.mtimeSec;
+    }
+
+    int
+    playbackMtimeNanos() const {
+        return m_playback.mtimeNanos;
     }
 
     int
