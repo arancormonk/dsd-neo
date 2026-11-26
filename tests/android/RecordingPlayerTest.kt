@@ -2173,6 +2173,73 @@ private fun aCompletionQueuedBeforeARestartIsDropped() {
     check(rig.opener.opened.size == 1 && !open.released) { "on the same open descriptor" }
 }
 
+/**
+ * Only a part playing ends a paused stretch: a resume from the gap, or the focus back after an interruption, while the
+ * next part opens keeps the stretch from its start, so a pause again before a part plays finds the deadline.
+ */
+private fun aResumeKeepsThePausedStretchUntilAPartPlays() {
+    val gap = Rig()
+    val g = gap.queue(1, 1)
+    gap.prepared()
+    gap.complete()
+    gap.machine.pause()
+    gap.elapse(599_950)
+    check(gap.state == PAUSED && gap.status.gap) { "a paused gap" }
+    gap.machine.resume()
+    check(gap.state == PREPARING && gap.status.call == 1 && gap.focus.held) { "the next call opens, the focus granted" }
+    gap.nowMs += 100
+    gap.machine.pause()
+    check(gap.state == STOPPED && gap.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "paused again 600.05 s from the first pause: it ends"
+    }
+    check(gap.service.ends == listOf(g to RecordingPlayer.ENDED_TIMEOUT)) { "the service is told once" }
+
+    // The same resume, its part prepared after the deadline: it plays, and that ends the stretch.
+    val plays = Rig()
+    plays.queue(1, 1)
+    plays.prepared()
+    plays.complete()
+    plays.machine.pause()
+    plays.elapse(599_950)
+    plays.machine.resume()
+    plays.elapse(200)
+    check(plays.state == PREPARING) { "held off while it opens" }
+    plays.prepared()
+    check(plays.state == PLAYING && plays.scheduler.live().none { it.delayMs == RecordingPlayer.PAUSED_LIMIT_MS }) {
+        "it plays: the stretch is over"
+    }
+    plays.machine.pause()
+    plays.elapse(599_999)
+    check(plays.state == PAUSED) { "a new pause starts a new stretch" }
+
+    // Interrupted, the next call opening: the focus back is no part playing.
+    val back = Rig()
+    back.queue(1, 1)
+    back.prepared()
+    back.machine.onFocusChange(back.focus.epoch, FocusChange.LOST_TRANSIENT)
+    back.elapse(599_000)
+    back.machine.next()
+    back.machine.onFocusChange(back.focus.epoch, FocusChange.GAINED)
+    check(back.state == PREPARING && !back.status.interrupted) { "the focus back while the part opens" }
+    back.nowMs += 1_100
+    back.machine.pause()
+    check(back.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "paused 600.1 s from the interruption: it ends" }
+
+    // Interrupted again before the part plays: the hold-off ends and the deadline counts from the first pause.
+    val again = Rig()
+    again.queue(1, 1)
+    again.prepared()
+    again.complete()
+    again.machine.pause()
+    again.elapse(599_000)
+    again.machine.resume()
+    again.machine.onFocusChange(again.focus.epoch, FocusChange.LOST_TRANSIENT)
+    again.elapse(999)
+    check(again.state == PREPARING && again.status.interrupted) { "not yet" }
+    again.elapse(1)
+    check(again.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "ten minutes from the first pause: it ends" }
+}
+
 fun main() {
     aPlayStartsOncePreparedAndHoldsTheFocus()
     aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted()
@@ -2220,5 +2287,6 @@ fun main() {
     aPrepareThatNeverAnswersFailsItsPart()
     aPartsSetupRunsOffTheMachinesThread()
     aCompletionQueuedBeforeARestartIsDropped()
+    aResumeKeepsThePausedStretchUntilAPartPlays()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

@@ -841,7 +841,8 @@ DSD-neo leaves the media buttons alone, as before.
 
 - **Pause** anywhere (the bar, the sheet, the notification, the lock screen, a media button or a headset tap) keeps the
   position and the notification, with Play to go on. A playlist left paused ends after 10 minutes (**Stopped after 10
-  minutes paused**); moving with Next or Previous while paused does not add time.
+  minutes paused**); moving with Next or Previous while paused does not add time, and neither does Play until a call
+  is actually playing again: paused again while the next call is still opening, it ends on the same 10 minutes.
 - Unplugging headphones pauses it (**Paused: headphones unplugged**).
 - A phone call, a navigation prompt or another app's short sound pauses it, and it carries on by itself when that ends
   (**Paused for another app's audio**). Meanwhile the lock screen shows Play, which changes nothing; to keep it from

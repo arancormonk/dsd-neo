@@ -19953,12 +19953,14 @@ Qt Quick frontend (`src/ui/qt`):
       interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the carry-on,
       B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
       every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
-      (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume ends it
-      only once the focus is granted, so one refused as the next part prepares keeps the pause's start; a resume pressed
-      before the deadline holds it off, across parts that fail or are skipped on the way, until a part is granted the
-      focus and plays, the focus is refused, it is paused again (the deadline is back from the pause and ends it at once
-      if the 10 minutes have passed) or the search ends (finished, unplayable), so a part still preparing at 10 minutes
-      does not end "timeout"; the search bounds it, each recording visited once and each open at most ten seconds),
+      (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume, in a
+      part, from the gap, at an interruption's end or by a media key, ends it only when a part starts playing, not at
+      the press nor at the focus grant, so one refused, interrupted or paused again as the next part opens keeps the
+      pause's start; a resume pressed before the deadline holds it off, across parts that fail or are skipped on the
+      way, until a part plays, the focus is refused or lost for a while, it is paused again (the deadline is back from
+      the pause and ends it at once if the 10 minutes have passed) or the search ends (finished, unplayable), so a part
+      still preparing at 10 minutes does not end "timeout"; the search bounds it, each recording visited once and each
+      open at most ten seconds),
       checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's
       awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered
       on the looper while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.

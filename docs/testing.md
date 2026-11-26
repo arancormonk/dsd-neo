@@ -212,7 +212,8 @@ thread (a fake setup held, run late or failed: a setup stuck in a read failing i
 meanwhile and the late results released, every part stuck ending "unplayable", a result after a move released, a
 prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), an error in the gap
 releasing the part's player so that Previous reopens the file, a completion queued before a Previous restart dropped
-(the new pass's own completion reaching the gap), and
+(the new pass's own completion reaching the gap), a resume from the paused gap or the focus back while the next part
+opens keeping the paused stretch until a part plays (paused again 600.05 s from the first pause: "timeout"), and
 `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build of the
 same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
