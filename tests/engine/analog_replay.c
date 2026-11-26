@@ -83,6 +83,10 @@
  * T the row's received tone as its text names it, "CTCSS 100.0 Hz", or "none").
  * tests/analog_recording_check.cmake reads those lines with the recordings and the journal.
  *
+ * --analog-synth-burst RATE_HZ:DSP_KHZ:BASE (issue #899) makes a 3.0 s idle channel at run time, white noise at RATE_HZ
+ * with one NFM burst from 1.0 to 2.0 s, and a sidecar that records DSP_KHZ through BASE half-band decimation (post 1),
+ * writes it to the private directory and adds `--iq-replay` for it: the multi-pass chain of a dongle at that rate,
+ * with no fixture committed.
  * --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS (issue #667) replays the first AT_MS of the --iq-replay capture, then
  * a GAP_MS gap in the radio stream as a USB recovery records one (a RETUNE to the same centre, the muted samples and a
  * RESET, each named usb_recovery), then the first THEN_MS of FIXTURE, another committed 48 kHz capture named without
@@ -306,6 +310,18 @@ typedef struct {
 static analog_gap_join g_gap_join;
 static const char k_gap_join_arg[] = "--analog-gap-join";
 
+/* The recorded chain of the idle channel with one burst the host makes and replays (--analog-synth-burst); unset makes
+   none. */
+typedef struct {
+    int set;
+    long rate_hz;
+    long dsp_bw_khz;
+    long base;
+} analog_synth_burst_chain;
+
+static analog_synth_burst_chain g_synth_burst;
+static const char k_synth_burst_arg[] = "--analog-synth-burst";
+
 /* ---- argument handling ---------------------------------------------------------------------------------------- */
 
 typedef struct {
@@ -395,6 +411,8 @@ analog_usage(void) {
                 "  --analog-pcm-lowpass-hz HZ        low-pass that audio at HZ first, as an SDR program's filter\n"
                 "  --analog-raw-wav-min-rms-dbfs DB  record the -6 raw WAV to a private file; RMS level of that WAV\n"
                 "  --analog-synth-pauses SEED        replay a made NFM capture of bursts with pauses between them\n"
+                "  --analog-synth-burst RATE_HZ:DSP_KHZ:BASE  replay a made idle channel with one NFM burst, white\n"
+                "                                    noise at RATE_HZ recorded at DSP_KHZ through BASE\n"
                 "  --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS  replay the capture to AT_MS, a recorded stream\n"
                 "                                    gap, then FIXTURE to THEN_MS\n"
                 "  --analog-scene NAME               replay a made scene of voice bursts, find each recording in it\n"
@@ -483,12 +501,13 @@ static int
 analog_is_host_option(const char* name) {
     return analog_find_scalar(name) != NULL || analog_find_probe_limit(name) >= 0 || strcmp(name, k_probe_hz_arg) == 0
            || strcmp(name, k_gap_join_arg) == 0 || strcmp(name, k_scene_arg) == 0
-           || strcmp(name, k_keep_output_arg) == 0 || strcmp(name, k_audio_out_arg) == 0;
+           || strcmp(name, k_keep_output_arg) == 0 || strcmp(name, k_audio_out_arg) == 0
+           || strcmp(name, k_synth_burst_arg) == 0;
 }
 
-/* One ':'-ended field of @p *text, a whole number of ms from 1 to 60000; advances past it. */
+/* One ':'-ended field of @p *text, a whole number from @p min_value to @p max_value; advances past it. */
 static int
-analog_parse_gap_ms(const char** text, long* out) {
+analog_parse_long_field(const char** text, long min_value, long max_value, long* out) {
     char field[16];
     const char* colon = strchr(*text, ':');
     const size_t len = colon != NULL ? (size_t)(colon - *text) : strlen(*text);
@@ -498,7 +517,31 @@ analog_parse_gap_ms(const char** text, long* out) {
     DSD_MEMCPY(field, *text, len);
     field[len] = '\0';
     *text = colon != NULL ? colon + 1 : *text + len;
-    return dsd_parse_long_strict(field, 10, 1L, 60000L, out);
+    return dsd_parse_long_strict(field, 10, min_value, max_value, out);
+}
+
+/* One ':'-ended field of @p *text, a whole number of ms from 1 to 60000; advances past it. */
+static int
+analog_parse_gap_ms(const char** text, long* out) {
+    return analog_parse_long_field(text, 1L, 60000L, out);
+}
+
+/* RATE_HZ:DSP_KHZ:BASE (--analog-synth-burst): a capture rate from 8 kHz to 3.2 MS/s, the DSP bandwidth its sidecar
+   records and a power-of-two base decimation from 1 to 1024 that divides the rate. */
+static int
+analog_parse_synth_burst(const char* text) {
+    const char* p = text;
+    analog_synth_burst_chain c = {1, 0L, 0L, 0L};
+    if (analog_parse_long_field(&p, 8000L, 3200000L, &c.rate_hz) != 0
+        || analog_parse_long_field(&p, 4L, 72L, &c.dsp_bw_khz) != 0
+        || analog_parse_long_field(&p, 1L, 1024L, &c.base) != 0 || *p != '\0' || (c.base & (c.base - 1L)) != 0
+        || c.rate_hz % c.base != 0L) {
+        DSD_FPRINTF(stderr, "%s: expected RATE_HZ:DSP_KHZ:BASE (BASE a power of two dividing RATE_HZ), got '%s'\n",
+                    k_synth_burst_arg, text);
+        return -1;
+    }
+    g_synth_burst = c;
+    return 0;
 }
 
 /* AT_MS:GAP_MS:FIXTURE:THEN_MS (--analog-gap-join). */
@@ -533,6 +576,9 @@ static int
 analog_apply_option(const char* name, const char* value) {
     if (strcmp(name, k_gap_join_arg) == 0) {
         return analog_parse_gap_join(value);
+    }
+    if (strcmp(name, k_synth_burst_arg) == 0) {
+        return analog_parse_synth_burst(value);
     }
     const analog_scalar_arg* scalar = analog_find_scalar(name);
     if (scalar != NULL) {
@@ -1327,9 +1373,10 @@ analog_synth_cu8(double x) {
     return (unsigned char)fmin(fmax(v, 0.0), 255.0);
 }
 
-/* The capture's sidecar, as tools/build_iq_fixtures.py writes nfm_burst_synth's, for @p data_bytes of cu8 data. */
+/* A made capture's sidecar, as tools/build_iq_fixtures.py writes nfm_burst_synth's, for @p data_bytes of cu8 data
+   recorded at @p rate_hz through @p base half-band decimation (post 1) at a DSP bandwidth of @p dsp_bw_khz. */
 static int
-analog_synth_sidecar(analog_capture* cap, size_t data_bytes) {
+analog_synth_sidecar_chain(analog_capture* cap, size_t data_bytes, long rate_hz, long dsp_bw_khz, long base) {
     cap->json = (unsigned char*)malloc(ANALOG_SYNTH_JSON_MAX);
     if (cap->json == NULL) {
         return -1;
@@ -1339,20 +1386,26 @@ analog_synth_sidecar(analog_capture* cap, size_t data_bytes) {
         "{\n  \"format\": \"dsd-neo-iq\",\n  \"version\": 1,\n  \"sample_format\": \"cu8\",\n  \"iq_order\": \"IQ\",\n"
         "  \"endianness\": \"none\",\n  \"capture_stage\": \"post_mute_pre_widen\",\n  \"sample_rate_hz\": %d,\n"
         "  \"center_frequency_hz\": 851375000,\n  \"capture_center_frequency_hz\": 851375000,\n  \"ppm\": 0,\n"
-        "  \"tuner_gain_tenth_db\": 270,\n  \"rtl_dsp_bw_khz\": 48,\n  \"base_decimation\": 1,\n"
-        "  \"post_downsample\": 1,\n  \"demod_rate_hz\": %d,\n  \"offset_tuning_enabled\": false,\n"
+        "  \"tuner_gain_tenth_db\": 270,\n  \"rtl_dsp_bw_khz\": %ld,\n  \"base_decimation\": %ld,\n"
+        "  \"post_downsample\": 1,\n  \"demod_rate_hz\": %ld,\n  \"offset_tuning_enabled\": false,\n"
         "  \"fs4_shift_enabled\": false,\n  \"combine_rotate_enabled\": false,\n  \"muted_bytes_excluded\": true,\n"
         "  \"contains_retunes\": false,\n  \"capture_retune_count\": 0,\n  \"source_backend\": \"rtl\",\n"
         "  \"source_args\": \"fixture\",\n  \"capture_started_utc\": \"1970-01-01T00:00:00Z\",\n"
         "  \"data_file\": \"" ANALOG_SYNTH_DATA "\",\n  \"data_bytes\": %zu,\n  \"capture_drops\": 0,\n"
         "  \"capture_drop_blocks\": 0,\n  \"input_ring_drops\": 0,\n"
         "  \"notes\": \"made by the analog replay host\"\n}\n",
-        ANALOG_SYNTH_RATE_HZ, ANALOG_SYNTH_RATE_HZ, data_bytes);
+        (int)rate_hz, dsp_bw_khz, base, rate_hz / base, data_bytes);
     if (n <= 0 || n >= ANALOG_SYNTH_JSON_MAX) {
         return -1;
     }
     cap->json_len = (size_t)n;
     return analog_sidecar_data_file((const char*)cap->json, &cap->name_at, &cap->name_len);
+}
+
+/* The sidecar of a capture made at 48 kHz as recorded at that DSP bandwidth, with no decimation. */
+static int
+analog_synth_sidecar(analog_capture* cap, size_t data_bytes) {
+    return analog_synth_sidecar_chain(cap, data_bytes, ANALOG_SYNTH_RATE_HZ, 48L, 1L);
 }
 
 /* Makes the capture with pauses in memory (see above); 0, or -1 (what was made stays for analog_capture_free()). */
@@ -1396,45 +1449,132 @@ analog_is_replay_arg(const char* arg) {
     return strncmp(arg, k_flag, len) == 0 && (arg[len] == '\0' || arg[len] == '=');
 }
 
-/* Makes the capture with pauses and replays it: adds `--iq-replay CAPTURE`, or with --analog-pcm-tap `-i TAP.wav` (args
-   has room for two more); 0, or -1 with a message. */
-static int
-analog_replay_synth(char** args, int* count) {
-    static char k_replay_flag[] = "--iq-replay";
-    static char k_input_flag[] = "-i";
-    for (int i = 1; i < *count; i++) {
-        if (analog_is_replay_arg(args[i])) {
-            DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses makes the capture; drop --iq-replay\n");
-            return -1;
-        }
+/* ---- an idle channel with one burst (--analog-synth-burst) ---------------------------------------------------- */
+
+/* Issue #899: the auto squelch's floor on a multi-pass chain. The host makes white complex Gaussian noise at the
+ * capture rate, 3 LSB a component as above, with one NFM burst from 1.0 to 2.0 s of the 3.0 s, keyed with 2 ms
+ * raised-cosine ramps, and a sidecar that records the chain (RATE_HZ, DSP_KHZ, BASE, post 1), so a replay runs the
+ * half-band cascade a dongle at that rate runs. The carrier stands 25 dB over the noise the channel can pass at most
+ * (the capture's noise power, scaled by the DSP rate over the capture rate when that is lower), well above a 10 dB
+ * squelch margin on any channel filter. Its 700 and 1300 Hz swell at 3 Hz as --analog-synth-pauses' do, at up to
+ * 1.5 kHz deviation, which an 8 kHz capture still holds whole (inside 0.45 x 8 kHz). The seed is fixed. */
+#define ANALOG_SYNTH_BURST_SEED         899U
+#define ANALOG_SYNTH_BURST_ON_S         1.0
+#define ANALOG_SYNTH_BURST_OFF_S        2.0
+#define ANALOG_SYNTH_BURST_TOTAL_S      3.0
+#define ANALOG_SYNTH_BURST_CNR_DB       25.0
+#define ANALOG_SYNTH_BURST_DEVIATION_HZ 1500.0
+
+/* The burst's keying envelope at @p t seconds. */
+static double
+analog_synth_burst_envelope(double t) {
+    if (t <= ANALOG_SYNTH_BURST_ON_S || t >= ANALOG_SYNTH_BURST_OFF_S) {
+        return 0.0;
     }
-    const double seed = g_synth_pauses.value;
-    if (fabs(seed - floor(seed)) > ANALOG_HZ_EPSILON) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses %g is not a whole number\n", seed);
+    const double key = fmin(t - ANALOG_SYNTH_BURST_ON_S, ANALOG_SYNTH_BURST_OFF_S - t) / ANALOG_SYNTH_RAMP_S;
+    return 0.5 - (0.5 * cos(ANALOG_PI * fmin(key, 1.0)));
+}
+
+/* Makes the idle channel with one burst in memory (see above); 0, or -1 (what was made stays for
+   analog_capture_free()). */
+static int
+analog_synth_burst_capture(analog_capture* cap, const analog_synth_burst_chain* chain) {
+    const double rate = (double)chain->rate_hz;
+    const size_t n = (size_t)lround(ANALOG_SYNTH_BURST_TOTAL_S * rate);
+    cap->data = (unsigned char*)malloc(2U * n);
+    if (cap->data == NULL
+        || analog_synth_sidecar_chain(cap, 2U * n, chain->rate_hz, chain->dsp_bw_khz, chain->base) != 0) {
         return -1;
     }
-    analog_capture cap;
-    DSD_MEMSET(&cap, 0, sizeof cap);
+    cap->data_len = 2U * n;
+    const double sigma = ANALOG_SYNTH_NOISE_LSB / ANALOG_CU8_MIDPOINT;
+    const double channel_share = fmin(1.0, (double)chain->dsp_bw_khz * 1000.0 / rate);
+    const double amplitude = sqrt(2.0 * sigma * sigma * channel_share * pow(10.0, ANALOG_SYNTH_BURST_CNR_DB / 10.0));
+    uint64_t rng = ANALOG_SYNTH_BURST_SEED;
+    double phase = 0.0;
+    for (size_t k = 0; k < n; k++) {
+        const double t = (double)k / rate;
+        const double swell = 0.6 + (0.4 * sin(2.0 * ANALOG_PI * 3.0 * t));
+        const double voice = (0.6 * sin(2.0 * ANALOG_PI * 700.0 * t)) + (0.4 * sin(2.0 * ANALOG_PI * 1300.0 * t));
+        phase =
+            fmod(phase + (2.0 * ANALOG_PI * ANALOG_SYNTH_BURST_DEVIATION_HZ * voice * swell / rate), 2.0 * ANALOG_PI);
+        const double carrier = amplitude * analog_synth_burst_envelope(t);
+        const double r = sigma * sqrt(-2.0 * log(analog_synth_uniform(&rng)));
+        const double theta = 2.0 * ANALOG_PI * analog_synth_uniform(&rng);
+        cap->data[2U * k] = analog_synth_cu8((carrier * cos(phase)) + (r * cos(theta)));
+        cap->data[(2U * k) + 1U] = analog_synth_cu8((carrier * sin(phase)) + (r * sin(theta)));
+    }
+    return 0;
+}
+
+/* Writes a made capture to the private directory and replays it: adds `--iq-replay CAPTURE`, or with --analog-pcm-tap
+   `-i TAP.wav` (args has room for two more). @p made is 0 when the capture was made, @p option names the host option
+   that made it. 0, or -1 with a message. */
+static int
+analog_replay_made(char** args, int* count, analog_capture* cap, int made, const char* option) {
     int rc = -1;
-    if (analog_synth_capture(&cap, (uint64_t)seed) != 0
-        || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_synth") == NULL) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses cannot make its capture\n");
+    if (made != 0 || dsd_test_mkdtemp(g_scaled_dir, sizeof(g_scaled_dir), "dsdneo_analog_synth") == NULL) {
+        DSD_FPRINTF(stderr, "analog replay: %s cannot make its capture\n", option);
         g_scaled_dir[0] = '\0';
     } else if (g_pcm_tap_hz.set) {
-        rc = analog_tap_write(&cap);
+        rc = analog_tap_write(cap);
     } else {
-        rc = analog_capture_write(&cap);
+        rc = analog_capture_write(cap);
         if (rc != 0) {
-            DSD_FPRINTF(stderr, "analog replay: --analog-synth-pauses cannot write its capture\n");
+            DSD_FPRINTF(stderr, "analog replay: %s cannot write its capture\n", option);
         }
     }
-    analog_capture_free(&cap);
+    analog_capture_free(cap);
     if (rc == 0) {
+        static char k_replay_flag[] = "--iq-replay";
+        static char k_input_flag[] = "-i";
         args[(*count)++] = g_pcm_tap_hz.set ? k_input_flag : k_replay_flag;
         args[(*count)++] = g_pcm_tap_hz.set ? g_tap_arg : g_scaled_meta;
         args[*count] = NULL;
     }
     return rc;
+}
+
+/* 0 when no --iq-replay is among @p args, which a made capture replaces; else -1 with a message naming @p option. */
+static int
+analog_made_has_no_replay(char* const* args, int count, const char* option) {
+    for (int i = 1; i < count; i++) {
+        if (analog_is_replay_arg(args[i])) {
+            DSD_FPRINTF(stderr, "analog replay: %s makes the capture; drop --iq-replay\n", option);
+            return -1;
+        }
+    }
+    return 0;
+}
+
+/* Makes the capture with pauses and replays it (analog_replay_made()); 0, or -1 with a message. */
+static int
+analog_replay_synth(char** args, int* count) {
+    static const char k_option[] = "--analog-synth-pauses";
+    if (analog_made_has_no_replay(args, *count, k_option) != 0) {
+        return -1;
+    }
+    const double seed = g_synth_pauses.value;
+    if (fabs(seed - floor(seed)) > ANALOG_HZ_EPSILON) {
+        DSD_FPRINTF(stderr, "analog replay: %s %g is not a whole number\n", k_option, seed);
+        return -1;
+    }
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    const int made = analog_synth_capture(&cap, (uint64_t)seed);
+    return analog_replay_made(args, count, &cap, made, k_option);
+}
+
+/* Makes the idle channel with one burst and replays it as I/Q (analog_replay_made()); 0, or -1 with a message. */
+static int
+analog_replay_synth_burst(char** args, int* count) {
+    if (analog_made_has_no_replay(args, *count, k_synth_burst_arg) != 0) {
+        return -1;
+    }
+    analog_capture cap;
+    DSD_MEMSET(&cap, 0, sizeof cap);
+    const int made = analog_synth_burst_capture(&cap, &g_synth_burst);
+    return analog_replay_made(args, count, &cap, made, k_synth_burst_arg);
 }
 
 /* ---- a recorded stream gap (--analog-gap-join) ---------------------------------------------------------------- */
@@ -3436,6 +3576,20 @@ analog_prepare_gap(char** args, int count) {
     return analog_replay_gap(args, count);
 }
 
+/* --analog-synth-burst, which makes the I/Q input and so takes no other option that makes or replaces it, and the raw
+   WAV; 0, or -1 with a message. */
+static int
+analog_prepare_synth_burst(char** args, int* count) {
+    if (g_scene.scene != NULL || g_synth_pauses.set || g_iq_gain_db.set || g_pcm_tap_hz.set || g_gap_join.set) {
+        DSD_FPRINTF(stderr, "analog replay: %s makes the I/Q input, alone\n", k_synth_burst_arg);
+        return -1;
+    }
+    if (analog_replay_synth_burst(args, count) != 0) {
+        return -1;
+    }
+    return (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, count) != 0) ? -1 : 0;
+}
+
 /* Applies the host options that change the dsd-neo arguments: the capture replayed (a scaled copy, a made one, or its
    discriminator tap as audio input) and the raw WAV. 0, or -1 with a message. */
 static int
@@ -3448,6 +3602,9 @@ analog_prepare_args(char** args, int* count) {
     if (g_scene.scene != NULL && (g_synth_pauses.set || g_iq_gain_db.set)) {
         DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input, as --analog-synth-pauses does\n");
         return -1;
+    }
+    if (g_synth_burst.set) {
+        return analog_prepare_synth_burst(args, count);
     }
     if (g_gap_join.set && analog_prepare_gap(args, *count) != 0) {
         return -1;
@@ -3472,7 +3629,7 @@ main(int argc, char** argv) {
         return analog_selftest();
     }
     /* Room for the NULL after the arguments, for the `-6 FILE` --analog-raw-wav-min-rms-dbfs adds and for the input
-       --analog-synth-pauses or --analog-scene adds (`-i udp:... -s RATE` at most). */
+       --analog-synth-pauses, --analog-synth-burst or --analog-scene adds (`-i udp:... -s RATE` at most). */
     char** args = (char**)calloc((size_t)argc + 7U, sizeof(*args));
     if (args == NULL) {
         return 1;

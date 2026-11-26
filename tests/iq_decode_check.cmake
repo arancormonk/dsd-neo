@@ -18,6 +18,9 @@
 # at least that many bytes, not all of them zero), and ANALOG_AUDIO_OUT (the
 # analog replay host's --analog-audio-out file, which the run must write there).
 #
+# An empty FIXTURE replays no capture: the analog replay host makes its own and
+# adds the --iq-replay for it (--analog-synth-burst).
+#
 # Optional -DREFERENCE_FIXTURE: another recording of the same signal (its native
 # rate, say). EXPECTED is then a pattern for any value of a decoded field (an
 # identity); the reference run's first match is the value, and every match in
@@ -116,10 +119,14 @@ if(DEFINED ANALOG_AUDIO_OUT)
     set(_analog_audio_out_args --analog-audio-out "${ANALOG_AUDIO_OUT}")
 endif()
 
+set(_replay_args)
+if(NOT "${FIXTURE}" STREQUAL "")
+    set(_replay_args --iq-replay "${FIXTURE}")
+endif()
 execute_process(
     COMMAND
         "${DSD_BIN}" --frontend none ${_mode_args} ${_analog_audio_out_args}
-        ${_event_args} ${_audio_args} --iq-replay "${FIXTURE}" -o null
+        ${_event_args} ${_audio_args} ${_replay_args} -o null
     RESULT_VARIABLE _rc
     OUTPUT_VARIABLE _out
     ERROR_VARIABLE _err
