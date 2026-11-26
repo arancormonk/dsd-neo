@@ -19937,13 +19937,13 @@ Qt Quick frontend (`src/ui/qt`):
       not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
       Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
       `LIMIT`): while two are running, each holding a thread and a `MediaPlayer` in a read that may never return, an
-      open makes no player and starts no setup and fails at once as a recording that couldn't be played (a playlist
-      moves on; SINGLE and PARTS end with the damaged-file text). One leaves the count when its work returns on its
-      setup thread, before its result is posted (not when the looper takes it), so a setup that is done and waits
-      only for delivery counts for nothing and quick moves on healthy storage never meet the limit; its player is
-      released when the result is delivered. Stop never waits for a setup. The JVM tests drive it with a fake setup that
-      holds, runs late or fails, on numbered
-      setup threads.
+      open makes no player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the
+      wait. One leaves the count when its work returns on its setup thread, before its result is posted, so a setup that
+      is done and waits only for delivery counts for nothing; the looper hears it when that result is delivered, which
+      releases its player and lets the waiting open go on under its own token. Only the current part waits, and Stop, a
+      move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
+      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
+      a setup. The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed

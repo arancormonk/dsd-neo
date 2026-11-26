@@ -229,6 +229,7 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     val scheduler = FakeScheduler { nowMs }
     val service = FakeService()
     val recheck = RecordingRecheck()
+    val abandoned = AbandonedSetups()
     val machine = RecordingPlayer(
         { token ->
             if (factoryFails) {
@@ -244,6 +245,7 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
         service,
         recheck,
         foreground,
+        abandoned,
     )
     var generation = 0
 
@@ -2269,47 +2271,130 @@ private fun aStuckSetupThreadIsReplaced() {
 }
 
 /**
- * Stuck setups are bounded for the process: with two given up and still out, an open makes no player and starts no
- * setup, and fails at once as a recording that couldn't be played; once one returns, the next open works.
+ * Stuck setups are bounded for the process: with two given up and still running, an open makes no player and starts
+ * no setup. It waits for one to return, under its own prepare timeout, so stalled storage costs one ten-second timeout
+ * per recording, one at a time, never a burst of failures; once one returns, the next open works.
  */
 private fun stuckSetupsAreBounded() {
+    val limit = RecordingPlayer.PREPARE_TIMEOUT_MS
     val rig = Rig()
     rig.opener.stuck += setOf(1, 2)
     val g = rig.queue(1, 1)
-    rig.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+    rig.elapse(limit)
     rig.turn()
     check(rig.opener.setups.size == 2 && rig.status.call == 1) { "call 1's setup stuck too" }
     rig.machine.stop(g)
-    check(rig.opener.threads == 3) { "two stuck setups given up" }
+    check(rig.opener.threads == 3 && rig.abandoned.outstanding == 2) { "two stuck setups given up" }
     val built = rig.players.size
     val handed = rig.opener.threadOf.size
+    fun nothingMade(what: String) = check(rig.players.size == built && rig.opener.threadOf.size == handed) {
+        "$what: no player made, no setup started"
+    }
 
     rig.play()
+    check(rig.state == PREPARING && rig.status.error.isEmpty()) { "a single play waits (${rig.state})" }
+    nothingMade("waiting")
+    rig.elapse(limit)
     check(rig.state == FAILED && rig.status.error == RecordingPlayer.ERROR_FAILED) {
-        "a single play fails at once as unplayable (${rig.state}, ${rig.status.error})"
+        "at its timeout it fails as unplayable (${rig.state}, ${rig.status.error})"
     }
-    check(rig.players.size == built && rig.opener.threadOf.size == handed) { "no player made, no setup started" }
     rig.queue(2, mode = MODE_PARTS)
-    check(rig.state == FAILED && rig.status.error == RecordingPlayer.ERROR_FAILED && rig.status.partOrdinal == 1) {
-        "Play all parts ends on its first part"
+    rig.elapse(limit - 1)
+    check(rig.state == PREPARING && rig.status.skipped == 0) { "Play all parts waits" }
+    rig.elapse(1)
+    check(rig.status.skipped == 1 && rig.status.partOrdinal == 2 && rig.state == PREPARING) {
+        "part 1 skipped at its timeout; part 2 waits in turn"
     }
+    rig.elapse(limit)
+    check(rig.state == FAILED && rig.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) { "then unplayable" }
     val list = rig.queue(1, 1)
-    check(rig.status.skipped == 1 && rig.state == PREPARING) { "a playlist moves on" }
-    rig.turn()
+    rig.elapse(limit - 1)
+    check(rig.state == PREPARING && rig.status.skipped == 0) { "a playlist waits" }
+    rig.elapse(1)
+    check(rig.status.skipped == 1 && rig.status.call == 1 && rig.state == PREPARING) {
+        "one skip at the timeout, not a burst: the next call waits"
+    }
+    rig.elapse(limit)
     check(rig.state == FAILED && rig.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) { "and ends unplayable" }
     check(rig.service.ends.last() == list to RecordingPlayer.ENDED_UNPLAYABLE) { "told once" }
-    check(rig.players.size == built && rig.opener.threadOf.size == handed && rig.focus.requests.isEmpty()) {
-        "none of them made a player, a setup or a focus request"
-    }
+    nothingMade("all of them")
+    check(rig.focus.requests.isEmpty()) { "and no focus asked" }
 
     rig.opener.setups[0].land()
-    check(rig.players[0].released) { "a stuck setup returns: its player released" }
+    check(rig.players[0].released && rig.abandoned.outstanding == 1) { "a stuck setup returns: its player released" }
     rig.play()
     check(rig.players.size == built + 1 && rig.last.asked && rig.opener.threadOf.last() == 3) {
         "the next open makes its player and sets up on a fresh thread"
     }
     rig.prepared()
     check(rig.state == PLAYING) { "and plays" }
+}
+
+/**
+ * An open at the limit waits for a setup thread: a setup returning lets it go on under its own token, and it plays
+ * with nothing skipped; Stop while it waits ends the play with no player made.
+ */
+private fun anOpenAtTheLimitWaitsForASetup() {
+    val rig = Rig()
+    rig.opener.stuck += setOf(1, 2)
+    rig.queue(1, 1, 1, 1)
+    rig.machine.next()
+    rig.machine.next()
+    check(rig.abandoned.outstanding == 2 && rig.status.call == 2 && rig.state == PREPARING) { "two running; call 2 waits" }
+    check(rig.players.size == 2 && rig.opener.setups.size == 2) { "with no player and no setup of its own" }
+    val token = rig.status.playToken
+    rig.opener.setups[0].land()
+    check(rig.players.size == 3 && rig.last.asked && rig.status.playToken == token) {
+        "a setup returns: the waiting open goes on under its own token"
+    }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 2 && rig.status.skipped == 0) { "it plays, nothing skipped" }
+    rig.opener.setups[1].land()
+    check(rig.state == PLAYING && rig.players[1].released) { "the other late result changes nothing" }
+
+    val stop = Rig()
+    stop.opener.stuck += setOf(1, 2)
+    val g = stop.queue(1, 1, 1)
+    stop.machine.next()
+    stop.machine.next()
+    stop.machine.stop(g)
+    check(stop.state == STOPPED && stop.status.endedReason == RecordingPlayer.ENDED_STOPPED) { "Stop while it waits" }
+    stop.opener.setups.toList().forEach { it.land() }
+    check(stop.players.size == 2 && stop.players.all { it.released } && stop.state == STOPPED) {
+        "the wait is dropped: no player made when the setups return"
+    }
+    stop.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+    check(stop.status.skipped == 0 && stop.state == STOPPED) { "and nothing times out after" }
+}
+
+/**
+ * The emulator's sequence on healthy storage, every setup still in flight: five Next at once, then five Previous at
+ * once. Nothing fails and the play goes on, landing on the first call; a setup whose work has returned when its part
+ * is dropped counts for nothing.
+ */
+private fun rapidNextThenPreviousNeverFailsAnItem() {
+    val rig = Rig()
+    rig.opener.stuck += (1..20).toSet()
+    rig.queue(1, 1, 1, 1, 1, 1, 1)
+    repeat(5) { rig.machine.next() }
+    check(rig.status.call == 5 && rig.status.skipped == 0) { "five Next: call 5, nothing skipped" }
+    repeat(5) { rig.machine.previous() }
+    check(rig.status.call == 0 && rig.status.skipped == 0 && rig.state == PREPARING) {
+        "five Previous: back on call 0 (${rig.status.call}), nothing skipped (${rig.status.skipped})"
+    }
+    while (rig.opener.setups.any { it.result == null }) {
+        rig.opener.setups.first { it.result == null }.also { it.run() }.land()
+    }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 0 && rig.status.skipped == 0) { "call 0 plays" }
+    check(rig.service.ends.isEmpty() && rig.abandoned.outstanding == 0) { "the play never ended; nothing left counted" }
+
+    val done = Rig()
+    done.opener.holding = true
+    done.queue(1, 1)
+    done.opener.setups[0].run()
+    done.machine.next()
+    check(done.abandoned.outstanding == 0) { "dropped after its work returned: it does not count" }
 }
 
 /**
@@ -2579,6 +2664,8 @@ fun main() {
     aResumeKeepsThePausedStretchUntilAPartPlays()
     stuckSetupsAreBounded()
     quickMovesNeverMeetTheLimit()
+    anOpenAtTheLimitWaitsForASetup()
+    rapidNextThenPreviousNeverFailsAnItem()
     previousWhileOpeningOpensAgain()
     aSupersededSetupStillRechecksItsFile()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
