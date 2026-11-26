@@ -50,12 +50,56 @@ ModalSheet {
         var revision = recordingsRevision;
         return rowUidKey > 0 && typeof callHistory.recordingsForUid === "function" ? callHistory.recordingsForUid(rowUidKey) : [];
     }
+    // Issue #909: "Play from here", on History's own sheet only (false where
+    // the list the playlist is taken from is not the one under the sheet:
+    // Monitor, Home, Signal search). Shown while the host has a player and the
+    // row has a recording that can be played and is among the rows History
+    // shows. The press asks History first (playFromHereRequested), so a search
+    // still being typed is part of what the list shows.
+    property bool showPlayFromHere: false
+    signal playFromHereRequested
+    readonly property bool rowPlayable: {
+        for (var i = 0; i < rowRecordings.length; i++) {
+            if (rowRecordings[i].available !== false && rowRecordings[i].deleteQueued !== true)
+                return true;
+        }
+        return false;
+    }
+    readonly property bool rowShown: {
+        var revision = recordingsRevision;
+        if (!showPlayFromHere || rowUidKey <= 0 || typeof historyView === "undefined" || !historyView)
+            return false;
+        var shownRows = historyView.count;
+        var filter = historyView.filterText + "|" + historyView.filterSystem + "|" + historyView.filterKind + "|" + historyView.historySession;
+        var row = callHistory.rowForUid(rowUidKey);
+        return row >= 0 && historyView.mapFromSource(callHistory.index(row, 0)).valid;
+    }
     accessibleName: qsTr("Activity details")
     function open(value) {
         recordingPlayer.reset();
         record = value;
         recordingsRevision++;
         visible = true;
+        recordingPlayer.follow();
+    }
+    // The calls History shows, from this one: closed once the host took them
+    // (the bar under the list shows them from then on); a press refused says
+    // why here, and what played plays on.
+    function playFromHere() {
+        if (!decoderHost.playbackSupported || rowUidKey <= 0)
+            return;
+        playFromHereRequested();
+        var outcome = historyPlaylist.start(rowUidKey) || {};
+        var result = String(outcome.result || "");
+        if (result === "accepted") {
+            visible = false;
+            return;
+        }
+        recordingPlayer.say(result === "rowNone" ? qsTr("This call's recording can't be played now.")
+            : result === "gone" ? qsTr("This call isn't in the list now.")
+            : result === "none" ? qsTr("None of the shown calls has a recording that can be played now.")
+            : result === "unsupported" ? qsTr("Recordings can't be played on this device.")
+            : qsTr("Couldn't start playing. Try again."), true);
     }
     // Issue #799: the record follows its row by uid while the sheet is open, so
     // a fragment folded in after it opened (a longer duration, a newer frequency,
@@ -126,7 +170,34 @@ ModalSheet {
         width: parent.width
         recordingList: sheet.rowRecordings
         dialogParent: sheet
+        noticeLine: recordingNotice
         title: sheet.record.when > 0 ? Util.fill(qsTr("%1 · %2"), [sheet.record.name || "", Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")]) : (sheet.record.name || "")
+    }
+    OutlineButton {
+        id: playFromHereButton
+        objectName: "historyPlayFromHere"
+        width: parent.width
+        visible: sheet.showPlayFromHere && decoderHost.playbackSupported && sheet.rowPlayable && sheet.rowShown
+        text: qsTr("Play from here")
+        Accessible.description: !navigationAllowed || !visible ? "" : qsTr("Plays this call, then each newer call History shows")
+        onClicked: sheet.playFromHere()
+    }
+    // What the recording's last action came to, and why Play from here could
+    // not start: under the recording, and shown when the recording has gone
+    // too (B3).
+    ReadableText {
+        id: recordingNotice
+        objectName: "recordingNotice"
+        width: parent.width
+        visible: text.length > 0
+        text: recordingPlayer.notice
+        // Names a saved file, which may hold markup characters.
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: recordingPlayer.noticeProblem ? Theme.alert : Theme.textSecondary
+        Accessible.role: !reachable ? Accessible.Pane : (recordingPlayer.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
     }
     OutlineButton {
         id: holdButton

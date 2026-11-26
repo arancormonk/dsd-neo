@@ -3756,6 +3756,9 @@ class ReadingMap : public QQmlPropertyMap {
                 {QStringLiteral("playbackToken"), qint64{0}},
                 {QStringLiteral("playbackKey"), QString()},
                 {QStringLiteral("playbackTitle"), QString()},
+                {QStringLiteral("playbackSize"), qint64{-1}},
+                {QStringLiteral("playbackMtimeSec"), qint64{0}},
+                {QStringLiteral("playbackMtimeNanos"), 0},
                 {QStringLiteral("playbackCallIndex"), -1},
                 {QStringLiteral("playbackCallCount"), 0},
                 {QStringLiteral("playbackPartOrdinal"), 0},
@@ -3784,7 +3787,7 @@ class ReadingMap : public QQmlPropertyMap {
      * @brief Set the playback readings @p readings names (full property names, e.g. playbackToken) at once, as one
      * platform record does: playbackChanged once when any but the position is named, playbackPositionChanged when
      * the position is. "item" names an index into the open play's items instead, setting playbackPath, Title, Key,
-     * CallIndex, PartOrdinal and PartCount from it. playbackHoldPath follows (a single recording's path while open)
+     * Size, MtimeSec, MtimeNanos, CallIndex, PartOrdinal and PartCount from it. playbackHoldPath follows (a single recording's path while open)
      * unless @p readings names it.
      */
     void
@@ -4034,6 +4037,9 @@ class ReadingMap : public QQmlPropertyMap {
         insert(QStringLiteral("playbackPath"), item.value(QStringLiteral("path")).toString());
         insert(QStringLiteral("playbackTitle"), item.value(QStringLiteral("title")).toString());
         insert(QStringLiteral("playbackKey"), item.value(QStringLiteral("key")).toString());
+        insert(QStringLiteral("playbackSize"), item.value(QStringLiteral("size"), qint64{-1}).toLongLong());
+        insert(QStringLiteral("playbackMtimeSec"), item.value(QStringLiteral("mtimeSec")).toLongLong());
+        insert(QStringLiteral("playbackMtimeNanos"), item.value(QStringLiteral("mtimeNanos")).toInt());
         insert(QStringLiteral("playbackCallIndex"), item.value(QStringLiteral("call")).toInt());
         insert(QStringLiteral("playbackCallCount"),
                playedItems.last().toMap().value(QStringLiteral("call")).toInt() + 1);
@@ -4133,6 +4139,67 @@ class ReadingMap : public QQmlPropertyMap {
         Q_EMIT recordingTransferChanged();
         return true;
     }
+};
+
+/**
+ * @brief Issue #909: History's playlist (CallHistoryPlaylist, `historyPlaylist`) as a case scripts it. Each start() is
+ * kept, oldest first, as {startUid, filterText} (the view's search when it was pressed). While `answer` is "accepted"
+ * (the default) it plays `items` as a playlist on the decoderHost map (one item of the start row when none are set),
+ * answering {accepted, the map's generation, calls}, or "refused" when the map does not take them; any other answer
+ * ("none", "gone", "rowNone", "unsupported", "refused") is given as it is, with nothing played.
+ */
+class HistoryPlaylistFake : public QObject {
+    Q_OBJECT
+  public:
+    HistoryPlaylistFake(ReadingMap* host, QObject* view, QObject* parent)
+        : QObject(parent), m_host(host), m_view(view) {}
+
+    Q_INVOKABLE QVariantMap
+    start(double startUid) {
+        calls.append(QVariantMap{
+            {QStringLiteral("startUid"), startUid},
+            {QStringLiteral("filterText"), m_view != nullptr ? m_view->property("filterText") : QVariant()}});
+        if (answer != QLatin1String("accepted")) {
+            return outcome(answer, 0, 0);
+        }
+        QVariantList played = items;
+        if (played.isEmpty()) {
+            played.append(QVariantMap{{QStringLiteral("path"), QStringLiteral("/rec/playlist.wav")},
+                                      {QStringLiteral("call"), 0},
+                                      {QStringLiteral("partOrdinal"), 1},
+                                      {QStringLiteral("partCount"), 1},
+                                      {QStringLiteral("key"), QString::number(static_cast<qint64>(startUid))}});
+        }
+        const int generation =
+            m_host->playRecordings(played, dsd_qt::DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+        if (generation <= 0) {
+            return outcome(QStringLiteral("refused"), 0, 0);
+        }
+        return outcome(QStringLiteral("accepted"), generation,
+                       played.last().toMap().value(QStringLiteral("call")).toInt() + 1);
+    }
+
+    void
+    reset() {
+        calls.clear();
+        answer = QStringLiteral("accepted");
+        items.clear();
+    }
+
+    QVariantList calls;
+    QString answer = QStringLiteral("accepted");
+    QVariantList items;
+
+  private:
+    static QVariantMap
+    outcome(const QString& result, int generation, int count) {
+        return {{QStringLiteral("result"), result},
+                {QStringLiteral("generation"), generation},
+                {QStringLiteral("calls"), count}};
+    }
+
+    ReadingMap* m_host;
+    QObject* m_view;
 };
 
 /**
@@ -4289,6 +4356,7 @@ class RecordingsFake : public QQmlPropertyMap {
         m_loading = false;
         m_storageAway = false;
         m_deleteRefusal.clear();
+        m_identityRefusal.clear();
         Q_EMIT changed();
     }
 
@@ -4305,6 +4373,27 @@ class RecordingsFake : public QQmlPropertyMap {
     deleteRecording(const QString& id) {
         note(QStringLiteral("deleteRecording"), {{QStringLiteral("id"), id}});
         return askDelete();
+    }
+
+    /* Issue #909 (B11): noted with the identity the press captured; refused as the store refuses it while
+     * setDeleteIdentityRefusal() names "changed" or "gone", then as deleteRecording(). */
+    Q_INVOKABLE bool
+    deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos) {
+        note(QStringLiteral("deleteRecordingChecked"), {{QStringLiteral("id"), id},
+                                                        {QStringLiteral("size"), size},
+                                                        {QStringLiteral("mtimeSec"), mtimeSec},
+                                                        {QStringLiteral("mtimeNanos"), mtimeNanos}});
+        if (!m_identityRefusal.isEmpty()) {
+            m_deleteRefusal = m_identityRefusal;
+            return false;
+        }
+        return askDelete();
+    }
+
+    /** @brief Issue #909: what deleteRecordingChecked() refuses with ("changed", "gone"); empty takes it. */
+    Q_INVOKABLE void
+    setDeleteIdentityRefusal(const QString& refusal) {
+        m_identityRefusal = refusal;
     }
 
     Q_INVOKABLE bool
@@ -4514,6 +4603,7 @@ class RecordingsFake : public QQmlPropertyMap {
     bool m_loading = false;
     bool m_storageAway = false;
     QString m_deleteRefusal;
+    QString m_identityRefusal;
 
     bool
     askDelete() {
@@ -6204,6 +6294,9 @@ class Setup : public QObject {
         m_host_readings->playAccepted = true;
         m_host_readings->playedItems.clear();
         m_host_readings->publishIdlePlayback();
+        if (m_history_playlist != nullptr) {
+            m_history_playlist->reset();
+        }
         setHostReading(QStringLiteral("recordingTransferActive"), false);
         setHostReading(QStringLiteral("recordingTransferBytes"), 0);
         setHostReading(QStringLiteral("recordingTransferTotalBytes"), 0);
@@ -6222,6 +6315,22 @@ class Setup : public QObject {
     Q_INVOKABLE void
     publishPlaybackReading(const QVariantMap& readings) {
         m_host_readings->publishPlaybackReading(readings);
+    }
+
+    /**
+     * @brief Issue #909: what `historyPlaylist.start()` answers next (see HistoryPlaylistFake): @p result, and for
+     * "accepted" the @p items it plays (none: one item of the start row). resetHostPlayback() puts it back to accepted.
+     */
+    Q_INVOKABLE void
+    setHistoryPlaylistAnswer(const QString& result, const QVariantList& items) {
+        m_history_playlist->answer = result;
+        m_history_playlist->items = items;
+    }
+
+    /** @brief Issue #909: each `historyPlaylist.start()` so far, oldest first, as {startUid, filterText}. */
+    Q_INVOKABLE QVariantList
+    historyPlaylistCalls() const {
+        return m_history_playlist->calls;
     }
 
     /** @brief Issue #909: the items of the last play the decoderHost map took. */
@@ -8451,6 +8560,8 @@ class Setup : public QObject {
             m_host_readings->insert(it.key(), it.value());
         }
         ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+        m_history_playlist = new HistoryPlaylistFake(m_host_readings, historyView, engine);
+        ctx->setContextProperty(QStringLiteral("historyPlaylist"), m_history_playlist);
 
         /* Issue #708: RecordingStatus at rest, a decoder run that records nothing and has storage; a case sets the
          * readings it needs (an applying switch, a refusal, failures). */
@@ -8742,6 +8853,8 @@ class Setup : public QObject {
     dsd_qt::AppPrefs* m_app_prefs = nullptr;
     ReadingMap* m_metric_readings = nullptr;
     ReadingMap* m_host_readings = nullptr;
+    /* Issue #909: History's playlist, scripted (setHistoryPlaylistAnswer()). */
+    HistoryPlaylistFake* m_history_playlist = nullptr;
     /* Issue #708: the `recordingStatus` QML reads, its readings at rest, and the `recordings` store. */
     ReadingMap* m_recording_readings = nullptr;
     QVariantMap m_recording_status;

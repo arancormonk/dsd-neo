@@ -614,6 +614,8 @@ Item {
     HistoryDetailSheet {
         id: detailSheet
         objectName: "historyDetailSheet"
+        showPlayFromHere: true
+        onPlayFromHereRequested: screen.flushPendingSearch()
         onShowOnMapRequested: function (record) {
             screen.showOnMap(record, detailSheet);
         }

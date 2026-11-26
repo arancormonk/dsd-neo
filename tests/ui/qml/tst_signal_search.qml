@@ -179,6 +179,8 @@ Item {
             }
             recordings.reset();
             callHistory.clearAll();
+            // Issue #909: a host with a player, unless a case says otherwise.
+            testContext.setPlaybackSupported(true);
             testContext.resetHostPlayback();
             testContext.setPrefs("recordCalls", false);
             testContext.setPrefs("appearance", 0);
@@ -2163,7 +2165,7 @@ Item {
             compare(findChild(player, "recordingHeader").text, "Call recording");
             verify(!findChild(player, "recordingPlayAll").visible, "one recording at a time: no parts");
             sheetTap(findChild(player, "recordingPlayButton"));
-            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().name, "playRecordingOwned");
             compare(lastHostCall().path, "/rec/Explore/c.wav");
             testContext.publishPlayback("/rec/Explore/c.wav", 2, 1000, 42000, "");
             // Another row: selected, and played in its place.
@@ -2172,13 +2174,13 @@ Item {
             verify(marked(rows[1]) && !marked(rows[0]), "the mark follows the selection");
             compare(rows[1].Accessible.name, time(1700000200) + " · 0:03, Fire Dispatch · NFM, selected");
             compare(player.part.id, "b");
-            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().name, "playRecordingOwned");
             compare(lastHostCall().path, "/rec/Explore/b.wav");
             verify(loader.item.menuOpen, "the screen under the sheet takes no taps");
             // Closing stops what it played.
             findChild(sheet, "detectionRecordingsClose").activate();
             verify(!sheet.visible);
-            compare(lastHostCall().name, "stopPlayback");
+            compare(lastHostCall().name, "stopPlaybackGeneration");
             verify(!loader.item.menuOpen);
             // Reopened, it starts on the newest again.
             findChild(loader.item, "searchHistoryActions").activate();
@@ -2208,9 +2210,9 @@ Item {
             verify(confirm.visible);
             compare(findChild(confirm, "confirmMessage").text, "Only the audio is deleted. History and detections are unchanged.");
             findChild(confirm, "confirmActionButton").activate();
-            compare(lastHostCall().name, "stopPlayback", "what plays stops first");
+            compare(lastHostCall().name, "stopPlaybackGeneration", "what plays stops first");
             var calls = recordings.calls();
-            compare(calls[calls.length - 1].name, "deleteRecording");
+            compare(calls[calls.length - 1].name, "deleteRecordingChecked");
             compare(calls[calls.length - 1].id, "b");
             // The store drops it.
             recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("a", 1700000100, 2000)]);
@@ -2219,7 +2221,7 @@ Item {
             compare(player.part.id, "a");
             tryVerify(function () { return recordingRow("a").activeFocus; }, 1000, "focus moves to it");
             sheetTap(findChild(player, "recordingPlayButton"));
-            compare(lastHostCall().name, "playRecording");
+            compare(lastHostCall().name, "playRecordingOwned");
             compare(lastHostCall().path, "/rec/Explore/a.wav");
             // Rowless from the start (never linked): the same words.
             sheetTap(findChild(player, "recordingDelete"));
@@ -2264,10 +2266,56 @@ Item {
             sheetTap(findChild(sheet, "recordingPlayButton"));
             testContext.publishPlayback("/rec/Explore/a.wav", 2, 500, 2000, "");
             recordings.setDetectionRecordings("17:40", []);
-            compare(lastHostCall().name, "stopPlayback", "no control is left for it");
+            compare(lastHostCall().name, "stopPlaybackGeneration", "no control is left for it");
             tryVerify(function () { return !sheet.visible; }, 1000, "the sheet closes");
             verify(!loader.item.menuOpen);
             verify(findChild(loader.item, "searchStartPause").enabled, "the screen takes taps again");
+            model.history = [];
+        }
+        // Issue #909 (B3): the last recording found gone when played: the sheet
+        // says so (read out once) and, as the store drops it and the sheet
+        // closes, the screen's message line shows it; the next recordings sheet
+        // takes it away.
+        function test_sheet_last_recording_missing_reaches_the_screen() {
+            var sheet = openRecordings([rec("a", 1700000100, 2000)]);
+            var player = findChild(sheet, "detectionRecordingPlayer");
+            var said = player.announcements;
+            sheetTap(findChild(sheet, "recordingPlayButton"));
+            testContext.publishPlayback("/rec/Explore/a.wav", 4, 0, 0, "missing");
+            compare(findChild(sheet, "recordingNotice").text, "This recording is gone.");
+            verify(findChild(sheet, "recordingNotice").visible, "on the sheet, though the player has gone");
+            compare(player.announcements, said + 1);
+            recordings.setDetectionRecordings("17:40", []);
+            tryVerify(function () { return !sheet.visible; }, 1000, "the sheet closes");
+            var message = findChild(loader.item, "searchMessage");
+            verify(message.text.indexOf("This recording is gone.") >= 0, "the screen shows it: " + message.text);
+            recordings.setDetectionRecordings("17:40", [rec("b", 1700000200, 2000)]);
+            findChild(loader.item, "searchHistoryActions").activate();
+            menuItem("searchActionRecordings").activate();
+            verify(sheet.visible);
+            verify(message.text.indexOf("This recording is gone.") < 0, "the next sheet takes it away");
+            sheet.visible = false;
+            model.history = [];
+        }
+        // Issue #909 (B6): with no player a row only selects; Save and Delete
+        // act on it, and closing stops nothing.
+        function test_sheet_without_a_player_selects_only() {
+            testContext.setPlaybackSupported(false);
+            var sheet = openRecordings([rec("b", 1700000200, 3000), rec("a", 1700000100, 2000)]);
+            var player = findChild(sheet, "detectionRecordingPlayer");
+            verify(!findChild(player, "recordingPlayButton").visible);
+            compare(findChild(player, "recordingProblem").text, "Recordings can't be played on this device.");
+            recordingRow("a").activate();
+            verify(recordingRow("a").selected);
+            compare(player.part.id, "a");
+            compare(testContext.hostCalls().length, 0, "nothing plays");
+            sheetTap(findChild(player, "recordingDelete"));
+            findChild(findChild(sheet, "recordingDeleteConfirm"), "confirmActionButton").activate();
+            var calls = recordings.calls();
+            compare(calls[calls.length - 1].name, "deleteRecordingChecked");
+            compare(calls[calls.length - 1].id, "a");
+            findChild(sheet, "detectionRecordingsClose").activate();
+            compare(testContext.hostCalls().length, 0, "and nothing stops");
             model.history = [];
         }
         // A recording on storage that went away stays listed and says so; it
@@ -2401,7 +2449,7 @@ Item {
             var details = findChild(sheet, "detectionCallDetails");
             sheetTap(details);
             verify(!sheet.visible, "the recordings sheet closes");
-            compare(lastHostCall().name, "stopPlayback", "and what it played stops");
+            compare(lastHostCall().name, "stopPlaybackGeneration", "and what it played stops");
             var callDetails = findChild(loader.item, "searchCallDetails");
             verify(callDetails.visible);
             compare(callDetails.record.uid, uid);

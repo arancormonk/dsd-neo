@@ -169,6 +169,8 @@ Item {
         }
         function init() {
             testContext.setHostRunning(true);
+            // Issue #909: a host with a player, so the recording sheet shows its position and seek bar.
+            testContext.setPlaybackSupported(true);
             set({radioInput: true, carrierLock: true, syncedHere: true, syncLabel: "P25p1", snrValid: true, snrDb: 9,
                 cfoHz: 0, centerFreqHz: 851012500, scanTargetCount: 3, scanTargetOrdinal: 1, scanTargetId: "target-1",
                 scanRotationActive: true, scanTimingVisible: true, scanStayPhrase: "Dwell", scanTimerLive: true,
@@ -350,8 +352,9 @@ Item {
                       + nameOf(time));
             // A seek, once the host reports where it landed: at once.
             testContext.publishPlayback(root.pathA, 2, 13000, 60000, "");
+            testContext.publishPlaybackReading({playbackToken: 1});
             wait(50);
-            bar.seekTo(40000);
+            bar.seekTo(40000, decoderHost.playbackToken);
             testContext.publishPlayback(root.pathA, 2, 40000, 60000, "");
             tryVerify(function () { return nameOf(time) === "0:40 of 1:00"; }, 100, "a seek is heard at once: "
                       + nameOf(time));
@@ -380,9 +383,9 @@ Item {
             wait(50);
             // The host leaves the seek unapplied, and playback stops.
             testContext.setSeekApplied(false);
-            bar.seekTo(50000);
+            bar.seekTo(50000, decoderHost.playbackToken);
             var calls = testContext.hostCalls();
-            compare(calls[calls.length - 1].name, "seekPlayback", "the seek was asked for");
+            compare(calls[calls.length - 1].name, "seekPlaybackFor", "the seek was asked for");
             testContext.setSeekApplied(true);
             testContext.publishPlayback(root.pathA, 2, 13250, 60000, "");
             testContext.publishPlayback(root.pathA, 0, 13500, 60000, "");

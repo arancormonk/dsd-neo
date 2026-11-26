@@ -8,15 +8,24 @@ import "Util.js" as Util
 // is and how long it runs, a bar to seek, the parts of a call heard in several
 // pieces with Play all, and Share, Save to file and Delete.
 //
-// The host plays one recording at a time (its playback readings). This block
-// reads it as its own only while the host's path is one of its parts, so a
-// recording another sheet started reads as stopped here. The host keeps no
-// queue: Play all advances when a part stops at its end (the path kept and the
-// position at the length), and a stop the user asked for clears the path, which
-// ends Play all too. A recording the host found gone ("missing") leaves the
-// block at once; the store drops it from the row soon after, or, when its
-// storage went, lists it as away, and from then on the store's availability
-// speaks for it: it shows again, away, and plays once the storage is back.
+// The host plays one thing at a time (its playback readings): a recording, a
+// call's parts or History's playlist (issue #909), the queue run by the
+// platform. This block reads the host as its own part's only while the host's
+// recording is that part's file, by path and the identity the play listed
+// (size and modification time), so a recording another sheet or a playlist
+// plays reads as stopped on every other chip. The chip shown is the user's
+// choice, apart from what plays: it follows the recording that plays while it
+// is one of these parts, on a change of item, of the parts or the sheet
+// opening (never on a position tick, and never while a Save picker or a Delete
+// confirmation is out), until the user picks a chip. A play this block starts
+// is its own by the generation the host gave it, and stops with the sheet; one
+// it follows (a playlist) plays on. A recording the host found gone ("missing")
+// leaves the block at once; the store drops it from the row soon after, or,
+// when its storage went, lists it as away, and from then on the store's
+// availability speaks for it: it shows again, away, and plays once the storage
+// is back. What a share, save, delete or play came to is the sheet's to show
+// (`notice`, on `noticeLine`), outside this block, which hides when no
+// recording is left.
 Column {
     id: player
 
@@ -31,17 +40,31 @@ Column {
     // trimmed) and may belong to a Signal search detection (issue #809), so
     // "the call stays in History" would not hold for every one.
     property string deleteMessage: qsTr("Only the audio is deleted. History and detections are unchanged.")
+    // The sheet's line that shows `notice`, through which a problem is read out
+    // (null: this block reads it out itself).
+    property Item noticeLine: null
 
     // The part shown, kept on its recording by path: a part that leaves (deleted,
     // or found missing) moves no other part's selection, and the index every label
     // uses is always one that exists.
     property int current: 0
     property string currentPath: ""
-    property bool playAll: false
-    // The recording this block last asked the host to play: it stops with the
-    // sheet even once the row's list no longer names it (a History trim).
-    property string ownedPath: ""
-    // What the last share, save or delete came to; empty when there is nothing to say.
+    // Issue #909: a chip the user picked keeps the selection where it is: it no
+    // longer follows what plays, until Play all parts or the sheet opens again.
+    property bool picked: false
+    // The play this block started, by the generation the host answered (0:
+    // none). It is this block's while the host shows that generation, and stops
+    // with the sheet even once the row's list no longer names its recording (a
+    // History trim).
+    property int ownedGeneration: 0
+    readonly property bool ownsPlay: ownedGeneration > 0 && decoderHost.playbackGeneration === ownedGeneration
+    // The recording a play of this block is being asked for, while the host is
+    // asked: a failure it publishes before it answers is this block's.
+    property string startingPath: ""
+    // The failure last said ("" while none stands), so each is said once.
+    property string failureKey: ""
+    property string failureNotice: ""
+    // What the last share, save, delete or play came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
     // The last problem read out and how many have been, for tests.
@@ -71,13 +94,40 @@ Column {
         return list;
     }
     readonly property var part: parts.length > 0 ? parts[Math.min(current, parts.length - 1)] : null
-    readonly property bool loaded: part !== null && decoderHost.playbackPath === part.path && part.path !== missingAway
+    readonly property bool loaded: part !== null && playsFile(part) && part.path !== missingAway
     // DecoderHost::PlaybackState: 0 stopped, 1 preparing, 2 playing, 3 paused, 4 failed.
     readonly property int playState: loaded ? decoderHost.playbackState : 0
-    readonly property bool wantsPlay: playState === 1 || playState === 2
+    // Issue #909 (B4): halted for another app's audio, carrying on by itself
+    // after it: wanted still, so its button pauses it (that cancels the carry-on).
+    readonly property bool interrupted: loaded && decoderHost.playbackInterrupted
+    readonly property bool wantsPlay: playState === 1 || playState === 2 || (playState === 3 && interrupted)
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
     readonly property real positionMs: seekBar.dragging ? seekBar.dragMs : loaded ? Math.min(decoderHost.playbackPositionMs, durationMs) : 0
     readonly property bool storageAway: part !== null && part.available === false
+    // Issue #909 (B6): a host with no player offers no play; the parts only
+    // select, for Share, Save and Delete.
+    readonly property bool supported: decoderHost.playbackSupported === true
+    readonly property bool anyAvailable: {
+        for (var i = 0; i < parts.length; i++) {
+            if (parts[i].available !== false)
+                return true;
+        }
+        return false;
+    }
+    readonly property string unavailableText: qsTr("Can't play right now. Another app has the audio, such as a phone call.")
+
+    // Whether the host's recording is @p recording's file: its path, and the
+    // identity the play listed for it (the store's, at the press), unless the
+    // play named its file by path alone (a single recording: size -1).
+    function playsFile(recording) {
+        if (!recording || decoderHost.playbackPath !== recording.path)
+            return false;
+        var size = Number(decoderHost.playbackSize);
+        return size < 0 || (Number(recording.identitySize) === size && Number(recording.mtimeSec) === Number(decoderHost.playbackMtimeSec) && Number(recording.mtimeNanos) === Number(decoderHost.playbackMtimeNanos));
+    }
+    readonly property bool hostOpen: decoderHost.playbackState >= 1 && decoderHost.playbackState <= 3
+    // The sheet holding this block is open.
+    readonly property bool sheetShown: dialogParent ? dialogParent.visible : visible
 
     visible: parts.length > 0
     spacing: 10
@@ -117,93 +167,193 @@ Column {
     }
     // A short state, beside the time.
     function statusText() {
-        if (!part || storageAway)
+        if (!part || storageAway || !supported)
             return "";
+        if (interrupted)
+            return qsTr("Paused for another app's audio");
         if (playState === 1)
             return qsTr("Opening…");
         if (playState === 3)
-            return qsTr("Paused");
+            return decoderHost.playbackPausedReason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         return "";
     }
-    // Why it cannot play, or what is wrong with it: a sentence, under the player.
+    // Why it cannot play, or what is wrong with it: a sentence, under the
+    // player. A play that failed is said on the notice line (failureText()).
     function problemText() {
         if (!part)
             return "";
         if (storageAway)
             return qsTr("The storage this recording is on isn't available right now.");
-        if (playState === 4) {
-            var error = decoderHost.playbackError;
-            return error === "unavailable" ? qsTr("Can't play right now. Another app has the audio, such as a phone call.")
-                : error === "unsupported" ? qsTr("Recordings can't be played on this device.")
-                : qsTr("Can't play this recording. The file may be damaged.");
-        }
+        if (!supported)
+            return qsTr("Recordings can't be played on this device.");
         if (part.failed)
             return qsTr("Saving stopped early, so the end may be missing.");
         return "";
     }
 
-    // Play from the start, or carry on where it paused.
-    function toggle() {
-        if (!part || storageAway)
+    // Issue #909 (B3): what the host's reading says went wrong with a play of
+    // this block, "" when nothing did: a failed play of its own (or one being
+    // asked for), and, for the recording shown whoever started it, a resume the
+    // platform refused the audio (it stays paused).
+    function failureText() {
+        var state = decoderHost.playbackState;
+        if (state === 3 && decoderHost.playbackPausedReason === "unavailable" && loaded)
+            return unavailableText;
+        var mine = ownsPlay || (startingPath.length > 0 && decoderHost.playbackPath === startingPath);
+        if (state !== 4 || !mine)
+            return "";
+        var error = decoderHost.playbackError;
+        return error === "missing" ? qsTr("This recording is gone.")
+            : error === "unavailable" ? unavailableText
+            : error === "unsupported" ? qsTr("Recordings can't be played on this device.")
+            : qsTr("Can't play this recording. The file may be damaged.");
+    }
+    // Each failure is said once, and read out; the line clears once the reading
+    // that said it has moved on (a resume the platform took after all).
+    function noteFailure() {
+        var text = failureText();
+        var key = text.length === 0 ? "" : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath].join("|");
+        if (key === failureKey)
             return;
-        notice = "";
+        var said = failureNotice;
+        failureKey = key;
+        // Closed, the sheet says nothing, then or once it opens again.
+        failureNotice = sheetShown ? text : "";
+        if (!sheetShown)
+            return;
+        if (text.length > 0)
+            say(text, true);
+        else if (said.length > 0 && notice === said && noticeProblem)
+            say("", false);
+    }
+
+    // Play from the start, or carry on where it paused. Pause and Resume carry
+    // the token of the recording open when they were pressed: one pressed on a
+    // recording that has moved on since does nothing.
+    function toggle() {
+        if (!supported || !part || storageAway)
+            return;
+        var token = decoderHost.playbackToken;
         if (wantsPlay) {
-            decoderHost.pausePlayback();
+            say("", false);
+            if (token > 0)
+                decoderHost.pausePlaybackFor(token);
+            else if (ownsPlay)
+                decoderHost.pausePlayback();
             return;
         }
         if (playState === 3) {
-            decoderHost.resumePlayback();
+            // A resume refused before is asked again; its sentence stays while it stands.
+            if (decoderHost.playbackPausedReason !== "unavailable")
+                say("", false);
+            if (token > 0)
+                decoderHost.resumePlaybackFor(token);
+            else if (ownsPlay)
+                decoderHost.resumePlayback();
             return;
         }
-        play(part.path);
+        playShown();
     }
-    function play(path) {
-        ownedPath = path;
-        decoderHost.playRecording(path);
+    // The part shown, alone, as this block's own play.
+    function playShown() {
+        if (!supported || !part || storageAway)
+            return;
+        var path = part.path;
+        say("", false);
+        startOwned(path, function () {
+            return decoderHost.playRecordingOwned(path);
+        });
+    }
+    // Ask the host for a play of this block (@p ask answers its generation),
+    // its first recording @p path: a failure published before the answer, or a
+    // refusal, is said.
+    function startOwned(path, ask) {
+        failureKey = "";
+        failureNotice = "";
+        startingPath = path;
+        var generation = ask();
+        startingPath = "";
+        ownedGeneration = generation > 0 ? generation : 0;
+        if (generation <= 0 && failureKey === "")
+            say(qsTr("Couldn't start playing. Try again."), true);
     }
     function select(index) {
         current = Math.max(0, Math.min(index, parts.length - 1));
         currentPath = parts.length > 0 ? parts[current].path : "";
     }
-    function playPart(index) {
-        playAll = false;
+    // A chip: the part it names is shown, and played. B1: a part whose storage
+    // is away is shown, with its away line, and not played; with no player
+    // (B6) a chip only selects.
+    function pickPart(index) {
+        picked = true;
         select(index);
-        notice = "";
-        play(parts[current].path);
+        say("", false);
+        if (supported && !storageAway)
+            playShown();
     }
+    // Issue #909: the call's parts one after another as one play of the host
+    // (B2), each with its identity from the store, the call's own numbering
+    // and this block's title; a part whose storage is away is left out (B1).
     function startPlayAll() {
-        select(0);
-        notice = "";
-        playAll = true;
-        play(parts[0].path);
-    }
-    // The host's news: a part that stopped at its end hands over to the next one
-    // while Play all runs, and a stop of any other kind ends Play all.
-    function followHost() {
-        if (!playAll)
+        if (!supported)
             return;
-        var stopped = decoderHost.playbackState === 0 || decoderHost.playbackState === 4;
-        if (!stopped || !part)
-            return;
-        var atEnd = decoderHost.playbackState === 0 && decoderHost.playbackPath === part.path && decoderHost.playbackDurationMs > 0 && decoderHost.playbackPositionMs >= decoderHost.playbackDurationMs;
-        if (atEnd && current + 1 < parts.length) {
-            select(current + 1);
-            play(parts[current].path);
-            return;
+        var items = [];
+        var first = -1;
+        for (var i = 0; i < parts.length; i++) {
+            var recording = parts[i];
+            if (recording.available === false)
+                continue;
+            if (first < 0)
+                first = i;
+            items.push({path: recording.path, size: recording.identitySize !== undefined ? Number(recording.identitySize) : -1, mtimeSec: Number(recording.mtimeSec) || 0, mtimeNanos: Number(recording.mtimeNanos) || 0, call: 0,
+                partOrdinal: i + 1, partCount: parts.length, title: title, line: "", key: ""});
         }
-        playAll = false;
+        if (items.length === 0)
+            return;
+        picked = false;
+        select(first);
+        say("", false);
+        // 1 is DecoderHost.PlaybackParts.
+        startOwned(items[0].path, function () {
+            return decoderHost.playRecordings(items, 1, "");
+        });
     }
-    // The sheet went away: what it played stops with it, since nothing else shows it.
+    // The chip shown moves to the recording that plays when it is one of these
+    // parts: on a change of item, of the parts or the sheet opening, never while
+    // a file action's picker or confirmation holds its target, and not once the
+    // user picked a chip.
+    function follow() {
+        if (picked || savePicker.visible || confirmDelete.visible || !hostOpen)
+            return;
+        for (var i = 0; i < parts.length; i++) {
+            if (playsFile(parts[i]) && parts[i].path !== missingAway) {
+                if (i !== current)
+                    select(i);
+                return;
+            }
+        }
+    }
+    // What a change of the host's item is told by; position ticks change none of it.
+    readonly property string hostItem: [decoderHost.playbackGeneration, decoderHost.playbackPath, decoderHost.playbackSize, decoderHost.playbackMtimeSec, decoderHost.playbackMtimeNanos, decoderHost.playbackCallIndex, decoderHost.playbackPartOrdinal, hostOpen].join("|")
+    onHostItemChanged: follow()
+    // The sheet went away: the play this block started stops with it, since
+    // nothing else shows it (a playlist it follows plays on). A failed one's
+    // reading is cleared, as it is no one's now.
     function stopOwnPlayback() {
-        playAll = false;
-        if (ownedPath !== "" && decoderHost.playbackPath === ownedPath && decoderHost.playbackState !== 0)
+        if (!ownsPlay)
+            return;
+        if (hostOpen)
+            decoderHost.stopPlaybackGeneration(ownedGeneration);
+        else if (decoderHost.playbackState === 4)
             decoderHost.stopPlayback();
     }
     function reset() {
         current = 0;
         currentPath = "";
-        playAll = false;
-        ownedPath = "";
+        picked = false;
+        ownedGeneration = 0;
+        failureKey = "";
+        failureNotice = "";
         missingAway = "";
         notice = "";
         noticeProblem = false;
@@ -215,7 +365,7 @@ Column {
         notice = text;
         noticeProblem = problem;
         if (problem || readOut === true)
-            Navigation.announce(player, recordingNoticeText, text);
+            Navigation.announce(player, noticeLine, text);
     }
 
     function share() {
@@ -299,11 +449,16 @@ Column {
         else if (result !== 2)
             say(qsTr("Couldn't save the recording. Try another location."), true);
     }
+    // Issue #909 (B10, B11): the confirmation's words and the file it deletes
+    // are the ones shown at the press (its id and identity), however the parts
+    // move while it is out.
     function askDelete() {
         if (!part)
             return;
-        confirmDelete.target = part;
-        confirmDelete.message = parts.length > 1 ? qsTr("Part %1 is deleted from this phone. The other parts and the call stay in History.").arg(current + 1) : deleteMessage;
+        var several = parts.length > 1;
+        confirmDelete.target = {id: part.id, path: part.path, size: part.identitySize !== undefined ? Number(part.identitySize) : -1, mtimeSec: Number(part.mtimeSec) || 0, mtimeNanos: Number(part.mtimeNanos) || 0};
+        confirmDelete.ordinal = several ? current + 1 : 0;
+        confirmDelete.message = several ? qsTr("Part %1 is deleted from this phone. The other parts and the call stay in History.").arg(current + 1) : deleteMessage;
         confirmDelete.open();
     }
     function deleteConfirmed() {
@@ -313,14 +468,25 @@ Column {
             return;
         // Issue #902: refused while storage that came back is read again, or
         // while its storage is not connected; the recording plays on, as
-        // nothing was deleted.
-        if (recordings.deleteRecording(target.id) === false) {
-            say(recordings.deleteRefusal() === "storageAway" ? qsTr("That storage isn't connected. Delete again once it's back.") : qsTr("Recordings are still loading. Try again in a moment."), true);
+        // nothing was deleted. Issue #909: and when the file under its id is
+        // another one now, or the id is gone.
+        if (recordings.deleteRecordingChecked(target.id, target.size, target.mtimeSec, target.mtimeNanos) === false) {
+            var refusal = recordings.deleteRefusal();
+            say(refusal === "changed" ? qsTr("This recording changed. Delete it again.")
+                : refusal === "gone" ? qsTr("This recording is gone.")
+                : refusal === "storageAway" ? qsTr("That storage isn't connected. Delete again once it's back.")
+                : qsTr("Recordings are still loading. Try again in a moment."), true);
             return;
         }
-        if (decoderHost.playbackPath === target.path && decoderHost.playbackState !== 0)
-            decoderHost.stopPlayback();
-        playAll = false;
+        // A single recording's play of it stops, as the store waits for it.
+        // A delete never stops parts or a playlist: the file open plays to its
+        // end, and the queue goes on.
+        if (decoderHost.playbackMode === 0 && decoderHost.playbackPath === target.path && hostOpen) {
+            if (decoderHost.playbackGeneration > 0)
+                decoderHost.stopPlaybackGeneration(decoderHost.playbackGeneration);
+            else
+                decoderHost.stopPlayback();
+        }
         say("", false);
     }
 
@@ -349,35 +515,39 @@ Column {
     }
 
     onPartsChanged: {
-        // The part it plays no longer listed (the row trimmed away, or that
-        // part's file gone from a call of several): what this block plays
-        // stops, as no control is left on screen for it.
-        var listed = false;
-        for (var p = 0; p < parts.length; p++) {
-            if (parts[p].path === ownedPath)
-                listed = true;
+        // What this block plays no longer listed: a single recording (the row
+        // trimmed away, or its file gone from a call of several) stops, as no
+        // control is left on screen for it. Its parts play on while the row
+        // lists any recording (a part deleted plays to its end and the queue
+        // goes on), and stop once it lists none.
+        if (ownsPlay && hostOpen) {
+            var listed = false;
+            for (var p = 0; p < parts.length; p++) {
+                if (playsFile(parts[p]))
+                    listed = true;
+            }
+            if (decoderHost.playbackMode === 0 ? !listed : parts.length === 0)
+                decoderHost.stopPlaybackGeneration(ownedGeneration);
         }
-        if (!listed && ownedPath !== "" && decoderHost.playbackPath === ownedPath && (decoderHost.playbackState === 1 || decoderHost.playbackState === 2 || decoderHost.playbackState === 3)) {
-            playAll = false;
-            decoderHost.stopPlayback();
-        }
-        for (var i = 0; i < parts.length; i++) {
+        var kept = false;
+        for (var i = 0; i < parts.length && !kept; i++) {
             if (parts[i].path === currentPath) {
                 current = i;
-                return;
+                kept = true;
             }
         }
-        select(current);
+        if (!kept)
+            select(current);
+        follow();
     }
 
     Connections {
         target: decoderHost
         ignoreUnknownSignals: true
         function onPlaybackChanged() {
-            player.followHost();
+            player.noteFailure();
         }
         function onPlaybackPositionChanged() {
-            player.followHost();
             if (player.seekTargetMs >= 0 && Math.abs(decoderHost.playbackPositionMs - player.seekTargetMs) < 1000) {
                 player.seekTargetMs = -1;
                 player.seekLanded++;
@@ -405,13 +575,14 @@ Column {
 
     Item {
         width: parent.width
-        height: Math.max(playButton.implicitHeight, readout.implicitHeight)
+        height: Math.max(playButton.visible ? playButton.implicitHeight : 0, readout.implicitHeight)
 
         PlayCircle {
             id: playButton
             objectName: "recordingPlayButton"
             anchors.left: parent.left
             anchors.verticalCenter: parent.verticalCenter
+            visible: player.supported
             featured: player.wantsPlay
             showPause: player.wantsPlay
             enabled: !player.storageAway
@@ -421,8 +592,8 @@ Column {
 
         Column {
             id: readout
-            anchors.left: playButton.right
-            anchors.leftMargin: 14
+            anchors.left: playButton.visible ? playButton.right : parent.left
+            anchors.leftMargin: playButton.visible ? 14 : 0
             anchors.right: parent.right
             anchors.verticalCenter: parent.verticalCenter
             spacing: 3
@@ -433,12 +604,13 @@ Column {
                 readonly property bool inReach: recordingTimeText.Accessible.focusable
                 objectName: "recordingTime"
                 width: parent.width
-                text: Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText])
+                // With no player there is no position: only the length.
+                text: player.supported ? Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText]) : player.lengthText
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
                 Accessible.role: !Navigation.allows(recordingTimeText) || !visible ? Accessible.Pane : Accessible.StaticText
-                Accessible.name: !Navigation.allows(recordingTimeText) || !visible ? "" : player.spokenTimeText
+                Accessible.name: !Navigation.allows(recordingTimeText) || !visible ? "" : player.supported ? player.spokenTimeText : player.lengthText
                 Accessible.focusable: Navigation.allows(recordingTimeText) && visible
                 Accessible.ignored: !Navigation.allows(recordingTimeText) || !visible
             }
@@ -449,6 +621,7 @@ Column {
             Item {
                 width: parent.width
                 height: 20
+                visible: player.supported
 
                 Item {
                     id: seekBar
@@ -456,9 +629,12 @@ Column {
                     readonly property bool inReach: Navigation.allows(seekBar) && seekBar.visible
                     objectName: "recordingSeekBar"
 
-                    readonly property bool seekable: player.loaded && (player.playState === 2 || player.playState === 3) && player.durationMs > 0
+                    // Issue #909: as the host's player has it (B7: never with no length).
+                    readonly property bool seekable: player.loaded && decoderHost.playbackCanSeek
                     property bool dragging: false
                     property real dragMs: 0
+                    // The recording a drag began on: its seek is dropped once another one is open.
+                    property real dragToken: 0
                     readonly property real fraction: player.durationMs > 0 ? Math.max(0, Math.min(1, player.positionMs / player.durationMs)) : 0
 
                     width: parent.width
@@ -497,10 +673,12 @@ Column {
                     function msAt(x) {
                         return Math.round(Math.max(0, Math.min(1, x / Math.max(1, track.width))) * player.durationMs);
                     }
-                    function seekTo(ms) {
+                    // A seek carries the token of the recording open when its gesture
+                    // began (@p token): one that has moved on since drops it.
+                    function seekTo(ms, token) {
                         if (seekable && Navigation.allows(seekBar)) {
                             player.seekTargetMs = Math.max(0, Math.min(player.durationMs, ms));
-                            decoderHost.seekPlayback(player.seekTargetMs);
+                            decoderHost.seekPlaybackFor(token, player.seekTargetMs);
                         }
                     }
                     // A step a screen reader sends a covered or hidden slider it still
@@ -508,7 +686,7 @@ Column {
                     function nudge(delta) {
                         if (!Navigation.allows(seekBar) || !seekBar.visible)
                             return;
-                        seekTo(player.positionMs + delta);
+                        seekTo(player.positionMs + delta, decoderHost.playbackToken);
                     }
 
                     Rectangle {
@@ -544,7 +722,7 @@ Column {
                     GatedTapHandler {
                         enabled: seekBar.seekable
                         onAllowedTap: function (eventPoint) {
-                            seekBar.seekTo(seekBar.msAt(eventPoint.position.x));
+                            seekBar.seekTo(seekBar.msAt(eventPoint.position.x), decoderHost.playbackToken);
                         }
                     }
                     // Not a tap: a drag that began on a sheet over the bar takes the
@@ -557,11 +735,12 @@ Column {
                         yAxis.enabled: false
                         onActiveChanged: {
                             if (active) {
+                                seekBar.dragToken = decoderHost.playbackToken;
                                 seekBar.dragMs = seekBar.msAt(centroid.position.x);
                                 seekBar.dragging = true;
                             } else if (seekBar.dragging) {
                                 seekBar.dragging = false;
-                                seekBar.seekTo(seekBar.dragMs);
+                                seekBar.seekTo(seekBar.dragMs, seekBar.dragToken);
                             }
                         }
                         onCentroidChanged: {
@@ -572,7 +751,7 @@ Column {
                 }
             }
 
-            // "Opening…" or "Paused". Its line is kept, empty, while there is
+            // "Opening…", "Paused" or why it paused. Its line is kept, empty, while there is
             // none, so the player is as tall stopped, opening, playing and
             // paused: a sheet centred on its content (History's, a detection's
             // recordings) would otherwise move under the finger at a tap. An
@@ -583,6 +762,8 @@ Column {
                 readonly property bool inReach: recordingStatusText.Accessible.focusable
                 objectName: "recordingStatus"
                 width: parent.width
+                // With no player nothing plays, opens or pauses.
+                visible: player.supported
                 height: Math.max(implicitHeight, statusLine.height)
                 text: player.statusText()
                 wrapMode: Text.Wrap
@@ -615,7 +796,8 @@ Column {
     }
 
     // A call heard in pieces: a chip per part, the one shown checked, and Play all
-    // as an action of its own under them.
+    // as an action of its own under them. A chip selects its part, and plays it
+    // where it can (pickPart()).
     Flow {
         width: parent.width
         spacing: 8
@@ -629,7 +811,7 @@ Column {
                 text: player.partLabel(index)
                 checkable: true
                 checked: index === player.current
-                onClicked: player.playPart(index)
+                onClicked: player.pickPart(index)
             }
         }
 
@@ -638,9 +820,10 @@ Column {
     OutlineButton {
         objectName: "recordingPlayAll"
         width: parent.width
-        visible: player.parts.length > 1
+        visible: player.parts.length > 1 && player.supported
         text: qsTr("Play all parts")
-        enabled: !player.storageAway
+        // The parts whose storage is there (B1).
+        enabled: player.anyAvailable
         onClicked: player.startPlayAll()
     }
 
@@ -674,21 +857,6 @@ Column {
         onClicked: player.askDelete()
     }
 
-    ReadableText {
-        id: recordingNoticeText
-        objectName: "recordingNotice"
-        width: parent.width
-        visible: text.length > 0
-        text: player.notice
-        // Names a saved file, which may hold markup characters.
-        textFormat: Text.PlainText
-        wrapMode: Text.Wrap
-        font.family: Theme.sans
-        font.pixelSize: Theme.fontSize(13)
-        color: player.noticeProblem ? Theme.alert : Theme.textSecondary
-        Accessible.role: !reachable ? Accessible.Pane : (player.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
-    }
-
     DocumentPicker {
         id: savePicker
         objectName: "recordingSavePicker"
@@ -696,6 +864,11 @@ Column {
         mimeType: "audio/x-wav"
         nameFilters: [qsTr("WAV audio") + " (*.wav)"]
         defaultSuffix: "wav"
+        // Following waits while the picker is out (B10), and catches up after.
+        onVisibleChanged: {
+            if (!visible)
+                player.follow();
+        }
         onAccepted: function (reference, displayName) {
             player.savePicked(reference);
         }
@@ -709,11 +882,17 @@ Column {
         id: confirmDelete
         objectName: "recordingDeleteConfirm"
         parent: player.dialogParent
+        // The file pressed on and its part number (0: a recording alone), kept from the press.
         property var target: null
-        title: player.parts.length > 1 ? qsTr("Delete part %1?").arg(player.current + 1) : qsTr("Delete this recording?")
-        confirmText: player.parts.length > 1 ? qsTr("Delete part %1").arg(player.current + 1) : qsTr("Delete recording")
+        property int ordinal: 0
+        title: ordinal > 0 ? qsTr("Delete part %1?").arg(ordinal) : qsTr("Delete this recording?")
+        confirmText: ordinal > 0 ? qsTr("Delete part %1").arg(ordinal) : qsTr("Delete recording")
         destructive: true
         onConfirmed: player.deleteConfirmed()
         onCancelled: target = null
+        onVisibleChanged: {
+            if (!visible)
+                player.follow();
+        }
     }
 }
