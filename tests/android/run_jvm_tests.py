@@ -204,12 +204,14 @@ def kotlin_codes(path, names):
     return {name: int(value) for name, value in re.findall(r"const val ([A-Z_]+) = (\d+)", text) if name in names}
 
 
-def native_enum_matches(enum_name, prefix, source, names):
-    """Whether DecoderHost's `enum_name` (members `prefix<Name>`) and the Kotlin `source`'s `names` agree."""
+def native_enum_matches(enum_name, prefix, source, names, jvm_prefix=""):
+    """Whether DecoderHost's `enum_name` (members `prefix<Name>`) and the Kotlin `source`'s `names` agree; the Kotlin
+    constants are `jvm_prefix<NAME>`."""
     header = REPO / "src/ui/qt/decoder_host.h"
     try:
         enum = re.search(rf"enum\s+{enum_name}\s*\{{([^}}]*)\}}", header.read_text(encoding="utf-8"))
-        jvm = kotlin_codes(REPO / APP_SOURCES / source, names)
+        codes = kotlin_codes(REPO / APP_SOURCES / source, {jvm_prefix + name for name in names})
+        jvm = {name[len(jvm_prefix) :]: value for name, value in codes.items()}
     except OSError as error:
         return f"cannot read the {enum_name} codes: {error}"
     if not enum:
@@ -234,6 +236,12 @@ def playback_states_match():
     """#708: the call recording player's state crosses JNI as a plain int."""
     names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED")
     return native_enum_matches("PlaybackState", "Playback", "RecordingPlayer.kt", names)
+
+
+def playback_modes_match():
+    """#909: the play's mode (one recording, a call's parts, History's playlist) crosses JNI as a plain int."""
+    names = ("SINGLE", "PARTS", "PLAYLIST")
+    return native_enum_matches("PlaybackMode", "Playback", "RecordingPlayer.kt", names, jvm_prefix="MODE_")
 
 
 def recordings_provider_contract():
@@ -1576,7 +1584,7 @@ SUITES = {
     # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
     # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
-        checks=(playback_states_match,),
+        checks=(playback_states_match, playback_modes_match),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
             Build(sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt"), tests=("PlaybackServicePhasesTest.kt",)),
