@@ -75,8 +75,9 @@ Column {
     property string failureNotice: ""
     // The refused resume read out last (its playlist and refusal count).
     property string refusalSaid: ""
-    // The skips said last (this block's play and the count), so each is said once.
-    property string skipSaid: ""
+    // The skips said last (this block's play and how many), so each is said once.
+    property int skipSaidGeneration: 0
+    property int skipSaidCount: 0
     // What the last share, save, delete or play came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
@@ -248,6 +249,10 @@ Column {
         var mine = ownsPlay || (startingPath.length > 0 && decoderHost.playbackPath === startingPath);
         if (state !== 4 || !mine)
             return "";
+        // Play all parts whose every part was skipped (none prepared in time): the skips are the news.
+        var skipped = Number(decoderHost.playbackSkipped) || 0;
+        if (decoderHost.playbackMode === 1 && decoderHost.playbackEndedReason === "unplayable" && skipped > 0)
+            return Util.skippedText(skipped);
         var error = decoderHost.playbackError;
         return error === "missing" ? qsTr("This recording is gone.")
             : error === "unavailable" ? unavailableText
@@ -291,18 +296,27 @@ Column {
     // prepare never answered) is said on the notice line once, while the part
     // that played after it plays, as the bar says a playlist's skips: the
     // player's skip notice names the call that followed them (a PARTS play
-    // is all call 0) and how many. A play another surface started is not
-    // this block's to report.
+    // is all call 0) and how many. Skips no part played after (the last part
+    // skipped) are said when the play finishes, from its end's skip count; a
+    // play whose every part was skipped says them as its failure
+    // (failureText()), and one that ends on a part that failed says only
+    // that failure. A play another surface started is not this block's to
+    // report.
     function noteSkips() {
-        if (!ownsPlay || decoderHost.playbackMode !== 1 || decoderHost.playbackState !== 2 || !sheetShown)
+        if (!ownsPlay || decoderHost.playbackMode !== 1 || !sheetShown)
             return;
-        var count = Number(decoderHost.playbackSkipNoticeCount) || 0;
-        if (count <= 0 || Number(decoderHost.playbackSkipNoticeCall) !== Number(decoderHost.playbackCallIndex))
+        var state = decoderHost.playbackState;
+        var count = 0;
+        if (state === 2 && Number(decoderHost.playbackSkipNoticeCall) === Number(decoderHost.playbackCallIndex))
+            count = Number(decoderHost.playbackSkipNoticeCount) || 0;
+        else if (state === 0 && decoderHost.playbackEndedReason === "finished")
+            count = Number(decoderHost.playbackSkipped) || 0;
+        var generation = Number(decoderHost.playbackGeneration);
+        var said = skipSaidGeneration === generation ? skipSaidCount : 0;
+        if (count <= said)
             return;
-        var key = [decoderHost.playbackGeneration, count].join("|");
-        if (key === skipSaid)
-            return;
-        skipSaid = key;
+        skipSaidGeneration = generation;
+        skipSaidCount = count;
         say(Util.skippedText(count), true);
     }
     // Issue #909: what a tap on Share, Save to file or Delete acts on (their
@@ -483,7 +497,8 @@ Column {
         failureKey = "";
         failureNotice = "";
         refusalSaid = "";
-        skipSaid = "";
+        skipSaidGeneration = 0;
+        skipSaidCount = 0;
         missingAway = "";
         notice = "";
         noticeProblem = false;

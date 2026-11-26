@@ -19793,8 +19793,9 @@ Qt Quick frontend (`src/ui/qt`):
     line but never plays, issue #909 B1) with a Play all parts action (a PARTS queue in the Kotlin player through
     `playRecordings(items, PlaybackParts, "")`, the available parts only, one transient focus kept across them,
     ending on the first part that fails, skipping one that never prepares, which the block's notice line says once
-    on the part that played after it, from the player's skip notice and in the bar's words, `Util.skippedText()`,
-    B2/B7), Share
+    on the part that played after it, from the player's skip notice and in the bar's words, `Util.skippedText()`; skips
+    no part played after are said when the play finishes (the end's skip count), a play whose every part was skipped
+    says them as its failure, and one that ends on a part that failed says only that failure, B2/B7), Share
     (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
     `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
     says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row

@@ -1782,6 +1782,44 @@ Item {
             verify(!item("recordingNotice").visible, "a playlist's skips are the bar's");
         }
 
+        // Skips no part played after are said when the sheet's Play all parts ends: the last part hangs and the play
+        // finishes, so the end's skip count is said once; one already said is not said again. A play whose every part
+        // was skipped says the skips as its failure.
+        function test_parts_skip_said_at_the_end() {
+            openWith([rec("t-1", pathA, 4000), rec("t-2", pathB, 4000), rec("t-3", pathC, 4000)]);
+            var player = item("historyRecording");
+            tap("recordingPlayAll");
+            var said = player.announcements;
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 5});
+            testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackToken: 6});
+            testContext.publishPlaybackReading({item: 2, playbackState: 1, playbackToken: 7});
+            verify(!item("recordingNotice").visible, "nothing while part 3 opens");
+            testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished", playbackSkipped: 1});
+            compare(item("recordingNotice").text, "Skipped 1 recording that couldn't be played", "part 3 hung: said at the end");
+            compare(player.announcements, said + 1, "read out");
+            testContext.publishPlaybackReading({playbackPositionMs: 4000});
+            compare(player.announcements, said + 1, "once");
+            sheet().visible = false;
+
+            openWith([rec("t-4", pathA, 4000), rec("t-5", pathB, 4000), rec("t-6", pathC, 4000)]);
+            player = item("historyRecording");
+            tap("recordingPlayAll");
+            said = player.announcements;
+            testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackToken: 8, playbackSkipped: 1, playbackSkipNoticeCall: 0, playbackSkipNoticeCount: 1});
+            compare(player.announcements, said + 1, "part 1 skipped: said on part 2");
+            testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
+            compare(player.announcements, said + 1, "the end has no skip not said yet: nothing more");
+            sheet().visible = false;
+
+            openWith([rec("t-7", pathA, 4000), rec("t-8", pathB, 4000)]);
+            player = item("historyRecording");
+            tap("recordingPlayAll");
+            said = player.announcements;
+            testContext.publishPlaybackReading({item: 1, playbackState: 4, playbackError: "failed", playbackEndedReason: "unplayable", playbackSkipped: 2});
+            compare(item("recordingNotice").text, "Skipped 2 recordings that couldn't be played", "every part skipped");
+            compare(player.announcements, said + 1, "said once, as its failure");
+        }
+
         // Share, Save to file and Delete pressed on part 1 while the sheet follows the play to part 2 before the
         // release: the tap is dropped, never taken for part 2. A keyboard or screen reader activation acts on the part
         // shown then, and a press begun on part 2 acts on it.
