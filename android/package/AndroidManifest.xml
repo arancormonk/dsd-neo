@@ -163,6 +163,13 @@
             android:exported="false"
             android:foregroundServiceType="mediaPlayback" />
 
+        <!-- #909: a History playlist plays on in the background under its own media service, with a media
+             notification and session. Same process: the queue stays in RecordingPlayback's player. -->
+        <service
+            android:name="io.github.arancormonk.dsdneo.RecordingPlaybackService"
+            android:exported="false"
+            android:foregroundServiceType="mediaPlayback" />
+
         <provider
             android:name="androidx.core.content.FileProvider"
             android:authorities="${applicationId}.qtprovider"

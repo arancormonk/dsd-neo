@@ -43,7 +43,8 @@ import org.qtproject.qt.android.bindings.QtActivity
  * queued behind the main thread — the service's own callbacks included — times out into
  * "DSD-neo isn't responding".
  *
- * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording (#708).
+ * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording a sheet plays (#708); a History
+ * playlist plays on under its own service (#909).
  *
  * [SignInAutofill] puts its host view into the content once `super.onCreate()` has set Qt's layout there, re-reads the
  * autofill service on each resume, and cancels an open framework session and takes the host away on destroy: Qt's
@@ -307,7 +308,9 @@ class DsdNeoActivity : QtActivity() {
             // about to block.
             timedStage("stopService") { stopService(Intent(this, DecoderService::class.java)) }
 
-            // A call recording playing ends with the app, and gives the audio focus back (#708).
+            // A call recording playing ends with the app, and gives the audio focus back (#708). A History playlist's
+            // service is withdrawn by its phase (#909): a promoted one is stopped here, as the decoder's is; a start
+            // not promoted yet is left to promote and retire, since stopping it first would crash the app.
             RecordingPlayback.release()
 
             // The process may end with Qt's teardown; start writing the last diagnostics now, without waiting. main() in

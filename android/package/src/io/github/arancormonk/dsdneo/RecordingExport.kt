@@ -8,9 +8,6 @@ package io.github.arancormonk.dsdneo
 import android.content.ContentResolver
 import android.os.CancellationSignal
 import android.os.OperationCanceledException
-import android.system.ErrnoException
-import android.system.Os
-import android.system.OsConstants
 import android.util.Log
 import java.io.File
 import java.io.FileDescriptor
@@ -260,46 +257,16 @@ object RecordingExport {
     }
 
     /**
-     * The recording at [path] opened once to read, never through a link at its name (O_NOFOLLOW; O_NONBLOCK, so a FIFO
-     * never holds the open), and the file opened checked to be the one [selected] names (a regular file with that size
-     * and modification time, read on the descriptor): what is read is what was checked. Null when it is gone;
+     * The recording at [path] opened once to read and checked to be the file [selected] names
+     * ([RecordingDescriptor.open]): what is read is what was checked. Null when it is gone;
      * [RecordingChangedException] otherwise, a link and a name that cannot be read included.
      */
-    internal fun openSelected(path: String, selected: Selected): InputStream? {
-        val fd = try {
-            val flags = OsConstants.O_RDONLY or OsConstants.O_NOFOLLOW or OsConstants.O_NONBLOCK or OsConstants.O_CLOEXEC
-            Os.open(path, flags, 0)
-        } catch (e: ErrnoException) {
-            // Gone only when the name is not in its folder and that folder is there (a parent that is a dangling link
-            // never looked the name up).
-            if (e.errno == OsConstants.ENOENT && parentIsFolder(path)) return null
-            // A link (ELOOP), a parent that does not resolve (ENOTDIR), no access to it, an I/O error: not the file
-            // selected as far as can be told, and the store looks again.
-            throw RecordingChangedException(path)
+    internal fun openSelected(path: String, selected: Selected): InputStream? =
+        when (val opened = RecordingDescriptor.open(path, selected.size, selected.seconds, selected.nanos)) {
+            is RecordingDescriptor.Result.Opened -> DescriptorInputStream(opened.fd)
+            RecordingDescriptor.Result.Gone -> null
+            RecordingDescriptor.Result.Changed -> throw RecordingChangedException(path)
         }
-        val same = try {
-            val stat = Os.fstat(fd)
-            OsConstants.S_ISREG(stat.st_mode) && stat.st_size == selected.size &&
-                stat.st_mtim.tv_sec == selected.seconds && stat.st_mtim.tv_nsec == selected.nanos
-        } catch (e: ErrnoException) {
-            false
-        }
-        if (!same) {
-            closeQuietly(fd)
-            throw RecordingChangedException(path)
-        }
-        return DescriptorInputStream(fd)
-    }
-
-    /** Whether the folder [path] is in is there and a folder, never followed if a link. */
-    private fun parentIsFolder(path: String): Boolean {
-        val parent = File(path).parent ?: return true
-        return try {
-            OsConstants.S_ISDIR(Os.lstat(parent).st_mode)
-        } catch (e: ErrnoException) {
-            false
-        }
-    }
 
     /** Reads [fd] and closes it with the stream: a FileInputStream made on a descriptor does not own it. */
     private class DescriptorInputStream(private val fd: FileDescriptor) : FilterInputStream(FileInputStream(fd)) {
@@ -307,16 +274,8 @@ object RecordingExport {
             try {
                 super.close()
             } finally {
-                closeQuietly(fd)
+                RecordingDescriptor.close(fd)
             }
-        }
-    }
-
-    private fun closeQuietly(fd: FileDescriptor) {
-        try {
-            Os.close(fd)
-        } catch (e: ErrnoException) {
-            // Already closed, or the close failed: a read-only descriptor has nothing to lose.
         }
     }
 

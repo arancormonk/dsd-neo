@@ -1559,17 +1559,28 @@ SUITES = {
     "downloads_save": Suite(
         builds=(
             Build(
-                sources=("DownloadsSave.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "RecordingExport.kt"),
+                sources=(
+                    "DownloadsSave.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                ),
                 tests=("DownloadsSaveTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
-    # The call recording player's state machine (#708). Plain Kotlin with no Android imports, so no stubs;
-    # RecordingPlayback runs it with a MediaPlayer and the audio focus.
+    # The call recording player's state machine (#708, #909) and the playlist service's order (#909): which play the
+    # service serves, what each delivery does, when it retires and the teardown by phase. Plain Kotlin with no Android
+    # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
+    # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
         checks=(playback_states_match,),
-        builds=(Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),),
+        builds=(
+            Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
+            Build(sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt"), tests=("PlaybackServicePhasesTest.kt",)),
+        ),
     ),
     # Call recording export and save (#708): the ZIP writer and the transfer into a document, through DocumentCopies'
     # managed write, against the same resolver stubs as the backup's copies.
@@ -1577,7 +1588,13 @@ SUITES = {
         checks=(recording_transfer_codes_match,),
         builds=(
             Build(
-                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
+                sources=(
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "DownloadsSave.kt",
+                ),
                 tests=("RecordingExportTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),
