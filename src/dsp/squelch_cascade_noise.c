@@ -8,6 +8,7 @@
 #include "squelch_cascade_noise.h"
 
 #include <dsd-neo/core/safe_api.h>
+#include <limits.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -63,7 +64,8 @@ scn_stages_ok(const dsd_noise_squelch_stage* stages, int count) {
 
 size_t
 dsd_squelch_cascade_noise_work_len(int in_period, int in_lags, const dsd_noise_squelch_stage* stages, int count) {
-    if (!scn_stages_ok(stages, count)) {
+    /* A stage's lags come from in_lags + len - 2 (scn_stage_shape()): held where that cannot overflow. */
+    if (!scn_stages_ok(stages, count) || in_lags > INT_MAX - DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS) {
         return 0U;
     }
     size_t most = scn_size(in_period, in_lags);
@@ -77,19 +79,25 @@ dsd_squelch_cascade_noise_work_len(int in_period, int in_lags, const dsd_noise_s
     return most <= SIZE_MAX / 2U ? 2U * most : 0U;
 }
 
+/* The autocorrelation of @p len real taps at lags 0..len - 1 into @p out. */
+static void
+scn_autocorr(const float* taps, int len, double* out) {
+    for (int j = 0; j < len; j++) {
+        double sum = 0.0;
+        for (int t = 0; t + j < len; t++) {
+            sum += (double)taps[t] * (double)taps[t + j];
+        }
+        out[j] = sum;
+    }
+}
+
 /* One stage on stationary noise: R'[m] = sum_j g[j] R[2m - j], g the taps' autocorrelation, into @p out. */
 static void
 scn_stage_stationary(const dsd_squelch_floor_periodic_noise* in, const dsd_noise_squelch_stage* stage, int out_lags,
                      double* out) {
     double g[DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS];
     const int len = stage->len;
-    for (int j = 0; j < len; j++) {
-        double sum = 0.0;
-        for (int t = 0; t + j < len; t++) {
-            sum += (double)stage->taps[t] * (double)stage->taps[t + j];
-        }
-        g[j] = sum;
-    }
+    scn_autocorr(stage->taps, len, g);
     for (int k = 0; k < out_lags; k++) {
         double sum = 0.0;
         for (int j = -(len - 1); j <= len - 1; j++) {
@@ -170,13 +178,7 @@ dsd_squelch_cascade_noise(const dsd_squelch_floor_periodic_noise* in, const dsd_
 static void
 scn_taps_stationary(const dsd_squelch_floor_periodic_noise* in, const float* taps, int len, double* rc, int lags,
                     double* out) {
-    for (int d = 0; d < len; d++) {
-        double r = 0.0;
-        for (int i = 0; i + d < len; i++) {
-            r += (double)taps[i] * (double)taps[i + d];
-        }
-        rc[d] = r;
-    }
+    scn_autocorr(taps, len, rc);
     for (int lag = 0; lag < lags; lag++) {
         double sum = 0.0;
         const int lo = lag - (len - 1);
@@ -209,12 +211,22 @@ scn_taps_periodic(const dsd_squelch_floor_periodic_noise* in, const float* taps,
     }
 }
 
+/* The arguments dsd_squelch_cascade_noise_through_taps() takes: noise with a shape, taps, room for R_c when the
+   noise is stationary, and an output lag count that fits an int. */
+static int
+scn_taps_args_ok(const dsd_squelch_floor_periodic_noise* in, const float* taps, int taps_len, int have_rc,
+                 size_t rc_len) {
+    if (!in || !in->cov || in->period < 1 || in->lags < 1 || !taps || taps_len < 1 || in->lags > INT_MAX - taps_len) {
+        return 0;
+    }
+    return in->period > 1 || (have_rc && rc_len >= (size_t)taps_len);
+}
+
 int
 dsd_squelch_cascade_noise_through_taps(const dsd_squelch_floor_periodic_noise* in, const float* taps, int taps_len,
-                                       double* rc, double* out_cov, size_t out_len,
+                                       double* rc, size_t rc_len, double* out_cov, size_t out_len,
                                        dsd_squelch_floor_periodic_noise* out) {
-    if (!in || !in->cov || in->period < 1 || in->lags < 1 || !taps || taps_len < 1 || !out_cov || !out
-        || (in->period == 1 && !rc) || in->lags > INT32_MAX - taps_len) {
+    if (!scn_taps_args_ok(in, taps, taps_len, rc != NULL, rc_len) || !out_cov || !out) {
         return -1;
     }
     const int lags = in->lags + taps_len - 1;
@@ -252,7 +264,8 @@ dsd_squelch_cascade_noise_floor_plan(dsd_squelch_floor_plan* out, const float* t
     dsd_squelch_floor_periodic_noise hb;
     dsd_squelch_floor_periodic_noise noise;
     if (dsd_squelch_cascade_noise(NULL, stages, count, work, sizeof(work) / sizeof(work[0]), &hb) != 0
-        || dsd_squelch_cascade_noise_through_taps(&hb, run, run_len, rc, chan, sizeof(chan) / sizeof(chan[0]), &noise)
+        || dsd_squelch_cascade_noise_through_taps(&hb, run, run_len, rc, sizeof(rc) / sizeof(rc[0]), chan,
+                                                  sizeof(chan) / sizeof(chan[0]), &noise)
                != 0) {
         return -1;
     }

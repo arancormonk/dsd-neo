@@ -41,7 +41,8 @@ enum {
 /**
  * @brief The doubles of workspace dsd_squelch_cascade_noise() needs for noise of @p in_period phases and @p in_lags
  * lags (1 and 1 for white noise) through @p stages (@p count of them): twice the largest of the input and every
- * stage's output (period x lags), the two halves it alternates between. 0 for bad arguments.
+ * stage's output (period x lags), the two halves it alternates between. 0 for bad arguments (among them @p in_lags past
+ * INT_MAX - DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS, where a stage's lag count could overflow).
  */
 size_t dsd_squelch_cascade_noise_work_len(int in_period, int in_lags, const dsd_noise_squelch_stage* stages, int count);
 
@@ -65,13 +66,13 @@ int dsd_squelch_cascade_noise(const dsd_squelch_floor_periodic_noise* in, const 
  * sum_i sum_j c_i c_j R(n - i, n + m - j), the input's period and in->lags + taps_len - 1 lags, into @p out_cov
  * (@p out_len doubles: at least period x those lags), which @p out describes.
  *
- * Stationary noise takes the taps' autocorrelation, written to @p rc (@p taps_len doubles; may be NULL for periodic
- * noise): R'[m] = sum_d R_c(d) R[m - d].
+ * Stationary noise takes the taps' autocorrelation, written to @p rc (@p rc_len doubles, at least @p taps_len; may be
+ * NULL and 0 for periodic noise): R'[m] = sum_d R_c(d) R[m - d].
  *
- * @return 0, or -1: bad arguments or too small an output.
+ * @return 0, or -1: bad arguments, too small an rc for stationary noise, or too small an output.
  */
 int dsd_squelch_cascade_noise_through_taps(const dsd_squelch_floor_periodic_noise* in, const float* taps, int taps_len,
-                                           double* rc, double* out_cov, size_t out_len,
+                                           double* rc, size_t rc_len, double* out_cov, size_t out_len,
                                            dsd_squelch_floor_periodic_noise* out);
 
 /**

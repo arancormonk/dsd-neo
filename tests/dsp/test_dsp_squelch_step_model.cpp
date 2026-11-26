@@ -518,8 +518,11 @@ cascade_plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor
     return std::fmax(rel, std::fmax(std::fabs(got.beta - want.beta), std::fabs(got.rho_lag - want.rho_lag)));
 }
 
-/* The float cascade's rounding against the oracle's: its impulses are float, the plans double (under 1e-7 on x86). */
-constexpr double kCascadeTolerance = 1e-6;
+/* The float cascade's rounding against the oracle's: its impulses are float, the plans double. Under 1e-7 on x86;
+   1e-5 is the bound test_halfband_recursion() already holds the same float cascade to on every platform (another
+   FMA contraction or SIMD path moves the last float bits), and stays far below what the tests tell apart: the
+   one-stage plan misses by 2.9e-3 at 2 passes, the whole-sample window at 39,062 Hz by 3.1e-4. */
+constexpr double kCascadeTolerance = 1e-5;
 
 /* Without a step the auto squelch's plan models the whole half-band cascade (issue #899): at every row of the DSP
    bandwidth table (unfiltered 4 to 16 kHz, the widths 16 kHz takes, 24/48/72 kHz with the default 16 kHz design and
@@ -1279,7 +1282,7 @@ test_cascade_noise_helper(void) {
         std::vector<double> chan((size_t)period * (size_t)len);
         dsd_squelch_floor_periodic_noise out;
         const int rc =
-            dsd_squelch_cascade_noise_through_taps(&in, taps.data(), len, NULL, chan.data(), chan.size(), &out);
+            dsd_squelch_cascade_noise_through_taps(&in, taps.data(), len, NULL, 0U, chan.data(), chan.size(), &out);
         std::vector<double> want(chan.size(), 0.0);
         for (int n = 0; n < period; n++) {
             for (int m = 0; m < len; m++) {
@@ -1321,30 +1324,38 @@ test_cascade_noise_helper(void) {
         std::vector<double> rc(DSD_NOISE_SQUELCH_MAX_TAPS);
         std::vector<double> c1((size_t)(hb.lags + len - 1));
         std::vector<double> c2(2U * c1.size());
-        const int rc_c =
-            dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), c1.data(), c1.size(), &a);
-        const int rc_d = dsd_squelch_cascade_noise_through_taps(&two, taps.data(), len, NULL, c2.data(), c2.size(), &b);
+        const int rc_c = dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), rc.size(), c1.data(),
+                                                                c1.size(), &a);
+        const int rc_d =
+            dsd_squelch_cascade_noise_through_taps(&two, taps.data(), len, NULL, 0U, c2.data(), c2.size(), &b);
         dsd_squelch_floor_periodic_noise b0 = b;
         b0.period = 1;
         CHECK(rc_c == 0 && rc_d == 0 && b.period == 2 && cov_distance(a, b0) <= 1e-12
                   && std::equal(c2.begin(), c2.begin() + (long)c1.size(), c2.begin() + (long)c1.size()),
               "tiled stationary noise through the channel taps: %.3e", cov_distance(a, b0));
-        /* Refusals: too little workspace, a stage too long, a period of none, no rc for stationary noise. */
+        /* Refusals: too little workspace, a stage too long, a period of none, a lag count a stage could overflow, no rc
+           or too short a one for stationary noise, too small an output. */
         dsd_squelch_floor_periodic_noise none;
         dsd_noise_squelch_stage longest = st[0];
         longest.len = DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS + 1;
         dsd_squelch_floor_periodic_noise zero = hb;
         zero.period = 0;
-        CHECK(dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size() - 1U, &none) == -1
-                  && dsd_squelch_cascade_noise(NULL, &longest, 1, work.data(), work.size(), &none) == -1
-                  && dsd_squelch_cascade_noise(&zero, st, 1, work.data(), work.size(), &none) == -1
-                  && dsd_squelch_cascade_noise_work_len(1, 1, &longest, 1) == 0U
-                  && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, NULL, c1.data(), c1.size(), &none)
-                         == -1
-                  && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), c1.data(), c1.size() - 1U,
-                                                            &none)
-                         == -1,
-              "a refusal went through");
+        CHECK(
+            dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size() - 1U, &none) == -1
+                && dsd_squelch_cascade_noise(NULL, &longest, 1, work.data(), work.size(), &none) == -1
+                && dsd_squelch_cascade_noise(&zero, st, 1, work.data(), work.size(), &none) == -1
+                && dsd_squelch_cascade_noise_work_len(1, 1, &longest, 1) == 0U
+                && dsd_squelch_cascade_noise_work_len(1, INT32_MAX - DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS + 1, st, 1)
+                       == 0U
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), (size_t)len - 1U, c1.data(),
+                                                          c1.size(), &none)
+                       == -1
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, NULL, 0U, c1.data(), c1.size(), &none)
+                       == -1
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), rc.size(), c1.data(),
+                                                          c1.size() - 1U, &none)
+                       == -1,
+            "a refusal went through");
     }
 
     /* One stage: the stationary design, at a rate 25 divides and at an odd one (both windows rate / 25.0). */
@@ -1376,7 +1387,8 @@ test_cascade_noise_helper(void) {
 
 /* The periodic design over the tracker's mean window: where 25 divides the rate it is the periodic design bit for bit
    (a period of one and of three); at 39,062 Hz the window is 1,562.48 samples, so at a period of one N_eff scales by
-   1,562.48 / 1,562 and beta and rho stay. */
+   1,562.48 / 1,562 and beta and rho stay, and at a period of three the plan is the two window lengths' plans weighted
+   by how often each runs. */
 void
 test_periodic_mean_window(void) {
     std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
@@ -1405,6 +1417,25 @@ test_periodic_mean_window(void) {
         const int rc_b = dsd_squelch_floor_plan_design_periodic_mean(&b, taps.data(), len, noise, 48000);
         CHECK(rc_a == 0 && rc_b == 0 && same_floor_plan(a, b), "period %d at 48 kHz: the mean window moved the plan",
               noise->period);
+    }
+    /* A period of three at 39,062 Hz: 12 of every 25 windows are 1,563 samples, the rest 1,562, so the plan is those
+       lengths' plans weighted 0.52 / 0.48 (39,075 Hz takes 1,563-sample windows in the periodic design). */
+    {
+        dsd_squelch_floor_plan short_w;
+        dsd_squelch_floor_plan long_w;
+        dsd_squelch_floor_plan mixed;
+        const int rc_s = dsd_squelch_floor_plan_design_periodic(&short_w, taps.data(), len, &per3, 39062);
+        const int rc_l = dsd_squelch_floor_plan_design_periodic(&long_w, taps.data(), len, &per3, 39075);
+        const int rc_x = dsd_squelch_floor_plan_design_periodic_mean(&mixed, taps.data(), len, &per3, 39062);
+        const double f = 12.0 / 25.0;
+        CHECK(rc_s == 0 && rc_l == 0 && rc_x == 0
+                  && close_rel(mixed.neff, ((1.0 - f) * short_w.neff) + (f * long_w.neff), 1e-12)
+                  && close_rel(mixed.beta, ((1.0 - f) * short_w.beta) + (f * long_w.beta), 1e-12)
+                  && close_rel(mixed.rho_lag, ((1.0 - f) * short_w.rho_lag) + (f * long_w.rho_lag), 1e-12)
+                  && close_rel(mixed.noise_gain, short_w.noise_gain, 1e-12) && mixed.rate_hz == 39062
+                  && std::fabs(short_w.neff - long_w.neff) > 1e-6 * short_w.neff,
+              "period 3 at 39,062 Hz: mean-window N_eff %.15g, the windows' %.15g and %.15g", mixed.neff, short_w.neff,
+              long_w.neff);
     }
     dsd_squelch_floor_plan whole;
     dsd_squelch_floor_plan mean;

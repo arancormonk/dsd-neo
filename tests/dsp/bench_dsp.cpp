@@ -1653,7 +1653,9 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
     std::vector<float> in((size_t)pairs * 2U);
     fill_noise(&in, 0x899u + (uint32_t)passes);
     int turn = 0;
+    uint64_t blocks = 0U;
     const auto block = [&]() -> float {
+        blocks++;
         if (kind == BENCH_BLOCK_FIRST_BUILD) {
             s->squelch_plan.set = 0;
         } else if (kind == BENCH_BLOCK_ALTERNATING) {
@@ -1678,11 +1680,14 @@ bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_
     meta.variant = kind == BENCH_BLOCK_FIRST_BUILD ? "first_build"
                                                    : (kind == BENCH_BLOCK_ALTERNATING ? "alternating" : "same_key");
     const uint64_t designs = s->squelch_plan_designs;
+    blocks = 0U;
     const int ran = run_named_case(opts, name, "block", 1.0, block, &meta);
-    /* The same key every block designs nothing; the others design at every block. */
-    if (ran > 0 && !opts.list_cases && (kind == BENCH_BLOCK_SAME_KEY) != (s->squelch_plan_designs == designs)) {
-        DSD_FPRINTF(stderr, "%s: %llu floor plan designs over the run\n", name,
-                    (unsigned long long)(s->squelch_plan_designs - designs));
+    /* The same key every block designs nothing; the others design once at every block (warm-up and timed calls). */
+    const uint64_t made = s->squelch_plan_designs - designs;
+    const uint64_t want = kind == BENCH_BLOCK_SAME_KEY ? 0U : blocks;
+    if (ran > 0 && !opts.list_cases && made != want) {
+        DSD_FPRINTF(stderr, "%s: %llu floor plan designs over %llu blocks, %llu expected\n", name,
+                    (unsigned long long)made, (unsigned long long)blocks, (unsigned long long)want);
         return 0;
     }
     return ran;

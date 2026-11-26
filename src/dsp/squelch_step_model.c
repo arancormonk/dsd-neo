@@ -458,7 +458,9 @@ ssm_mean_cov_through_taps(dsd_squelch_step_model* m, const float* taps, int len,
     dsd_squelch_floor_periodic_noise chan;
     /* Not reachable (the scratch holds DSD_NOISE_SQUELCH_MAX_TAPS taps, which ssm_floor_args() holds them to): should
        it happen, the bound is infinite and the plan takes every output phase in full. */
-    if (dsd_squelch_cascade_noise_through_taps(&ry, taps, len, m->rc, m->chan, (size_t)m->cov_lags, &chan) != 0
+    if (dsd_squelch_cascade_noise_through_taps(&ry, taps, len, m->rc, sizeof(m->rc) / sizeof(m->rc[0]), m->chan,
+                                               (size_t)m->cov_lags, &chan)
+            != 0
         || chan.lags != lags) {
         return INFINITY;
     }
