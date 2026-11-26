@@ -644,6 +644,34 @@ private fun nextOpensTheNextCallAtOnceAlsoFromTheGap() {
     check(rig.state == PLAYING && rig.players.size == 3) { "a Next at the last call is dropped" }
 }
 
+private fun nextPastOnlyFailedCallsFinishes() {
+    // A, B good; C gone and D damaged while it plays: Previous from D, before its skip turn, lands on B.
+    val rig = Rig()
+    rig.fail(path(2, 1), RecordingPlayer.REASON_GONE)
+    val generation = rig.queue(1, 1, 1, 1)
+    rig.prepared()
+    rig.machine.next()
+    rig.prepared()
+    rig.machine.next()
+    rig.turn()
+    rig.prepared()
+    check(rig.status.call == 3 && rig.status.skipped == 1) { "C skipped, D plays" }
+    rig.machine.onFailed(rig.current.token, RecordingPlayer.REASON_DAMAGED)
+    rig.machine.previous()
+    rig.prepared()
+    check(rig.status.call == 1 && rig.state == PLAYING && rig.status.skipped == 2) { "on B, C and D failed" }
+    check(rig.status.actions and ACTION_NEXT == 0) { "the session offers no Next" }
+    val b = rig.current
+    rig.machine.next()
+    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "Next with only failed calls ahead finishes, as the advance at the end does"
+    }
+    check(rig.status.call == 1 && b.released && rig.opener.opened.count { it == path(2, 1) } == 1) {
+        "on the call that played, nothing failed tried again"
+    }
+    check(rig.service.ends == listOf(generation to RecordingPlayer.ENDED_FINISHED)) { "the service is told once" }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -1511,6 +1539,7 @@ fun main() {
     aPlaylistPlaysCallsAndPartsInOrderWithAGapBetweenCalls()
     theGapReadsFrozenAndPausesWithIt()
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
+    nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
     movesWhilePausedStayPausedAndKeepTheDeadline()
     lateCallbacksTasksAndFocusAreDropped()

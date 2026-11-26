@@ -467,9 +467,13 @@ class RecordingPlayer(
         }
     }
 
-    /** The next call's first playable part; dropped when there is none (or SINGLE). Paused stays paused. */
+    /**
+     * The next call's first playable part. With calls after this one but none of them playable the play ends, as the
+     * automatic advance ends it at the end (finished, or "unplayable" when every recording failed); dropped at the last
+     * call (or SINGLE). Paused stays paused.
+     */
     fun next(generation: Int = 0) = command(generation) {
-        if (queue && hasCallAfter(currentCall())) {
+        if (queue && callEnd(currentCall()) + 1 < items.size) {
             beginMove(Move(after(callEnd(currentCall())), forward = true))
         }
     }

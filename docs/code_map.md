@@ -19913,7 +19913,9 @@ Qt Quick frontend (`src/ui/qt`):
       once the service is promoted, in either order with the play, exactly once; refused or not promoted within 5 s,
       `PROMOTION_MS`, ends "start"). Focus is `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, `setWillPauseWhenDucked(true)`
       (D8). No gap between parts, a 1 s gap (`GAP_MS`) after a call's last part (position frozen at the part's end,
-      speed 0, no seek). Next: the next call's first playable part at once (also from the gap). Previous (D7): restart
+      speed 0, no seek). Next: the next call's first playable part at once (also from the gap); with calls after but
+      none playable it ends the play as the advance at the end does (finished, or "unplayable" when every recording
+      failed), and at the last call it is dropped. Previous (D7): restart
       the call when a playable part of it comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or
       it is in the gap, else the previous call's first playable part, and at the first call restart; restarting the open
       part is a seek to 0 on that player, never a reopen, and a move keeps the open player until the new one prepared
