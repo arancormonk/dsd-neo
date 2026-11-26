@@ -1721,7 +1721,10 @@ alone is `auto+10`), so one setting suits every receiver and every channel of a 
   radio panel's `dB | Auto | Noise` choice set it live; on audio input the Qt/Android monitor's `SQUELCH` row offers
   `dB | Noise`.
 - Learning. The demodulator classes each 40 ms window of the channel-filtered I/Q as noise, carrier or undecided from
-  its envelope and phase statistics, and takes the floor from noise windows only (5 of the last 8). Until it has one
+  its envelope and phase statistics, and takes the floor from noise windows only (5 of the last 8). It judges those
+  statistics against what noise alone gives through the channel filter and every decimation and resampling stage
+  ahead of it; on one tested RTL-SDR receiver, idle noise's lag-1 phase coherence measured 0.256 against the model's
+  0.268, well inside the classifier's margins (the cause of the difference was not isolated). Until it has one
   (`learning`) only carrier windows open, so landing in the middle of a transmission plays it. A carrier is never
   learned as the floor: a channel with no noise windows (a continuous carrier or a birdie) stays learning and plays,
   as with the squelch off; lock it out, or let `--scan-max-visit-ms` move a scan on. A weak steady spur is enough:
@@ -1825,10 +1828,14 @@ their sensitivity in.
 - Where it runs: the FM monitor (`-fA`, `nfm` rows, `nfm-conventional` targets) on a radio input. A channel has no room
   for the band when the band, from 3.8 kHz to the lower of its edge less 800 Hz and 0.45 times the channel rate (the
   rate before any post-decimation), is under 1200 Hz wide (the 8 and 10 kHz NFM widths, or a low DSP rate). Nor does a
-  channel with no channel filter behind the half-band decimation at a channel rate of 16 kHz or less (the width unset at
-  those rates, or `DSD_NEO_CHANNEL_LPF=0`): the decimation stages' gentle roll-off is then its only edge and would
-  truncate a wide signal into the band; a replay with no decimation keeps its band. The auto squelch runs the setting on
-  such a channel, with N as its margin, and the readout says `as auto`. AM has no discriminator: on the AM monitor
+  channel with no channel filter behind one or more half-band decimation stages at a channel rate of 16 kHz or less
+  (the width unset at those rates, or `DSD_NEO_CHANNEL_LPF=0`): the decimation stages' gentle roll-off is then its only
+  edge and would truncate a wide signal into the band. A channel that runs no half-band stage (a replay or network I/Q
+  stream at the DSP rate) keeps its band. Where a replay or network I/Q stream is resampled to the DSP rate, the band
+  must also lie inside the resampler's passband, which ends at 0.45 times the capture rate when the capture is slower
+  than the channel rate: the band's top is cut to that edge, and a channel left with under 1200 Hz (an 8 kHz capture at
+  a 16 kHz DSP bandwidth, say) has no band either. The auto squelch runs the setting on such a channel, with N as its
+  margin, and the readout says `as auto`. AM has no discriminator: on the AM monitor
   (`-fM`) of a radio input a noise setting runs as auto with the same N, whatever set it (`--squelch noise`, an input
   spec, the config, a live edit from the terminal), and the engine says so at startup (`NOTICE: The noise squelch needs
   an FM channel; this AM channel runs auto+10dB.`). The setting stays noise, so a switch back to `-fA` runs the noise
