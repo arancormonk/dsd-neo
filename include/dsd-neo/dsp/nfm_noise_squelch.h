@@ -15,9 +15,10 @@
  *
  * Band (tools/noise_squelch_model.py, docs/testing.md "Noise squelch"): B = [3.8 kHz, hi], hi = min(edge - 800 Hz,
  * 0.45 fs), edge the channel taps' -1 dB point (fs/2 without a channel filter). A plan needs at least 1200 Hz there; a
- * narrower channel (8 and 10 kHz NFM widths) has none, nor has a channel with no filter behind the half-band cascade at
- * a rate of 16 kHz or less (the cascade's roll-off would be its edge), and the demodulator runs the auto squelch for
- * those instead. B is
+ * narrower channel (8 and 10 kHz NFM widths) has none, nor has a channel with no filter behind at least one half-band
+ * pass at a rate of 16 kHz or less (the cascade's roll-off would be its edge), nor one behind a replay or network
+ * reader's resampler whose passband edge leaves less than that (an 8 kHz source read into 48 kHz: 3.6 kHz; issue #899),
+ * and the demodulator runs the auto squelch for those instead. B is
  * cut into K equal sub-bands, K = floor(|B| / 300 Hz) held to 1..DSD_NOISE_SQUELCH_MAX_SUB_BANDS, and a staggered
  * set of K - 1 more, each a sub-band's width shifted by half of it, so a line on a boundary of the first set sits
  * inside one of the second. Each of the 2K - 1 is a Butterworth band-pass of prototype order 4 (four biquads).

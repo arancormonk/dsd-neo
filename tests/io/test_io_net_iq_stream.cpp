@@ -4,7 +4,7 @@
  * iqtcp:/iqudp: spec) whose reader talks to senders on loopback in this test.
  *
  * Pinned: every block the demod takes is exactly one block of dsd_iq_live_block_samples() under a backlog, across the
- * ring's wrap, with the reader's resampler and after a gap; a ring the demod leaves full drops whole blocks with a gap
+ * ring's wrap, with the reader's resampler (whose plan the demodulator's squelches model, issue #899) and after a gap; a ring the demod leaves full drops whole blocks with a gap
  * mark only; a TCP reconnect, a UDP sender's re-lock and a resume after a stall run the stream boundary (the
  * discontinuity count and the output generation move, the resampler starts over, the demod resets with StreamGap);
  * the stream has no stream while it reconnects or stalls, so a read waiting for samples gives way to a queued command,
@@ -603,6 +603,11 @@ test_blocks_after_upsampling_and_gaps(void) {
     assert(rtl_net_iq_resample_info(rtl_device_net_iq(s.dev), &l, &m, nullptr) == 1);
     assert(l == 2 && m == 1);
     assert(rtl_device_rate_plan_backend(s.dev) == DSD_RATE_PLAN_BACKEND_REPLAY_RESAMPLED);
+    /* The demodulator's squelches model the stream reader's resampler (issue #899): published at the open, with its
+       model. */
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_out_hz == 48000 && opened.reader_model == 1);
     blocks_reset();
     udp_sender tx = udp_sender_open(port);
     uint64_t phase = 0U;

@@ -1165,6 +1165,9 @@ rate_chain_plan(uint32_t request_hz, uint32_t programmed_hz, uint32_t readback_h
 static void
 rate_chain_run_plan(const dsd_rate_plan* plan) {
     g_live_rate_plan = *plan;
+    /* A live chain reads its device with no resampler ahead of the cascade (issue #899). */
+    demod.iq_reader = dsd_iq_reader_plan{};
+    (void)dsd_demod_squelch_reader_model_sync(&demod);
     demod.downsample_passes = plan->passes;
     const int post = demod.post_downsample > 1 ? demod.post_downsample : 1;
     demod.complex_rate = (int)plan->step_out_hz;
@@ -5696,6 +5699,13 @@ demod_take_squelch_setting(struct demod_state* d) {
         key.step_l = d->live_iq_step.plan.L;
         key.step_m = d->live_iq_step.plan.M;
     }
+    /* So does a replay or I/Q stream reader's resampler ahead of the cascade (issue #899): an 8 kHz source read into a
+       16 kHz chain is not a 16 kHz source. */
+    if (d->iq_reader.enabled) {
+        key.reader_in_hz = d->iq_reader.in_hz;
+        key.reader_out_hz = d->iq_reader.out_hz;
+        key.reader_protect_hz = d->iq_reader.protect_hz;
+    }
     d->squelch_context = key;
 }
 
@@ -7902,6 +7912,19 @@ controller_apply_replay_step(const dsd_iq_replay_rate_plan* plan) {
     return 0;
 }
 
+/* The resampler a replay's or an I/Q stream's reader runs ahead of the cascade for @p cfg read into @p dsp_in_hz (issue
+ * #899): the plan the reader opened with (rtl_iq_resampler_open(), one rule), published for the squelch models before
+ * samples arrive, or none at equal rates. Returns 0, or -1 for rates no reader could take (its open refuses them). */
+static int
+controller_apply_replay_reader(const dsd_iq_replay_config* cfg, uint32_t dsp_in_hz) {
+    const uint64_t final_dsp_hz =
+        (uint64_t)cfg->demod_rate_hz * (cfg->post_downsample > 0U ? cfg->post_downsample : 1U);
+    dsd_iq_reader_plan reader;
+    const int rc = dsd_iq_reader_plan_for(&reader, cfg->sample_rate_hz, dsp_in_hz, final_dsp_hz);
+    demod.iq_reader = reader;
+    return rc;
+}
+
 /* The rates a replay of @p cfg runs after the half-band chain (issue #806): the applied plan's complex rate, after any
  * I/Q rate step, its forced flag, and its step; a config no plan was applied to runs its half-band output at
  * @p dsp_in_hz over base_decimation, as forced. Returns 0, or -1 when the step cannot be designed. */
@@ -7926,7 +7949,25 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
        to, runs as forced. */
     demod.capture_rate_device_forced = plan ? plan->forced : 1;
     g_live_rate_plan = dsd_rate_plan{};
-    return controller_apply_replay_step(plan);
+    if (controller_apply_replay_reader(cfg, dsp_in_hz) != 0) {
+        return -1;
+    }
+    if (controller_apply_replay_step(plan) != 0) {
+        return -1;
+    }
+    /* A reader that resamples and the live step never run together: the step runs only on a KEEP plan, which reads the
+       capture at its own rate. */
+    if (demod.iq_reader.enabled && demod.live_iq_step.enabled) {
+        dsd_live_iq_step_disable(&demod.live_iq_step);
+        LOG_ERROR("IQ replay: the capture would be resampled ahead of the I/Q rate step.\n");
+        return -1;
+    }
+    if (dsd_demod_squelch_reader_model_sync(&demod) != 0) {
+        LOG_WARN("Auto and noise squelch could not be set up for the %d Hz input resampled to %d Hz, so they will not "
+                 "mute noise.\n",
+                 demod.iq_reader.in_hz, demod.iq_reader.out_hz);
+    }
+    return 0;
 }
 
 static int
@@ -7981,6 +8022,9 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
         g_external_output_freq_hz.store(0U, std::memory_order_release);
         (void)controller_finalize_dsp_chain(s, opts, 0U, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
     }
+    /* Behind a reader that resamples, the auto squelch's plan for the channel the chain now runs is designed here,
+       before samples arrive, not on the demod thread's first block (issue #899). */
+    dsd_demod_squelch_prime_reader_plan(&demod);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -10376,6 +10420,9 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
         controller.freqs[controller.freq_len] = 446000000;
         controller.freq_len++;
     }
+    /* A device has no reader resampling ahead of its cascade, whatever a replay before it ran (issue #899). */
+    demod.iq_reader = dsd_iq_reader_plan{};
+    (void)dsd_demod_squelch_reader_model_sync(&demod);
     if (controller_apply_initial_settings(&controller, opts) != 0) {
         LOG_ERROR("Failed to apply initial tuner settings.\n");
         return -1;
@@ -17813,6 +17860,11 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     out_state->dongle_rate_hz = load_dongle_rate();
     out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
+    /* Written only when the rate plan commits, before the demod thread takes samples. */
+    out_state->reader_in_hz = demod.iq_reader.in_hz;
+    out_state->reader_out_hz = demod.iq_reader.out_hz;
+    out_state->reader_model =
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes);
     return 0;
 }
 

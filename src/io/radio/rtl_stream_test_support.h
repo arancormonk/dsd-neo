@@ -2486,6 +2486,11 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
     uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
     uint64_t input_gap_reset_count;   /* demod resets at producer gaps in the input (issue #806 X12), process-wide */
+    /* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899): its source and DSP
+       input rates (0 and 0 with none), and whether its squelch model is built. */
+    int reader_in_hz;
+    int reader_out_hz;
+    int reader_model;
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);

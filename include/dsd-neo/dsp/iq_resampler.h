@@ -35,6 +35,10 @@
  * I and Q share one phase and one set of taps, so the two never mix. The output depends only on the samples fed since
  * the last clear, never on how they were cut into calls.
  *
+ * A replay's or an I/Q stream's reader designs its resampler from a dsd_iq_reader_plan (dsd_iq_reader_plan_for(), the
+ * one rule for both), which the controller also hands the demodulator: the squelches' reader model designs the same
+ * bank from it, to model the noise the reader shapes (issue #899).
+ *
  * One thread at a time; a resampler is plain storage the caller owns. Configuring one resampler never touches another,
  * so a caller can design a candidate next to the one it runs and swap them with dsd_iq_resampler_swap() when it
  * commits.
