@@ -19902,11 +19902,11 @@ Qt Quick frontend (`src/ui/qt`):
       PLAYLIST marks a failed recording failed for this play (never its whole call), and the next not-failed one in the
       move's direction opens on the next looper turn (a long run of failures stays stoppable; each search visits each
       recording once); PARTS ends on its first failure as before. An error from the part that completed, in the gap
-      after its call, is ignored (it played: not failed, no skip, the gap runs on). The paths of `gone` and `changed` items go to the
-      process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement never drops one); its serial
-      is in the status record, and the host calls `takeRecheck()` (a `String[]`, no delimiter) when the serial moved, on
-      every foreground return and with the next play, and hands the paths to `recordingFilesMissing` (the store's
-      root-aware recheck, which keeps away storage's entries). Each path is handed over once.
+      after its call, is ignored (it played: not failed, no skip, the gap runs on). The paths of `gone` and `changed`
+      items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement never drops
+      one); its serial is in the status record, and the host calls `takeRecheck()` (a `String[]`, no delimiter) when the
+      serial moved, on every foreground return and with the next play, and hands the paths to `recordingFilesMissing`
+      (the store's root-aware recheck, which keeps away storage's entries). Each path is handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
       sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part) and
