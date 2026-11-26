@@ -2241,6 +2241,50 @@ private fun aStuckSetupThreadIsReplaced() {
     check(slow.status.skipped == 1 && slow.opener.threads == 1) { "a hung prepare is not a stuck setup" }
 }
 
+/**
+ * Stuck setups are bounded for the process: with two given up and still out, an open makes no player and starts no
+ * setup, and fails at once as a recording that couldn't be played; once one returns, the next open works.
+ */
+private fun stuckSetupsAreBounded() {
+    val rig = Rig()
+    rig.opener.stuck += setOf(1, 2)
+    val g = rig.queue(1, 1)
+    rig.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+    rig.turn()
+    check(rig.opener.setups.size == 2 && rig.status.call == 1) { "call 1's setup stuck too" }
+    rig.machine.stop(g)
+    check(rig.opener.threads == 3) { "two stuck setups given up" }
+    val built = rig.players.size
+    val handed = rig.opener.threadOf.size
+
+    rig.play()
+    check(rig.state == FAILED && rig.status.error == RecordingPlayer.ERROR_FAILED) {
+        "a single play fails at once as unplayable (${rig.state}, ${rig.status.error})"
+    }
+    check(rig.players.size == built && rig.opener.threadOf.size == handed) { "no player made, no setup started" }
+    rig.queue(2, mode = MODE_PARTS)
+    check(rig.state == FAILED && rig.status.error == RecordingPlayer.ERROR_FAILED && rig.status.partOrdinal == 1) {
+        "Play all parts ends on its first part"
+    }
+    val list = rig.queue(1, 1)
+    check(rig.status.skipped == 1 && rig.state == PREPARING) { "a playlist moves on" }
+    rig.turn()
+    check(rig.state == FAILED && rig.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) { "and ends unplayable" }
+    check(rig.service.ends.last() == list to RecordingPlayer.ENDED_UNPLAYABLE) { "told once" }
+    check(rig.players.size == built && rig.opener.threadOf.size == handed && rig.focus.requests.isEmpty()) {
+        "none of them made a player, a setup or a focus request"
+    }
+
+    rig.opener.setups[0].land()
+    check(rig.players[0].released) { "a stuck setup returns: its player released" }
+    rig.play()
+    check(rig.players.size == built + 1 && rig.last.asked && rig.opener.threadOf.last() == 3) {
+        "the next open makes its player and sets up on a fresh thread"
+    }
+    rig.prepared()
+    check(rig.state == PLAYING) { "and plays" }
+}
+
 /** A part that completes hands off the next part first, and is released after: its release is not in the joint. */
 private fun theNextPartIsHandedOffBeforeTheCompletedOneIsReleased() {
     val rig = Rig()
@@ -2428,5 +2472,6 @@ fun main() {
     aStuckSetupThreadIsReplaced()
     theNextPartIsHandedOffBeforeTheCompletedOneIsReleased()
     aResumeKeepsThePausedStretchUntilAPartPlays()
+    stuckSetupsAreBounded()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

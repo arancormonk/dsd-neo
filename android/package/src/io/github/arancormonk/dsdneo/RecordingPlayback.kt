@@ -71,6 +71,13 @@ object RecordingPlayback {
     /** The recordings found gone or changed at their turn (#909), for the store to look at again; for the process. */
     private val recheck = RecordingRecheck()
 
+    /**
+     * The setups given up with their result still out, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
+     * thread and a MediaPlayer each, stuck in a read that may never return) an open fails at once, so stalled storage
+     * cannot pile up threads; Stop never waits for one. Looper only.
+     */
+    private val abandonedSetups = AbandonedSetups()
+
     private val main: Handler by lazy { Handler(Looper.getMainLooper()) }
     private val renderPosted = AtomicBoolean()
 
@@ -378,6 +385,7 @@ object RecordingPlayback {
             ServiceSide,
             recheck,
             foreground,
+            abandonedSetups,
         ).also { player = it }
         looper to machine
     }

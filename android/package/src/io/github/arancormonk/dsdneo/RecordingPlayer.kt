@@ -61,6 +61,37 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
 }
 
 /**
+ * The setups given up with their result still out (#909), counted for the process: a setup dropped while it runs (its
+ * part timed out, was moved off, stopped or replaced) keeps its thread and its MediaPlayer until its read returns, and
+ * on storage that stopped answering it may never return. While [limit] of them are out, a new open makes no player
+ * and starts no setup: its recording fails at once as one that couldn't be played. One leaves the count when its
+ * result is delivered, its player released then. RecordingPlayback owns one for the process; on the playback looper
+ * only.
+ */
+class AbandonedSetups(val limit: Int = LIMIT) {
+    /** The setups given up and not delivered yet. */
+    var outstanding = 0
+        private set
+
+    val full: Boolean get() = outstanding >= limit
+
+    fun abandoned() {
+        outstanding++
+    }
+
+    fun delivered() {
+        if (outstanding > 0) {
+            outstanding--
+        }
+    }
+
+    companion object {
+        /** At most this many stuck setups (threads and players) are left behind. */
+        const val LIMIT = 2
+    }
+}
+
+/**
  * The call recording player's state machine (#708 D6/D7/D10, #909): a queue of recordings beside the live audio.
  *
  * A play is one of three modes. SINGLE plays one recording by path, unchecked, and keeps #708's readings. PARTS plays a
@@ -86,7 +117,8 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * that player until the setup's result comes back with the part's token, and releases it then if the part is no longer
  * current (it timed out, was moved off, stopped or ended). A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
  * setup included, fails as a player error on it would (a stalled read or a MediaPlayer that never answers would leave
- * the play opening for good).
+ * the play opening for good). While [AbandonedSetups.LIMIT] setups given up are still out, an open fails at once, as a
+ * recording that couldn't be played, with no player made.
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
@@ -126,6 +158,7 @@ class RecordingPlayer(
     private val service: ServiceLink,
     private val recheck: RecordingRecheck,
     private var foreground: Boolean = true,
+    private val abandoned: AbandonedSetups = AbandonedSetups(),
 ) {
     /**
      * One recording's player, made by the factory with its play token; it reports back through [onPrepared],
@@ -478,6 +511,9 @@ class RecordingPlayer(
     private class Opening(val token: Long, val player: Player) {
         /** Its prepare answered before the setup's result came back: it is prepared as soon as it is adopted. */
         var prepared = false
+
+        /** Dropped with its result still out: counted in [AbandonedSetups] until the result is delivered. */
+        var abandoned = false
     }
 
     private var generation = 0
@@ -830,13 +866,15 @@ class RecordingPlayer(
 
     /**
      * The current part's setup is dropped with its result still out: its thread is given up at once
-     * ([Opener.abandonSetup]), so nothing ever queues behind a read that does not return.
+     * ([Opener.abandonSetup]), so nothing ever queues behind a read that does not return, and it is counted until its
+     * result is delivered.
      */
     private fun dropOpening() {
-        if (opening != null) {
-            opening = null
-            opener.abandonSetup()
-        }
+        val dropped = opening ?: return
+        opening = null
+        dropped.abandoned = true
+        abandoned.abandoned()
+        opener.abandonSetup()
     }
 
     /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
@@ -907,10 +945,16 @@ class RecordingPlayer(
     /**
      * Build the candidate's player here (its callbacks come to this thread), guarded: one that cannot be built ends
      * the play. Then hand it to the setup thread, with the prepare timeout already armed, so it covers the setup too.
+     * With [AbandonedSetups.LIMIT] setups given up still out, no player is made and no setup started: the recording
+     * fails at once as one that couldn't be played (a playlist moves on; SINGLE and PARTS end).
      */
     private fun open(candidate: Int) {
         index = candidate
         token = tokens.incrementAndGet()
+        if (abandoned.full) {
+            failItem(REASON_DAMAGED)
+            return
+        }
         val made = try {
             players(token)
         } catch (_: Exception) {
@@ -937,11 +981,15 @@ class RecordingPlayer(
 
     /**
      * A setup's result, on this thread. A part no longer current (timed out, moved off, stopped, ended, replaced)
-     * only releases its player; a current one adopts it, prepared already if its prepare answered first, or fails.
+     * only releases its player, and a setup given up leaves the count; a current one adopts it, prepared already if its
+     * prepare answered first, or fails.
      */
     private fun onSetUp(setup: Opening, result: SetupResult) {
         if (opening !== setup) {
             setup.player.release()
+            if (setup.abandoned) {
+                abandoned.delivered()
+            }
             return
         }
         opening = null
