@@ -26,6 +26,9 @@ Item {
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return null;
+        // The row placed here is the answer now: a return to the top that a
+        // filter change still has queued would take it off screen again.
+        logToStart.stop();
         settleListLayout();
         logList.positionViewAtIndex(row, ListView.Contain);
         var item = logList.itemAtIndex(row);
@@ -291,6 +294,9 @@ Item {
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return false;
+        // The flush's filter change queued the list's return to its top,
+        // which would run after the row is placed: the row supersedes it.
+        logToStart.stop();
         settleListLayout();
         logList.positionViewAtIndex(row, ListView.Contain);
         detailSheet.open(callHistory.recordFor(uid));
@@ -920,7 +926,9 @@ Item {
         // still applying the filter's row changes, and a position asserted there
         // does not survive them. Setting several filters at once (the empty
         // state's Clear filters button sets three) coalesces into one call, and
-        // repositioning an already-topped list is a no-op either way.
+        // repositioning an already-topped list is a no-op either way. A timer
+        // the screen owns, so a row placed after the change (Show in list
+        // flushing a search, Back from the map) cancels it (issue #909).
         //
         // A hidden log has no rows to reposition, so the place it will come
         // back to is dropped as well (issue #782). That covers the filter the
@@ -928,7 +936,7 @@ Item {
         // (flushPendingSearch), which runs after the log noted its place.
         function onFilterChanged() {
             logPlace.forget();
-            Qt.callLater(logList.positionViewAtBeginning);
+            logToStart.restart();
         }
     }
 
@@ -937,7 +945,8 @@ Item {
     // the place it held. Deferred so the rows take their new height first, by
     // a timer the screen owns, so nothing runs after it closes; the rows are
     // laid out at their new height before the view is placed, or the start it
-    // found was the old layout's and a log read deep stayed off its top.
+    // found was the old layout's and a log read deep stayed off its top. A
+    // filter change uses the same timer, and a row placed after either stops it.
     onCompactViewChanged: {
         logPlace.forget();
         logToStart.restart();

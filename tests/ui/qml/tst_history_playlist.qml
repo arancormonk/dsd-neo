@@ -827,6 +827,53 @@ Item {
             compare(line(screen), "Call 2 of 30 · 0:12 / 0:31", "the next call ends the notice");
         }
 
+        // The row placed by Show in list, or by Back from the map, against a search still in its debounce: the
+        // press flushes it, and the filter change queues the list's return to its top, which would run after the row
+        // was placed and take it off screen again. Once the row is found the return is cancelled, so with 40 matching
+        // calls and the oldest playing, the row is still in view when the queued work has run and the sheet closes.
+        function rowInView(list, uid) {
+            for (var i = 0; i < list.count; i++) {
+                var item = list.itemAtIndex(i);
+                if (item && item.rowUid === uid) {
+                    var r = rectIn(item, list);
+                    return r.y >= -0.5 && r.y + r.height <= list.height + 0.5;
+                }
+            }
+            return false;
+        }
+        function test_placed_row_outlasts_the_filter_reset_data() {
+            return [{tag: "show in list", press: "show"}, {tag: "row focus", press: "focus"}];
+        }
+        function test_placed_row_outlasts_the_filter_reset(data) {
+            var screen = idle();
+            only(screen);
+            var calls = logCalls(40);
+            playAll(screen, calls);
+            playing({item: 0});
+            var list = findChild(screen, "callLogList");
+            list.positionViewAtBeginning();
+            waitForRendering(list);
+            verify(!rowInView(list, calls[0].uid), "the oldest call starts off screen");
+            findChild(screen, "historySearch").text = "CALL";
+            compare(historyView.filterText, "", "still in the debounce");
+            var sheet = findChild(screen, "historyDetailSheet");
+            if (data.press === "show") {
+                part(screen, "nowPlayingShowInList").activate();
+                verify(sheet.visible, "the row's sheet opens");
+                compare(sheet.record.uid, calls[0].uid);
+            } else {
+                screen.flushPendingSearch();
+                verify(screen.rowFocusFor(calls[0].uid) !== null, "the row is found");
+            }
+            compare(historyView.filterText, "CALL", "the search was flushed");
+            compare(historyView.count, 40, "every call matches");
+            // Everything the press queued runs.
+            wait(50);
+            sheet.visible = false;
+            verify(waitForPolish(list));
+            verify(rowInView(list, calls[0].uid), "the row is still in view");
+        }
+
         // Back from the map brings its row into view (rowFocusFor) the same way, against the header the next frame
         // draws.
         function test_row_focus_with_the_header_pending() {

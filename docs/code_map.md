@@ -23608,14 +23608,16 @@ Qt Quick frontend (`src/ui/qt`):
     holds no rows). History (there and in the bar's Show in list) and the monitor lay out the positioners their list
     hangs from before they bring the row into view (`Theme.settlePositioners()`, then the list's `forceLayout()`): a
     Column above or below the list that changed since the last frame lays out only on its next polish, and the row
-    would be contained against the old room and cut off once the list moved (issue #909). Listen's list hangs from no
-    positioner. When the row has left the log the focus goes to the History list
-    (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
-    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
-    `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
-    screen away), Back focuses the screen the map leaves to (`focusScreen()`, the top root surface). Opened from the
-    session menu, the session-menu return ("Text a screen reader reaches") hands the focus to Session options. A
-    close the app makes (an incoming document) reopens nothing.
+    would be contained against the old room and cut off once the list moved (issue #909). A filter change sends
+    History's list back to its top on a timer the screen owns (`logToStart`, shared with the density change), and a row
+    found there (`showPlaying()`, `rowFocusFor()`) stops it, so the return a search flushed by the press queued never
+    runs after the row is placed. Listen's list hangs from no positioner. When the row has left the log the focus goes
+    to the History list (`HistoryScreen.focusList()`), else to the control that opened the sheet
+    (`HistoryDetailSheet.mapOpener`, kept past the close), else back to that screen (`restoreFocus(null)`). A plain
+    `openMap()` keeps the focused control in `mapReturn.focus` and Back gives it the focus again; when that control is
+    gone (a Stop under the map took its screen away), Back focuses the screen the map leaves to (`focusScreen()`, the
+    top root surface). Opened from the session menu, the session-menu return ("Text a screen reader reaches") hands the
+    focus to Session options. A close the app makes (an incoming document) reopens nothing.
     Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText,
