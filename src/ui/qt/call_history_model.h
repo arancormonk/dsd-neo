@@ -331,8 +331,7 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
     struct PlaylistRow {
         qint64 uid = 0;          // UidRole
         QString name;            // NameRole: what the row shows
-        QString dayLabel;        // DayLabelRole: the list section the row is under
-        QString timeText;        // TimeTextRole
+        qint64 when = 0;         // WhenRole: the start in seconds, 0 when not known
         QVariantList recordings; // CallRecordingProvider::recordingsForFragmentLists(): every one, oldest first
     };
 

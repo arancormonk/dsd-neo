@@ -5,6 +5,7 @@
 
 #include "call_history_playlist.h"
 
+#include <QDateTime>
 #include <QList>
 #include <QModelIndex>
 #include <QString>
@@ -61,14 +62,12 @@ playable(const QVariantMap& recording) {
            && !recording.value(QStringLiteral("path")).toString().isEmpty();
 }
 
-/* The line under a call's name (the notification's subtitle): its day and time, "<day> · <time>", or whichever of
- * them the row has, so a call from another day never reads as a bare time. */
+/* The line under a call's name (the notification's subtitle): its start in local time as the detail sheet's share
+ * title says it ("2026-11-24 12:04"), a date that stays true however long the playlist runs; empty with no start. */
 QString
 call_line(const CallHistoryModel::PlaylistRow& row) {
-    if (row.dayLabel.isEmpty() || row.timeText.isEmpty()) {
-        return row.dayLabel.isEmpty() ? row.timeText : row.dayLabel;
-    }
-    return row.dayLabel + QStringLiteral(" \u00B7 ") + row.timeText;
+    return row.when > 0 ? QDateTime::fromSecsSinceEpoch(row.when).toString(QStringLiteral("yyyy-MM-dd hh:mm"))
+                        : QString();
 }
 
 /* @p row's playable recordings appended to @p items as call @p call, each with its place among all the row's

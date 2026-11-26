@@ -24,6 +24,7 @@
 #include <QStringList>
 #include <QTemporaryDir>
 #include <QTime>
+#include <QTimeZone>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -32,6 +33,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <limits>
 #include <stdio.h>
+#include <time.h>
 #include "../test_support/qt_test_paths.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"
@@ -39,7 +41,6 @@
 #include "call_recording_provider.h"
 #include "decoder_host.h"
 #include "json_store.h"
-#include "local_day_watch.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -328,11 +329,11 @@ test_play_all_order_and_items() {
                          && item.value(QStringLiteral("mtimeNanos")).toInt() == 402);
     expect(__LINE__, item.value(QStringLiteral("title")).toString() == QLatin1String("Fire North")
                          && item.value(QStringLiteral("title")) == f.model.data(idx, CallHistoryModel::NameRole));
-    // The row's list section and its time: the day is said, not only the time.
-    const QString day = f.model.data(idx, CallHistoryModel::DayLabelRole).toString();
-    const QString time = f.model.data(idx, CallHistoryModel::TimeTextRole).toString();
-    expect(__LINE__, !day.isEmpty() && !time.isEmpty()
-                         && item.value(QStringLiteral("line")).toString() == day + QStringLiteral(" \u00B7 ") + time);
+    // The call's start in local time, date and all.
+    const qint64 when = f.model.data(idx, CallHistoryModel::WhenRole).toLongLong();
+    expect(__LINE__, when == kBase + 300
+                         && item.value(QStringLiteral("line")).toString()
+                                == QDateTime::fromSecsSinceEpoch(when).toString(QStringLiteral("yyyy-MM-dd hh:mm")));
     expect(__LINE__,
            item.value(QStringLiteral("key")).toLongLong() == f.model.data(idx, CallHistoryModel::UidRole).toLongLong());
 }
@@ -463,34 +464,60 @@ test_unsupported_and_unwired() {
     expect(__LINE__, is_outcome(viewless.start(0), "none", 0, 0) && f.host.plays == 3);
 }
 
-/* An item's line names the call's day with its time ("YESTERDAY · 12:04"), and a row with no start, which has no
- * time, has its day label alone. */
+/* The local time zone set from a POSIX TZ string, as the C library and Qt's local time read it. */
+void
+apply_tz() {
+#ifdef _WIN32
+    _tzset();
+#else
+    tzset();
+#endif
+}
+
+/* An item's line is the call's start in local time as the detail sheet's share title says it, its date included: with
+ * TZ=UTC-09 (nine hours ahead of UTC), a call at 20:00 UTC on the 21st reads "2026-11-22 05:00". A row with no start
+ * has no line. A host whose runtime does not take the string skips the dated case. */
 void
 test_item_line() {
-    const QDate today = dsd_qt::LocalDayWatch::current().date;
-    const qint64 yesterday = QDateTime(today.addDays(-1), QTime(12, 4)).toSecsSinceEpoch();
+    const bool had = qEnvironmentVariableIsSet("TZ");
+    const QByteArray previous = qgetenv("TZ");
+    qputenv("TZ", "UTC-09");
+    apply_tz();
+    const QDateTime start(QDate(2026, 11, 21), QTime(20, 0), QTimeZone::UTC);
     FakeProvider provider;
-    save_store(QJsonArray{stored_row(yesterday, 201, QStringLiteral("Fire Ops"), {"Y1"}),
+    save_store(QJsonArray{stored_row(start.toSecsSinceEpoch(), 201, QStringLiteral("Fire Ops"), {"Y1"}),
                           stored_row(0, 202, QStringLiteral("Fire Undated"), {"Y0"})});
     provider.byFragment = {{QStringLiteral("Y1"), {recording(QStringLiteral("/r/y1.wav"), 2100)}},
                            {QStringLiteral("Y0"), {recording(QStringLiteral("/r/y0.wav"), 2000)}}};
-    CallHistoryModel model;
-    model.setRecordingProvider(&provider);
-    CallHistoryFilterModel view;
-    view.setSourceModel(&model);
-    FakeHost host;
-    CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
-    const QVariantMap outcome = playlist.start(0);
-    expect(__LINE__, result_of(outcome) == QLatin1String("accepted"));
-    QHash<QString, QString> lines;
-    for (const QVariant& item : host.items) {
-        const QVariantMap map = item.toMap();
-        lines.insert(map.value(QStringLiteral("path")).toString(), map.value(QStringLiteral("line")).toString());
+    {
+        CallHistoryModel model;
+        model.setRecordingProvider(&provider);
+        CallHistoryFilterModel view;
+        view.setSourceModel(&model);
+        FakeHost host;
+        CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
+        expect(__LINE__, result_of(playlist.start(0)) == QLatin1String("accepted"));
+        QHash<QString, QString> lines;
+        for (const QVariant& item : host.items) {
+            const QVariantMap map = item.toMap();
+            lines.insert(map.value(QStringLiteral("path")).toString(), map.value(QStringLiteral("line")).toString());
+        }
+        expect(__LINE__, model.count() == 2 && host.items.size() == 2);
+        if (start.toTimeZone(QTimeZone(QTimeZone::LocalTime)).offsetFromUtc() != 9 * 3600) {
+            DSD_FPRINTF(stdout, "SKIP item line: this host does not take the POSIX TZ string UTC-09\n");
+        } else {
+            expect(__LINE__, lines.value(QStringLiteral("/r/y1.wav")) == QLatin1String("2026-11-22 05:00"));
+        }
+        expect(__LINE__,
+               lines.contains(QStringLiteral("/r/y0.wav")) && lines.value(QStringLiteral("/r/y0.wav")).isEmpty());
+        model.setRecordingProvider(nullptr);
     }
-    expect(__LINE__, lines.value(QStringLiteral("/r/y1.wav")) == QStringLiteral("YESTERDAY \u00B7 12:04"));
-    expect(__LINE__, model.count() == 2 && host.items.size() == 2);
-    expect(__LINE__, lines.value(QStringLiteral("/r/y0.wav")) == QLatin1String("TIME UNKNOWN"));
-    model.setRecordingProvider(nullptr);
+    if (had) {
+        qputenv("TZ", previous);
+    } else {
+        qunsetenv("TZ");
+    }
+    apply_tz();
 }
 
 /* The base host has no player: a play publishes the first item's path Failed "unsupported" and returns 0. */

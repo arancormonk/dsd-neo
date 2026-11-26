@@ -768,8 +768,7 @@ CallHistoryModel::playlistRows(const QList<int>& sourceRows) const {
         PlaylistRow row;
         row.uid = m_rows.at(source).uid;
         row.name = data(idx, NameRole).toString();
-        row.dayLabel = data(idx, DayLabelRole).toString();
-        row.timeText = data(idx, TimeTextRole).toString();
+        row.when = data(idx, WhenRole).toLongLong();
         rows.append(row);
         fragments.append(recording_fragments(m_rows.at(source)));
     }

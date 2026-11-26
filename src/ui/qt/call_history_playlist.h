@@ -49,7 +49,7 @@ class CallHistoryPlaylist : public QObject {
      *         row has @p startUid), `rowNone` (the row of @p startUid is shown but has no recording that can be played
      *         now), `unsupported` (the host has no player) or `refused` (the host has a player but did not take the
      *         items: generation 0). Every result but `accepted` leaves what plays playing, with generation and calls
-     *         0. Each item's `line` is the row's day and time, "<day> · <time>", or whichever of them it has.
+     *         0. Each item's `line` is the call's start in local time, "yyyy-MM-dd hh:mm", empty with no start.
      */
     Q_INVOKABLE QVariantMap start(double startUid);
 

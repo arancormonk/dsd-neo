@@ -403,7 +403,8 @@ class DecoderHost : public QObject {
      * Each item is a map: `path`, `size`, `mtimeSec` and `mtimeNanos` (the file as the recording store indexed it;
      * one found another file at its turn is not played), `call` (the call's index in @p items, from 0), `partOrdinal`
      * and `partCount` (its part's place among all the call's recordings, from 1, and their number), `title` and `line`
-     * (the call's name, and its day and time, "<day> · <time>") and `key` (its History row uid).
+     * (the call's name, and its start in local time, "yyyy-MM-dd hh:mm", empty when not known) and `key` (its History
+     * row uid).
      *
      * @return The play's generation, above 0, once accepted; 0 when refused, with what played left playing. The base
      *         host has no player: it publishes the first item's path Failed "unsupported" and returns 0.

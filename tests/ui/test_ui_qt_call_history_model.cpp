@@ -7431,9 +7431,9 @@ test_withdrawn_fragment_recordings(void) {
     }
 }
 
-/* Issue #909: a playlist's rows say what the row shows (its uid, its name as data() gives it, its day label and time
- * text) and carry every row's recordings from one provider read, in the order asked, rows out of range skipped; no
- * provider, or one that answers for fewer rows than asked, lists none rather than another row's. */
+/* Issue #909: a playlist's rows say what the row shows (its uid, its name as data() gives it, its start) and carry
+ * every row's recordings from one provider read, in the order asked, rows out of range skipped; no provider, or one
+ * that answers for fewer rows than asked, lists none rather than another row's. */
 void
 test_playlist_rows(void) {
     const time_t when = 1754707200;
@@ -7465,9 +7465,8 @@ test_playlist_rows(void) {
         expect("playlist rows: what the row shows",
                rows.at(i).uid == uid_at(model, 1 - i)
                    && rows.at(i).name == model.data(idx, CallHistoryModel::NameRole).toString()
-                   && rows.at(i).dayLabel == model.data(idx, CallHistoryModel::DayLabelRole).toString()
-                   && rows.at(i).timeText == model.data(idx, CallHistoryModel::TimeTextRole).toString()
-                   && !rows.at(i).dayLabel.isEmpty() && !rows.at(i).timeText.isEmpty());
+                   && rows.at(i).when == model.data(idx, CallHistoryModel::WhenRole).toLongLong()
+                   && rows.at(i).when > 0);
     }
     expect("playlist rows: each row its own recordings",
            rows.at(0).recordings.size() == 1 && rows.at(1).recordings.size() == 1
