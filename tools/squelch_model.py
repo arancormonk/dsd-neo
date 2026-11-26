@@ -110,7 +110,7 @@ Two modes:
 
 Usage:
     python3 tools/squelch_model.py [--frozen] [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
-                                   [--noise-windows N] [--segments N]
+                                   [--noise-windows N] [--segments N] [--chains TEXT]
 
 Writes report.md and report.json under DIR (default build/squelch_model/, build/squelch_model_frozen/ with --frozen)
 and prints the verdict. --quick (5000 noise windows per filter, short carriers) runs in a few minutes, too few windows
@@ -886,6 +886,14 @@ def modelled(combo: dict) -> bool:
     return combo["runs"] and "scoped" not in combo
 
 
+def segment_windows(noise_windows: int, segments: int) -> list[int]:
+    """The 20 ms sub-windows each of a chain's noise streams (segments) runs: the requested 40 ms decisions
+    (noise_windows / 2) split over the segments by quotient and remainder, the empty segments left out, so the streams
+    run exactly the noise_windows asked for. Segment i keeps its seed whatever the split."""
+    q, r = divmod(noise_windows // 2, max(1, segments))
+    return [2 * (q + (1 if i < r else 0)) for i in range(max(1, segments)) if q + (1 if i < r else 0) > 0]
+
+
 def make_jobs(
     combos: list[dict], hb_taps: dict, quick: bool, noise_windows: int, frozen: bool, segments: int
 ) -> list[dict]:
@@ -928,12 +936,10 @@ def make_jobs(
             },
         )
     jobs = []
-    parts = max(1, segments) if frozen else 1
+    split = segment_windows(noise_windows, segments if frozen else 1)
     for entry in chains.values():
         plan = entry["plan"]
-        per = -(-noise_windows // parts)
-        per += per % 2
-        for segment in range(parts):
+        for segment, per in enumerate(split):
             jobs.append(
                 {
                     "type": "noise",
@@ -2303,7 +2309,7 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
         "git": git_describe(),
         "mode": "quick" if args.quick else "full",
         "noise_windows": noise_windows,
-        "segments": args.segments,
+        "segments": len(segment_windows(noise_windows, args.segments)),
         "generator_check": model["generator_check"],
         "scipy": scipy.__version__,
         "python": platform.python_version(),
@@ -2409,6 +2415,9 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--segments", type=int, default=4, help="--frozen: independent noise streams per chain (run in parallel)"
     )
+    parser.add_argument(
+        "--chains", default="", help="run only the chains whose name contains this text (a partial run, same seeds)"
+    )
     args = parser.parse_args(argv)
     args.argv = argv
     noise_windows = args.noise_windows or (QUICK_NOISE_WINDOWS if args.quick else FULL_NOISE_WINDOWS)
@@ -2418,6 +2427,8 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = (args.out or (ROOT / "build" / default_out)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     model = load_chain_model(args, out_dir)
+    if args.chains:
+        model["combos"] = [c for c in model["combos"] if args.chains in c["plan"].name]
     if args.frozen:
         return main_frozen(args, model, noise_windows, started, out_dir)
     return main_design(args, model, noise_windows, started, out_dir)

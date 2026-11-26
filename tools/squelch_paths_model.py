@@ -58,7 +58,7 @@ encoder's VOX releases after 11 closed 40 ms reads (440 ms).
 
 Usage:
     python3 tools/squelch_paths_model.py [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
-                                         [--noise-windows N] [--segments N]
+                                         [--noise-windows N] [--segments N] [--chains TEXT]
 
 Writes report.md and report.json under DIR (default build/squelch_paths_model/) and prints the verdict; exits 1 when a
 plan either path runs misses a target that its ACCEPTED_MARGINAL entry (one plan, one bound, an allowance just above
@@ -770,6 +770,9 @@ def main(argv: list[str] | None = None) -> int:
         help=f"20 ms noise windows per filter (default {sm.FULL_NOISE_WINDOWS}, {sm.QUICK_NOISE_WINDOWS} with --quick)",
     )
     parser.add_argument("--segments", type=int, default=4, help="independent noise streams per chain (in parallel)")
+    parser.add_argument(
+        "--chains", default="", help="run only the chains whose name contains this text (a partial run, same seeds)"
+    )
     args = parser.parse_args(argv)
     noise_windows = args.noise_windows or (sm.QUICK_NOISE_WINDOWS if args.quick else sm.FULL_NOISE_WINDOWS)
     noise_windows = max(2, noise_windows // 2 * 2)
@@ -781,7 +784,7 @@ def main(argv: list[str] | None = None) -> int:
     header, _ = sm.run_harness(exe, [])
     hb_taps = {name: np.asarray(header[name], dtype=np.float64) for name in ("hb15", "hb31")}
     plans = sm.rate_plans()
-    filters = path_filters(plans)
+    filters = [f for f in path_filters(plans) if args.chains in f["plan"].name]
     run_profile_harness(exe, filters, hb_taps)
     sm.real_sources()  # fail early on a missing fixture
 
@@ -805,10 +808,9 @@ def main(argv: list[str] | None = None) -> int:
             base = {"key": ckey, "filter": f, "hb": hb_taps, "quick": args.quick, "cost": plan.source_hz * 3000}
             jobs.append({**base, "type": "carrier"})
             jobs.append({**base, "type": "timing", "exe": str(exe)})
-    per = noise_windows // max(1, args.segments)
-    per += per % 2
+    split = sm.segment_windows(noise_windows, args.segments)
     for entry in chains.values():
-        for segment in range(max(1, args.segments)):
+        for segment, per in enumerate(split):
             jobs.append(
                 {
                     "type": "noise",
