@@ -106,8 +106,8 @@ private class HeldSetup(
 
 /**
  * The opener; each setup runs at once on the caller's thread unless its setup thread is [stuck] ([holding]: the current
- * one), when it waits in [setups]. [threads] numbers the setup threads made: a timed-out setup makes the next one go to
- * a new thread ([setupTimedOut]), which is not stuck unless a case says so.
+ * one), when it waits in [setups]. [threads] numbers the setup threads made: a setup dropped with its result out makes
+ * the next one go to a new thread ([abandonSetup]), which is not stuck unless a case says so.
  */
 private class FakeOpener : RecordingPlayer.Opener {
     val refusals = HashMap<String, String>()
@@ -133,7 +133,7 @@ private class FakeOpener : RecordingPlayer.Opener {
         }
     }
 
-    override fun setupTimedOut() {
+    override fun abandonSetup() {
         threads++
     }
 
@@ -2094,9 +2094,11 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     moved.opener.holding = true
     moved.queue(1, 1, 1)
     val first = moved.last
+    moved.opener.stuck += 2 // the next call's read is slow too
     moved.machine.next()
     val second = moved.last
     check(moved.opener.setups.size == 2 && moved.status.playToken == second.token) { "Next opens the next call" }
+    check(moved.opener.threadOf == listOf(1, 2)) { "its setup on a fresh thread: the first was dropped with its result out" }
     moved.opener.setups[0].land()
     check(first.released && moved.status.call == 1 && moved.state == PREPARING) { "the first call's result is let go" }
     moved.opener.setups[1].land()
@@ -2179,6 +2181,32 @@ private fun aStuckSetupThreadIsReplaced() {
     check(rig.state == PLAYING) { "and plays" }
     rig.opener.setups.single().land()
     check(stuck.released && rig.state == PLAYING) { "the stuck read's late result is released, nothing else changes" }
+
+    // Left before its timeout: Stop, or Next, at 5 s with the read still stuck. The thread is given up at once, so a
+    // sheet play right after is set up on a fresh one and plays, never failing behind the stuck read.
+    for (leave in listOf("stop", "next")) {
+        val early = Rig()
+        early.opener.holding = true
+        val g = early.queue(1, 1)
+        val hung = early.last
+        early.elapse(5_000)
+        if (leave == "stop") early.machine.stop(g) else early.machine.next()
+        check(early.opener.threads == 2) { "$leave at 5 s: the stuck thread is given up at once" }
+        if (leave == "next") {
+            check(early.opener.threadOf == listOf(1, 2) && early.last.asked) { "next: the next call set up at once" }
+            early.prepared()
+            check(early.state == PLAYING && early.status.call == 1 && early.status.skipped == 0) {
+                "next: it plays, nothing skipped"
+            }
+        }
+        early.play()
+        check(early.opener.threadOf.last() == 2 && early.last.asked) { "$leave: the sheet play set up on the fresh thread" }
+        early.prepared()
+        early.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+        check(early.state == PLAYING && early.status.error.isEmpty()) { "$leave: it plays, and never fails as damaged" }
+        early.opener.setups.single().land()
+        check(hung.released) { "$leave: the stuck read's late result is released" }
+    }
 
     // A setup that came back in time (the prepare is what hangs) keeps its thread.
     val slow = Rig()

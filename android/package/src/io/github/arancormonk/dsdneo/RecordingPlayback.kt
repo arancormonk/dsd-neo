@@ -82,8 +82,8 @@ object RecordingPlayback {
 
     /**
      * The setup thread, beside the looper: each part's blocking open, data source and prepare start
-     * ([RecordingPlayer.Opener.setup]), one after another. One stuck past the prepare timeout is replaced
-     * ([RecordingPlayer.Opener.setupTimedOut]); under [setupLock].
+     * ([RecordingPlayer.Opener.setup]), one after another. A thread whose setup was dropped with its result still out
+     * is replaced ([RecordingPlayer.Opener.abandonSetup]); under [setupLock].
      */
     private var setupThread: ExecutorService? = null
     private val setupLock = Any()
@@ -558,10 +558,10 @@ object RecordingPlayback {
         }
 
         /**
-         * The stuck thread is abandoned: shut down, it takes no new work but finishes what it holds (the stuck read,
-         * whose late result the looper releases); the next setup starts a fresh one.
+         * The thread of a dropped setup is given up: shut down, it takes no new work but finishes what it holds (a
+         * stuck read, whose late result the looper releases); the next setup starts a fresh one.
          */
-        override fun setupTimedOut() {
+        override fun abandonSetup() {
             val stuck = synchronized(setupLock) { setupThread.also { setupThread = null } }
             stuck?.shutdown()
         }

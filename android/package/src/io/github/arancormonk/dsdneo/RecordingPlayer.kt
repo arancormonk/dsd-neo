@@ -184,11 +184,12 @@ class RecordingPlayer(
         fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
 
         /**
-         * The setup running now did not come back within [PREPARE_TIMEOUT_MS] (a read that does not return): later
-         * setups go to a fresh setup thread, and the stuck one takes no new work. It finishes, if ever, on its own;
-         * its result is delivered and released as any late one.
+         * The setup running now was dropped with its result still out (its part timed out, was moved off, stopped,
+         * failed or replaced), so its read may never return: later setups go to a fresh setup thread, and that one
+         * takes no new work. It finishes, if ever, on its own; its result is delivered and released as any late one.
+         * Healthy setups finish in milliseconds, so this costs at most a short-lived thread per quick move.
          */
-        fun setupTimedOut()
+        fun abandonSetup()
     }
 
     enum class FocusMode { GAIN, GAIN_TRANSIENT }
@@ -811,7 +812,7 @@ class RecordingPlayer(
         gap = false
         gapSinceMs = -1
         halt()
-        opening = null
+        dropOpening()
         if (player != null && prepared) {
             leave()
         }
@@ -822,6 +823,17 @@ class RecordingPlayer(
         durationMs = 0
         move = next
         tryNext()
+    }
+
+    /**
+     * The current part's setup is dropped with its result still out: its thread is given up at once
+     * ([Opener.abandonSetup]), so nothing ever queues behind a read that does not return.
+     */
+    private fun dropOpening() {
+        if (opening != null) {
+            opening = null
+            opener.abandonSetup()
+        }
     }
 
     /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
@@ -910,10 +922,6 @@ class RecordingPlayer(
         val opened = token
         schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
             if (token == opened && !prepared) {
-                if (opening?.token == opened) {
-                    // Its setup is still running: a stuck read would hold every later setup behind it.
-                    opener.setupTimedOut()
-                }
                 onFailed(opened, REASON_DAMAGED)
             }
         }
@@ -957,7 +965,7 @@ class RecordingPlayer(
         positionMs = currentPositionMs()
         player?.release()
         player = null
-        opening = null
+        dropOpening()
         prepared = false
         playing = false
         playingSinceMs = -1
@@ -1246,7 +1254,7 @@ class RecordingPlayer(
         cancelAll()
         player?.release()
         player = null
-        opening = null
+        dropOpening()
         left = null
         move = null
         prepared = false
@@ -1271,7 +1279,7 @@ class RecordingPlayer(
         cancelAll()
         player?.release()
         player = null
-        opening = null
+        dropOpening()
         left = null
         move = null
         prepared = false
