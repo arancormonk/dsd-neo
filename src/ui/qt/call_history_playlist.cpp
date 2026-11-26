@@ -7,11 +7,14 @@
 
 #include <QDateTime>
 #include <QList>
+#include <QMap>
 #include <QModelIndex>
 #include <QString>
 #include <QVariant>
 #include <QVariantList>
+#include <QtGlobal>
 #include <cmath>
+#include <utility>
 
 #include "call_history_filter.h"
 #include "call_history_model.h"

@@ -56,6 +56,7 @@
 #include <QTimer>
 #include <QVariant>
 #include <QVariantList>
+#include <Qt>
 #include <QtGlobal>
 #include <cstdint>
 #include <vector>
@@ -72,6 +73,10 @@ class QSGNode;
 class QVariantAnimation;
 
 namespace dsd_qt {
+
+namespace spectrum_geometry {
+struct StrokeVertex;
+} // namespace spectrum_geometry
 
 class MapViewItem : public QQuickItem {
     Q_OBJECT

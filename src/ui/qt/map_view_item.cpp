@@ -5,39 +5,33 @@
 
 #include "map_view_item.h"
 
+#include <QAbstractAnimation>
+#include <QByteArray>
+#include <QChar>
+#include <QCoreApplication>
+#include <QDebug>
 #include <QEasingCurve>
-#include <QFontMetricsF>
 #include <QGuiApplication>
-#include <QMatrix4x4>
-#include <QPainter>
-#include <QPainterPath>
-#include <QPen>
 #include <QPointF>
-#include <QQuickWindow>
 #include <QRectF>
-#include <QSGGeometry>
-#include <QSGGeometryNode>
-#include <QSGImageNode>
-#include <QSGNode>
-#include <QSGRendererInterface>
-#include <QSGTexture>
-#include <QSGTextureMaterial>
-#include <QSGTransformNode>
-#include <QSGVertexColorMaterial>
 #include <QSet>
 #include <QVariantAnimation>
 #include <Qt>
-#include <QtMath>
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <dsd-neo/core/position.h>
 #include <iterator>
+#include <limits>
+#include <qrgb.h>
+#include <stdlib.h>
 #include <utility>
 #include <vector>
 
 #include "map_geometry.h"
+#include "map_math.h"
 #include "map_view_detail.h"
+#include "spectrum_trace_geometry.h"
 
 namespace dsd_qt {
 

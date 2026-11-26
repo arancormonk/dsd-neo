@@ -32,6 +32,7 @@
 #include <QString>
 #include <QVariantMap>
 #include <QtGlobal>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
 

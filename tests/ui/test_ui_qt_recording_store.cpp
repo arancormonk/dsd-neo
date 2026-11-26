@@ -16,10 +16,10 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -33,14 +33,12 @@
 #include <QMap>
 #include <QModelIndex>
 #include <QObject>
-#include <QPair>
 #include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
@@ -58,16 +56,17 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <functional>
-#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <qflags.h>
+#include <qtenvironmentvariables.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
 #include <time.h>
+#include <utility>
 #ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -81,6 +80,7 @@
 #include "decoder_host.h"
 #include "platform_path.h"
 #include "recording_journal.h"
+#include "recording_selection_token.h"
 #include "recording_store.h"
 #include "wav_journal.h"
 

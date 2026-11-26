@@ -29,6 +29,7 @@
  * counted, not printed. */
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>
@@ -42,6 +43,7 @@
 #include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QModelIndex>
 #include <QObject>
 #include <QSet>
@@ -52,7 +54,6 @@
 #include <QTemporaryDir>
 #include <QVariant>
 #include <QVariantMap>
-#include <QVector>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
@@ -69,12 +70,15 @@
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <memory>
+#include <qflags.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <time.h>
+#include <utility>
 #include "../../src/app_control/snapshot_internal.h"
 #include "../test_support/qt_test_paths.h"
+#include "call_history_heard.h"
 #include "call_history_model.h"
 #include "call_history_tap.h"
 #include "heard_talkgroup_sink.h"

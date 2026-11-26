@@ -26,6 +26,7 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QChar>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -40,11 +41,10 @@
 #include <QList>
 #include <QLocale>
 #include <QObject>
-#include <QPair>
 #include <QString>
-#include <QStringList>
 #include <QTemporaryDir>
 #include <QTimeZone>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <chrono>
@@ -55,13 +55,17 @@
 #include <dsd-neo/runtime/tile_fetch.h>
 #include <functional>
 #include <mutex>
+#include <qflags.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../test_support/qt_test_paths.h"
 #include "map_tile_cache.h"
+#include "map_tile_http.h"
 #include "map_tile_worker.h"
 
 using dsd_qt::MapTileCache;

@@ -6,26 +6,32 @@
 #include "map_tile_cache.h"
 
 #include <QBuffer>
+#include <QChar>
 #include <QCryptographicHash>
 #include <QDateTime>
 #include <QDir>
 #include <QFile>
-#include <QFileDevice>
 #include <QFileInfo>
 #include <QIODevice>
 #include <QImageReader>
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonParseError>
 #include <QJsonValue>
+#include <QLatin1String>
+#include <QPair>
 #include <QSaveFile>
 #include <QSize>
 #include <QStandardPaths>
 #include <QStringList>
 #include <algorithm>
+#include <dsd-neo/runtime/tile_fetch.h>
+#include <qflags.h>
 #include <utility>
 #include <vector>
 
+#include "map_tile_http.h"
 #include "realtime_clock.h"
 
 namespace dsd_qt {

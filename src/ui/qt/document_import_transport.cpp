@@ -16,7 +16,6 @@
 #include <cerrno>
 #include <cstdint>
 #include <memory>
-#include <stddef.h>
 
 #include <dsd-neo/crypto/backup_seal.h>
 

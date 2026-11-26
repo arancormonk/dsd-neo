@@ -32,6 +32,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_LOCATION_FEED_H_
 #define DSD_NEO_SRC_UI_QT_LOCATION_FEED_H_
 
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QSet>
@@ -39,6 +40,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 
 namespace dsd_qt {
 

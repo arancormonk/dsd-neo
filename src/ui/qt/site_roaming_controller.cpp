@@ -6,11 +6,13 @@
 #include "site_roaming_controller.h"
 
 #include <QAbstractItemModel>
+#include <QDebug>
 #include <QLatin1String>
-#include <QMetaObject>
+#include <QList>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantList>
+#include <Qt>
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/runtime/decode_clock.h>

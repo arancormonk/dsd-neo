@@ -11,18 +11,19 @@
  * Rows are synthetic (dsd_unit_activity_push()); all IDs are made up (WACN 0xBEE00, SYS 0x123 / 0x456, RID 42).
  */
 
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QHash>
 #include <QList>
 #include <QModelIndex>
-#include <QObject>
 #include <QSignalSpy>
 #include <QString>
 #include <QVariant>
+#include <QtGlobal>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/alias_learn.h>
 #include <dsd-neo/core/received_identity.h>
@@ -30,10 +31,12 @@
 #include <dsd-neo/core/source_alias.h>
 #include <dsd-neo/core/state.h>
 #include <dsd-neo/core/state_ext.h>
+#include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/talkgroup_policy.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <dsd-neo/core/unit_activity_reason.h>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <initializer_list>
 #include <memory>
 #include "unit_activity_model.h"
 

@@ -6,6 +6,7 @@
 #include <QChar>
 #include <QDebug>
 #include <dsd-neo/core/receive_types.h>
+#include <type_traits>
 #include "call_history_model.h"
 
 #include <QBuffer>

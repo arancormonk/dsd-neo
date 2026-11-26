@@ -48,6 +48,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/radioreference.h>
 #include <memory>
+#include <qqml.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <utility>

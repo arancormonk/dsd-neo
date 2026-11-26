@@ -39,13 +39,16 @@
 #define DSD_NEO_SRC_UI_QT_SITE_ROAMING_CONTROLLER_H_
 
 #include <QHash>
+#include <QMap>
 #include <QObject>
 #include <QPointer>
 #include <QString>
 #include <QTimer>
+#include <QVariant>
 #include <QVariantMap>
 #include <QtGlobal>
 #include <functional>
+#include <type_traits> // IWYU pragma: keep -- QPointer's conversion checks.
 #include <vector>
 #include "site_roaming.h"
 

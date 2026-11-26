@@ -18,6 +18,7 @@
  */
 
 #include <QAbstractItemModel>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDebug>
 #include <QDir>

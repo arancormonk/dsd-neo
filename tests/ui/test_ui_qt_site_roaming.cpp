@@ -8,24 +8,28 @@
  * generous; where a case needs a distance near the margin it measures it with site_distance_km itself, so the cases
  * hold for any accurate distance formula.
  */
+#include <QByteArray>
 #include <QCoreApplication>
 #include <QEvent>
 #include <QGuiApplication>
+#include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QObject>
-#include <QPair>
 #include <QSettings>
 #include <QString>
 #include <QStringList>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
-#include <cstddef>
+#include <Qt>
+#include <QtGlobal>
 #include <cstdint>
 #include <cstdio>
 #include <functional>
 #include <limits>
 #include <string>
+#include <utility>
 #include <vector>
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"

@@ -6,8 +6,9 @@
 #include "map_tile_worker.h"
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
-#include <QMetaObject>
+#include <QImage>
 #include <QStringList>
 #include <Qt>
 #include <algorithm>
@@ -16,6 +17,7 @@
 #include <condition_variable>
 #include <deque>
 #include <dsd-neo/runtime/decode_clock.h>
+#include <dsd-neo/runtime/tile_fetch.h>
 #include <functional>
 #include <list>
 #include <mutex>
@@ -24,6 +26,7 @@
 #include <utility>
 #include <vector>
 
+#include "map_tile_http.h"
 #include "realtime_clock.h"
 
 namespace dsd_qt {

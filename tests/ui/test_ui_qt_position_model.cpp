@@ -13,21 +13,23 @@
  * snapshot publish would. Every coordinate, ID and scope here is made up.
  */
 
+#include <QAbstractListModel>
 #include <QByteArray>
 #include <QGuiApplication>
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QSignalSpy>
 #include <QString>
 #include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>

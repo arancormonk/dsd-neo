@@ -14,6 +14,7 @@
 #include <QList>
 #include <QSet>
 #include <QString>
+#include <QVariant>
 #include <QtGlobal>
 #include <algorithm>
 #include <dsd-neo/core/position.h>

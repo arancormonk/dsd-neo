@@ -48,13 +48,11 @@
 #include <QHashFunctions>
 #include <QImage>
 #include <QList>
-#include <QPair>
 #include <QString>
 #include <QtGlobal>
 #include <dsd-neo/runtime/tile_fetch.h>
 #include <functional>
-
-#include "map_tile_http.h"
+#include <stddef.h>
 
 namespace dsd_qt {
 

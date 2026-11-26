@@ -10,6 +10,8 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <QtGlobal>
+#include <array>
 #include <functional>
 #include <utility>
 #include "scan_protocol_catalog.h"

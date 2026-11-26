@@ -14,7 +14,6 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -38,7 +37,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QUuid>
 #include <QVariant>
 #include <QVariantList>

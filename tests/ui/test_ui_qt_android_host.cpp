@@ -22,6 +22,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <cstdio>
@@ -43,6 +44,7 @@
 #include "diagnostics_log.h"
 #include "document_import_transport.h"
 #include "document_save_transport.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 

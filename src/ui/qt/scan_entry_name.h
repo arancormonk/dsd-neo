@@ -16,6 +16,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 #define DSD_NEO_SRC_UI_QT_SCAN_ENTRY_NAME_H_
 
+#include <QLatin1String>
 #include <QString>
 #include "scan_protocol_catalog.h"
 

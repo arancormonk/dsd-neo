@@ -6,11 +6,14 @@
 #include "heard_talkgroup_owners.h"
 
 #include <QAbstractItemModel>
+#include <QDebug>
+#include <QList>
 #include <QObject>
 #include <QSet>
 #include <QString>
 #include <memory>
 
+#include "backup_apply.h"
 #include "heard_talkgroup_store.h"
 #include "saved_systems_model.h"
 

@@ -3,9 +3,12 @@
  * Copyright (C) 2026 by arancormonk <180709949+arancormonk@users.noreply.github.com>
  */
 
+#include <QMap>
+#include <QVariant>
+#include <Qt>
+#include <utility>
 #include "location_requests.h"
 
-#include <QMetaObject>
 #include "decoder_host.h"
 
 namespace dsd_qt {

@@ -19,18 +19,15 @@
  * about) is skipped, saying so; the fixed-offset cases run everywhere. */
 
 #include <QByteArray>
-#include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QGuiApplication>
-#include <QMetaObject>
 #include <QObject>
-#include <QTime>
 #include <QTimeZone>
 #include <QTimer>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/safe_api.h>
+#include <stdio.h>
 #include "local_day_watch.h"
 #include "realtime_clock.h"
 

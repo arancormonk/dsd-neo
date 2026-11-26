@@ -6,12 +6,13 @@
  * platform*() functions in decoder_host_android.cpp), so the desktop host test compiles this dispatch as it ships.
  */
 
-#include <QChar>
 #include <QCoreApplication>
+#include <QDebug>
 #include <QFileInfo>
 #include <QGuiApplication>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QSet>
 #include <QString>
@@ -26,12 +27,15 @@
 #include <map>
 #include <memory>
 #include <mutex>
+#include <stddef.h>
 #include <utility>
 #include <vector>
 #include "abandoned_workers.h"
 #include "decoder_host.h"
 #include "decoder_host_android.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "playback_status_record.h"
+#include "recording_selection_token.h"
 
 namespace dsd_android {
 namespace {

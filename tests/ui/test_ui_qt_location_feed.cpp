@@ -7,13 +7,18 @@
  * move with the notice first, the host's updates passed on in order, a host replacement that drops every lease, and a
  * record that never outlives the feed. The host is scripted; coordinates are made up.
  */
-#include <QCoreApplication>
 #include <QGuiApplication>
+#include <QList>
+#include <QMap>
 #include <QObject>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
+#include <Qt>
+#include <QtGlobal>
 #include <cstdio>
+#include <utility>
 #include "decoder_host.h"
 #include "location_feed.h"
 

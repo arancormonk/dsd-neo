@@ -6,7 +6,9 @@
 #include "location_feed.h"
 
 #include <QCoreApplication>
+#include <QDebug>
 #include <QGuiApplication>
+#include <QVariant>
 #include <dsd-neo/runtime/decode_clock.h>
 #include "decoder_host.h"
 

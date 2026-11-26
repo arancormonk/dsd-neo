@@ -8,32 +8,35 @@
 // every row's recordings in one provider read, and hands the host the playable ones with their place in the call;
 // every result code, and the host's base play.
 
+#include <QByteArray>
+#include <QByteArrayView>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDir>
 #include <QHash>
 #include <QJsonArray>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QModelIndex>
 #include <QSettings>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QTimeZone>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
 #include <QtGlobal>
-#include <cmath>
 #include <dsd-neo/core/safe_api.h>
 #include <limits>
+#include <qtenvironmentvariables.h>
 #include <stdio.h>
 #include <time.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "call_history_filter.h"
 #include "call_history_model.h"

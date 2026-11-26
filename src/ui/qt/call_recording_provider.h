@@ -21,6 +21,7 @@
 #include <QList>
 #include <QString>
 #include <QStringList>
+#include <QVariant> // IWYU pragma: keep -- QVariantList's element; IWYU's answer differs by TU.
 #include <QVariantList>
 #include <QtGlobal>
 

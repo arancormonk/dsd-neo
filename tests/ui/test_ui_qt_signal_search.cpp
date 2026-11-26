@@ -68,7 +68,6 @@
 #include <qflags.h>
 #include <qsystemdetection.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <thread>
 #include <utility>

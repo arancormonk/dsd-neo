@@ -51,7 +51,7 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
+#include <QDebug>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -66,9 +66,7 @@
 #include <QList>
 #include <QLocale>
 #include <QMap>
-#include <QMetaObject>
 #include <QMetaType>
-#include <QModelIndex>
 #include <QObject>
 #include <QSet>
 #include <QSettings>
@@ -77,7 +75,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantList>
@@ -7889,7 +7886,7 @@ test_legacy_rows_fold_as_parts(void) {
     later.insert(QStringLiteral("seq"), 2);
     expect("legacy parts: an older build's store is written",
            dsd_qt::json_store_save_array("call_history.json", QJsonArray{later, earlier}));
-    const auto folded = [when](const CallHistoryModel& model) {
+    const auto folded = [](const CallHistoryModel& model) {
         const QModelIndex idx = model.index(0);
         return model.count() == 1 && model.data(idx, CallHistoryModel::SrcRole).toULongLong() == 8701U
                && model.data(idx, CallHistoryModel::EmergencyRole).toBool()
