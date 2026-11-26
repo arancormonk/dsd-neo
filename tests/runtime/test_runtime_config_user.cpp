@@ -5877,7 +5877,6 @@ test_config_line_nul_and_crlf(void) {
 
 #if defined(DSD_TEST_FAULT_READS)
 // IWYU pragma: no_include <bits/types/cookie_io_functions_t.h>
-#include <dsd-neo/runtime/path_policy.h>
 
 /* Issue #931 (gate r3): a stream that serves g_fault_content and then, from the g_fault_from_open-th open on (1-based),
    fails with EIO instead of ending; earlier opens end cleanly after it. With g_fault_path set, only an open of a path
