@@ -1284,8 +1284,17 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
     scan.scan_includes = 1;
     int line_num = 0;
 
-    while (fgets(line, sizeof line, stream)) {
+    int oversized = 0;
+    while (user_config_read_line(stream, line, sizeof line, &oversized)) {
         line_num++;
+        if (oversized) {
+            /* Never quoted, nor any part of it read as a key: it can be a credential (issue #931). */
+            char msg[128];
+            DSD_SNPRINTF(msg, sizeof msg, "Line is longer than %zu bytes; the loader ignores it whole",
+                         sizeof line - 1U);
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, "", "", msg);
+            continue;
+        }
         validate_config_stream_line(line, line_num, &scan, diags);
     }
 

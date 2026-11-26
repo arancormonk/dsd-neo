@@ -5777,6 +5777,47 @@ test_recording_rdio_mode_refused(void) {
     return rc;
 }
 
+/* Issue #931 (gate r1): a physical line longer than the reader's 8191 bytes is dropped whole, with a warning that
+   quotes none of it. Its tail used to be read as a line of its own, so "rdio_system_id=91" past the cut of an
+   oversized key line took effect. A line that just fits (8191 bytes, its newline after) still loads, and the lines
+   after an oversized one do. */
+static int
+test_config_line_too_long_dropped_whole(void) {
+    int rc = 0;
+    const std::string prefix = "rdio_api_key = \"";
+    const std::string oversized =
+        prefix + "SECRETMARK" + std::string(8191U - prefix.size() - 10U, 'k') + "rdio_system_id=91\n";
+    const std::string ini =
+        std::string("[recording]\nrdio_system_id = 7\nrdio_api_key = \"kept\"\n") + oversized + "rdio_mode = \"api\"\n";
+    dsdneoUserConfig cfg{};
+    g_log_text[0] = '\0';
+    if (load_config_text(ini.c_str(), &cfg) != 0 || cfg.rdio_system_id != 7 || strcmp(cfg.rdio_api_key, "kept") != 0
+        || cfg.rdio_mode != DSD_RDIO_MODE_API || strstr(g_log_text, "longer than 8191 bytes") == nullptr
+        || strstr(g_log_text, "SECRETMARK") != nullptr || strstr(g_log_text, "kkkk") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: oversized line: system=%d key=%.16s mode=%d (log: '%.200s')\n", cfg.rdio_system_id,
+                    cfg.rdio_api_key, cfg.rdio_mode, g_log_text);
+        rc |= 1;
+    }
+    /* 8191 bytes with the newline after them fit: a comment that long is a comment, and the next line loads. */
+    const std::string fits = std::string("[recording]\n#") + std::string(8190U, 'c') + "\nrdio_system_id = 9\n";
+    g_log_text[0] = '\0';
+    if (load_config_text(fits.c_str(), &cfg) != 0 || cfg.rdio_system_id != 9
+        || strstr(g_log_text, "longer") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: an 8191-byte line was not read as one (system=%d, log: '%.200s')\n",
+                    cfg.rdio_system_id, g_log_text);
+        rc |= 1;
+    }
+    /* A profile load reads the same way: the tail of an oversized profile line sets nothing. */
+    const std::string profile = std::string("[recording]\nrdio_system_id = 7\n\n[profile.p]\n") + "recording." + prefix
+                                + std::string(8191U - prefix.size() - 10U, 'k') + "recording.rdio_system_id=91\n";
+    dsdneoUserConfig prof{};
+    if (load_profile_text(profile.c_str(), "p", &prof) != 0 || prof.rdio_system_id != 7) {
+        DSD_FPRINTF(stderr, "FAIL: an oversized profile line's tail took effect (system=%d)\n", prof.rdio_system_id);
+        rc |= 1;
+    }
+    return rc;
+}
+
 /* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
    fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
    stays, instead of a value cut to another endpoint or key. */
@@ -7490,6 +7531,7 @@ main(void) {
     rc |= test_recording_rdio_system_id_range();
     rc |= test_recording_rdio_mode_refused();
     rc |= test_recording_rdio_credentials_too_long();
+    rc |= test_config_line_too_long_dropped_whole();
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
     rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();

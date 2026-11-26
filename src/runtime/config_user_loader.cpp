@@ -1237,7 +1237,12 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     char current_section[64];
     current_section[0] = '\0';
 
-    while (fgets(line, sizeof line, fp)) {
+    int oversized = 0;
+    while (user_config_read_line(fp, line, sizeof line, &oversized)) {
+        if (oversized) {
+            LOG_WARN("Config: ignored a line longer than %zu bytes, whole\n", sizeof line - 1U);
+            continue;
+        }
         user_config_trim_ascii_whitespace(line);
         if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
             continue;
@@ -1558,7 +1563,7 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
     }
 
     char line[8192];
-    while (fgets(line, sizeof line, fp)) {
+    while (user_config_read_line(fp, line, sizeof line, NULL)) {
         char inc_path[1024];
         int parse_rc = user_config_parse_include_directive_line(line, inc_path, sizeof inc_path);
         if (parse_rc < 0) {
@@ -1679,7 +1684,7 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     int in_target_profile = 0;
     int profile_found = 0;
 
-    while (fgets(line, sizeof line, fp)) {
+    while (user_config_read_line(fp, line, sizeof line, NULL)) {
         user_config_trim_ascii_whitespace(line);
         if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
             continue;
@@ -1830,7 +1835,7 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
     size_t buf_used = 0;
     char line[8192];
 
-    while (fgets(line, sizeof line, stream) && count < max_names) {
+    while (count < max_names && user_config_read_line(stream, line, sizeof line, NULL)) {
         const char* profile_name = NULL;
         if (!extract_profile_section_name(line, &profile_name)) {
             continue;

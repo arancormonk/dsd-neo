@@ -134,6 +134,36 @@ user_config_parse_double_value(const char* val, double* out_value) {
     return 0;
 }
 
+int
+user_config_read_line(FILE* stream, char* line, size_t line_size, int* oversized) {
+    if (oversized) {
+        *oversized = 0;
+    }
+    if (!stream || !line || line_size < 2U || line_size > (size_t)INT_MAX) {
+        return 0;
+    }
+    if (!fgets(line, (int)line_size, stream)) {
+        return 0;
+    }
+    const size_t len = strlen(line);
+    if (len + 1U < line_size || line[len - 1U] == '\n') {
+        return 1;
+    }
+    /* The buffer is full without a newline: the line ends here only if the stream does or a newline follows. */
+    int c = fgetc(stream);
+    if (c == EOF || c == '\n') {
+        return 1;
+    }
+    while (c != EOF && c != '\n') {
+        c = fgetc(stream);
+    }
+    line[0] = '\0';
+    if (oversized) {
+        *oversized = 1;
+    }
+    return 1;
+}
+
 char*
 user_config_trim_ascii_whitespace(char* text) {
     if (!text) {

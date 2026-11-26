@@ -1809,6 +1809,52 @@ test_rdio_analog_validation(void) {
     return rc;
 }
 
+/* Issue #931 (gate r1): --validate-config reads a physical line longer than 8191 bytes as one line, an error that
+ * quotes none of it: its tail used to be read as a line of its own, and "PRIVATE-SUFFIX=value" past the cut of a key
+ * was reported as an unknown key, part of the credential printed. The lines after it keep their numbers. */
+int
+test_config_line_too_long_validation(void) {
+    const std::string prefix = "rdio_api_key = \"";
+    const std::string ini = std::string("[recording]\n") + prefix + std::string(8191U - prefix.size(), 'q')
+                            + "PRIVATE-SUFFIX=value\"\nno_such_key = 1\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini.c_str(), path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    int long_line = 0;
+    int unknown_on_3 = 0;
+    bool leaked = false;
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].message, "PRIVATE") || strstr(diags.items[i].key, "PRIVATE")
+            || strstr(diags.items[i].message, "qqqq") || strstr(diags.items[i].key, "qqqq")) {
+            leaked = true;
+        }
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 2
+            && strstr(diags.items[i].message, "longer than 8191 bytes") != nullptr) {
+            long_line++;
+        }
+        if (diags.items[i].line_number == 3 && strcmp(diags.items[i].key, "no_such_key") == 0) {
+            unknown_on_3++;
+        }
+    }
+    int rc = 0;
+    if (leaked || long_line != 1 || unknown_on_3 != 1) {
+        DSD_FPRINTF(stderr, "FAIL: oversized line: leaked=%d long_line=%d unknown_on_3=%d\n", leaked ? 1 : 0, long_line,
+                    unknown_on_3);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %d %s.%.40s: %.80s\n", diags.items[i].line_number, diags.items[i].section,
+                        diags.items[i].key, diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return rc;
+}
+
 /* Issue #931 (B11): an rdio_api_url or rdio_api_key the loader refuses as too long is an error that never quotes the
  * value; the largest value that fits is none. */
 int
@@ -2619,6 +2665,7 @@ main(void) {
     rc |= test_rdio_analog_validation();
     rc |= test_rdio_system_by_frequency_validation();
     rc |= test_rdio_credential_length_validation();
+    rc |= test_config_line_too_long_validation();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
