@@ -76,9 +76,10 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * It keeps what the user asked for (play or pause) apart from what the player does, and starts a player only when it
  * is prepared, play is wanted, the foreground (SINGLE, PARTS) and the service (PLAYLIST) allow it and the focus is
  * granted. Every prepare gets a fresh play token, unique in the process and never reused, which the player's callbacks
- * and the host's item commands carry; each scheduled task (gap, skip search, paused deadline, promotion timeout) has
- * its own id; focus callbacks carry the epoch of the request they answer. A callback, task or command whose identity is
- * not current is dropped.
+ * and the host's item commands carry; each scheduled task (gap, skip search, paused deadline, promotion timeout,
+ * prepare timeout) has its own id; focus callbacks carry the epoch of the request they answer. A callback, task or
+ * command whose identity is not current is dropped. A part not prepared within [PREPARE_TIMEOUT_MS] of its open fails
+ * as a player error on it would (a MediaPlayer that never answers would leave the play opening for good).
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
@@ -378,11 +379,17 @@ class RecordingPlayer(
         /** A PLAYLIST whose service is not promoted in this time ends "start". */
         const val PROMOTION_MS = 5_000L
 
+        /**
+         * A part whose player has not prepared this long after its open has failed, as a player error on it would
+         * have: a MediaPlayer that never answers would otherwise leave the play opening, its service up, for good.
+         */
+        const val PREPARE_TIMEOUT_MS = 10_000L
+
         /** Play tokens, unique in the process. */
         private val tokens = AtomicLong()
     }
 
-    private enum class Slot { GAP, SEARCH, DEADLINE, PROMOTION }
+    private enum class Slot { GAP, SEARCH, DEADLINE, PROMOTION, PREPARE }
 
     private class Pending(val id: Int, val handle: Cancellable)
 
@@ -655,6 +662,7 @@ class RecordingPlayer(
             return
         }
         prepared = true
+        cancel(Slot.PREPARE)
         durationMs = current.durationMs.coerceAtLeast(0)
         positionMs = 0
         releaseHeld()
@@ -717,6 +725,7 @@ class RecordingPlayer(
     private fun beginMove(next: Move) {
         cancel(Slot.GAP)
         cancel(Slot.SEARCH)
+        cancel(Slot.PREPARE)
         gap = false
         gapSinceMs = -1
         halt()
@@ -849,6 +858,14 @@ class RecordingPlayer(
             }
             else -> {
                 player = made
+                // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end
+                // cancels it, and a later open's player is never failed by it.
+                val opened = token
+                schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
+                    if (token == opened && !prepared) {
+                        onFailed(opened, REASON_DAMAGED)
+                    }
+                }
                 publish()
             }
         }
@@ -856,6 +873,15 @@ class RecordingPlayer(
 
     /** The current recording cannot be played: end the play, or (PLAYLIST) mark it and search on, next turn. */
     private fun failItem(reason: String) {
+        cancel(Slot.PREPARE)
+        if (resumeSuspended) {
+            // The part a resume waited for failed: the hold-off ends, and the deadline counts from the pause again.
+            resumeSuspended = false
+            if (expireIfDue()) {
+                return
+            }
+            scheduleDeadline((PAUSED_LIMIT_MS - (clock.elapsedMs() - pausedSinceMs)).coerceAtLeast(0))
+        }
         val wasOpen = prepared
         positionMs = currentPositionMs()
         player?.release()

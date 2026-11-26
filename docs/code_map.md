@@ -19905,16 +19905,20 @@ Qt Quick frontend (`src/ui/qt`):
       descriptor, so the file playing plays to its end when it is deleted under it. What plays is decided by the file
       found at its turn: one whose delete waits on an export or upload and that is still there unchanged plays.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
-      link, any other open error) or the player reports `damaged` (a media error for this file); `player` (no player
-      could be built, or `MEDIA_ERROR_SERVER_DIED`) is not the file's fault and ends the play FAILED "failed". A
-      PLAYLIST marks a failed recording failed for this play (never its whole call), and the next not-failed one in the
-      move's direction opens on the next looper turn (a long run of failures stays stoppable; each search visits each
-      recording once); PARTS ends on its first failure as before. An error from the part that completed, in the gap
-      after its call, is ignored (it played: not failed, no skip, the gap runs on). The paths of `gone` and `changed`
-      items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement never drops
-      one); its serial is in the status record, and the host calls `takeRecheck()` (a `String[]`, no delimiter) when the
-      serial moved, on every foreground return and with the next play, and hands the paths to `recordingFilesMissing`
-      (the store's root-aware recheck, which keeps away storage's entries). Each path is handed over once.
+      link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
+      seconds of its open, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, cancelled on prepare,
+      error, a move and the end: a SINGLE play then reads Failed, a PARTS play ends, a PLAYLIST skips it, and a resume
+      waiting for that part stops holding the paused deadline off, which then ends the play at once if 10 minutes have
+      passed); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is not the file's fault and ends the
+      play FAILED "failed". A PLAYLIST marks a failed recording failed for this play (never its whole call), and the
+      next not-failed one in the move's direction opens on the next looper turn (a long run of failures stays stoppable;
+      each search visits each recording once); PARTS ends on its first failure as before. An error from the part that
+      completed, in the gap after its call, is ignored (it played: not failed, no skip, the gap runs on). The paths of
+      `gone` and `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a
+      replacement never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a
+      `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and hands the
+      paths to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path
+      is handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
       sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part) and
@@ -19936,16 +19940,17 @@ Qt Quick frontend (`src/ui/qt`):
       every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
       (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume ends it
       only once the focus is granted, so one refused as the next part prepares keeps the pause's start; a resume pressed
-      before the deadline holds it off until its focus answer, so a part still preparing at 10 minutes does not end
-      "timeout", and a refusal or another pause then ends it at once if the 10 minutes have passed), checked against
-      `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's awake time), when
-      the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered on the looper
-      while a playlist is open) and at every event, so it ends at the first of these after 10 minutes. Identities: every
-      prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap, skip search,
-      deadline, promotion timeout) has its own id and is cancelled when superseded; focus callbacks carry an epoch; a
-      callback, task or command whose identity is not current is dropped. The last generation's terminal
-      reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced; the item it ended on) stays as
-      the status until the next play, so the host reads a notification Stop on its next poll.
+      before the deadline holds it off until its focus answer or its part failing (at most a ten-second prepare), so a
+      part still preparing at 10 minutes does not end "timeout", and a refusal or another pause then ends it at once if
+      the 10 minutes have passed), checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`,
+      which counts the device's awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an
+      `ACTION_SCREEN_ON` receiver registered on the looper while a playlist is open) and at every event, so it ends at
+      the first of these after 10 minutes. Identities: every prepare gets a fresh play token (unique in the process,
+      never reused); each scheduled task (gap, skip search, deadline, promotion timeout, prepare timeout) has its own id
+      and is cancelled when superseded; focus callbacks carry an epoch; a callback, task or command whose identity is
+      not current is dropped. The last generation's terminal reading (finished, stopped, focus, timeout, unplayable,
+      start, failed, replaced; the item it ended on) stays as the status until the next play, so the host reads a
+      notification Stop on its next poll.
     - State/action table (one table drives Qt and the session, and every command is checked against it again on
       delivery): opening (wanted) PLAYING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
       Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;

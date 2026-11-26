@@ -821,9 +821,10 @@ History, the Monitor's Recent calls and Home's Recent activity.
   does not talk over the calls as they change. While the on-screen keyboard is up, the bar hides (the media controls
   keep theirs).
 
-A playlist holds on to no files: deleting a recording (from its sheet or Call recordings) and the storage limit go
-ahead as if nothing played. A recording that is gone or was replaced by its turn is skipped, and DSD-neo reads its
-folder again; the recording playing when it is deleted plays to its end. **Clear history** ends a playlist.
+A playlist holds on to no files: deleting a recording (from its sheet or Call recordings) and the storage limit go ahead
+as if nothing played. A recording that is gone or was replaced by its turn is skipped, and DSD-neo reads its folder
+again; one that does not open within 10 seconds is skipped too; the recording playing when it is deleted plays to its
+end. **Clear history** ends a playlist.
 
 ### Playlists in the background and on the lock screen
 

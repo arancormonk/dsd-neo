@@ -278,7 +278,7 @@ private fun aPlayStartsOncePreparedAndHoldsTheFocus() {
     check(rig.state == PLAYING && rig.focus.requests.size == 2) { "a resume asks for the focus again and plays" }
     rig.nowMs += 70_000
     check(rig.position == 60_000L) { "the position never runs past the length" }
-    check(rig.service.changes.isEmpty() && rig.scheduler.entries.isEmpty()) { "a single play uses no service and no task" }
+    check(rig.service.changes.isEmpty() && rig.scheduler.live().isEmpty()) { "a single play uses no service and no task left" }
 }
 
 private fun aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted() {
@@ -516,7 +516,7 @@ private fun partsPlayThroughHoldingOneTransientFocus() {
     }
     check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) { "it finishes after the last part" }
     check(rig.focus.requests == listOf(FocusMode.GAIN_TRANSIENT) && rig.focus.abandons == 1) { "one request, one abandon" }
-    check(rig.scheduler.entries.isEmpty()) { "no gap between parts" }
+    check(rig.scheduler.entries.none { it.delayMs == RecordingPlayer.GAP_MS }) { "no gap between parts" }
 
     // A part MediaPlayer reports no length for still advances on completion (#909).
     val zero = Rig(length = 0)
@@ -620,7 +620,7 @@ private fun theGapReadsFrozenAndPausesWithIt() {
     check(rig.last.path == path(1, 1) && !rig.status.gap && rig.focus.requests.size == 2) {
         "Play in a paused gap opens the next call at once, the gap not resumed"
     }
-    check(rig.scheduler.live().none { it.delayMs > 0 }) { "no gap task is left" }
+    check(rig.scheduler.live().none { it.delayMs in 1..RecordingPlayer.GAP_MS }) { "no gap task is left" }
     rig.prepared()
     check(rig.state == PLAYING) { "and plays it" }
 }
@@ -830,8 +830,9 @@ private fun aResumeWaitingForTheFocusKeepsTheDeadline() {
     again.machine.next()
     again.machine.resume()
     again.machine.pause()
+    again.prepared()
     again.elapse(99_999)
-    check(again.state == PREPARING && again.status.endedReason.isEmpty()) { "not yet ten minutes from the pause" }
+    check(again.state == PAUSED && again.status.endedReason.isEmpty()) { "not yet ten minutes from the pause" }
     again.elapse(1)
     check(again.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "ten minutes from the first pause" }
 }
@@ -959,7 +960,7 @@ private fun theServiceIsPromotedOnceInEitherOrder() {
     // A times out while B starts.
     val ab = Rig()
     val a = ab.queue(1, promote = false)
-    val aTimeout = ab.scheduler.live().single()
+    val aTimeout = ab.scheduler.live().single { it.delayMs == RecordingPlayer.PROMOTION_MS }
     ab.elapse(3_000)
     val b = ab.queue(1, promote = false)
     check(ab.service.ends == listOf(a to RecordingPlayer.ENDED_REPLACED)) { "A is replaced" }
@@ -1704,7 +1705,7 @@ private fun theTenMinuteDeadlineCountsFromThePause() {
     single.prepared()
     single.machine.pause()
     single.elapse(3_600_000)
-    check(single.state == PAUSED && single.scheduler.entries.isEmpty()) { "a single play has no paused deadline" }
+    check(single.state == PAUSED && single.scheduler.live().isEmpty()) { "a single play has no paused deadline" }
 }
 
 private fun theTerminalRecordStaysUntilTheNextPlay() {
@@ -1765,6 +1766,88 @@ private fun onlyAGrantedFocusRequestIsKept() {
     check(given == listOf("first", "second", "third", "fourth")) { "a request superseded is given back" }
 }
 
+/** A prepare that never answers fails its part after PREPARE_TIMEOUT_MS, as a player error would. */
+private fun aPrepareThatNeverAnswersFailsItsPart() {
+    val limit = RecordingPlayer.PREPARE_TIMEOUT_MS
+    // PLAYLIST: the part is skipped at 10 s, its player released, and the next call opens.
+    val list = Rig()
+    list.queue(1, 1)
+    val hung = list.last
+    list.elapse(limit - 1)
+    check(list.state == PREPARING && list.status.skipped == 0) { "not before the timeout" }
+    list.elapse(1)
+    check(hung.released && list.status.skipped == 1) { "at the timeout: released and skipped" }
+    list.turn()
+    check(list.last.path == path(1, 1) && list.last !== hung) { "the next call opens" }
+    list.machine.onPrepared(hung.token)
+    hung.prepared = true
+    check(list.state == PREPARING && list.status.call == 1) { "the hung player's late prepare is ignored" }
+    list.prepared()
+    check(list.state == PLAYING && list.scheduler.live().none { it.delayMs == limit }) { "the next one plays, no timeout" }
+
+    // SINGLE: Failed.
+    val single = Rig()
+    single.play()
+    single.elapse(limit)
+    check(single.state == FAILED && single.status.error == RecordingPlayer.ERROR_FAILED && single.last.released) {
+        "a single play reads Failed"
+    }
+
+    // PARTS: the queue ends on it, as on a failed part.
+    val parts = Rig()
+    parts.queue(2, mode = MODE_PARTS)
+    parts.elapse(limit)
+    check(parts.state == FAILED) { "Play all parts ends on the hung part" }
+
+    // Prepared at 9.9 s: no timeout, and none later.
+    val inTime = Rig()
+    inTime.queue(1, 1)
+    inTime.elapse(9_900)
+    inTime.prepared()
+    inTime.elapse(60_000)
+    check(inTime.state == PLAYING && inTime.status.skipped == 0) { "prepared in time, it plays on" }
+
+    // A move cancels it: Next during a hung prepare, the next part prepared, no failure later.
+    val moved = Rig()
+    moved.queue(1, 1, 1)
+    moved.elapse(5_000)
+    moved.machine.next()
+    moved.elapse(9_000)
+    moved.prepared()
+    moved.elapse(limit)
+    check(moved.state == PLAYING && moved.status.skipped == 0 && moved.status.call == 1) { "the old part's timeout is gone" }
+
+    // M2 with a hung prepare: paused 599.8 s, Next, Resume; the part never prepares. At 10 s it fails, which ends the
+    // resume's hold-off, and the deadline, long past, ends the play "timeout".
+    val waits = Rig()
+    val g = waits.queue(1, 1, 1)
+    waits.prepared()
+    waits.machine.pause()
+    waits.elapse(599_800)
+    waits.machine.next()
+    waits.machine.resume()
+    waits.elapse(limit - 1)
+    check(waits.state == PREPARING && waits.status.endedReason.isEmpty()) { "the resume waits for the prepare" }
+    waits.elapse(1)
+    check(waits.state == STOPPED && waits.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "the part failed, the hold-off ends and the deadline has passed: timeout"
+    }
+    check(waits.service.ends == listOf(g to RecordingPlayer.ENDED_TIMEOUT)) { "once" }
+    // Before the deadline, the failed part's hold-off ends and the play goes on, the deadline from the pause.
+    val early = Rig()
+    early.queue(1, 1, 1)
+    early.prepared()
+    early.machine.pause()
+    early.elapse(100_000)
+    early.machine.next()
+    early.machine.resume()
+    early.elapse(limit)
+    early.turn()
+    check(early.status.call == 2 && early.state == PREPARING) { "skipped to the next call, still wanted" }
+    early.prepared()
+    check(early.state == PLAYING) { "which plays" }
+}
+
 fun main() {
     aPlayStartsOncePreparedAndHoldsTheFocus()
     aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted()
@@ -1808,5 +1891,6 @@ fun main() {
     theTerminalRecordStaysUntilTheNextPlay()
     invalidItemsFailThePlay()
     onlyAGrantedFocusRequestIsKept()
+    aPrepareThatNeverAnswersFailsItsPart()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }
