@@ -153,12 +153,12 @@ Item {
             compare(line.Accessible.name, line.text);
             compare(line.Accessible.role, Accessible.StaticText);
             verify(note().visible);
-            verify(note().y > combo().y + combo().height, "App default's note left the choice");
-            verify(line.y > note().y + note().height, "App default's note moved under the line");
+            verify(note().y > combo().y + combo().height, "App default's note is not under the choice");
+            verify(line.y > note().y + note().height, "the line is not under App default's note");
             pick("24 kHz");
             verify(!note().visible);
             verify(line.visible);
-            verify(line.y > combo().y + combo().height, "the line is under the choice");
+            verify(line.y > combo().y + combo().height, "the line is not under the choice");
         }
 
         // Issue #803: App default runs TETRA at 72 kHz and says so, and stays

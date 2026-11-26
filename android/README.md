@@ -51,11 +51,11 @@ the entry then uses its saved system's gain, else the list's.
 +10 dB (`noise+10`). An idle channel stays quiet. Noise makes its first decision
 40 ms into a transmission, so on FM a transmission opens the squelch within its
 first 40 ms. AM channels, NFM at the 8 and 10 kHz widths, and NFM left on its
-default width at a Bandwidth of 16 kHz or less, run it as Auto instead, which
-has other limits (see below). To change it, open Settings, then
-**Radio defaults · next start**, and under **Squelch** choose **Off**, **Auto**
-or **Noise**, with its margin for Auto and Noise. The change applies from the
-next start.
+default width at a Bandwidth of 16 kHz or less on an RTL-SDR, rtl_tcp or Airspy
+source, run it as Auto instead, which has other limits (see below). To change
+it, open Settings, then **Radio defaults · next start**, and under **Squelch**
+choose **Off**, **Auto** or **Noise**, with its margin for Auto and Noise. The
+change applies from the next start.
 
 The app hands the setting to the decoder with every session, and when the input
 is a radio (an RTL-SDR, rtl_tcp, an Airspy, or one that Extra decoder arguments
@@ -109,10 +109,10 @@ backup restores to this default too):
   to 80 ms where Auto runs). A new analog channel also stays muted until the
   squelch for it is set, a few ms after the tune lands.
 - AM channels, NFM at the 8 and 10 kHz widths, and NFM left on its default width
-  at a Bandwidth of 16 kHz or less, run it as Auto: Auto learns
-  each new channel's noise in its first moments. Meanwhile noise stays quiet, but
-  a transmission already on the air plays, and so can a steady carrier or spur
-  (see above).
+  at a Bandwidth of 16 kHz or less on an RTL-SDR, rtl_tcp or Airspy source, run
+  it as Auto: Auto learns each new channel's noise in its first moments.
+  Meanwhile noise stays quiet, but a transmission already on the air plays, and
+  so can a steady carrier or spur (see above).
 - Digital decodes are unchanged.
 
 ## Saved encryption keys

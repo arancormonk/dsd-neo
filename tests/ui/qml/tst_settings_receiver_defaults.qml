@@ -192,11 +192,11 @@ Item {
             verify(line.contentWidth <= line.width, "the line runs past the card");
             compare(line.Accessible.name, line.text);
             compare(line.Accessible.role, Accessible.StaticText);
-            verify(line.y > combo.y + combo.height, "the line is under the choice");
+            verify(line.y > combo.y + combo.height, "the line is not under the choice");
             prefs.bandwidthKhz = 25;
             verify(note().visible);
-            verify(line.visible, "the odd-width note replaced the line");
-            verify(line.y > note().y + note().height, "the odd-width note moved under the line");
+            verify(line.visible, "the line went when the odd-width note showed");
+            verify(line.y > note().y + note().height, "the line is not under the odd-width note");
             pick(combo, "16 kHz");
             verify(line.visible);
         }
