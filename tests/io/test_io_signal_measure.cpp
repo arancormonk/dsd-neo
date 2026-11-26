@@ -1138,6 +1138,30 @@ test_quiet_signals(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* @p noise with a DMR mobile's single-slot burst train of @p burst (the transmitter keyed throughout) at @p rate added:
+   its 27.5 ms symbol interval every 60 ms starting at pair @p start (mod the 60 ms period), with 1.5 ms raised-cosine
+   ramps outside it. */
+static std::vector<float>
+quiet_dmr_train(const std::vector<float>& noise, const std::vector<float>& burst, uint32_t rate, size_t start) {
+    const size_t pairs = noise.size() / 2;
+    const size_t period = rate * 60 / 1000, interval = rate * 275 / 10000, ramp = rate * 15 / 10000;
+    std::vector<float> iq = noise;
+    for (size_t i = 0; i < pairs; ++i) {
+        const size_t t = (i + period - start % period + ramp) % period;
+        double envelope = 0;
+        if (t >= ramp && t < ramp + interval) {
+            envelope = 1;
+        } else if (t < ramp) {
+            envelope = 0.5 - 0.5 * std::cos(3.141592653589793 * (double)t / ramp);
+        } else if (t < 2 * ramp + interval) {
+            envelope = 0.5 + 0.5 * std::cos(3.141592653589793 * (double)(t - ramp - interval) / ramp);
+        }
+        iq[2 * i] += (float)(envelope * burst[2 * i]);
+        iq[2 * i + 1] += (float)(envelope * burst[2 * i + 1]);
+    }
+    return iq;
+}
+
 /* A DMR mobile's single-slot burst train (27.5 ms symbol interval every 60 ms, 1.5 ms ramps outside it) is never quiet,
    at any phase: sample-level steps across the 60 ms and phases that start or end a burst on a transform or sub-window
    boundary. Its bursts stand 15 dB over the noise, so a sub-window a burst only partly fills reads busy too: what pins
@@ -1147,29 +1171,13 @@ test_quiet_dmr_bursts(dsd_signal_quiet_detector* d) {
     for (uint32_t rate : kQuietRates) {
         const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
         const size_t pairs = quiet_request_pairs(q), n = quiet_fft_size(q);
-        const size_t period = rate * 60 / 1000, interval = rate * 275 / 10000, ramp = rate * 15 / 10000;
+        const size_t period = rate * 60 / 1000, interval = rate * 275 / 10000;
         std::vector<float> burst(2 * pairs, 0.0f);
         quiet_add_fm(burst, rate, 0, quiet_amplitude(15, rate, 12500),
                      fsk_deviation(pairs, rate, 4800, {-1944, -648, 648, 1944}, 2400, 21));
         const auto noise = quiet_noise(pairs, 22);
         /* A burst train whose symbol interval starts at pair @p start (mod the period). */
-        auto train = [&](size_t start) {
-            std::vector<float> iq = noise;
-            for (size_t i = 0; i < pairs; ++i) {
-                const size_t t = (i + period - start % period + ramp) % period;
-                double envelope = 0;
-                if (t >= ramp && t < ramp + interval) {
-                    envelope = 1;
-                } else if (t < ramp) {
-                    envelope = 0.5 - 0.5 * std::cos(3.141592653589793 * (double)t / ramp);
-                } else if (t < 2 * ramp + interval) {
-                    envelope = 0.5 + 0.5 * std::cos(3.141592653589793 * (double)(t - ramp - interval) / ramp);
-                }
-                iq[2 * i] += (float)(envelope * burst[2 * i]);
-                iq[2 * i + 1] += (float)(envelope * burst[2 * i + 1]);
-            }
-            return iq;
-        };
+        auto train = [&](size_t start) { return quiet_dmr_train(noise, burst, rate, start); };
         /* Sample-level phases across the period (a prime step, so every alignment to the transforms occurs); then
            bursts starting and ending on every sub-window boundary and, at the default rate, on the transform boundary
            halfway through each sub-window and one pair either side of each. */
@@ -2091,6 +2099,19 @@ test_quiet_windows_and_lead(dsd_signal_quiet_detector* d) {
     }
 }
 
+/* Whether some sub-window of @p count, back to back of @p window pairs from @p phase in a frame of @p frame pairs whose
+   first @p burst pairs are a DMR burst, lies wholly inside one burst. */
+static bool
+quiet_dmr_whole_burst(uint64_t phase, int count, uint64_t window, uint64_t frame, uint64_t burst) {
+    for (int w = 0; w < count; ++w) {
+        const uint64_t first = phase + (uint64_t)w * window, last = first + window - 1;
+        if (first / frame == last / frame && last % frame < burst) {
+            return true;
+        }
+    }
+    return false;
+}
+
 /* The DMR burst rule the sub-windows rest on (issue #834; docs/trunk-scan.md "Skipping silent channels"), on sample
    indices alone, whatever a verdict says: for an ongoing train of normal bursts, 27.5 ms of each 60 ms frame (ETSI TS
    102 361-1 clauses 4.2.2 and 10.2.3), six back-to-back sub-windows of the 12.5 kHz class hold one sub-window wholly
@@ -2104,22 +2125,97 @@ test_quiet_dmr_coverage() {
         const auto q = quiet_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
         const uint64_t window = quiet_window_pairs(q);
         const uint64_t frame = (uint64_t)rate * 60 / 1000, burst = (uint64_t)rate * 275 / 10000;
-        /* Whether some sub-window of @p count starting at @p phase in the frame lies inside one burst. */
-        auto covered = [&](uint64_t phase, int count) {
-            for (int w = 0; w < count; ++w) {
-                const uint64_t first = phase + (uint64_t)w * window, last = first + window - 1;
-                if (first / frame == last / frame && last % frame < burst) {
-                    return true;
-                }
-            }
-            return false;
-        };
         bool five_misses = false;
         for (uint64_t phase = 0; phase < frame; ++phase) {
-            assert(covered(phase, 6));
-            five_misses = five_misses || !covered(phase, 5);
+            assert(quiet_dmr_whole_burst(phase, 6, window, frame, burst));
+            five_misses = five_misses || !quiet_dmr_whole_burst(phase, 5, window, frame, burst);
         }
         assert(five_misses);
+    }
+}
+
+/* A native Airspy's request (the centred policy) with the engine's 10 ms lead (issue #834, D-E), at every centred
+   rate: the calibrated reading asked by default (count 0) and asked explicitly (nine) measure the same samples, byte for
+   byte; a three-sub-window request (a short reading on a channel with no DMR) takes exactly the lead and three
+   sub-windows. A carrier only in the lead, or only after the third sub-window, is never measured, and one only in the
+   third sub-window is. */
+static void
+test_quiet_centred_windows_and_lead(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    for (uint32_t rate : kCentredRates) {
+        auto q = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        q.lead_pairs = rate / 100;
+        const size_t window = quiet_window_pairs(q), lead = q.lead_pairs;
+        const auto iq = quiet_noise(lead + DSD_SIGNAL_QUIET_WINDOWS * window, 221);
+        const auto by_default = quiet_run(d, q, iq, 4096, &shipped);
+        q.windows = DSD_SIGNAL_QUIET_WINDOWS;
+        const auto nine = quiet_run(d, q, iq, 4096, &shipped);
+        assert(by_default.failure == DSD_SIGNAL_MEASURE_OK && by_default.valid);
+        assert(same_bits(by_default.max_ratio_db, nine.max_ratio_db)
+               && same_bits(by_default.power_dbfs, nine.power_dbfs) && same_bits(by_default.floor_dbfs, nine.floor_dbfs)
+               && same_bits(by_default.floor_rise_db, nine.floor_rise_db) && by_default.quiet == nine.quiet
+               && by_default.valid == nine.valid && by_default.void_causes == nine.void_causes);
+        q.windows = 3;
+        assert(dsd_signal_quiet_detector_begin(d, &q, &shipped, nullptr) == 0);
+        size_t used = 0;
+        int rc = 0;
+        while (!rc) {
+            rc = dsd_signal_quiet_detector_feed(d, iq.data() + 2 * used, 1, &q.capture);
+            ++used;
+        }
+        assert(rc == 1 && used == lead + 3 * window);
+        const double amplitude = quiet_amplitude(30, rate, 12500);
+        auto lead_only = quiet_noise(lead + 4 * window, 222);
+        auto after = lead_only;
+        auto third = lead_only;
+        quiet_add_fm(lead_only, rate, 0, amplitude, {}, {}, 0, lead);
+        quiet_add_fm(after, rate, 0, amplitude, {}, {}, lead + 3 * window, lead + 4 * window);
+        quiet_add_fm(third, rate, 0, amplitude, {}, {}, lead + 2 * window, lead + 3 * window);
+        assert(quiet_verdict(d, q, lead_only));
+        assert(quiet_verdict(d, q, after));
+        assert(!quiet_verdict(d, q, third));
+    }
+}
+
+/* Six sub-windows on a DMR channel at an adverse burst phase, on a native Airspy's request with the engine's 10 ms
+   lead (issue #834, D-E), at every centred rate: a DMR mobile's burst train (test_quiet_dmr_bursts()'s, 15 dB) whose
+   phase at the reading's first pair, the first after the lead, is one where five back-to-back sub-windows hold no
+   whole sub-window inside a burst and six do (the first, middle and last such phase) reads busy, its highest
+   sub-window within 1 dB of the same transmitter keyed throughout. */
+static void
+test_quiet_centred_dmr_adverse_phase(dsd_signal_quiet_detector* d) {
+    const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
+    for (uint32_t rate : kCentredRates) {
+        auto q = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        q.lead_pairs = rate / 100;
+        q.windows = 6;
+        const size_t window = quiet_window_pairs(q), lead = q.lead_pairs, pairs = lead + 6 * window;
+        const uint64_t frame = (uint64_t)rate * 60 / 1000, interval = (uint64_t)rate * 275 / 10000;
+        std::vector<uint64_t> adverse;
+        for (uint64_t phase = 0; phase < frame; ++phase) {
+            if (!quiet_dmr_whole_burst(phase, 5, window, frame, interval)) {
+                assert(quiet_dmr_whole_burst(phase, 6, window, frame, interval));
+                adverse.push_back(phase);
+            }
+        }
+        assert(!adverse.empty());
+        std::vector<float> burst(2 * pairs, 0.0f);
+        quiet_add_fm(burst, rate, 0, quiet_amplitude(15, rate, 12500),
+                     fsk_deviation(pairs, rate, 4800, {-1944, -648, 648, 1944}, 2400, 223));
+        const auto noise = quiet_noise(pairs, 224);
+        std::vector<float> keyed = noise;
+        for (size_t i = 0; i < keyed.size(); ++i) {
+            keyed[i] += burst[i];
+        }
+        const auto steady = quiet_run(d, q, keyed, 4096, &shipped);
+        assert(steady.failure == DSD_SIGNAL_MEASURE_OK && steady.valid && !steady.quiet);
+        for (uint64_t phase : {adverse.front(), adverse[adverse.size() / 2], adverse.back()}) {
+            /* The burst whose phase at pair lead is @p phase started phase pairs before it. */
+            const size_t start = (size_t)((lead + frame - phase) % frame);
+            const auto result = quiet_run(d, q, quiet_dmr_train(noise, burst, rate, start), 4096, &shipped);
+            assert(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid && !result.quiet);
+            assert(result.max_ratio_db > steady.max_ratio_db - 1.0f);
+        }
     }
 }
 
@@ -2310,6 +2406,52 @@ test_quiet_tap_lead_credit() {
             assert(used == 15360 - gone + DSD_SIGNAL_QUIET_WINDOWS * window);
             dsd_signal_quiet_result result{};
             assert(rtl_signal_quiet_take(ticket, &result) == 1);
+        }
+    }
+    rtl_signal_measure_reset();
+}
+
+/* A native Airspy's retune as the shared tap sees it (issue #834, D-E): blocks of the old channel's centred capture,
+   none while the retune's mute drops the samples, then blocks of the new channel's (a new generation, tuned on it). A
+   request for the new capture with the engine's 10 ms lead reads from 10 ms after the end of the new capture's first
+   block, the first after the mute, whatever came before it: pairs of the new capture fed after that block and before
+   the request are taken off the lead, and none of the old capture's are. At every centred rate, in blocks of 16384
+   pairs. */
+static void
+test_quiet_tap_centred_lead_from_first_block() {
+    constexpr size_t kBlock = 16384;
+    for (uint32_t rate : kCentredRates) {
+        const auto q0 = quiet_centred_request(rate, DSD_SIGNAL_QUIET_CLASS_12K5);
+        const size_t window = quiet_window_pairs(q0), lead = rate / 100;
+        dsd_signal_capture old_capture = q0.capture;
+        --old_capture.generation;
+        old_capture.capture_hz -= 1000000;
+        for (size_t fed_blocks : {size_t{0}, size_t{1}, size_t{2}, size_t{8}}) {
+            const auto noise = quiet_noise((3 + fed_blocks) * kBlock + lead + DSD_SIGNAL_QUIET_WINDOWS * window, 231);
+            rtl_signal_measure_reset();
+            auto q = q0;
+            q.lead_pairs = (uint32_t)lead;
+            size_t at = 0;
+            for (int b = 0; b < 3; ++b, at += kBlock) {
+                rtl_signal_measure_feed(noise.data() + 2 * at, kBlock, &old_capture);
+            }
+            const uint32_t old_word = rtl_signal_capture_seq();
+            for (size_t b = 0; b < fed_blocks; ++b, at += kBlock) {
+                rtl_signal_measure_feed(noise.data() + 2 * at, kBlock, &q.capture);
+                assert(b > 0 || rtl_signal_capture_seq() != old_word);
+            }
+            uint32_t ticket = 0;
+            assert(rtl_signal_quiet_request(&q, &ticket, nullptr) == 0);
+            size_t used = 0;
+            while (rtl_signal_quiet_status(ticket) == 0) {
+                rtl_signal_measure_feed(noise.data() + 2 * (at + used), 1, &q.capture);
+                ++used;
+            }
+            const size_t after_first = fed_blocks > 0 ? (fed_blocks - 1) * kBlock : 0;
+            assert(used == lead - std::min(after_first, lead) + DSD_SIGNAL_QUIET_WINDOWS * window);
+            dsd_signal_quiet_result result{};
+            assert(rtl_signal_quiet_take(ticket, &result) == 1 && result.failure == DSD_SIGNAL_MEASURE_OK
+                   && result.valid && result.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED);
         }
     }
     rtl_signal_measure_reset();
@@ -2540,9 +2682,12 @@ test_quiet(const dsd_signal_measure_request& r) {
     test_quiet_estimators(d);
     test_quiet_windows_and_lead(d);
     test_quiet_dmr_coverage();
+    test_quiet_centred_windows_and_lead(d);
+    test_quiet_centred_dmr_adverse_phase(d);
     dsd_signal_quiet_detector_destroy(d);
     test_quiet_tap_capture_seq();
     test_quiet_tap_lead_credit();
+    test_quiet_tap_centred_lead_from_first_block();
     test_quiet_tap_owners(r);
     test_quiet_tap_completion_stamp();
     test_quiet_tap_tickets();
