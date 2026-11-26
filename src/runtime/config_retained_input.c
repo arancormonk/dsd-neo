@@ -110,6 +110,8 @@ static const input_key k_input_keys[] = {
     /* The note that rtl_sql was rounded (issue #899 B15) goes with rtl_sql: a merged whole dB clears it. */
     INPUT_FLAGGED_KEY(rtl_sql_rounded, rtl_sql_is_set),
     INPUT_FLAGGED_KEY(rtl_sql_unrounded_db, rtl_sql_is_set),
+    /* So does the note that the analog default was in force: a patch naming a squelch key clears it. */
+    INPUT_FLAGGED_KEY(rtl_sql_analog_default, rtl_sql_is_set),
     INPUT_KEY(rtl_volume),
     INPUT_KEY(rtl_auto_ppm),
     INPUT_KEY(rtltcp_host),

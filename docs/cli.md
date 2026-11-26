@@ -1929,8 +1929,12 @@ of a radio input (RTL-SDR, rtl_tcp, SoapySDR, Airspy, `--iq-replay`, and an I/Q 
 not the PCM `tcp` and `udp` inputs) while no squelch was set. It is for a frontend
 that starts every radio session the same way: the Qt/Android app passes its Settings default (`noise+10` unless
 changed; nothing when it is Off) with every radio session it starts, so its analog channels play only traffic while
-digital decoding is left exactly as it was. It is no INI key: a config saves the squelch the session set, never this
-default.
+digital decoding is left exactly as it was. It is no INI key, and a save (the exit autosave, Config > Save,
+`--print-config`) never writes it: while it stands (no squelch set this session, on whatever channel) the save writes
+no squelch key (`rtl_sql`, `rtl_sql_mode`, `rtl_sql_margin_db`) for any input, as a config that never set one, so the
+next start with the option runs it again. Once a squelch was set explicitly, an Off included, the save writes the session's squelch,
+which ends the default on the next start as any config's squelch keys do. Without the option a save writes `rtl_sql`
+as before.
 
 - In force on: the standalone `-fA` / `-fM` monitor, from the start and after any live decode switch to it (from the
   terminal, the app, the control API, or a config whose `[mode]` makes the decode analog), and a `-Y` row or trunk-scan

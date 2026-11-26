@@ -574,13 +574,17 @@ typedef struct dsdneoUserConfig {
     int rtl_sql_mode;
     int rtl_sql_margin_db;
     /* 1 when the config names rtl_sql, rtl_sql_mode or rtl_sql_margin_db; a session's snapshot (radio or audio input)
-       always sets it, so a save always writes them. A PCM source applies the keys a loaded config holds only then
-       (issue #628): a config without them leaves its squelch alone. */
+       always sets it, so a save writes them unless rtl_sql_analog_default. A PCM source applies the keys a loaded
+       config holds only then (issue #628): a config without them leaves its squelch alone. */
     int rtl_sql_is_set;
     /* 1 when a session's snapshot rounded its level to rtl_sql's whole dB (issue #899 B15), whose dB it held is
        rtl_sql_unrounded_db: a render of the snapshot says so. 0 in a loaded config. */
     int rtl_sql_rounded;
     double rtl_sql_unrounded_db;
+    /* 1 when a session's snapshot ran with --squelch-analog-default standing (no squelch set explicitly this session:
+       dsd_squelch_analog_default_pending(), issue #899): a render writes no squelch key for any source, as a config
+       that never set one, so the next start keeps the default. 0 in a loaded config. */
+    int rtl_sql_analog_default;
     int rtl_volume;   /* monitor/non-symbol gain; does not scale symbol streams */
     int rtl_auto_ppm; /* bool */
     char rtltcp_host[128];
