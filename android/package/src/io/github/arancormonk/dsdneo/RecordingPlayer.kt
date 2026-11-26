@@ -75,9 +75,10 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  *
  * It keeps what the user asked for (play or pause) apart from what the player does, and starts a player only when it
  * is prepared, play is wanted, the foreground (SINGLE, PARTS) and the service (PLAYLIST) allow it and the focus is
- * granted. Every prepare gets a fresh play token, unique in the process and never reused, which the player's callbacks
- * and the host's item commands carry; each scheduled task (gap, skip search, paused deadline, promotion timeout,
- * prepare timeout) has its own id; focus callbacks carry the epoch of the request they answer. A callback, task or command whose identity is not current is dropped.
+ * granted. Every prepare, and every restart of an open part, gets a fresh play token, unique in the process and never
+ * reused, which the player's callbacks and the host's item commands carry; each scheduled task (gap, skip search,
+ * paused deadline, promotion timeout, prepare timeout) has its own id; focus callbacks carry the epoch of the request
+ * they answer. A callback, task or command whose identity is not current is dropped.
  *
  * Opening a part never blocks the machine's thread: the player is made there, then handed to the setup thread
  * ([Opener.setup]), which opens the file, gives it to the player and starts its prepare. The machine does not touch
@@ -89,7 +90,8 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
  * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. Restarting the
- * part already open is a seek to 0 on that player, never a reopen; moving to another part keeps the open player until
+ * part already open is a seek to 0 on that player, never a reopen, under a new token so that a completion the player
+ * had already queued is dropped; moving to another part keeps the open player until
  * the new one has prepared, and a backward move whose every candidate fails stays on it at 0. A move that finds nothing
  * forward ends the play: "unplayable" when every recording of the play failed, else finished. One backward with no
  * open player goes on forward. Each search visits each recording at most once; the next candidate after a failure
@@ -142,6 +144,13 @@ class RecordingPlayer(
         fun pause()
 
         fun seekTo(positionMs: Long)
+
+        /**
+         * Seek to 0 for a new pass of the part, whose callbacks carry [token] from now on. A callback the player had
+         * already queued on the machine's thread (its completion at the end of the pass before) still carries the old
+         * token, so the machine drops it.
+         */
+        fun restart(token: Long)
 
         /** The length, once prepared. */
         val durationMs: Long
@@ -833,12 +842,22 @@ class RecordingPlayer(
         val candidate = search.candidates[search.next++]
         val open = held
         if (open != null && open.index == candidate) {
-            adopt(open, positionMs = 0)
-            open.player.seekTo(0)
-            advance()
+            restart(open)
             return
         }
         open(candidate)
+    }
+
+    /**
+     * Make the held player current again at 0, on its own open descriptor (D9), as a new pass with a new token: a
+     * completion it queued before the restart (it had just reached its end) is then dropped, not taken for the end
+     * of the new pass.
+     */
+    private fun restart(open: Held) {
+        adopt(open, positionMs = 0)
+        token = tokens.incrementAndGet()
+        open.player.restart(token)
+        advance()
     }
 
     private fun exhausted(search: Move) {
@@ -850,11 +869,7 @@ class RecordingPlayer(
                 open?.let { adopt(it, it.durationMs) }
                 enterGap()
             }
-            !search.forward && open != null -> {
-                adopt(open, positionMs = 0)
-                open.player.seekTo(0)
-                advance()
-            }
+            !search.forward && open != null -> restart(open)
             !search.forward -> beginMove(Move(after(search.resumeAfter), forward = true))
             failed.all { it } -> end(FAILED, ERROR_FAILED, ENDED_UNPLAYABLE)
             else -> {

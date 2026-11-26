@@ -31,9 +31,19 @@ private class FakeSource(val path: String) : RecordingPlayer.Source {
     }
 }
 
-/** A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. */
-private class FakePlayer(val token: Long, private val length: Long, private val damaged: Set<String>) :
-    RecordingPlayer.Player {
+/**
+ * A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. [token] is the one
+ * its callbacks carry: a restart's new token is taken behind what the looper already holds ([post]), as
+ * RecordingPlayback's MediaItem takes it.
+ */
+private class FakePlayer(
+    var token: Long,
+    private val length: Long,
+    private val damaged: Set<String>,
+    private val post: (() -> Unit) -> Unit,
+) : RecordingPlayer.Player {
+    /** A restart's token, not taken yet. */
+    var restartedTo = 0L
     var path = ""
     var asked = false
     var prepared = false
@@ -76,6 +86,15 @@ private class FakePlayer(val token: Long, private val length: Long, private val 
     override fun seekTo(positionMs: Long) {
         valid("seek", prepared)
         seeks += positionMs
+    }
+
+    override fun restart(token: Long) {
+        seekTo(0)
+        restartedTo = token
+        post {
+            this.token = token
+            restartedTo = 0
+        }
     }
 
     override val durationMs: Long
@@ -203,6 +222,9 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     val opener = FakeOpener()
     val focus = FakeFocus()
     val scheduler = FakeScheduler { nowMs }
+
+    /** What the players posted to the looper themselves (a restart's token), apart from the machine's tasks. */
+    val looper = ArrayDeque<() -> Unit>()
     val service = FakeService()
     val recheck = RecordingRecheck()
     val machine = RecordingPlayer(
@@ -210,7 +232,7 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
             if (factoryFails) {
                 throw RuntimeException("the media server is away")
             }
-            FakePlayer(token, length, damaged).also { players += it }
+            FakePlayer(token, length, damaged) { task -> looper += task }.also { players += it }
         },
         opener,
         focus,
@@ -233,8 +255,9 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
      */
     val given: List<FakePlayer> get() = players.filter { it.asked }
 
-    /** The player the status names. */
-    val current: FakePlayer get() = players.last { it.token == status.playToken }
+    /** The player the status names (a restart's new token included, before the player takes it). */
+    val current: FakePlayer
+        get() = players.last { it.token == status.playToken || it.restartedTo == status.playToken }
 
     fun play(path: String = "/r/Explore/a.wav"): Int = (++generation).also { machine.play(it, path) }
 
@@ -277,11 +300,22 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
         complete()
     }
 
-    fun turn() = scheduler.runDue()
+    /** The looper's next turn: what the players posted, then the tasks due. */
+    fun turn() {
+        drain()
+        scheduler.runDue()
+    }
 
     fun elapse(ms: Long) {
+        drain()
         nowMs += ms
         scheduler.runDue()
+    }
+
+    fun drain() {
+        while (looper.isNotEmpty()) {
+            looper.removeFirst()()
+        }
     }
 
     fun fail(path: String, reason: String) {
@@ -748,7 +782,10 @@ private fun previousFollowsTheThreeSecondRule() {
     val token = past.status.playToken
     past.machine.previous()
     check(past.players.size == 2 && playing.seeks == listOf(0L) && past.position == 0L) { "past 3,000 ms it restarts" }
-    check(past.state == PLAYING && playing.started && past.status.playToken == token) { "on the same player, playing" }
+    check(past.state == PLAYING && playing.started && past.current === playing) { "on the same player, playing" }
+    check(past.status.playToken != token && playing.restartedTo == past.status.playToken) {
+        "as a new pass, under a new token the player takes behind what the looper holds"
+    }
 
     // A later part: restart the call on its first part.
     val part = Rig()
@@ -2115,6 +2152,27 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     check(parts.state == PLAYING && parts.status.partOrdinal == 2) { "Play all parts goes through its parts" }
 }
 
+/** A completion queued before Previous restarted the open part is the pass before's: dropped, the part replays. */
+private fun aCompletionQueuedBeforeARestartIsDropped() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    val open = rig.current
+    val before = open.token
+    rig.nowMs += 60_000 // at its end: the completion is queued behind the Previous
+    rig.machine.previous()
+    check(rig.state == PLAYING && open.seeks == listOf(0L) && rig.current === open) { "Previous restarts it in place" }
+    rig.machine.onCompleted(before)
+    check(rig.state == PLAYING && !rig.status.gap && rig.status.call == 0 && rig.position == 0L) {
+        "the completion from before the restart is dropped: it replays"
+    }
+    rig.turn()
+    rig.nowMs += 60_000
+    rig.complete()
+    check(rig.status.gap && rig.status.call == 0) { "the new pass's completion: the gap" }
+    check(rig.opener.opened.size == 1 && !open.released) { "on the same open descriptor" }
+}
+
 fun main() {
     aPlayStartsOncePreparedAndHoldsTheFocus()
     aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted()
@@ -2161,5 +2219,6 @@ fun main() {
     onlyAGrantedFocusRequestIsKept()
     aPrepareThatNeverAnswersFailsItsPart()
     aPartsSetupRunsOffTheMachinesThread()
+    aCompletionQueuedBeforeARestartIsDropped()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

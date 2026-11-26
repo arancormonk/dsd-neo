@@ -19946,7 +19946,9 @@ Qt Quick frontend (`src/ui/qt`):
       dropped. Previous (D7): restart
       the call when a playable part of it comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or
       it is in the gap, else the previous call's first playable part, and at the first call restart; restarting the open
-      part is a seek to 0 on that player, never a reopen, and a move keeps the open player until the new one prepared
+      part is a seek to 0 on that player, never a reopen (D9: its descriptor is kept), under a new play token that the
+      player's callbacks take behind what the looper already holds, so a completion it queued just before the restart
+      is dropped rather than taken for the end of the new pass; a move keeps the open player until the new one prepared
       (if every candidate fails it stays there at 0). Next/Previous while paused stay paused. A transient focus loss
       interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the carry-on,
       B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
@@ -19960,7 +19962,8 @@ Qt Quick frontend (`src/ui/qt`):
       checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's
       awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered
       on the looper while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.
-      Identities: every prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap,
+      Identities: every prepare, and every restart of the open part, gets a fresh play token (unique in the process,
+      never reused); each scheduled task (gap,
       skip search, deadline, promotion timeout, prepare timeout) has its own id and is cancelled when superseded; focus
       callbacks carry an epoch; a callback, task or command whose identity is not current is dropped. The last
       generation's terminal reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced; the item it
