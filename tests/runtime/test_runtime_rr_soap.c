@@ -291,7 +291,8 @@ test_user_info_and_zip(void) {
     DSD_MEMSET(&user, 0, sizeof(user));
     if (parse_fixture("user_data.xml", RR_SHAPE_USER_INFO, &user, &err) == 0) {
         expect_str("username", user.username, "user");
-        expect_str("subExpireDate", user.sub_expire, "11-24-2026");
+        /* The capture said 11-24-2026; the year was moved (fixtures NOTES.md, edit 3). */
+        expect_str("subExpireDate", user.sub_expire, "11-24-2999");
     }
 
     dsd_rr_zip_info zip;
