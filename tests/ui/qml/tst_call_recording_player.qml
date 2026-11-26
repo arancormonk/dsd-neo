@@ -1697,6 +1697,23 @@ Item {
             compare(player.announcements, said + 2, "a new refusal is");
         }
 
+        // A Play pressed on this sheet while a playlist plays another call: the playlist moving on to its next part
+        // during the press is not this play's target, so the play is sent.
+        function test_play_press_survives_another_playlist_moving() {
+            var c = rec("t-9", pathC, 4000);
+            var other = callHistory.pushWithRecordings([c]);
+            openWith([rec("t-1", pathA, 12000)]);
+            playPlaylist([itemOf(c, 0, 1, 2, other), itemOf(rec("t-8", "/rec/County (12345678)/D.wav", 4000), 0, 2, 2, other)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 3});
+            var button = item("recordingPlayButton");
+            verify(!button.showPause, "nothing plays here");
+            mousePress(button, button.width / 2, button.height / 2);
+            testContext.publishPlaybackReading({item: 1, playbackToken: 4});
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(lastHostCall().name, "playRecordingOwned", "the sheet's play is sent");
+            compare(lastHostCall().path, pathA);
+        }
+
         // Asked again and refused again with the same reading, the refusal is said again.
         function test_repeated_refusal_said_again() {
             var b = rec("t-2", pathB, 8000);

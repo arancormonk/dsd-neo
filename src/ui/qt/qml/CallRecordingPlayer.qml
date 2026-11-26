@@ -278,7 +278,11 @@ Column {
         if (!supported || !part || storageAway || awaitingToken)
             return;
         var now = playGesture();
-        if (pressed && (pressed.action !== now.action || pressed.generation !== now.generation || pressed.token !== now.token || pressed.path !== now.path))
+        // Each action against what it acts on: a play the part shown (whatever
+        // else plays meanwhile), a pause or resume the host's play and
+        // recording.
+        if (pressed && (pressed.action !== now.action || pressed.path !== now.path
+                        || (now.action !== "play" && (pressed.generation !== now.generation || pressed.token !== now.token))))
             return;
         var token = decoderHost.playbackToken;
         if (wantsPlay) {
