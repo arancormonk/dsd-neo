@@ -74,8 +74,9 @@ validate_enum_value_with_diagnostic(const char* val, const char* allowed, dsdcfg
         return -1;
     }
     if (allowed && validate_enum_value(val, allowed) != 0) {
+        /* A value is never quoted: a mistaken one can be a credential (issue #931). */
         char msg[256];
-        DSD_SNPRINTF(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, allowed);
+        DSD_SNPRINTF(msg, sizeof msg, "Invalid value (allowed: %s)", allowed);
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section ? diag_section : "", diag_key ? diag_key : "",
                          msg);
         return -1;
@@ -107,9 +108,7 @@ validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val,
                             int line_num, const char* diag_section, const char* diag_key) {
     double dbl_val = 0.0;
     if (user_config_parse_double_value(val, &dbl_val) != 0) {
-        char msg[128];
-        DSD_SNPRINTF(msg, sizeof msg, "Invalid numeric value '%s'", val);
-        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid numeric value");
     } else if ((entry->min_val != 0 || entry->max_val != 0)
                && (dbl_val < (double)entry->min_val || dbl_val > (double)entry->max_val)) {
         char msg[128];
@@ -128,18 +127,15 @@ validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* va
     switch (entry->type) {
         case DSDCFG_TYPE_BOOL:
             if (validate_bool_value(val) != 0) {
-                char msg[128];
-                DSD_SNPRINTF(msg, sizeof msg, "Invalid boolean value '%s' (use true/false/yes/no/1/0)", val);
-                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key,
+                                 "Invalid boolean value (use true/false/yes/no/1/0)");
             }
             break;
 
         case DSDCFG_TYPE_INT: {
             int int_val = 0;
             if (user_config_parse_int_value(val, &int_val) != 0) {
-                char msg[128];
-                DSD_SNPRINTF(msg, sizeof msg, "Invalid integer value '%s'", val);
-                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid integer value");
             } else if ((entry->min_val != 0 || entry->max_val != 0)
                        && (int_val < entry->min_val || int_val > entry->max_val)) {
                 char msg[128];

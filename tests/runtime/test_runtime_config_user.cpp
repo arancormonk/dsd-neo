@@ -2564,7 +2564,7 @@ test_validate_iq_stream_input(void) {
          "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"7k\"\niq_format = \"cs16\"\n",
          DSDCFG_DIAG_ERROR, "input", "iq_rate", "RATE '7k' is outside"},
         {"", "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"8k\"\niq_format = \"s16\"\n",
-         DSDCFG_DIAG_ERROR, "input", "iq_format", "'s16'"},
+         DSDCFG_DIAG_ERROR, "input", "iq_format", "Invalid value (allowed: cu8|cs8|cs16|cs32|cf32)"},
         {"iq_freq = \"5G\"\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_freq", "FREQ '5G' is above"},
         {"iq_rate = \"49152000\"\nrtl_bw_khz = 24\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_rate",
          "the stream's rate (49152000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},

@@ -289,7 +289,7 @@ test_included_unknown_and_invalid_value_diagnostics(void) {
     for (int i = 0; i < diags.count; i++) {
         found_invalid_enum |= diags.items[i].level == DSDCFG_DIAG_ERROR
                               && strstr(diags.items[i].source_path, path_basename(included_path)) != NULL
-                              && strstr(diags.items[i].message, "Invalid value 'definitely-invalid'") != NULL;
+                              && strstr(diags.items[i].message, "Invalid value (allowed: ") != NULL;
     }
     if (validate_rc == 0 || !found_invalid_enum) {
         DSD_FPRINTF(stderr, "included invalid enum should fail validation (rc=%d errors=%d)\n", validate_rc,
@@ -1661,8 +1661,7 @@ test_scan_skip_silent_ms_validation(void) {
     }
     for (const char* value : {"abc", "50ms"}) {
         char ini[128];
-        char text[64];
-        DSD_SNPRINTF(text, sizeof text, "Invalid integer value '%s'", value);
+        const char* text = "Invalid integer value"; /* the value is never quoted (issue #931) */
         DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = %s\n", value);
         rc |= run_scan_skip_silent_ms_case(ini, "trunking", "scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
         DSD_SNPRINTF(ini, sizeof ini, "[profile.quick]\ntrunking.scan_skip_silent_ms = %s\n", value);
@@ -1747,8 +1746,8 @@ test_analog_max_gap_validation(void) {
     rc |= run_analog_max_gap_case("10000", -1, NULL);
     rc |= run_analog_max_gap_case("-1", DSDCFG_DIAG_ERROR, "Value -1 is out of range [0, 10000] and is refused");
     rc |= run_analog_max_gap_case("10001", DSDCFG_DIAG_ERROR, "Value 10001 is out of range [0, 10000] and is refused");
-    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value '99999999999'");
-    rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 
@@ -1763,7 +1762,7 @@ test_analog_preroll_validation(void) {
                                  "Value -1 is out of range [0, 1000] and is refused");
     rc |= run_recording_key_case("analog_preroll_ms", "1001", DSDCFG_DIAG_ERROR,
                                  "Value 1001 is out of range [0, 1000] and is refused");
-    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 
@@ -1775,8 +1774,7 @@ test_rdio_system_by_frequency_validation(void) {
     rc |= run_recording_key_case("rdio_system_by_frequency", "false", -1, NULL);
     rc |= run_recording_key_case("rdio_system_by_frequency", "yes", -1, NULL);
     rc |= run_recording_key_case("rdio_system_by_frequency", "0", -1, NULL);
-    rc |=
-        run_recording_key_case("rdio_system_by_frequency", "maybe", DSDCFG_DIAG_ERROR, "Invalid boolean value 'maybe'");
+    rc |= run_recording_key_case("rdio_system_by_frequency", "maybe", DSDCFG_DIAG_ERROR, "Invalid boolean value");
     return rc;
 }
 
@@ -1788,8 +1786,8 @@ test_rdio_analog_validation(void) {
     int rc = 0;
     /* Issue #931 (B7): the loader refuses an invalid or empty rdio_mode, and the validator reports both as errors. */
     rc |= run_recording_key_case("rdio_mode", "DirWatch", -1, NULL);
-    rc |= run_recording_key_case("rdio_mode", "dirwach", DSDCFG_DIAG_ERROR, "Invalid value 'dirwach'");
-    rc |= run_recording_key_case("rdio_mode", "\"\"", DSDCFG_DIAG_ERROR, "Invalid value ''");
+    rc |= run_recording_key_case("rdio_mode", "dirwach", DSDCFG_DIAG_ERROR, "Invalid value (allowed: ");
+    rc |= run_recording_key_case("rdio_mode", "\"\"", DSDCFG_DIAG_ERROR, "Invalid value (allowed: ");
     for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
         rc |= run_recording_key_case(key, "0", -1, NULL);
         rc |= run_recording_key_case(key, "65536", -1, NULL);
@@ -1797,15 +1795,14 @@ test_rdio_analog_validation(void) {
         rc |= run_recording_key_case(key, "2147483647", -1, NULL);
         rc |= run_recording_key_case(key, "-1", DSDCFG_DIAG_ERROR,
                                      "Value -1 is out of range [0, 2147483647] and is refused");
-        rc |= run_recording_key_case(key, "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value '2147483648'");
-        rc |= run_recording_key_case(key, "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+        rc |= run_recording_key_case(key, "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
+        rc |= run_recording_key_case(key, "9x", DSDCFG_DIAG_ERROR, "Invalid integer value");
     }
     rc |= run_recording_key_case("rdio_analog_talkgroup", "0", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483647", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "-1", DSDCFG_DIAG_ERROR,
                                  "Value -1 is out of range [0, 2147483647] and is refused");
-    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
-                                 "Invalid integer value '2147483648'");
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 
@@ -1927,6 +1924,49 @@ test_config_line_invalid_validation(void) {
     return rc;
 }
 
+/* Issue #931 (gate r3fix): --validate-config never quotes a value it refuses: a credential put in an rdio key by
+ * mistake is reported by key and expected form, and printed nowhere, whatever the key's type. */
+int
+test_validation_never_quotes_values(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* key;
+        const char* want;
+    } cases[] = {
+        {"rdio_system_id", "Invalid integer value"},
+        {"rdio_analog_system_id", "Invalid integer value"},
+        {"rdio_upload_retries", "Invalid integer value"},
+        {"rdio_mode", "Invalid value (allowed: off|dirwatch|api|both)"},
+        {"rdio_system_by_frequency", "Invalid boolean value (use true/false/yes/no/1/0)"},
+    };
+
+    for (const auto& c : cases) {
+        char ini[192];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = \"https://u:SENTINELPW@host.invalid/\"\n", c.key);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        (void)dsd_user_config_validate(path, &diags);
+        int want = 0;
+        bool leaked = false;
+        for (int i = 0; i < diags.count; i++) {
+            leaked = leaked || strstr(diags.items[i].message, "SENTINEL") != nullptr;
+            want += strcmp(diags.items[i].key, c.key) == 0 && strcmp(diags.items[i].message, c.want) == 0;
+        }
+        if (leaked || want != 1) {
+            DSD_FPRINTF(stderr, "FAIL: %s with a credential: leaked=%d matched=%d\n", c.key, leaked ? 1 : 0, want);
+            rc = 1;
+        }
+        dsdcfg_diags_free(&diags);
+        (void)remove(path);
+    }
+    return rc;
+}
+
 /* Issue #931 (gate r3): --validate-config parses an include directive from the whole line, as the loader does, so a
  * directive after 1030 spaces still has its file checked: the child's 9001-byte comment line is an error reported
  * against the child, and the validation fails. */
@@ -2022,9 +2062,8 @@ test_rdio_unknown_talkgroup_validation(void) {
     rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483647", -1, NULL);
     rc |= run_recording_key_case("rdio_unknown_talkgroup", "-1", DSDCFG_DIAG_ERROR,
                                  "Value -1 is out of range [0, 2147483647] and is refused");
-    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
-                                 "Invalid integer value '2147483648'");
-    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 } // namespace
@@ -2342,16 +2381,17 @@ test_profile_invalid_enum(void) {
         result = 1;
     }
 
-    // Check error mentions the invalid value
+    // The error names the allowed values, never the invalid one (issue #931: a value can be a credential)
     int found_error = 0;
     for (int i = 0; i < diags.count; i++) {
-        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "invalid_mode")) {
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "Invalid value (allowed: ")
+            && !strstr(diags.items[i].message, "invalid_mode")) {
             found_error = 1;
             break;
         }
     }
     if (!found_error) {
-        DSD_FPRINTF(stderr, "FAIL: error doesn't mention invalid_mode\n");
+        DSD_FPRINTF(stderr, "FAIL: error doesn't name the allowed values, or quotes invalid_mode\n");
         result = 1;
     }
 
@@ -2779,6 +2819,7 @@ main(void) {
     rc |= test_config_line_too_long_validation();
     rc |= test_config_line_invalid_validation();
     rc |= test_config_include_after_long_indent_validation();
+    rc |= test_validation_never_quotes_values();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();
