@@ -279,15 +279,20 @@ Column {
         failureNotice = sheetShown ? text : "";
         if (!sheetShown)
             return;
-        if (text.length > 0 && refusal && key === refusalSaid) {
-            // The refusal read out already: shown again, not read again.
+        // The refusal's play and count, as the bar and this sheet note the
+        // one they read out (Navigation.refusalSaid).
+        var heard = Navigation.refusalKey(decoderHost.playbackGeneration, decoderHost.playbackRefusals);
+        if (text.length > 0 && refusal && (key === refusalSaid || Navigation.refusalSaid === heard)) {
+            // The refusal read out already, here or by the bar: shown again,
+            // not read again.
+            refusalSaid = key;
             notice = text;
             noticeProblem = true;
         } else if (text.length > 0) {
             if (refusal) {
                 refusalSaid = key;
                 // The bar a playlist's refusal waits on reads it as heard.
-                Navigation.refusalSaid = Navigation.refusalKey(decoderHost.playbackGeneration, decoderHost.playbackRefusals);
+                Navigation.refusalSaid = heard;
             }
             say(text, true);
         } else if (said.length > 0 && notice === said && noticeProblem) {

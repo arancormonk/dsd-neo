@@ -629,6 +629,43 @@ Item {
             compare(barItem.announced, full, "and the bar reads it");
         }
 
+        // The reverse: a refused resume the bar read out is heard by a sheet opened after it. Show in list opens the
+        // playing call's sheet, and a move that keeps the refusal standing (the part opened again under a new token)
+        // shows it on the sheet's notice line without reading it again; the next refusal is read.
+        function test_refusal_the_bar_said_is_not_read_by_a_later_sheet() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            testContext.setHistoryPlaylistAnswer("accepted", calls.map(function (call, i) {
+                return {path: "/rec/call-" + i + ".wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: i, partOrdinal: 1,
+                    partCount: 1, title: call.name, line: "", key: String(call.uid)};
+            }));
+            findChild(screen, "historyPlayAll").activate();
+            playing({item: 0});
+            tryCompare(barItem, "announcements", 1);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            tryCompare(barItem, "announcements", 2);
+            compare(barItem.announced, full, "the bar reads the refusal");
+
+            var sheet = detailSheet(screen);
+            var block = findChild(sheet, "historyRecording");
+            var said = block.announcements;
+            part(screen, "nowPlayingShowInList").activate();
+            verify(sheet.visible);
+            compare(sheet.record.uid, calls[0].uid);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1, playbackToken: 8});
+            compare(block.notice, full, "the sheet shows the refusal");
+            compare(block.announcements, said, "and does not read it again");
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 2, playbackToken: 8});
+            compare(block.announcements, said + 1, "a new refusal is read");
+            compare(block.announced, full);
+            sheet.visible = false;
+            wait(30);
+            compare(barItem.announcements, 2, "and not again by the bar");
+        }
+
         function test_unheard_refusal_dropped_once_resumed() {
             var calls = logCalls(2);
             var screen = idle();
