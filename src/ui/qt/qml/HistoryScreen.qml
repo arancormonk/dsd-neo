@@ -324,10 +324,11 @@ Item {
     // That reservation never takes the whole header: in a short window at a
     // large text size the bar and a row of list leave it nothing, and Search,
     // the filters, Export and Clear could not be reached without ending the
-    // playlist. The header keeps its top row (the title's line, with Map and
-    // Play all), or at least a 48 px control row, within what the bar leaves,
-    // and scrolls for the rest. Squeezed below its top row, it scrolls that
-    // row's controls whole into view (alignTopRow()).
+    // playlist. While the bar takes room, the header keeps its top row (the
+    // title's line, with Map and Play all), or at least a 48 px control row,
+    // within what the bar leaves, and scrolls for the rest. Squeezed below its
+    // top row, it scrolls that row's controls whole into view (alignTopRow()).
+    // With no bar the list keeps its 40% share, as before the playlist.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
     readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
@@ -335,9 +336,10 @@ Item {
     readonly property real sectionHeight: 34
     readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + sectionHeight + rowHeight : 0)
     readonly property real topRowBottom: chrome.y + headerButtons.places.topRow
-    readonly property real headerFloor: Math.min(headerScroll.contentHeight,
-                                                 Math.max(Theme.minimumTouchSize, topRowBottom),
-                                                 Math.max(0, height - barHeight - logList.anchors.topMargin))
+    readonly property real headerFloor: barHeight > 0 ? Math.min(headerScroll.contentHeight,
+                                                                 Math.max(Theme.minimumTouchSize, topRowBottom),
+                                                                 Math.max(0, height - barHeight - logList.anchors.topMargin))
+                                                      : 0
 
     PlexFlickable {
         id: headerScroll

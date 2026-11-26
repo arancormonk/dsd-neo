@@ -1194,6 +1194,37 @@ Item {
             }
         }
 
+        // With no playlist the header floor does not apply: the list keeps the 40% share it had before the
+        // playlist, however tall the header is. In a 260x145 window at 2x text the header scrolls in what is left and
+        // the list is 58 px (ceil(145 * 0.4)), not squeezed to nothing under the header's top row.
+        function test_no_bar_keeps_the_list_share_data() {
+            return [{tag: "idle", session: false}, {tag: "session", session: true}];
+        }
+        function test_no_bar_keeps_the_list_share(data) {
+            logCalls(5);
+            var loader = data.session ? sessionLoader : idleLoader;
+            var screen = loader.item;
+            only(screen);
+            Ui.Theme.fontScale = 2.0;
+            loader.width = 260;
+            loader.height = 145;
+            try {
+                verify(waitForPolish(screen));
+                waitForRendering(screen);
+                compare([screen.width, screen.height], [260, 145]);
+                verify(!bar(screen).visible, "no playlist, no bar");
+                var scroll = findChild(screen, "historyHeaderScroll");
+                var list = findChild(screen, "callLogList");
+                verify(scroll.contentHeight > 145 - 58 - 4, "a header taller than its room: " + scroll.contentHeight);
+                compare(scroll.height, 145 - 58 - 4, "the header as before the playlist");
+                compare(list.height, 58, "the list keeps its 40% share");
+                verify(scroll.interactive, "and the header scrolls for the rest");
+            } finally {
+                loader.width = root.width;
+                loader.height = 640;
+            }
+        }
+
         // The line under the name holds at most two lines: every status it shows fits them whole at 360 px, at
         // normal or 2x text (and wide), except one whose whole words Show in list's description reads. A refused
         // resume shows a short line; its full sentence is what is read. The result takes the transport's room and
