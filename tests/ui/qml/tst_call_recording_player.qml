@@ -1714,6 +1714,26 @@ Item {
             compare(lastHostCall().path, pathA);
         }
 
+        // A sheet closed (or opened again for another call) with its delete confirmation out ends that confirmation
+        // and forgets its file: it never comes back over another call's sheet, where Delete would take the first
+        // call's recording.
+        function test_delete_confirmation_ends_with_the_sheet() {
+            openWith([rec("t-1", pathA, 12000)]);
+            press("recordingDelete");
+            var confirm = item("recordingDeleteConfirm");
+            verify(confirm.visible && confirm.target && confirm.target.path === pathA, "asked for A");
+            sheet().visible = false;
+            openWith([rec("t-2", pathB, 8000)]);
+            verify(!confirm.visible, "no confirmation over B");
+            compare(confirm.target, null, "A's file forgotten");
+            confirm.confirm();
+            compare(recordings.calls().filter(function (call) { return call.name === "deleteRecordingChecked"; }).length, 0, "nothing deleted");
+            press("recordingDelete");
+            verify(confirm.visible && confirm.target.path === pathB, "Delete on B asks for B");
+            sheet().open({uid: callHistory.pushWithRecordings([rec("t-3", pathC, 4000)]), name: "Dispatch", tg: 1001, when: 1700000000, systemUid: "test-system"});
+            verify(!confirm.visible && confirm.target === null, "opened again for another call: ended too");
+        }
+
         // While a seek waits for its landing, the bar shows where it goes (the Android host shows nothing until the
         // player's record); the record that lands it, a seek the host can no longer take, or another recording falls
         // back on the host's position.

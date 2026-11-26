@@ -20083,7 +20083,11 @@ Qt Quick frontend (`src/ui/qt`):
       on a foreground return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose
       uid is `playbackKey` (History, Monitor, Home), paused while it is paused, opens paused or is halted for another
       app's audio (`Util.playlistMark()`, as the bar and the sheet read "Paused for another app's audio"). Clear history
-      ends a History playlist. History closes its detail sheet when its screen hides (B5).
+      ends a History playlist. History closes its detail sheet when its screen hides (B5); a sheet's recording block
+      ends its delete confirmation (forgetting the file it named) and its save picker when its sheet hides or opens
+      again (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the
+      first call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the
+      block).
     - Documented limits: calls recorded after the press are not added; the limit or a delete can take a queued
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is

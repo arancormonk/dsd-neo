@@ -408,6 +408,33 @@ Item {
             compare(hostCallsNamed("resumePlayback").length, 1, "a press begun now resumes");
         }
 
+        // A row's delete confirmation does not outlive History hiding: Delete on call A, History hidden and shown,
+        // call B's sheet opened: no confirmation shows, and nothing is deleted.
+        function test_hidden_history_ends_a_pending_delete() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var sheet = findChild(screen, "historyDetailSheet");
+            sheet.open(callHistory.recordFor(calls[0].uid));
+            var del = findChild(sheet, "recordingDelete");
+            verify(del.visible && del.enabled);
+            del.activate();
+            var confirm = findChild(sheet, "recordingDeleteConfirm");
+            verify(confirm.visible && confirm.target.path === "/rec/call-0.wav", "asked for A");
+            screen.visible = false;
+            screen.visible = true;
+            sheet.open(callHistory.recordFor(calls[1].uid));
+            verify(sheet.visible, "B's sheet");
+            verify(!confirm.visible, "no confirmation over B");
+            compare(confirm.target, null, "A's file forgotten");
+            var deletes = function () {
+                return recordings.calls().filter(function (call) { return call.name === "deleteRecordingChecked"; }).length;
+            };
+            var before = deletes();
+            confirm.confirm();
+            compare(deletes(), before, "nothing deleted");
+        }
+
         // A Resume refused, then refused again with the same reading but for the host's refusal count: each refusal
         // is said on the bar (the fake host, like the real one, publishes nothing for a reading that did not change).
         function test_repeated_refusal_said_again() {

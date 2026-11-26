@@ -433,7 +433,17 @@ Column {
         else if (decoderHost.playbackState === 4)
             decoderHost.stopPlayback();
     }
+    // The sheet holding this block closed or opened again: a confirmation still
+    // out ends, and forgets the file it named, which would otherwise come back
+    // over the next call's sheet with the old call's file; a save picker still
+    // out ends as a cancel (its recording goes again).
+    function endDialogs() {
+        confirmDelete.target = null;
+        confirmDelete.visible = false;
+        savePicker.cancel();
+    }
     function reset() {
+        endDialogs();
         current = 0;
         currentPath = "";
         picked = false;
@@ -584,7 +594,7 @@ Column {
     // already writing runs on.
     onVisibleChanged: {
         if (!visible)
-            savePicker.cancel();
+            endDialogs();
     }
     onPartChanged: {
         if (savePicker.visible && (!part || part.path !== savePath))
