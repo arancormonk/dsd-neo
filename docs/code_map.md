@@ -19792,7 +19792,7 @@ Qt Quick frontend (`src/ui/qt`):
     (the one shown kept on its recording by path; a chip only selects, and an away part is selectable with its away
     line but never plays, issue #909 B1) with a Play all parts action (a PARTS queue in the Kotlin player through
     `playRecordings(items, PlaybackParts, "")`, the available parts only, one transient focus kept across them,
-    ending on the first part that fails, B2/B7), Share
+    ending on the first part that fails, skipping one that never prepares, B2/B7), Share
     (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
     `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
     says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
@@ -19939,12 +19939,14 @@ Qt Quick frontend (`src/ui/qt`):
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
       before the hand-off to the setup thread and cancelled on prepare,
-      error, a move and the end: a SINGLE play then reads Failed, a PARTS play ends, a PLAYLIST skips it, a resume
-      waiting for it still waiting for the next); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is
-      not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play
-      (never its whole call), and the next not-failed one in the move's direction opens on the next looper turn (a long
-      run of failures stays stoppable; each search visits each recording once); PARTS ends on its first failure as
-      before. A player is never reused: it is released as soon as its part completes (just after the next part is
+      error, a move and the end: a SINGLE play then reads Failed, PARTS and PLAYLIST skip it, a resume waiting for it
+      still waiting for the next, and the hung part's late callbacks reach nothing); `player` (no player could be built,
+      or `MEDIA_ERROR_SERVER_DIED`) is not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed
+      recording failed for this play (never its whole call), and the next not-failed one in the move's direction opens
+      on the next looper turn (a long run of failures stays stoppable; each search visits each recording once); PARTS
+      ends on its first failure as before (gone, changed, a media error), a prepare timeout aside, which it skips as a
+      playlist does (every part timed out: "unplayable"). A player is never reused: it is released as soon as its part
+      completes (just after the next part is
       handed off, so the release adds nothing to the joint), fails or is left, so an error or completion it reports
       later reaches nothing (its token is never opened again); the gap after a call holds no player, only the
       completed part's readings (item, token, duration, position). The paths of `gone` and
@@ -19955,7 +19957,8 @@ Qt Quick frontend (`src/ui/qt`):
       over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
-      sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part) and
+      sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part,
+      skips one whose prepare timed out) and
       PLAYLIST (lasting `AUDIOFOCUS_GAIN` kept across parts, calls and gaps; ignores the foreground; starts audio only
       once the service is promoted, in either order with the play, exactly once; refused or not promoted within 5 s,
       `PROMOTION_MS`, ends "start"). Focus is `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, `setWillPauseWhenDucked(true)`

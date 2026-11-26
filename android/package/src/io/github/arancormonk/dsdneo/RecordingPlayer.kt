@@ -117,9 +117,9 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * that player until the setup's result comes back with the part's token, and releases it then if the part is no longer
  * current (it timed out, was moved off, stopped or ended); a setup that found its file gone or changed puts it on the
  * recheck list whether or not its part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
- * setup included, fails as a player error on it would (a stalled read or a MediaPlayer that never answers would leave
- * the play opening for good). While [AbandonedSetups.LIMIT] setups given up are still out, an open fails at once, as a
- * recording that couldn't be played, with no player made.
+ * setup included, fails (a stalled read or a MediaPlayer that never answers would leave the play opening for good):
+ * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] setups given up are still out, an open fails
+ * at once, as a recording that couldn't be played, with no player made.
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
@@ -410,7 +410,10 @@ class RecordingPlayer(
         /** PLAYLIST: paused or interrupted for [PAUSED_LIMIT_MS]. */
         const val ENDED_TIMEOUT = "timeout"
 
-        /** PLAYLIST: every recording of the play failed (one that played in part included). FAILED, error "failed". */
+        /**
+         * PLAYLIST: every recording of the play failed (one that played in part included); PARTS: every part was
+         * skipped for its prepare's timeout. FAILED, error "failed".
+         */
         const val ENDED_UNPLAYABLE = "unplayable"
 
         /** PLAYLIST: the service was refused or not promoted in time. FAILED, error "failed". */
@@ -977,8 +980,8 @@ class RecordingPlayer(
         // and a later open's player is never failed by it.
         val opened = token
         schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
-            if (token == opened && !prepared) {
-                onFailed(opened, REASON_DAMAGED)
+            if (token == opened && !prepared && (player != null || opening?.token == opened)) {
+                failItem(REASON_DAMAGED, timedOut = true)
             }
         }
         publish()
@@ -1026,8 +1029,11 @@ class RecordingPlayer(
         }
     }
 
-    /** The current recording cannot be played: end the play, or (PLAYLIST) mark it and search on, next turn. */
-    private fun failItem(reason: String) {
+    /**
+     * The current recording cannot be played: end the play, or (PLAYLIST, and PARTS for a part whose prepare timed
+     * out, [timedOut]) mark it and search on, next turn.
+     */
+    private fun failItem(reason: String, timedOut: Boolean = false) {
         cancel(Slot.PREPARE)
         val wasOpen = prepared
         positionMs = currentPositionMs()
@@ -1044,7 +1050,7 @@ class RecordingPlayer(
             end(FAILED, ERROR_FAILED, ENDED_FAILED)
             return
         }
-        if (mode != MODE_PLAYLIST) {
+        if (mode == MODE_SINGLE || (mode == MODE_PARTS && !timedOut)) {
             end(FAILED, if (reason == REASON_GONE) ERROR_MISSING else ERROR_FAILED, ENDED_FAILED)
             return
         }

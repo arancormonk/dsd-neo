@@ -1950,11 +1950,35 @@ private fun aPrepareThatNeverAnswersFailsItsPart() {
         "a single play reads Failed"
     }
 
-    // PARTS: the queue ends on it, as on a failed part.
+    // PARTS: the hung part is skipped (an error on a part still ends it), part 2 plays, and part 1's late callbacks
+    // are ignored.
     val parts = Rig()
     parts.queue(2, mode = MODE_PARTS)
+    val hungPart = parts.last
     parts.elapse(limit)
-    check(parts.state == FAILED) { "Play all parts ends on the hung part" }
+    check(hungPart.released && parts.status.skipped == 1 && parts.state == PREPARING) {
+        "Play all parts skips the hung part (${parts.state}, ${parts.status.endedReason})"
+    }
+    parts.turn()
+    check(parts.last.path == path(0, 2) && parts.status.partOrdinal == 2 && parts.last !== hungPart) { "part 2 opens" }
+    parts.machine.onPrepared(hungPart.token)
+    parts.machine.onFailed(hungPart.token, RecordingPlayer.REASON_DAMAGED)
+    check(parts.state == PREPARING && parts.status.partOrdinal == 2 && !hungPart.started) {
+        "part 1's late prepare and error are ignored"
+    }
+    parts.prepared()
+    check(parts.state == PLAYING && parts.last.started && parts.status.partOrdinal == 2) { "part 2 plays" }
+    parts.complete()
+    check(parts.state == STOPPED && parts.status.endedReason == RecordingPlayer.ENDED_FINISHED) { "and finishes" }
+    val allHung = Rig()
+    allHung.queue(2, mode = MODE_PARTS)
+    allHung.elapse(limit)
+    allHung.turn()
+    allHung.elapse(limit)
+    allHung.turn()
+    check(allHung.state == FAILED && allHung.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
+        "every part hung: unplayable"
+    }
 
     // Prepared at 9.9 s: no timeout, and none later.
     val inTime = Rig()

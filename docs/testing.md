@@ -205,8 +205,9 @@ Pause, noisy in each state, the 10-minute deadline with a clock jump, a late tas
 ends it, `onAwake()`), play tokens (Pause and Resume for the item in a gap with no player after its last part failed, no
 seek there), task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before
 and after the play, refused, timed out and late, PARTS's failure rule and duration 0, a throwing player factory, a
-prepare that never answers (skipped at 10 s in a playlist, Failed alone, ended in PARTS, none at 9.9 s or after a move,
-its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast error to a part prepared
+prepare that never answers (skipped at 10 s in a playlist and in PARTS, where part 2 then plays, Failed alone, none at
+9.9 s or after a move, its late prepare ignored, and a Resume pressed in time waiting on across a hung part or a fast
+error to a part prepared
 after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), the setup
 thread (a fake setup held, run late or failed: a setup stuck in a read failing its part at 10 s with Stop working
 meanwhile and the late results released, every part stuck ending "unplayable", a result after a move released, a
