@@ -147,19 +147,24 @@ Rectangle {
         notice = qsTr("This call isn't in the list now.");
         Navigation.announce(bar, showButton, notice);
     }
-    // What a press on Pause/Resume began on: whether it would pause, and the
-    // playlist; a tap acts on that, or on nothing once either changed while
-    // the press was held (a headset paused it meanwhile: the tap does not
-    // resume it).
-    property var playPress: null
-    function playGesture() {
-        return {wanted: wanted, generation: status ? status.generation : 0};
+    // What a tap on each control acts on (GatedTapHandler.pressKey): a tap
+    // acts on what its press began on, or on nothing once that changed while
+    // the press was held. Pause/Resume: whether it would pause, and the
+    // playlist (a headset paused it meanwhile: the tap does not resume it).
+    // Previous, Next and ✕: the playlist, the action, and whether it has
+    // ended, so a press held on one playlist never moves or stops the next one
+    // (nor a press on an ended result stop a new one).
+    function playKey() {
+        return [wanted, status ? status.generation : 0].join("|");
     }
-    function togglePlay(pressed) {
+    function controlKey(action) {
+        return [status ? status.generation : 0, action, !!end].join("|");
+    }
+    function closeAction() {
+        return live ? "stop" : "dismiss";
+    }
+    function togglePlay() {
         if (!live)
-            return;
-        var now = playGesture();
-        if (pressed && (pressed.wanted !== now.wanted || pressed.generation !== now.generation))
             return;
         if (wanted)
             decoderHost.pausePlayback();
@@ -410,6 +415,9 @@ Rectangle {
         enabled: bar.live
         x: bar.previousX
         y: bar.transportY + 2
+        pressKey: function () {
+            return bar.controlKey("previous");
+        }
         onClicked: decoderHost.previousPlayback()
     }
     PlayCircle {
@@ -422,12 +430,10 @@ Rectangle {
         accessibleName: bar.wanted ? qsTr("Pause") : qsTr("Resume")
         x: bar.playX
         y: bar.transportY
-        onPressBegan: bar.playPress = bar.playGesture()
-        onClicked: {
-            var pressed = playButton.tapping ? bar.playPress : null;
-            bar.playPress = null;
-            bar.togglePlay(pressed);
+        pressKey: function () {
+            return bar.playKey();
         }
+        onClicked: bar.togglePlay()
     }
     MapControlButton {
         id: nextButton
@@ -440,6 +446,9 @@ Rectangle {
         enabled: bar.live && bar.callIndex >= 0 && bar.callIndex < bar.callCount - 1
         x: bar.nextX
         y: bar.transportY + 2
+        pressKey: function () {
+            return bar.controlKey("next");
+        }
         onClicked: decoderHost.nextPlayback()
     }
     // The keyboard's order is what is seen (Tab, and a screen reader's swipe):
@@ -459,6 +468,9 @@ Rectangle {
         // Beside the top row's text; once ended, centred on the result, which
         // then fills the transport's room too.
         y: bar.stacked ? bar.padding + ((bar.end ? bar.textHeight : bar.topRow) - height) / 2 : (bar.height - height) / 2
+        pressKey: function () {
+            return bar.controlKey(bar.closeAction());
+        }
         onClicked: bar.close()
     }
 

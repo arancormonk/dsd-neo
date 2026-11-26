@@ -254,7 +254,9 @@ reading, a sheet's own play whose file goes right after its one check (`decoder_
 and no status reads while idle or on position-only ticks); and
 `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
 the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a
-press acting only on the target it began on, a pending
+press acting only on the target it began on (the bar's ✕, Previous and Next held across a new playlist, an ended
+result's ✕, the sheet's Play across a reread of the same path with another size, and a keyboard activation during a
+held press, each followed by a fresh press that acts), a sheet's Play all parts waiting for its first token, a pending
 delete ended with its sheet (and with History hidden), History's header keeping a control row at 360×240 and 2x text,
 the row marker paused while a call opens interrupted, a sheet's own play kept its own after it refused a gone part, and
 Play all parts playing on when its row's last listed part is deleted, against the fake host's queue model in

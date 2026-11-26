@@ -117,10 +117,15 @@ Column {
     readonly property bool pausedOpening: playState === 1 && String(decoderHost.playbackPausedReason || "").length > 0
     readonly property bool paused: (playState === 3 && !interrupted) || pausedOpening
     readonly property bool wantsPlay: (playState === 1 && !pausedOpening) || playState === 2 || (playState === 3 && interrupted)
-    // A play of someone else's (a playlist) still opening, with no recording
-    // token yet: a pause or resume from here could reach nothing, so none is
-    // offered until it has one.
-    readonly property bool awaitingToken: loaded && playState >= 1 && playState <= 3 && !ownsPlay && Number(decoderHost.playbackToken) <= 0
+    // A play with no recording token yet (before the host's first poll): a
+    // pause or resume from here could reach nothing, or (a queue's) another
+    // part than the one shown, so none is offered until it has one. Only this
+    // block's single recording, one item whatever its token, is paused and
+    // resumed as a whole meanwhile.
+    readonly property bool awaitingToken: loaded && playState >= 1 && playState <= 3 && Number(decoderHost.playbackToken) <= 0
+                                          && !(ownsPlay && decoderHost.playbackMode === 0)
+    // This block's own queue (Play all parts) before its first token: no seek either, which would be the queue's.
+    readonly property bool ownQueueAwaitingToken: awaitingToken && ownsPlay
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
     // Issue #909: a seek waiting for its landing shows where it goes (the host shows nothing until the player's
     // record), so the thumb does not jump back to the old position for a poll.
@@ -277,28 +282,24 @@ Column {
         }
     }
 
-    // Issue #909: what the play button would do now and what it would do it
-    // to: its action, the host's play and recording, and the part shown.
-    function playGesture() {
-        return {action: wantsPlay ? "pause" : paused ? "resume" : "play", generation: Number(decoderHost.playbackGeneration), token: Number(decoderHost.playbackToken), path: part ? part.path : ""};
+    // Issue #909: what a tap on the play button acts on (its pressKey): its
+    // action and what it would do it to. A play is of the part shown, its
+    // path and the identity the store indexed (a reread that put another
+    // recording under the same path is another part), whatever else plays
+    // meanwhile; a pause or resume is of the host's play and recording.
+    function playKey() {
+        var action = wantsPlay ? "pause" : paused ? "resume" : "play";
+        var shown = part ? [part.path, String(part.identitySize), String(part.mtimeSec), String(part.mtimeNanos)] : [""];
+        if (action === "play")
+            return [action].concat(shown).join("|");
+        return [action, part ? part.path : "", Number(decoderHost.playbackGeneration), Number(decoderHost.playbackToken)].join("|");
     }
-    // The gesture a press on the play button began, for its tap.
-    property var playPress: null
     // Play from the start, or carry on where it paused. Pause and Resume carry
-    // the token of the recording open when they were pressed: one pressed on a
-    // recording that has moved on since does nothing. A tap acts on what its
-    // press began on (@p pressed, from playGesture()): one whose target moved
-    // while the press was held (a playlist on to another part or call) is
-    // dropped, never turned into another action on another recording.
-    function toggle(pressed) {
+    // the token of the recording open now: one pressed on a recording that has
+    // moved on since does nothing. A tap whose target moved while its press
+    // was held (a playlist on to another part or call) never reaches here.
+    function toggle() {
         if (!supported || !part || storageAway || awaitingToken)
-            return;
-        var now = playGesture();
-        // Each action against what it acts on: a play the part shown (whatever
-        // else plays meanwhile), a pause or resume the host's play and
-        // recording.
-        if (pressed && (pressed.action !== now.action || pressed.path !== now.path
-                        || (now.action !== "play" && (pressed.generation !== now.generation || pressed.token !== now.token))))
             return;
         var token = decoderHost.playbackToken;
         if (wantsPlay) {
@@ -686,12 +687,10 @@ Column {
             showPause: player.wantsPlay
             enabled: !player.storageAway && !player.awaitingToken
             accessibleName: player.wantsPlay ? qsTr("Pause recording") : player.paused ? qsTr("Resume recording") : qsTr("Play recording")
-            onPressBegan: player.playPress = player.playGesture()
-            onClicked: {
-                var pressed = playButton.tapping ? player.playPress : null;
-                player.playPress = null;
-                player.toggle(pressed);
+            pressKey: function () {
+                return player.playKey();
             }
+            onClicked: player.toggle()
         }
 
         Column {
@@ -734,7 +733,7 @@ Column {
                     objectName: "recordingSeekBar"
 
                     // Issue #909: as the host's player has it (B7: never with no length).
-                    readonly property bool seekable: player.loaded && decoderHost.playbackCanSeek
+                    readonly property bool seekable: player.loaded && decoderHost.playbackCanSeek && !player.ownQueueAwaitingToken
                     property bool dragging: false
                     property real dragMs: 0
                     // The recording a drag began on: its seek is dropped once another one is open.

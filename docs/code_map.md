@@ -19815,11 +19815,20 @@ Qt Quick frontend (`src/ui/qt`):
     the store looks again; that one file check is its only one, and the start after it never reaches `playRecording()`'s
     missing-file stop, `decoder_host_test_hooks.h` taking the file between them in `UI_QT_ANDROID_HOST`) and the sheet
     says "This recording is gone.". Item commands carry the play token captured when the gesture began
-    (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`): the play button reads its action, the host's
-    generation and token and the part shown at the press (`PlayCircle.pressBegan`, `tapping` while a tap's `clicked()`
-    runs) and the seek bar its token (`GatedTapHandler.pressBegan`), and a tap, or a drag's start, once what it acts on
-    moved does nothing (a play the part shown, a pause or resume the generation and token; the now-playing bar's
-    Pause/Resume reads its action and playlist the same way); the seek bar reads `playbackCanSeek`. A single recording's
+    (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`). One press rule holds for every pointer control on
+    the sheet and the bar (`GatedTapHandler.pressKey`, passed through by `PlayCircle`, `MapControlButton` and
+    `IconButton`): the press takes a key, the action the control would perform and the identity of what it shows, and
+    the tap acts only if the same key is current at the release, else it is dropped; a release with no press taken is
+    dropped too. The sheet's Play keys on the part shown (its path and the indexed size and mtime, so a reread that put
+    another recording under the same id and path drops it, while a playlist moving elsewhere does not), its
+    Pause/Resume on the action, the generation and the token, and the seek bar on its token
+    (`GatedTapHandler.pressBegan`, a drag's start included). The bar's Pause/Resume keys on whether it would pause and
+    the playlist, and Previous, Next and ✕ on the playlist, the action and whether it has ended, so a press held on one
+    playlist never moves or stops the next one, nor a press on an ended result stops a new one. A keyboard or screen
+    reader activation acts on the state at its moment and never takes, clears or replaces a held pointer press. A
+    sheet-owned Play all parts offers Pause/Resume and seek only once the host has published a positive token (before
+    the first poll a pause would be the queue's, and could reach the next part); the seek bar reads `playbackCanSeek`.
+    A single recording's
     delete confirmation says `deleteMessage` ("Only the audio is deleted. History and detections are unchanged.", a host
     may set its own), and the Call recordings screen's bulk deletes say the same of their count: a recording may have no
     History row (never linked, or trimmed) and may belong to a Signal search detection, so "the call stays in History"
@@ -25670,22 +25679,22 @@ refuses a handler beneath while the cover is up, but a control that closes the c
 by the time the handler beneath reports its tap. Every tap in `src/ui/qt/qml` therefore goes through
 `qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)` (its parent unless `gate` is set) when
 the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()` (and
-`pressBegan()` as a press starts, for a control that acts on what it showed then); a new control uses it and handles
-those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed` (Semgrep
-`dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
+`pressBegan()` as a press starts; with `pressKey`, a tap acts only on the key its press began on, issue #909); a new
+control uses it and handles those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed`
+(Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
 `onSingleTapped`/`onDoubleTapped`; it cannot see a handler reached another way, `Connections { function onTapped() }` or
 `.tapped.connect(...)`). Keyboard and accessibility presses do not come through it and keep the control's own guarded
 activation. A drag or pinch is not a tap: a drag, mouse or touch, that begins anywhere on a cover, its scrim included,
-can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds
-`enabled: Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A
-`MouseArea` takes the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies
-outside every navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`,
-`PlexInput`) take the press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is
-the one cover that closed on the press itself, before any handler beneath judged it, and let that press through to the
-control under the finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it
-reaches nothing beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a
-sheet opened while it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or
-touch tap on a button beneath it), and the overlay cases above.
+can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds `enabled:
+Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A `MouseArea` takes
+the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies outside every
+navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`, `PlexInput`) take the
+press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is the one cover that
+closed on the press itself, before any handler beneath judged it, and let that press through to the control under the
+finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it reaches nothing
+beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a sheet opened while
+it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or touch tap on a button
+beneath it), and the overlay cases above.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's

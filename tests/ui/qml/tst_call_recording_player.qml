@@ -1714,6 +1714,61 @@ Item {
             compare(lastHostCall().path, pathA);
         }
 
+        // A Play tap acts on the part shown at the press: a store reread that put another recording (another size)
+        // under the same id and path during the press is another part, so the tap is dropped; a press begun on it
+        // plays it.
+        function test_play_press_checks_the_shown_identity() {
+            var uid = openWith([rec("t-1", pathA, 12000)]);
+            var button = item("recordingPlayButton");
+            mousePress(button, button.width / 2, button.height / 2);
+            callHistory.setRowRecordings(uid, [rec("t-1", pathA, 13000)]);
+            compare(item("historyRecording").part.identitySize, 44 + 13000 * 16, "the reread recording shows");
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(hostCallsNamed("playRecordingOwned").length, 0, "the recording pressed on is gone: nothing played");
+            tap("recordingPlayButton");
+            compare(hostCallsNamed("playRecordingOwned").length, 1, "a press begun on the shown one plays it");
+            compare(lastHostCall().path, pathA);
+        }
+
+        // A keyboard or screen reader activation while a pointer holds the button acts on the state then, and
+        // leaves the held press alone: Pause held, Pause activated, the paused reading in, then the release: it is
+        // dropped (it began on Pause), never taken for a Resume.
+        function test_activation_leaves_a_held_press() {
+            openWith([rec("t-1", pathA, 12000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 3, playbackDurationMs: 12000});
+            var button = item("recordingPlayButton");
+            verify(button.showPause);
+            mousePress(button, button.width / 2, button.height / 2);
+            button.activate();
+            compare(hostCallsNamed("pausePlaybackFor").length, 1, "the activation pauses");
+            verify(!button.showPause, "paused");
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(hostCallsNamed("resumePlaybackFor").length, 0, "the held Pause is not a Resume");
+            compare(hostCallsNamed("pausePlaybackFor").length, 1, "nor a second Pause");
+            tap("recordingPlayButton");
+            compare(hostCallsNamed("resumePlaybackFor").length, 1, "a press begun now resumes");
+        }
+
+        // A sheet's own Play all parts offers Pause and seek only once the host has published its first part's
+        // token: before that a pause would be the queue's, and could reach the next part (the first already done).
+        function test_parts_wait_for_a_token() {
+            openWith([rec("t-1", pathA, 4000), rec("t-2", pathB, 4000)]);
+            tap("recordingPlayAll");
+            var player = item("historyRecording");
+            verify(player.ownsPlay && player.wantsPlay, "its own parts, opening");
+            testContext.publishPlaybackReading({playbackCanSeek: true, playbackDurationMs: 4000});
+            verify(!item("recordingPlayButton").enabled, "no Pause before the token");
+            verify(!item("recordingSeekBar").seekable, "no seek before the token");
+            player.toggle();
+            compare(hostCallsNamed("pausePlayback").length + hostCallsNamed("pausePlaybackFor").length, 0, "nothing sent");
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 5});
+            verify(item("recordingPlayButton").enabled && item("recordingSeekBar").seekable, "offered with the token");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "pausePlaybackFor");
+            compare(lastHostCall().token, 5);
+        }
+
         // A sheet closed (or opened again for another call) with its delete confirmation out ends that confirmation
         // and forgets its file: it never comes back over another call's sheet, where Delete would take the first
         // call's recording.

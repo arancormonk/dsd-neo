@@ -408,6 +408,83 @@ Item {
             compare(hostCallsNamed("resumePlayback").length, 1, "a press begun now resumes");
         }
 
+        // ✕ held on playlist A while Play all starts B: the release is dropped (its press was A's Stop), so B plays
+        // on; a ✕ press on A's ended result never becomes a Stop of B either. A press begun on B stops B.
+        function test_close_press_belongs_to_its_playlist() {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            var a = playAll(screen, calls);
+            playing({item: 0});
+            var close = part(screen, "nowPlayingClose");
+            waitForRendering(screen);
+            mousePress(close, close.width / 2, close.height / 2);
+            var b = playAll(screen, calls);
+            verify(b !== a, "B replaced A");
+            mouseRelease(close, close.width / 2, close.height / 2);
+            compare(hostCallsNamed("stopPlaybackGeneration").length, 0, "A's Stop does not stop B");
+            compare(decoderHost.playbackGeneration, b, "B plays on");
+            verify(bar(screen).live, "its bar too");
+
+            testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
+            verify(!!bar(screen).end, "B ended");
+            waitForRendering(screen);
+            mousePress(close, close.width / 2, close.height / 2);
+            var c = playAll(screen, calls);
+            mouseRelease(close, close.width / 2, close.height / 2);
+            compare(hostCallsNamed("stopPlaybackGeneration").length, 0, "a press on an ended result stops no new playlist");
+            verify(bar(screen).live && decoderHost.playbackGeneration === c, "C plays on");
+
+            mouseClick(close, close.width / 2, close.height / 2);
+            var stops = hostCallsNamed("stopPlaybackGeneration");
+            compare(stops.length, 1, "a press begun on C stops it");
+            compare(stops[0].generation, c);
+        }
+
+        // Previous or Next held on playlist A while B starts: the release moves nothing (it would move B); a press
+        // begun on B moves B.
+        function test_skip_press_belongs_to_its_playlist_data() {
+            return [{tag: "next", name: "nowPlayingNext", call: "nextPlayback"}, {tag: "previous", name: "nowPlayingPrevious", call: "previousPlayback"}];
+        }
+        function test_skip_press_belongs_to_its_playlist(data) {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 1});
+            var control = part(screen, data.name);
+            verify(control.enabled);
+            waitForRendering(screen);
+            mousePress(control, control.width / 2, control.height / 2);
+            playAll(screen, calls);
+            playing({item: 1, playbackToken: 9});
+            mouseRelease(control, control.width / 2, control.height / 2);
+            compare(hostCallsNamed(data.call).length, 0, "the press was A's: B is not moved");
+            mouseClick(control, control.width / 2, control.height / 2);
+            compare(hostCallsNamed(data.call).length, 1, "a press begun on B moves it");
+        }
+
+        // A keyboard or screen reader activation while the pointer holds Pause/Resume acts at once and leaves the
+        // held press: Pause held, Pause activated, then the release (now on Resume) is dropped.
+        function test_activation_leaves_a_held_bar_press() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 0});
+            var play = part(screen, "nowPlayingPlay");
+            waitForRendering(screen);
+            mousePress(play, play.width / 2, play.height / 2);
+            play.activate();
+            compare(hostCallsNamed("pausePlayback").length, 1, "the activation pauses");
+            verify(!play.showPause);
+            mouseRelease(play, play.width / 2, play.height / 2);
+            compare(hostCallsNamed("resumePlayback").length, 0, "the held Pause is not a Resume");
+            compare(hostCallsNamed("pausePlayback").length, 1);
+            mouseClick(play, play.width / 2, play.height / 2);
+            compare(hostCallsNamed("resumePlayback").length, 1, "a press begun now resumes");
+        }
+
         // A row's delete confirmation does not outlive History hiding: Delete on call A, History hidden and shown,
         // call B's sheet opened: no confirmation shows, and nothing is deleted.
         function test_hidden_history_ends_a_pending_delete() {
