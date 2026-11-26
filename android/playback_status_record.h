@@ -23,6 +23,7 @@
 #include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <utility>
 
 namespace dsd_android {
 
@@ -128,7 +129,7 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
     record.endedReason = fields.at(15);
     record.skipped = static_cast<int>(n[16]);
     record.recheckSerial = n[17];
-    *out = record;
+    *out = std::move(record);
     return true;
 }
 
