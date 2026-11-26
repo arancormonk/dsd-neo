@@ -19970,8 +19970,9 @@ Qt Quick frontend (`src/ui/qt`):
       dropped. Previous (D7): restart
       the call when a playable part of it comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or
       it is in the gap, else the previous call's first playable part, and at the first call restart. A restart opens
-      the part again, as any move does (R31: a new `MediaPlayer` and play token, through the setup thread), so nothing
-      of the pass before reaches it, and a part deleted while it played is then a failed open, skipped and counted (D9
+      the part again, as any move does (R31: a new `MediaPlayer` and play token, through the setup thread), also a part
+      still opening, so nothing of the pass before reaches it, and a part deleted while it played or opened is then a
+      failed open, skipped and counted (D9
       still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
       backward move whose every candidate fails goes on forward. Next/Previous while paused stay paused. A transient
       focus loss interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the

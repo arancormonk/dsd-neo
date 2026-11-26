@@ -945,10 +945,8 @@ class RecordingPlayer(
         val restart = gap || playableBefore || currentPositionMs() > RESTART_MS
         val earlier = if (restart) emptyList() else (call - 1 downTo 0).flatMap { callStarts[it]..callEnd(it) }
         val candidates = (earlier + span(callStarts[call], callEnd(call)).asList()).toIntArray()
-        if (candidates.firstOrNull { !failed[it] } == index && (player != null || opening != null) && !prepared) {
-            publish() // It is already opening that part, at 0.
-            return
-        }
+        // Always a new open, also of the part opening now: its file is checked again under a fresh token, and the
+        // pass before can deliver nothing to it.
         beginMove(Move(candidates, forward = false, resumeAfter = callEnd(call)))
     }
 

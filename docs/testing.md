@@ -215,7 +215,7 @@ prepare answering before the result, an error before it, and SINGLE and PARTS on
 replaced at its timeout, or at once when Stop or Next leaves it (the next item and a later sheet play set up on a fresh
 one, never failing; a hung prepare keeps its thread), at most two setups given up out at once (a third open fails at
 once with no player made, and the next one after a stuck setup returns works), a setup's gone file rechecked when
-its result comes after Stop or Next,
+its result comes after Stop or Next, Previous while a part opens opening it again (deleted meanwhile: skipped),
 no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the gap
 opening the call again, and staying paused in a paused gap; an error from a part completed or left reaching nothing; the
 next part handed off before the completed one is released; Previous on a recording deleted while it played skipping it),

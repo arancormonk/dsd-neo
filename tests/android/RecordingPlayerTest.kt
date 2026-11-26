@@ -2309,6 +2309,25 @@ private fun stuckSetupsAreBounded() {
     check(rig.state == PLAYING) { "and plays" }
 }
 
+/** Previous while the part opens opens it again: a file deleted meanwhile is skipped; the old open plays nothing. */
+private fun previousWhileOpeningOpensAgain() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    val first = rig.last
+    check(first.asked && rig.state == PREPARING) { "the first call's file is opened, not prepared yet" }
+    rig.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+    rig.machine.previous()
+    check(first.released && rig.status.playToken != first.token) { "a fresh open under a new token" }
+    check(rig.status.skipped == 1 && rig.recheck.take().toList() == listOf(path(0, 1))) { "gone: skipped, rechecked" }
+    first.prepared = true
+    rig.machine.onPrepared(first.token)
+    check(!first.started && rig.state != PLAYING) { "the old open's prepare starts no audio" }
+    rig.turn()
+    check(rig.last.path == path(1, 1)) { "it goes on forward" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 1 && rig.status.skipped == 1) { "the next call plays" }
+}
+
 /**
  * A setup that found its file gone, its result delivered after Stop or Next: the file still goes on the recheck list,
  * and the replacement's audio and skip count are untouched. A single play's file is never rechecked.
@@ -2531,6 +2550,7 @@ fun main() {
     theNextPartIsHandedOffBeforeTheCompletedOneIsReleased()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     stuckSetupsAreBounded()
+    previousWhileOpeningOpensAgain()
     aSupersededSetupStillRechecksItsFile()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }
