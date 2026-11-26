@@ -1580,6 +1580,8 @@ SUITES = {
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
             Build(sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt"), tests=("PlaybackServicePhasesTest.kt",)),
+            # The media keys the Activity hands past Qt to the playlist's media session (#909).
+            Build(sources=("MediaKeys.kt",), tests=("MediaKeysTest.kt",)),
         ),
     ),
     # Call recording export and save (#708): the ZIP writer and the transfer into a document, through DocumentCopies'
