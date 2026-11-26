@@ -160,6 +160,11 @@ Rectangle {
     function controlKey(action) {
         return [status ? status.generation : 0, action, !!end].join("|");
     }
+    // Show in list: the playlist and the call it names (a press held while the
+    // playlist moves on never opens the next call's row).
+    function showKey() {
+        return [status ? status.generation : 0, live ? decoderHost.playbackKey : end ? end.key : ""].join("|");
+    }
     function closeAction() {
         return live ? "stop" : "dismiss";
     }
@@ -397,6 +402,9 @@ Rectangle {
         GatedTapHandler {
             id: showTap
             gesturePolicy: TapHandler.ReleaseWithinBounds
+            pressKey: function () {
+                return bar.showKey();
+            }
             onAllowedTap: showButton.activate()
         }
     }

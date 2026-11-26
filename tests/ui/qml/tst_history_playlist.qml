@@ -477,6 +477,27 @@ Item {
             compare(hostCallsNamed(data.call).length, 1, "a press begun on B moves it");
         }
 
+        // Show in list held on call A while the playlist moves on to call B: the release opens no row (it would be
+        // B's); a press begun on B opens B's.
+        function test_show_in_list_press_belongs_to_its_call() {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 0});
+            var show = part(screen, "nowPlayingShowInList");
+            var sheet = findChild(screen, "historyDetailSheet");
+            waitForRendering(screen);
+            mousePress(show, show.width / 2, show.height / 2);
+            playing({item: 1, playbackToken: 8});
+            mouseRelease(show, show.width / 2, show.height / 2);
+            verify(!sheet.visible, "the press was A's: no row opened");
+            compare(bar(screen).notice, "", "and nothing said");
+            mouseClick(show, show.width / 2, show.height / 2);
+            tryVerify(function () { return sheet.visible; }, 2000, "a press begun on B opens its row");
+            compare(sheet.rowUidKey, calls[1].uid);
+        }
+
         // A keyboard or screen reader activation while the pointer holds Pause/Resume acts at once and leaves the
         // held press: Pause held, Pause activated, then the release (now on Resume) is dropped.
         function test_activation_leaves_a_held_bar_press() {
