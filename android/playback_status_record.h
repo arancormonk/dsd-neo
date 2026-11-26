@@ -14,15 +14,15 @@
 #ifndef DSD_NEO_ANDROID_PLAYBACK_STATUS_RECORD_H_
 #define DSD_NEO_ANDROID_PLAYBACK_STATUS_RECORD_H_
 
-#include <QChar>
 #include <QLatin1Char>
+#include <QLatin1String>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
 #include <algorithm>
-#include <initializer_list>
 #include <iterator>
 #include <limits>
+#include <stddef.h>
 #include <utility>
 
 namespace dsd_android {
@@ -66,21 +66,28 @@ playback_status_number(const QString& text, qint64 low, qint64 high, qint64* out
     return true;
 }
 
-/** @brief Whether @p text is empty or one of the record's codes: a short run of lower-case letters. */
+/* The codes each reason field may hold, as RecordingPlayer.kt writes them: its ERROR_*, PAUSED_* and ENDED_* values
+ * (never ENDED_REPLACED, which no record carries). run_jvm_tests.py checks they match. */
+constexpr const char* kPlaybackErrorCodes[] = {"missing", "unavailable", "failed"};
+constexpr const char* kPlaybackPausedCodes[] = {"user", "noisy", "background", "focus", "unavailable"};
+constexpr const char* kPlaybackEndedCodes[] = {"finished",   "stopped", "focus", "timeout",
+                                               "unplayable", "start",   "failed"};
+
+/** @brief Whether @p text is empty (none) or one of @p codes. */
+template <size_t N>
 inline bool
-playback_status_code(const QString& text) {
-    if (text.size() > 32) {
-        return false;
-    }
-    return std::all_of(text.cbegin(), text.cend(),
-                       [](QChar c) { return c >= QLatin1Char('a') && c <= QLatin1Char('z'); });
+playback_status_code(const QString& text, const char* const (&codes)[N]) {
+    return text.isEmpty() || std::any_of(std::begin(codes), std::end(codes), [&text](const char* code) {
+               return text == QLatin1String(code);
+           });
 }
 
 } // namespace detail
 
 /**
  * @brief Reads @p text, one status record, into @p out; false, leaving @p out as it was, when it is not one (another
- * number of fields, a number out of its range, a flag other than 0 or 1, a code that is not one).
+ * number of fields, a number out of its range, a flag other than 0 or 1, a reason that is not one of its field's
+ * codes).
  */
 inline bool
 parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
@@ -104,10 +111,10 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
     const bool numbers = std::all_of(std::begin(kNumbers), std::end(kNumbers), [&fields, &n](const Range& range) {
         return detail::playback_status_number(fields.at(range.index), range.low, range.high, &n[range.index]);
     });
-    const auto codes = {4, 14, 15};
-    if (!numbers || !std::all_of(codes.begin(), codes.end(), [&fields](int code) {
-            return detail::playback_status_code(fields.at(code));
-        })) {
+    // Each reason against its own codes: one the player never writes (a typo, a newer player's) is not a record.
+    if (!numbers || !detail::playback_status_code(fields.at(4), detail::kPlaybackErrorCodes)
+        || !detail::playback_status_code(fields.at(14), detail::kPlaybackPausedCodes)
+        || !detail::playback_status_code(fields.at(15), detail::kPlaybackEndedCodes)) {
         return false;
     }
     PlaybackStatusRecord record;

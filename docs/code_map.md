@@ -19945,7 +19945,8 @@ Qt Quick frontend (`src/ui/qt`):
       framework toggles on STATE_PLAYING, pauses it. `playbackCanSeek` comes from the same value and the sheet's seek
       bar reads it.
     - Status record (`RecordingPlayback.status()`, parsed by `playback_status_record.h`, tab-separated, bounded, numeric
-      fields and fixed reason codes, a malformed record ignored with no change published): generation, state, position,
+      fields and fixed reason codes, each reason checked against its own field's codes, which `run_jvm_tests.py` checks
+      are `RecordingPlayer.kt`'s, a malformed record ignored with no change published): generation, state, position,
       duration, error, item index, play token, call, calls, part, parts, gap, interrupted, can seek, paused reason,
       ended reason, skipped count, recheck serial. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and
       the identity from the item index of the same record, and publishes everything together; the position alone goes on

@@ -2967,6 +2967,29 @@ check_playlist_record() {
            "a record with a number that is none says nothing");
     bad.gap = 2;
     unread(bad.text(), "a record with a flag that is neither 0 nor 1 says nothing");
+    // A reason the player never writes, though lower-case letters, is no record: each field has its own codes.
+    bad.gap = 1;
+    StatusFields code = bad;
+    code.state = DecoderHost::PlaybackStopped;
+    code.ended = QStringLiteral("finishedd");
+    unread(code.text(), "an ended reason the player never writes says nothing");
+    code.ended = QStringLiteral("user");
+    unread(code.text(), "nor a paused reason in the ended field");
+    code = bad;
+    code.paused = QStringLiteral("finished");
+    unread(code.text(), "nor an ended reason in the paused field");
+    code = bad;
+    code.paused = QStringLiteral("phonecall");
+    unread(code.text(), "nor an unknown paused reason");
+    code = bad;
+    code.state = DecoderHost::PlaybackFailed;
+    code.error = QStringLiteral("unsupported");
+    unread(code.text(), "nor an error the player never writes");
+    StatusFields good = bad;
+    good.paused = QStringLiteral("noisy");
+    r.status = good.text();
+    host.refresh();
+    check(host.playbackPausedReason() == QStringLiteral("noisy") && host.playbackGap(), "a known reason is read");
 }
 
 /* #909: a play that ended from the platform (a notification Stop, its end, a failure) keeps its last reading under

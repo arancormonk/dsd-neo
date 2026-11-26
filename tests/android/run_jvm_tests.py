@@ -244,6 +244,33 @@ def playback_modes_match():
     return native_enum_matches("PlaybackMode", "Playback", "RecordingPlayer.kt", names, jvm_prefix="MODE_")
 
 
+def playback_codes_match():
+    """#909: a status record whose reason is not one of its field's codes is ignored, so the codes the parser takes
+    (playback_status_record.h) must be the ones RecordingPlayer.kt writes: its ERROR_*, PAUSED_* and ENDED_* values,
+    less ENDED_REPLACED, which no record carries."""
+    header = REPO / "android/playback_status_record.h"
+    kotlin = REPO / APP_SOURCES / "RecordingPlayer.kt"
+    try:
+        header_text = header.read_text(encoding="utf-8")
+        kotlin_text = kotlin.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the playback reason codes: {error}"
+    jvm_codes = dict(re.findall(r'const val ((?:ERROR|PAUSED|ENDED)_[A-Z_]+) = "([a-z]*)"', kotlin_text))
+    jvm_codes.pop("ENDED_REPLACED", None)
+    for field, prefix in (("Error", "ERROR_"), ("Paused", "PAUSED_"), ("Ended", "ENDED_")):
+        table = re.search(rf"kPlayback{field}Codes\[\]\s*=\s*\{{([^}}]*)\}}", header_text)
+        if not table:
+            return f"{header.relative_to(REPO)}: no kPlayback{field}Codes"
+        native = sorted(re.findall(r'"([a-z]*)"', table.group(1)))
+        jvm = sorted(value for name, value in jvm_codes.items() if name.startswith(prefix))
+        if native != jvm:
+            return (
+                f"kPlayback{field}Codes in {header.relative_to(REPO)} ({native}) and the {prefix}* codes in "
+                f"{kotlin.relative_to(REPO)} ({jvm}) must name the same values"
+            )
+    return None
+
+
 def recordings_provider_contract():
     """#708: the recordings provider serves the two "Call recordings" folders and the share copies' cache folder that
     RecordingShare names, and no more."""
@@ -1584,7 +1611,7 @@ SUITES = {
     # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
     # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
-        checks=(playback_states_match, playback_modes_match),
+        checks=(playback_states_match, playback_modes_match, playback_codes_match),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
             Build(sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt"), tests=("PlaybackServicePhasesTest.kt",)),
