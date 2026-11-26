@@ -20095,7 +20095,9 @@ Qt Quick frontend (`src/ui/qt`):
       released in `onDestroy`. Channel `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is
       1), default (private) lock-screen visibility, tap opens the launcher intent. The session follows every render at
       once; the notification is posted at most once per 500 ms (`NotificationPace`, plain Kotlin), the first of a burst
-      at once and the rest as one trailing post of the latest status, cancelled at the retire and in `onDestroy`:
+      at once and the rest as one trailing post of the latest status, shown only if its playlist still owns the
+      service when it fires, dropped when a start's foreground notification shows the owner's current status, and
+      cancelled at the retire and in `onDestroy`:
       Android sheds an app's updates over its enqueue rate (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per
       package, shared with the decoder's notification, which posts at most once a second), and a shed last update left
       a paused playlist's notification offering Pause on 29-32. On 29-32 the compact Previous /

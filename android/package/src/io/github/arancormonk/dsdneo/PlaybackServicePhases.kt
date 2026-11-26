@@ -255,11 +255,14 @@ class PlaybackServicePhases(private val processToken: Long) {
  * playlist on API 29-32. The decoder's notification shares that budget and is updated at most once a second (its
  * status poll). So the playlist's is posted at most once per [intervalMs]: the first of a burst at once, the rest as
  * one trailing post of the latest value [offer] was given. The media session follows every render at once; only the
- * notification waits. [post] posts a value and says whether it did. Not thread-safe: the service's main thread only.
+ * notification waits. [post] posts a value and says whether it did; a value is posted only while it is still [current]
+ * (its playlist owns the service), so a trailing post never shows a playlist another has replaced. Not thread-safe:
+ * the service's main thread only.
  */
 class NotificationPace<T : Any>(
     private val scheduler: RecordingPlayer.Scheduler,
     private val clock: RecordingPlayer.Clock,
+    private val current: (T) -> Boolean,
     private val post: (T) -> Boolean,
     private val intervalMs: Long = INTERVAL_MS,
 ) {
@@ -285,10 +288,18 @@ class NotificationPace<T : Any>(
         }
     }
 
-    /** The notification was posted another way (startForeground): it counts as a post. */
-    fun postedNow() {
+    /**
+     * The notification was posted another way (startForeground): it counts as a post. When it showed the owner's
+     * status as it is now ([covers]), it covers what a trailing post waits to show, which is dropped.
+     */
+    fun postedNow(covers: Boolean = false) {
         lastPostMs = clock.elapsedMs()
         posted = true
+        if (covers) {
+            trailing?.cancel()
+            trailing = null
+            latest = null
+        }
     }
 
     /** The notification is taken down (the service retires or goes): nothing waiting is posted. */
@@ -301,7 +312,7 @@ class NotificationPace<T : Any>(
     private fun flush() {
         val value = latest ?: return
         latest = null
-        if (post(value)) {
+        if (current(value) && post(value)) {
             postedNow()
         }
     }

@@ -488,6 +488,7 @@ fun notificationUpdatesArePacedAndEndOnTheLatest() {
             RecordingPlayer.Cancellable { tasks.remove(entry) }
         },
         { nowMs },
+        { true },
         { value -> posts += nowMs to value; true },
     )
     fun elapse(ms: Long) {
@@ -526,6 +527,57 @@ fun notificationUpdatesArePacedAndEndOnTheLatest() {
     check(posts.last().second == "playing 3" && tasks.isEmpty()) { "cancelled: nothing posted after the retire" }
     pace.offer("next owner")
     check(posts.last().second == "next owner") { "a later render posts" }
+}
+
+/**
+ * A trailing post shows only a status whose playlist still owns the service when it fires (a hand-over can make
+ * another playlist the owner while one waits), and a start's foreground notification of the owner's current status
+ * drops the trailing post it covers.
+ */
+fun aTrailingPostShowsOnlyTheOwner() {
+    var nowMs = 10_000L
+    var owner = 1
+    val tasks = mutableListOf<Pair<Long, () -> Unit>>()
+    val posts = mutableListOf<Pair<Int, String>>()
+    val pace = NotificationPace<Pair<Int, String>>(
+        { delayMs, task ->
+            val entry = (nowMs + delayMs) to task
+            tasks += entry
+            RecordingPlayer.Cancellable { tasks.remove(entry) }
+        },
+        { nowMs },
+        { value -> value.first == owner },
+        { value -> posts += value; true },
+    )
+    fun elapse(ms: Long) {
+        nowMs += ms
+        for (task in tasks.filter { it.first <= nowMs }) {
+            if (tasks.remove(task)) task.second()
+        }
+    }
+    val interval = NotificationPace.INTERVAL_MS
+    pace.offer(1 to "opening")
+    pace.offer(1 to "playing")
+    owner = 2 // handed over before the trailing post fires, P2 not rendered yet
+    elapse(interval)
+    check(posts == listOf(1 to "opening")) { "P1's waiting status is not shown once P2 owns: $posts" }
+    pace.offer(2 to "opening")
+    check(posts.last() == (2 to "opening")) { "P2's first render posts at once: it did not count as a post" }
+
+    elapse(interval)
+    pace.offer(2 to "playing")
+    pace.offer(2 to "paused")
+    check(tasks.size == 1 && posts.last() == (2 to "playing")) { "playing posted; paused waits" }
+    pace.postedNow(covers = true)
+    check(tasks.isEmpty()) { "a start that showed the owner's status covers the waiting post" }
+    elapse(interval)
+    check(posts.last() == (2 to "playing")) { "which never posts" }
+    pace.offer(2 to "stopped")
+    pace.offer(2 to "stopped again")
+    check(tasks.size == 1) { "a post waits" }
+    pace.postedNow(covers = false)
+    elapse(interval)
+    check(posts.last() == (2 to "stopped again")) { "the \"Opening…\" notification covers nothing: it shows" }
 }
 
 fun theTaskRemovedEndsWhatTheServiceServesOrWaitsFor() {
@@ -796,6 +848,7 @@ fun main() {
     aNewInstanceEndsTheRetiringPhase()
     aLateDestroyLeavesTheSharedStateToTheNextInstance()
     notificationUpdatesArePacedAndEndOnTheLatest()
+    aTrailingPostShowsOnlyTheOwner()
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
     headsetTapsBelongToThePlaylistNotThePart()

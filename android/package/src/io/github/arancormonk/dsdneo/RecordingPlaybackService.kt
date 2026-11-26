@@ -94,6 +94,7 @@ class RecordingPlaybackService : Service() {
             RecordingPlayer.Cancellable { main.removeCallbacks(message) }
         },
         { SystemClock.elapsedRealtime() },
+        { status -> RecordingPlayback.isOwner(status.generation) },
         { status ->
             getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
             true
@@ -219,12 +220,10 @@ class RecordingPlaybackService : Service() {
 
     /** Enter the foreground, first and always on a start; false when Android refused it (API 31+). */
     private fun enterForeground(): Boolean = try {
-        startForeground(
-            NOTIFICATION_ID,
-            notification(RecordingPlayback.foregroundStatus()),
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
-        )
-        pace.postedNow()
+        val shown = RecordingPlayback.foregroundStatus()
+        startForeground(NOTIFICATION_ID, notification(shown), ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK)
+        // The owner's status as it is now covers a trailing post still waiting; the "Opening…" one does not.
+        pace.postedNow(covers = shown != null)
         true
     } catch (e: IllegalStateException) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || e !is ForegroundServiceStartNotAllowedException) {
