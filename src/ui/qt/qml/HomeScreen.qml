@@ -2211,6 +2211,8 @@ Item {
                 enc: model.enc
                 emergency: model.emergency
                 hasRecording: model.hasRecording
+                // Issue #909: the call a History playlist is on.
+                playback: Util.playlistMark(decoderHost, model.uid)
                 interactive: true
                 onActivated: recentDetail.open(callHistory.recordFor(model.uid))
             }

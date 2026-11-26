@@ -186,6 +186,8 @@ qt_add_resources(
         qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
+        qml/NowPlayingBar.qml
+        qml/PlaylistStatus.qml
         qml/ActivityScreen.qml
         qml/HomeScreen.qml
         qml/SavedSystemsControls.qml

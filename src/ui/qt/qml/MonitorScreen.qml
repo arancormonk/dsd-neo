@@ -2263,6 +2263,8 @@ Item {
             metaSaysEnc: model.kind !== 1
             emergency: model.emergency
             hasRecording: model.hasRecording
+            // Issue #909: the call a History playlist is on.
+            playback: Util.playlistMark(decoderHost, model.uid)
         }
     }
 

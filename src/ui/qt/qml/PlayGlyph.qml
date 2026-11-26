@@ -6,11 +6,13 @@ import QtQuick
 // Issue #708: the small drawn play triangle a call row carries when the call has
 // a recording. Drawn like Caret, since the bundled faces have no geometric
 // glyphs; nudged right of centre, as PlayCircle's is, so it does not read
-// left-heavy.
+// left-heavy. Issue #909: `bars` draws two upright bars in the same box
+// instead, the mark of the call a History playlist is on.
 Item {
     id: glyph
 
     property color color: Theme.cyan
+    property bool bars: false
 
     implicitWidth: 9
     implicitHeight: 10
@@ -24,6 +26,11 @@ Item {
             var ctx = getContext("2d")
             ctx.reset()
             ctx.fillStyle = String(glyph.color)
+            if (glyph.bars) {
+                ctx.fillRect(1, 0.5, 2.5, height - 1)
+                ctx.fillRect(width - 3.5, 0.5, 2.5, height - 1)
+                return
+            }
             ctx.beginPath()
             ctx.moveTo(1, 0.5)
             ctx.lineTo(width - 0.5, height / 2)
@@ -39,4 +46,5 @@ Item {
     }
 
     onColorChanged: canvas.requestPaint()
+    onBarsChanged: canvas.requestPaint()
 }

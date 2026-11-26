@@ -1168,6 +1168,20 @@ function fileNameText(name) {
 }
 
 // A player position in milliseconds as "m:ss", whole seconds played.
+// Issue #909: where @p host's History playlist stands on the call row logged
+// under @p uid, for its marker (CallRow.playback): 1 playing that call (or
+// opening it, or in the pause after it), 2 paused on it, 0 neither (no History
+// playlist open, or it is on another call). Bound per row; it reads only
+// readings that change with playbackChanged, never the position.
+function playlistMark(host, uid) {
+    if (!host || host.playbackOrigin !== "history" || host.playbackMode !== 2)
+        return 0
+    var state = host.playbackState
+    if (state < 1 || state > 3 || !host.playbackKey || host.playbackKey !== String(uid))
+        return 0
+    return state === 3 ? 2 : 1
+}
+
 function playbackTimeText(ms) {
     return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
 }

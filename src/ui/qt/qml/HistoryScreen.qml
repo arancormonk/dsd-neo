@@ -53,6 +53,12 @@ Item {
             // A picker still out ends with the screen, as a cancel; a file
             // already being written finishes.
             exportPicker.cancel();
+            // Issue #909 (B5): a row's sheet ends with the screen, as the
+            // Monitor's do: the session's History hidden under a Stop came
+            // back with the sheet of a call from before. A "Show on map" has
+            // closed its sheet already, and Back from the map opens it again
+            // by its row's uid.
+            detailSheet.visible = false;
             return;
         }
         forgetHeardExportMessage();
@@ -231,6 +237,51 @@ Item {
         historyView.filterKind = 0;
     }
 
+    // ---- Play all (issue #909): the recorded calls the list shows ----
+    // Main's playlistStatus, which the bar at the bottom shows (null: no bar).
+    property var playlistStatus: null
+    readonly property bool canPlayAll: decoderHost.playbackSupported === true
+    // Oldest first, from what the list shows at the press; the bar takes it
+    // from there. A press refused says why on the header's message line,
+    // which Export shares (the newer replaces), and what played plays on.
+    function playAll() {
+        if (!canPlayAll || historyView.count === 0)
+            return;
+        flushPendingSearch();
+        setExportMessage("", false);
+        var outcome = historyPlaylist.start(0) || {};
+        var result = String(outcome.result || "");
+        if (result === "accepted")
+            return;
+        if (result === "none")
+            setExportMessage(qsTr("None of the shown calls has a recording that can be played now."), false);
+        else if (result === "unsupported")
+            setExportMessage(qsTr("Recordings can't be played on this device."), true);
+        else
+            setExportMessage(qsTr("Couldn't start playing. Try again."), true);
+    }
+    // Clear history ends a History playlist that plays, as the bar's ✕ does.
+    function endPlaylist() {
+        if (playlistStatus) {
+            playlistStatus.stop();
+            return;
+        }
+        var state = decoderHost.playbackState;
+        if (decoderHost.playbackOrigin === "history" && decoderHost.playbackMode === 2 && state >= 1 && state <= 3)
+            decoderHost.stopPlaybackGeneration(decoderHost.playbackGeneration);
+    }
+    // The bar's Show in list: the row logged under @p uid, looked up through
+    // the list's filter now, scrolled into view and its sheet opened (which
+    // follows what plays by itself). False when the list does not show it.
+    function showPlaying(uid) {
+        var row = logPlace.rowOf(uid);
+        if (row < 0 || !logList.model)
+            return false;
+        logList.positionViewAtIndex(row, ListView.Contain);
+        detailSheet.open(callHistory.recordFor(uid));
+        return true;
+    }
+
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
     readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
@@ -246,7 +297,18 @@ Item {
     // warning shown it is taller than a phone screen, and as one fixed column it
     // pushed the list off the bottom and its last controls out of reach. A
     // header that fits does not move.
-    readonly property real listMinHeight: Math.ceil(height * 0.4)
+    //
+    // Issue #909: the now-playing bar docks at the bottom and the list ends
+    // above it, so the bar never covers the last row; the header's share is
+    // what the list and the bar leave. While the keyboard is up (a search
+    // being typed) the screen's room ends at the keyboard's top: the bar is
+    // under the keyboard there, where the bottom navigation is, and out of the
+    // way until it goes down, so the list's last row and the field being typed
+    // in keep the room above it.
+    readonly property real roomHeight: Math.max(0, Math.min(height, Theme.keyboardTop(screen)))
+    readonly property bool keyboardUp: roomHeight < height - 0.5
+    readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
+    readonly property real listMinHeight: Math.ceil(roomHeight * 0.4)
 
     PlexFlickable {
         id: headerScroll
@@ -256,7 +318,7 @@ Item {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: Math.min(contentHeight, Math.max(0, screen.height - screen.listMinHeight - logList.anchors.topMargin))
+        height: Math.min(contentHeight, Math.max(0, screen.roomHeight - screen.listMinHeight - screen.barHeight - logList.anchors.topMargin))
         contentWidth: width
         // A few pixels under the filters for their focus ring, which the clip
         // would otherwise cut; the list's top margin gives them back.
@@ -282,21 +344,18 @@ Item {
             width: headerScroll.width - 2 * Theme.screenPadding
             spacing: Theme.gap
 
-            // Title on the left, Export… and Clear on the right, on one line when
-            // they fit. When they do not (a narrow phone, a large text size), the
-            // buttons take their own line under the title, still on the right,
-            // rather than running over it.
+            // Title on the left, the buttons (Map, Play all, Export…, Clear) on the
+            // right, on one line when they fit. When they do not (a narrow phone,
+            // a large text size), the glyphs stay on the title's line while they
+            // fit there and Export… and Clear take a line under it, still on the
+            // right, rather than running over the title.
             Item {
                 id: header
 
                 readonly property real titleHeight: screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0
-                // Map is always offered (issue #800); Export… and Clear only with calls.
-                readonly property bool stacked: screen.showTitle
-                                                 && historyTitle.implicitWidth + Theme.gap + headerButtons.implicitWidth > width
 
                 width: parent.width
-                height: stacked ? titleHeight + headerButtons.implicitHeight
-                                : Math.max(titleHeight, headerButtons.implicitHeight)
+                height: headerButtons.places.height
                 visible: height > 0
 
                 ReadableText {
@@ -305,7 +364,7 @@ Item {
                     heading: true
                     visible: screen.showTitle
                     anchors.left: parent.left
-                    y: ((header.stacked ? header.titleHeight : header.height) - height) / 2
+                    y: (headerButtons.places.titleLine - height) / 2
                     text: qsTr("History")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(24)
@@ -314,18 +373,112 @@ Item {
                     color: Theme.textPrimary
                 }
 
-                Row {
+                // Issue #909: a flow set against the right edge, in two groups
+                // kept whole while each fits a line: the glyphs (Map, Play all)
+                // and the text buttons (Export…, Clear). Everything on the
+                // title's line when it fits beside the title; else the glyphs
+                // there and the text buttons on the lines under it; else the
+                // title alone and the groups under it. The buttons keep their
+                // order, and the keyboard's. Placed from the buttons' widths and
+                // whether each is offered, never from their positions or the
+                // screen's visibility, so a hidden screen keeps its layout.
+                Item {
                     id: headerButtons
 
-                    anchors.right: parent.right
-                    y: header.stacked ? header.titleHeight : (header.height - height) / 2
-                    spacing: 10
+                    readonly property var controls: [historyMapButton, historyPlayAll, historyExportButton, clearHistory]
+                    readonly property real spacing: 10
+                    anchors.fill: parent
 
-                    // A glyph, as the top bars' other icon actions, so the
-                    // title, Export… and Clear still share one line on a phone.
+                    // {height, titleLine (the first line's height), at: [{x, y}, ...] per control, in its order}.
+                    readonly property var places: {
+                        var room = header.width;
+                        var titleRoom = screen.showTitle ? room - historyTitle.implicitWidth - Theme.gap : room;
+                        var controls = headerButtons.controls, spacing = headerButtons.spacing;
+                        var groups = [[0, 1], [2, 3]].map(function (group) {
+                            return group.filter(function (index) {
+                                return controls[index].offered;
+                            });
+                        }).filter(function (group) {
+                            return group.length > 0;
+                        });
+                        // The glyphs' 48 px targets sit side by side, as a top
+                        // bar's icon actions do; framed buttons keep a gap.
+                        var gapBefore = function (list, n) {
+                            return n === 0 ? 0 : list[n] < 2 && list[n - 1] < 2 ? 0 : spacing;
+                        };
+                        var widthOf = function (list) {
+                            var total = 0;
+                            for (var n = 0; n < list.length; n++)
+                                total += gapBefore(list, n) + controls[list[n]].implicitWidth;
+                            return total;
+                        };
+                        var heightOf = function (list) {
+                            var tallest = 0;
+                            for (var index of list)
+                                tallest = Math.max(tallest, controls[index].implicitHeight);
+                            return tallest;
+                        };
+                        var all = [].concat.apply([], groups);
+                        var first = [], rest = groups;
+                        if (widthOf(all) <= titleRoom) {
+                            first = all;
+                            rest = [];
+                        } else if (screen.showTitle && groups.length > 1 && widthOf(groups[0]) <= titleRoom) {
+                            first = groups[0];
+                            rest = groups.slice(1);
+                        }
+                        // The rest from the end, each line as wide as the screen:
+                        // a group whole while it fits one, else button by button.
+                        var units = [];
+                        for (var group of rest) {
+                            if (widthOf(group) <= room)
+                                units.push(group);
+                            else
+                                for (var index of group)
+                                    units.push([index]);
+                        }
+                        var lines = [], line = [];
+                        for (var u = units.length - 1; u >= 0; u--) {
+                            if (line.length > 0 && widthOf(units[u].concat(line)) > room) {
+                                lines.unshift(line);
+                                line = [];
+                            }
+                            line = units[u].concat(line);
+                        }
+                        if (line.length > 0)
+                            lines.unshift(line);
+                        var at = controls.map(function () {
+                            return {x: 0, y: 0};
+                        });
+                        var place = function (list, top, height) {
+                            var left = room - widthOf(list);
+                            for (var n = 0; n < list.length; n++) {
+                                var index = list[n];
+                                left += gapBefore(list, n);
+                                at[index] = {x: left, y: top + (height - controls[index].implicitHeight) / 2};
+                                left += controls[index].implicitWidth;
+                            }
+                        };
+                        var titleLine = Math.max(header.titleHeight, heightOf(first));
+                        place(first, 0, titleLine);
+                        var top = titleLine;
+                        for (var l = 0; l < lines.length; l++) {
+                            if (top > 0)
+                                top += spacing;
+                            var lineHeight = heightOf(lines[l]);
+                            place(lines[l], top, lineHeight);
+                            top += lineHeight;
+                        }
+                        return {height: top, titleLine: titleLine, at: at};
+                    }
+
+                    // A glyph, as the top bars' other icon actions.
                     MapControlButton {
+                        id: historyMapButton
+                        readonly property bool offered: true
                         objectName: "historyMapButton"
-                        anchors.verticalCenter: parent.verticalCenter
+                        x: headerButtons.places.at[0].x
+                        y: headerButtons.places.at[0].y
                         framed: false
                         shape: "map"
                         accessibleName: qsTr("Map")
@@ -333,9 +486,31 @@ Item {
                         onClicked: screen.openMap()
                     }
 
+                    // Issue #909: beside Map and drawn as it is; on Export's rule,
+                    // where the host has a player.
+                    MapControlButton {
+                        id: historyPlayAll
+                        readonly property bool offered: callHistory.count > 0 && screen.canPlayAll
+                        objectName: "historyPlayAll"
+                        visible: offered
+                        x: headerButtons.places.at[1].x
+                        y: headerButtons.places.at[1].y
+                        framed: false
+                        shape: "play"
+                        accessibleName: qsTr("Play all")
+                        accessibleDescription: qsTr("Plays the recorded calls shown, oldest first")
+                        // While the list shows rows (its empty state says why not).
+                        enabled: historyView.count > 0
+                        onClicked: screen.playAll()
+                    }
+
                     OutlineButton {
+                        id: historyExportButton
+                        readonly property bool offered: callHistory.count > 0
                         objectName: "historyExportButton"
-                        visible: callHistory.count > 0
+                        visible: offered
+                        x: headerButtons.places.at[2].x
+                        y: headerButtons.places.at[2].y
                         text: qsTr("Export…")
                         accessibleName: qsTr("Export history as a CSV file")
                         // Held while this screen's picker is out, while either
@@ -347,8 +522,11 @@ Item {
 
                     OutlineButton {
                         id: clearHistory
+                        readonly property bool offered: callHistory.count > 0
                         objectName: "clearHistoryButton"
-                        visible: callHistory.count > 0
+                        visible: offered
+                        x: headerButtons.places.at[3].x
+                        y: headerButtons.places.at[3].y
                         text: qsTr("Clear")
                         onClicked: confirmClear.open()
                     }
@@ -494,6 +672,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
+        // Above the keyboard and the now-playing bar (issue #909).
+        anchors.bottomMargin: screen.height - screen.roomHeight + screen.barHeight
         clip: true
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.
@@ -593,6 +773,8 @@ Item {
             enc: model.enc
             emergency: model.emergency
             hasRecording: model.hasRecording
+            // Issue #909: the call a History playlist is on.
+            playback: Util.playlistMark(decoderHost, model.uid)
             // The frequency a search found is not added: the meta line, read as
             // the row's description, already leads with it. A row with no start
             // time has no time to read.
@@ -605,6 +787,20 @@ Item {
             nameSaysTime: true
             onActivated: detailSheet.open(callHistory.recordFor(model.uid))
         }
+    }
+
+    // Issue #909: the History playlist, docked under the list.
+    NowPlayingBar {
+        id: nowPlaying
+        objectName: "nowPlayingBar"
+        status: screen.playlistStatus
+        showRow: screen.showPlaying
+        visible: shown && !screen.keyboardUp
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        // As the list: a tap on the confirm sheet over it reaches nothing here.
+        enabled: !confirmClear.visible
     }
 
     ChoiceSheet {
@@ -767,6 +963,10 @@ Item {
         message: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
         confirmText: qsTr("Clear history")
         destructive: true
-        onConfirmed: callHistory.clearAll()
+        onConfirmed: {
+            // Issue #909: a History playlist ends with the log it came from.
+            screen.endPlaylist();
+            callHistory.clearAll();
+        }
     }
 }

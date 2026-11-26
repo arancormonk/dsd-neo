@@ -1050,6 +1050,11 @@ Window {
     property bool signalSearchOpen: typeof signalSearch !== "undefined" && decoderHost.sessionActive && !!signalSearch.status.owned
     property bool licensesOpen: false
     property bool callRecordingsOpen: false // issue #708
+    // Issue #909: History's playlist, which both History screens' bars show,
+    // and its events, each read out once by the bar that can be read.
+    property PlaylistStatus playlistStatus: PlaylistStatus {
+        objectName: "playlistStatus"
+    }
     // Issue #800: the map, pushed from the session menu or History, over the
     // tab shell and the session tools alike. It stays open across a Stop
     // (its tracks are the app's, not the session's). mapReturn is the History
@@ -2310,6 +2315,7 @@ Window {
         HistoryScreen {
             id: historyRoot
             objectName: "idleHistoryScreen"
+            playlistStatus: mainRoot.playlistStatus
             x: mainRoot.expanded ? nav.width : 0
             y: 0
             width: parent.width - x
@@ -2852,6 +2858,7 @@ Window {
         }
         HistoryScreen {
             objectName: "sessionHistoryScreen"
+            playlistStatus: mainRoot.playlistStatus
             showTitle: false
             anchors.top: sessionToolsHeader.bottom
             anchors.left: parent.left
