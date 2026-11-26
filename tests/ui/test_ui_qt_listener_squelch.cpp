@@ -630,7 +630,11 @@ wavDurationMs(const QString& path) {
     const quint32 rate = u32(24);
     const quint32 blockAlign = u32(32) & 0xFFFFU;
     const quint32 size = u32(data + 4);
-    return rate > 0U && blockAlign > 0U ? static_cast<double>(size / blockAlign) * 1000.0 / rate : -1.0;
+    if (rate == 0U || blockAlign == 0U) {
+        return -1.0;
+    }
+    const quint32 frames = size / blockAlign;
+    return static_cast<double>(frames) * 1000.0 / rate;
 }
 
 /* The mean level, in dBFS, of the audible blocks heard in [@p fromMs, @p toMs) of stream time; -200 for none. */

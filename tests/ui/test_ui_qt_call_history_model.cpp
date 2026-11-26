@@ -5861,13 +5861,10 @@ test_lost_fix_gives_way_to_remaining_fragment(void) {
             resetStorage();
             RingFixture ring;
             CallHistoryModel model;
-            Event_History* a =
-                with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
-            (void)a;
-            Event_History* b =
-                with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
-            a = &ring.rings[0].Event_History_Items[2];
-            b = &ring.rings[0].Event_History_Items[1];
+            with_gps(ring.commit(0, 80401U, 8401U, when, when + 3), "GPS: A", 225000000, 450000000, 5U);
+            with_gps(ring.commit(0, 80401U, 8401U, when + 5, when + 9), "GPS: B", 226000000, 451000000, 9U);
+            Event_History* a = &ring.rings[0].Event_History_Items[2];
+            Event_History* b = &ring.rings[0].Event_History_Items[1];
             if (order == 1) {
                 // Fragment A is read only after B lost its fix.
                 Event_History saved = *a;
@@ -6200,12 +6197,12 @@ test_restamped_fragment_found_by_identity(void) {
     resetStorage();
     RingFixture ring;
     CallHistoryModel model;
-    Event_History* call = with_gps(ring.commit(0, 80431U, 8431U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
+    with_gps(ring.commit(0, 80431U, 8431U, 0, when + 6), "GPS: A", 225000000, 450000000, 5U);
     model.refresh(ring.state);
     ring.commitBatch(0, 40, 81000U, 9100U, when + 100);
     model.refresh(ring.state);
     expect("restamped far: 41 rows", model.count() == 41);
-    call = &ring.rings[0].Event_History_Items[41];
+    Event_History* call = &ring.rings[0].Event_History_Items[41];
     expect("restamped far: the ring row is the fragment", call->target_id == 80431U && call->source_id == 8431U);
     call->event_start_time = when;
     with_gps(call, "GPS: B", 226000000, 451000000, 6U);
@@ -6551,7 +6548,8 @@ test_callsign_callers_stay_apart(void) {
     RingFixture ring;
     CallHistoryModel model;
     for (int i = 0; i < 2; i++) {
-        Event_History* item = ring.commit(0, 0U, 0U, when + 5 * i, when + 5 * i + 3, "CQCQCQ");
+        Event_History* item =
+            ring.commit(0, 0U, 0U, when + static_cast<time_t>(5 * i), when + static_cast<time_t>(5 * i) + 3, "CQCQCQ");
         item->systype = DSD_SYNC_DSTAR_HD_POS;
         DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", i == 0 ? "N0CALL" : "N0CALL  ");
     }
@@ -6606,7 +6604,8 @@ test_textual_destinations_under_one_service_stay_apart(void) {
         CallHistoryModel model;
         const char* destinations[2] = {"DEST-ONE", "DEST-TWO"};
         for (int i = 0; i < 2; i++) {
-            Event_History* item = ring.commit(0, 0U, 0U, when + 4 * i, when + 4 * i + 3, destinations[i]);
+            Event_History* item = ring.commit(0, 0U, 0U, when + static_cast<time_t>(4 * i),
+                                              when + static_cast<time_t>(4 * i) + 3, destinations[i]);
             item->systype = DSD_SYNC_M17_STR_POS;
             DSD_SNPRINTF(item->src_str, sizeof(item->src_str), "%s", "N0CALL");
             DSD_SNPRINTF(item->service_label, sizeof(item->service_label), "%s", "Club CAN 3");
@@ -6663,7 +6662,8 @@ test_system_identity_splits_conventional_systems(void) {
         {
             CallHistoryModel model;
             for (int i = 0; i < 2; i++) {
-                Event_History* item = ring.commit(0, 80601U, 8601U, when + 5 * i, when + 5 * i + 3);
+                Event_History* item = ring.commit(0, 80601U, 8601U, when + static_cast<time_t>(5 * i),
+                                                  when + static_cast<time_t>(5 * i) + 3);
                 item->systype = c.kind == DSD_POS_SCOPE_P25 || c.kind == DSD_POS_SCOPE_P25_NAC
                                     ? DSD_SYNC_P25P1_POS
                                     : DSD_SYNC_DMR_BS_VOICE_POS;
@@ -6693,7 +6693,8 @@ test_system_identity_splits_conventional_systems(void) {
         {
             CallHistoryModel model;
             for (int i = 0; i < 2; i++) {
-                Event_History* item = ring.commit(0, 80602U, 8602U, when + 5 * i, when + 5 * i + 3);
+                Event_History* item = ring.commit(0, 80602U, 8602U, when + static_cast<time_t>(5 * i),
+                                                  when + static_cast<time_t>(5 * i) + 3);
                 item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_DMR_BS_VOICE_POS;
                 with_rx(item, c.kind, c.a[i], c.b, c.freq[i]);
             }
@@ -6742,7 +6743,8 @@ test_weaker_identity_joins_stronger(void) {
                 fullFirst != 0 ? static_cast<uint8_t>(DSD_POS_SCOPE_P25_NAC) : static_cast<uint8_t>(DSD_POS_SCOPE_P25),
                 DSD_POS_SCOPE_P25_NAC};
             for (int i = 0; i < 3; i++) {
-                Event_History* item = ring.commit(0, 80611U, 8611U, when + 5 * i, when + 5 * i + 3);
+                Event_History* item = ring.commit(0, 80611U, 8611U, when + static_cast<time_t>(5 * i),
+                                                  when + static_cast<time_t>(5 * i) + 3);
                 const bool full = kinds[i] == DSD_POS_SCOPE_P25;
                 with_rx(item, kinds[i], full ? 0xBEE00U : 0x293U, full ? 0x1A3U : 0U, full ? 0 : 851000000 + 12500 * i);
                 item->freq_hz = 851000000 + 12500 * i;
@@ -6762,8 +6764,8 @@ test_weaker_identity_joins_stronger(void) {
     RingFixture ring;
     CallHistoryModel model;
     for (int i = 0; i < 2; i++) {
-        with_rx(ring.commit(0, 80612U, 8612U, when + 5 * i, when + 5 * i + 3), DSD_POS_SCOPE_P25, 0xBEE00U,
-                i == 0 ? 0x1A3U : 0x1A4U, 0);
+        with_rx(ring.commit(0, 80612U, 8612U, when + static_cast<time_t>(5 * i), when + static_cast<time_t>(5 * i) + 3),
+                DSD_POS_SCOPE_P25, 0xBEE00U, i == 0 ? 0x1A3U : 0x1A4U, 0);
     }
     model.refresh(ring.state);
     expect("B5: two full P25 scopes that differ are two calls", model.count() == 2);
@@ -7019,44 +7021,44 @@ test_partial_identity_joins_fuller(void) {
 
     struct Case {
         const char* what;
-        uint8_t kind;
-        uint32_t a[2];
-        uint32_t b[2];
         int64_t freq[2];
         int rows;
+        uint32_t a[2];
+        uint32_t b[2];
+        uint8_t kind;
     };
 
     const Case cases[] = {
         {"B5: an EDACS site, then its system learned",
-         DSD_POS_SCOPE_FEED_EDACS,
+         {0, 0},
+         1,
          {kSite, kSite},
          {0U, kSystem},
-         {0, 0},
-         1},
+         DSD_POS_SCOPE_FEED_EDACS},
         {"B5: an EDACS site and system, then a site-only fragment",
-         DSD_POS_SCOPE_FEED_EDACS,
+         {0, 0},
+         1,
          {kSite, kSite},
          {kSystem, 0U},
-         {0, 0},
-         1},
+         DSD_POS_SCOPE_FEED_EDACS},
         {"B5: two EDACS systems on one site",
-         DSD_POS_SCOPE_FEED_EDACS,
+         {0, 0},
+         2,
          {kSite, kSite},
          {kSystem, 0x10000U | 8U},
-         {0, 0},
-         2},
+         DSD_POS_SCOPE_FEED_EDACS},
         {"B5: an EDACS site-only and a system-only identity",
-         DSD_POS_SCOPE_FEED_EDACS,
+         {0, 0},
+         2,
          {kSite, 0U},
          {0U, kSystem},
-         {0, 0},
-         2},
+         DSD_POS_SCOPE_FEED_EDACS},
         {"B5: a P25 NAC, then its tuned frequency known",
-         DSD_POS_SCOPE_P25_NAC,
+         {0, 155100000},
+         1,
          {0x293U, 0x293U},
          {0U, 0U},
-         {0, 155100000},
-         1},
+         DSD_POS_SCOPE_P25_NAC},
     };
     for (const Case& c : cases) {
         resetStorage();
@@ -7064,7 +7066,8 @@ test_partial_identity_joins_fuller(void) {
         {
             CallHistoryModel model;
             for (int i = 0; i < 2; i++) {
-                Event_History* item = ring.commit(0, 80631U, 8631U, when + 5 * i, when + 5 * i + 3);
+                Event_History* item = ring.commit(0, 80631U, 8631U, when + static_cast<time_t>(5 * i),
+                                                  when + static_cast<time_t>(5 * i) + 3);
                 item->systype = c.kind == DSD_POS_SCOPE_P25_NAC ? DSD_SYNC_P25P1_POS : DSD_SYNC_EDACS_POS;
                 item->access_code_kind = DSD_ACCESS_CODE_NONE;
                 with_rx(item, c.kind, c.a[i], c.b[i], c.freq[i]);
@@ -7286,7 +7289,7 @@ test_fragment_on_another_system_withdraws_call_fields(void) {
                !stored.isEmpty() && !stored.contains(QLatin1String("receiveKnown"))
                    && !stored.contains(QLatin1String("service")));
         expect("fields: the end the withdrawn fragment gave is not saved",
-               stored.value(QLatin1String("end")).toInteger() == static_cast<qint64>(when + 3));
+               stored.value(QLatin1String("end")).toInteger() == static_cast<qint64>(when) + 3);
         CallHistoryModel reloaded;
         expect("fields: the rebuilt row is the one saved",
                reloaded.count() == 1 && part_fields_of(reloaded, 0) == alone);

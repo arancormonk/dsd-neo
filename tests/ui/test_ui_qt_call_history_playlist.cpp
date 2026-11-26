@@ -570,11 +570,11 @@ test_full_log_one_read() {
     provider.rowReads = 0;
     expect(__LINE__, is_outcome(playlist.start(0), "accepted", 7, kRows));
     expect(__LINE__, provider.batchReads == 1 && provider.rowReads == 0);
-    expect(__LINE__, host.items.size() == 2 * kRows);
-    bool ordered = host.items.size() == 2 * kRows;
+    expect(__LINE__, host.items.size() == qsizetype{2} * kRows);
+    bool ordered = host.items.size() == qsizetype{2} * kRows;
     for (int call = 0; ordered && call < kRows; call++) {
         const QString key = QStringLiteral("G%1").arg(kRows - 1 - call);
-        const QVariantMap second = host.items.at(2 * call).toMap();
+        const QVariantMap second = host.items.at(qsizetype{2} * call).toMap();
         const QVariantMap third = host.items.at(2 * call + 1).toMap();
         ordered = second.value(QStringLiteral("path")).toString() == key + QStringLiteral("-2")
                   && third.value(QStringLiteral("path")).toString() == key + QStringLiteral("-3")

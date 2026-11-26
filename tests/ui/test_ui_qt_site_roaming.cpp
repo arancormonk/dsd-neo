@@ -153,7 +153,8 @@ check_route_verdict(const SiteRoamingCore& core, const SiteRoamingVerdict& v, co
     const int step = i - first_qualifying;
     check(step < 2 ? is(v, Kind::Candidate, "B") : is(v, Kind::Switch, "B"),
           "route: Candidate for two qualifying fixes, Switch at the third");
-    check(core.evidence().count == step + 1 && core.evidence().last_ms - core.evidence().first_ms == 10000 * step,
+    check(core.evidence().count == step + 1
+              && core.evidence().last_ms - core.evidence().first_ms == std::int64_t{10000} * step,
           "route: evidence counts the qualifying fixes and spans their fix times");
 }
 
@@ -163,7 +164,8 @@ check_route_ticks(SiteRoamingCore& core, const Sites& sites, const std::string& 
                   const SiteRoamingMeasurement& m, const SiteRoamingVerdict& v) {
     for (int tick = 1; tick < 10; ++tick) {
         const int count = core.evidence().count;
-        const SiteRoamingVerdict ticked = core.evaluate(m.fix_at_ms + 1000 * tick, sites, current, &m, kSettings);
+        const SiteRoamingVerdict ticked =
+            core.evaluate(m.fix_at_ms + std::int64_t{1000} * tick, sites, current, &m, kSettings);
         check(ticked.kind == v.kind && ticked.uid == v.uid && core.evidence().count == count,
               "route: a timer tick adds nothing");
     }
@@ -293,7 +295,7 @@ jitter_switches(const std::vector<double>& lats, const char* start) {
         const std::int64_t t = 10000LL * static_cast<std::int64_t>(i);
         const SiteRoamingMeasurement m = fix(lats[i], 20.0, t, 25);
         for (int tick = 0; tick < 10; ++tick) {
-            const SiteRoamingVerdict v = core.evaluate(t + 1000 * tick, sites, current, &m, kSettings);
+            const SiteRoamingVerdict v = core.evaluate(t + std::int64_t{1000} * tick, sites, current, &m, kSettings);
             if (v.kind == Kind::Switch) {
                 ++switches;
                 current = v.uid;
