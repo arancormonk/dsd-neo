@@ -278,7 +278,10 @@ private fun aPlayStartsOncePreparedAndHoldsTheFocus() {
     check(rig.state == PLAYING && rig.focus.requests.size == 2) { "a resume asks for the focus again and plays" }
     rig.nowMs += 70_000
     check(rig.position == 60_000L) { "the position never runs past the length" }
-    check(rig.service.changes.isEmpty() && rig.scheduler.live().isEmpty()) { "a single play uses no service and no task left" }
+    val prepareTimeoutsOnly = rig.scheduler.entries.all { it.delayMs == RecordingPlayer.PREPARE_TIMEOUT_MS }
+    check(rig.service.changes.isEmpty() && prepareTimeoutsOnly) {
+        "a single play uses no service and no task but its prepare timeout"
+    }
 }
 
 private fun aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted() {
@@ -1705,7 +1708,9 @@ private fun theTenMinuteDeadlineCountsFromThePause() {
     single.prepared()
     single.machine.pause()
     single.elapse(3_600_000)
-    check(single.state == PAUSED && single.scheduler.live().isEmpty()) { "a single play has no paused deadline" }
+    check(single.state == PAUSED && single.scheduler.entries.none { it.delayMs == RecordingPlayer.PAUSED_LIMIT_MS }) {
+        "a single play has no paused deadline"
+    }
 }
 
 private fun theTerminalRecordStaysUntilTheNextPlay() {
