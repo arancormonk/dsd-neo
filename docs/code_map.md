@@ -11179,7 +11179,9 @@ Runtime controls (via `include/dsd-neo/io/rtl_stream_c.h`):
 - Scan quiet request (`radio/signal_measure.cpp`, `io/signal_measure.h`, issue #834): whether one landed conventional
   channel carries no power above the capture's noise. A request may ask for another sub-window count
   (`dsd_signal_quiet_request::windows`, 0 for the calibrated `DSD_SIGNAL_QUIET_WINDOWS`, at most
-  `DSD_SIGNAL_QUIET_WINDOWS_MAX`) and a lead of pairs dropped before the first transform (`lead_pairs`). The tap's
+  `DSD_SIGNAL_QUIET_WINDOWS_MAX`) and a lead of pairs dropped before the first transform (`lead_pairs`); only the
+  calibrated count is calibrated, under the default and the centred policy alike, and another count is judged with the
+  same parameters (the centred threshold on a centred capture), uncalibrated. The tap's
   capture word (`rtl_signal_capture_seq()`, lock-free; `rtl_signal_capture_get_seq()` gives the capture and its word
   from one snapshot under `tap_mutex`) moves with every change of generation, centre or capture offset and at a
   reset, never for drops or gain. `dsd_signal_quiet_detector_*` is the measurement (the shared

@@ -2877,7 +2877,8 @@ channel is delayed.
   Reading length (experts): `--scan-skip-silent-ms <ms>` (also `--scan-skip-silent-ms=<ms>`; `10..500`; config
   `[trunking] scan_skip_silent_ms`, where `0`, the default, is the calibrated reading) sets how long the check reads a
   channel. Values round up to whole 10 ms slices. The calibrated reading is 9 slices (90 ms or a little more, by
-  sample rate). Fewer than nine slices (settings 10-80 ms) are not calibrated: a weak or fading signal can read silent and be skipped. A
+  sample rate), on every receiver the check runs on, a native Airspy included. Fewer than nine slices (settings
+  10-80 ms) are not calibrated: a weak or fading signal can read silent and be skipped. A
   channel that can carry DMR is still read for at least 6 slices. Above 90 the check skips less often. It does
   nothing without `--scan-skip-silent`, and is one setting for the session, never a row option. See [Reading length
   (experts)](trunk-scan.md#reading-length-experts).

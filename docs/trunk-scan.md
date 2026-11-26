@@ -1303,16 +1303,17 @@ so the reading lasts that many slices of it: 60 reads for 60 to 69 ms. Unset (or
 its calibrated nine slices, exactly as without the option. It is session-wide, like `--scan-skip-silent`, and an
 `options` cell refuses it.
 
-- Only the nine-slice reading was calibrated. The 5.0 dB threshold and the 8.7 dB guard stay the same at every
-  length, but below nine slices they are not calibrated: a weak signal, or one that fades during the reading, is more
-  likely to read silent and be skipped. A short check at 1.536 Msps (not a calibration) found no live signal read
-  silent at six slices, live DMR read silent at three, and weak M17 and dPMR read silent at one.
+- Only the nine-slice reading was calibrated, on the RTL-SDR's capture and on the native Airspy's alike. The 5.0 dB
+  threshold (3.2 dB on a native Airspy) and the 8.7 dB guard stay the same at every length, but below nine slices they
+  are not calibrated: a weak signal, or one that fades during the reading, is more likely to read silent and be
+  skipped. A short check at 1.536 Msps (not a calibration) found no live signal read silent at six slices, live DMR
+  read silent at three, and weak M17 and dPMR read silent at one; no such check was run on a native Airspy.
 - A channel that can carry a single DMR radio is still read for at least six slices (60 to 69 ms): a typed DMR row or
   `dmr-conventional` target, or an untyped row or a row in mode `inherit` while the DMR decoder is on. Six slices is
   the fewest that always hold one slice wholly inside a burst of an ongoing DMR transmission (above).
 - Longer readings (above 90 ms) skip less often and are less likely to skip a weak live signal, at the cost of a
   longer skip. The time the scan waits for the answer grows with them.
-- When the setting shortens the reading, the first check logs
+- When the setting shortens the reading, the first check logs, on every receiver,
   `WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to 53 ms), shorter than the calibrated 9: a weak or fading signal can read silent and be skipped.`
   (with the span at the receiver's rate), and the first DMR channel read for its floor logs
   `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.`

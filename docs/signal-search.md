@@ -1235,7 +1235,8 @@ ratio against the capture-wide reference alone. The shipped rule judges it again
 sideband floor, which can only raise a ratio, so its active figures are lower bounds of what the shipped rule reads;
 its noise-only figures are not, and are measured again under the shipped rule.
 
-Only that nine-sub-window reading is calibrated. `--scan-skip-silent-ms` (an expert setting, see
+Only that nine-sub-window reading is calibrated, here and in the native Airspy's calibration below alike.
+`--scan-skip-silent-ms` (an expert setting, see
 [Reading length (experts)](trunk-scan.md#reading-length-experts)) asks the detector for another count of sub-windows
 of the same length, and the same threshold and guard judge it uncalibrated. The driver takes `--windows N` for a short
 check of such a count (`dsd_signal_quiet_request::windows`); a run of it is not a calibration. Since issue #834's
@@ -1512,7 +1513,9 @@ hardware coordinates: the nominal Airspy passband, a steeper one, the nominal mi
 rendered, not received. The release takes a rate only when every response passes there, since the check cannot tell
 one receiver's response from another's. Each cell also carries the `-8` masks (a digital class beside each analog
 width, and noise alone under each pair), busy neighbours at every native rate, occupied captures for the occupancy
-check, and raised-band captures reported for information only.
+check, and raised-band captures reported for information only. Like the RTL-SDR's, it covers only the calibrated
+nine-sub-window reading: a shorter `--scan-skip-silent-ms` reading on a native Airspy is judged at the same 3.2 dB,
+uncalibrated, and logs the same warning.
 
 The threshold is 3.2 dB, with the 0.5 dB margin over it held at selection everywhere but in the 2 dB dip's occupied
 captures, one unit a rate, where a kept reading from 3.2 up to 3.7 dB is reported rather than failed and that pairing
