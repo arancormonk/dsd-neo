@@ -115,7 +115,8 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * Opening a part never blocks the machine's thread: the player is made there, then handed to the setup thread
  * ([Opener.setup]), which opens the file, gives it to the player and starts its prepare. The machine does not touch
  * that player until the setup's result comes back with the part's token, and releases it then if the part is no longer
- * current (it timed out, was moved off, stopped or ended). A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
+ * current (it timed out, was moved off, stopped or ended); a setup that found its file gone or changed puts it on the
+ * recheck list whether or not its part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
  * setup included, fails as a player error on it would (a stalled read or a MediaPlayer that never answers would leave
  * the play opening for good). While [AbandonedSetups.LIMIT] setups given up are still out, an open fails at once, as a
  * recording that couldn't be played, with no player made.
@@ -197,8 +198,11 @@ class RecordingPlayer(
         class Refused(val reason: String) : OpenResult()
     }
 
-    /** What a part's setup came to: [failure] is empty when the player took the file and prepares, else REASON_*. */
-    class SetupResult(val failure: String = "")
+    /**
+     * What a part's setup came to: [failure] is empty when the player took the file and prepares, else REASON_*.
+     * [path] is the recording it tried, for the recheck list.
+     */
+    class SetupResult(val failure: String = "", val path: String = "")
 
     /**
      * Opens an item's file and, for an item with a size (not SINGLE's -1), checks it is the regular file the store
@@ -463,14 +467,14 @@ class RecordingPlayer(
             }
             val source = when (opened) {
                 is OpenResult.Refused ->
-                    return SetupResult(if (opened.reason == REASON_GONE) REASON_GONE else REASON_CHANGED)
+                    return SetupResult(if (opened.reason == REASON_GONE) REASON_GONE else REASON_CHANGED, item.path)
                 is OpenResult.Opened -> opened.source
             }
             return try {
                 player.prepare(source)
-                SetupResult()
+                SetupResult(path = item.path)
             } catch (_: Exception) {
-                SetupResult(REASON_DAMAGED)
+                SetupResult(REASON_DAMAGED, item.path)
             } finally {
                 try {
                     source.close()
@@ -507,8 +511,11 @@ class RecordingPlayer(
 
     private class Ended(val state: Int, val error: String, val reason: String)
 
-    /** A part's player while its setup runs on the setup thread: not touched here until the setup's result is back. */
-    private class Opening(val token: Long, val player: Player) {
+    /**
+     * A part's player while its setup runs on the setup thread: not touched here until the setup's result is back.
+     * [checked]: its play checks identities (not SINGLE), so a file found gone or changed is rechecked.
+     */
+    private class Opening(val token: Long, val player: Player, val checked: Boolean) {
         /** Its prepare answered before the setup's result came back: it is prepared as soon as it is adopted. */
         var prepared = false
 
@@ -964,7 +971,7 @@ class RecordingPlayer(
             failItem(REASON_PLAYER)
             return
         }
-        val setup = Opening(token, made)
+        val setup = Opening(token, made, mode != MODE_SINGLE)
         opening = setup
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it.
@@ -980,15 +987,23 @@ class RecordingPlayer(
     }
 
     /**
-     * A setup's result, on this thread. A part no longer current (timed out, moved off, stopped, ended, replaced)
-     * only releases its player, and a setup given up leaves the count; a current one adopts it, prepared already if its
+     * A setup's result, on this thread. A file it found gone or changed goes on the recheck list first, whether or not
+     * its part is still current. A part no longer current (timed out, moved off, stopped, ended, replaced) only
+     * releases its player, and a setup given up leaves the count; a current one adopts it, prepared already if its
      * prepare answered first, or fails.
      */
     private fun onSetUp(setup: Opening, result: SetupResult) {
+        val serial = recheck.serial
+        if (setup.checked && (result.failure == REASON_GONE || result.failure == REASON_CHANGED)) {
+            recheck.add(result.path)
+        }
         if (opening !== setup) {
             setup.player.release()
             if (setup.abandoned) {
                 abandoned.delivered()
+            }
+            if (recheck.serial != serial) {
+                publish() // The host reads the recheck serial from the status.
             }
             return
         }
@@ -1028,10 +1043,6 @@ class RecordingPlayer(
         if (reason == REASON_PLAYER) {
             end(FAILED, ERROR_FAILED, ENDED_FAILED)
             return
-        }
-        val item = items[index]
-        if (mode != MODE_SINGLE && (reason == REASON_GONE || reason == REASON_CHANGED)) {
-            recheck.add(item.path)
         }
         if (mode != MODE_PLAYLIST) {
             end(FAILED, if (reason == REASON_GONE) ERROR_MISSING else ERROR_FAILED, ENDED_FAILED)

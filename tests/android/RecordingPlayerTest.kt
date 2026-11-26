@@ -2285,6 +2285,40 @@ private fun stuckSetupsAreBounded() {
     check(rig.state == PLAYING) { "and plays" }
 }
 
+/**
+ * A setup that found its file gone, its result delivered after Stop or Next: the file still goes on the recheck list,
+ * and the replacement's audio and skip count are untouched. A single play's file is never rechecked.
+ */
+private fun aSupersededSetupStillRechecksItsFile() {
+    for (leave in listOf("stop", "next")) {
+        val rig = Rig()
+        rig.opener.holding = true
+        rig.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+        val g = rig.queue(1, 1)
+        rig.opener.setups[0].run()
+        if (leave == "stop") rig.machine.stop(g) else rig.machine.next()
+        val serial = rig.status.recheckSerial
+        rig.opener.setups[0].land()
+        check(rig.recheck.take().toList() == listOf(path(0, 1))) { "$leave: the gone file is rechecked" }
+        check(rig.status.recheckSerial == serial + 1) { "$leave: the status names the new serial" }
+        check(rig.status.skipped == 0) { "$leave: nothing counted skipped" }
+        if (leave == "next") {
+            rig.prepared()
+            check(rig.state == PLAYING && rig.status.call == 1 && rig.last.started) { "next: the next call plays" }
+        } else {
+            check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_STOPPED) { "stop: stopped" }
+        }
+    }
+    val single = Rig()
+    single.opener.holding = true
+    single.fail("/r/Explore/a.wav", RecordingPlayer.REASON_GONE)
+    single.play()
+    single.opener.setups[0].run()
+    single.machine.stop()
+    single.opener.setups[0].land()
+    check(single.recheck.take().isEmpty()) { "a single play's file is not the store's to recheck" }
+}
+
 /** A part that completes hands off the next part first, and is released after: its release is not in the joint. */
 private fun theNextPartIsHandedOffBeforeTheCompletedOneIsReleased() {
     val rig = Rig()
@@ -2473,5 +2507,6 @@ fun main() {
     theNextPartIsHandedOffBeforeTheCompletedOneIsReleased()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     stuckSetupsAreBounded()
+    aSupersededSetupStillRechecksItsFile()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

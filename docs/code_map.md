@@ -19923,11 +19923,12 @@ Qt Quick frontend (`src/ui/qt`):
       closes what it opened and posts its result (done, or failed with the reason) with the part's token. Until then
       the looper never touches that player (a prepare answering first is noted and applied at adoption; an error
       drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement)
-      only releases its player. A setup dropped with its result still out (its prepare timeout, a move, Stop, the end,
-      a replacement, an error while it runs) gives its thread up at once (`Opener.abandonSetup()`: that executor is
-      shut down, so it takes no new work, and finishes on its own, its late result released as any), and the next
-      setup starts a fresh thread, so nothing ever queues behind a read that does not return; healthy setups finish in
-      milliseconds, so the cost is at most a short-lived thread per quick move.
+      only releases its player; one that found its file gone or changed still puts the path it tried (carried in the
+      result) on the recheck list, leaving the play now open alone. A setup dropped with its result still out (its
+      prepare timeout, a move, Stop, the end, a replacement, an error while it runs) gives its thread up at once
+      (`Opener.abandonSetup()`: that executor is shut down, so it takes no new work, and finishes on its own, its late
+      result released as any), and the next setup starts a fresh thread, so nothing ever queues behind a read that does
+      not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
       Setups given up are counted for the process (`AbandonedSetups`, a limit of 2, `LIMIT`): while two are out, each
       holding a thread and a `MediaPlayer` in a read that may never return, an open makes no player and starts no
       setup and fails at once as a recording that couldn't be played (a playlist moves on; SINGLE and PARTS end with
