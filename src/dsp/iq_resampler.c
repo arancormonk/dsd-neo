@@ -357,12 +357,13 @@ dsd_iq_reader_plan_for(dsd_iq_reader_plan* out, uint32_t source_hz, uint32_t dsp
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
-    if (source_hz == dsp_in_hz) {
-        return 0;
-    }
+    /* The rates first: equal rates no reader could take are refused too, not passed through. */
     if (source_hz == 0U || dsp_in_hz == 0U || source_hz > (uint32_t)INT_MAX || dsp_in_hz > (uint32_t)INT_MAX
         || final_dsp_hz == 0U || final_dsp_hz > (uint64_t)INT_MAX) {
         return -1;
+    }
+    if (source_hz == dsp_in_hz) {
+        return 0;
     }
     out->enabled = 1;
     out->in_hz = (int)source_hz;

@@ -198,7 +198,8 @@ typedef struct dsd_iq_reader_plan {
  * resampler protecting 0.45 of the final DSP rate.
  *
  * @return 0 (the plan in @p out, disabled at equal rates), or -1 for a NULL @p out or rates a resampler cannot take
- * (0, or past INT_MAX), with @p out zeroed.
+ * (0, or past INT_MAX, the final DSP rate's included), with @p out zeroed. The rates are checked before the equal-rate
+ * pass-through, so equal rates no reader could take are refused as well.
  */
 int dsd_iq_reader_plan_for(dsd_iq_reader_plan* out, uint32_t source_hz, uint32_t dsp_in_hz, uint64_t final_dsp_hz);
 
