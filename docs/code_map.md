@@ -19806,22 +19806,23 @@ Qt Quick frontend (`src/ui/qt`):
     positive generation equal to `playbackGeneration`, from `playRecordingOwned()` or `playRecordings()`: a sheet that
     follows a playlist item holds none, so its close never stops the playlist); a pause the host made in the
     background (D10, sheet plays only) reads as Paused. The block's notice line (`noticeLine`) sits under it, outside
-    the hidden block, so a sole recording found missing still says so (B3); a transient focus loss reads
-    `playbackInterrupted` ("Paused for another app's audio", the button Pause, B4); with no player the block says
-    "Recordings can't be played on this device." and chips only select (B6); a part played from the sheet whose file
-    is gone at the press is refused before the play is taken (`playRecordingOwned()` answers 0, what plays plays on, a
-    play of the sheet's own still the sheet's, so its close stops it, nothing is published, the store looks again; that
-    one file check is its only one, and the start after it never reaches `playRecording()`'s missing-file stop,
-    `decoder_host_test_hooks.h` taking the file between them in `UI_QT_ANDROID_HOST`) and the sheet says "This recording
-    is gone.". Item commands carry the play token captured when the gesture began (`seekPlaybackFor`,
-    `pausePlaybackFor`, `resumePlaybackFor`): the play button reads its action, the host's generation and token and
-    the part shown at the press (`PlayCircle.pressBegan`, `tapping` while a tap's `clicked()` runs) and the seek bar
-    its token (`GatedTapHandler.pressBegan`), and a tap, or a drag's start, once any of that moved does nothing (the
-    now-playing bar's Pause/Resume reads its action and playlist the same way); the seek bar reads `playbackCanSeek`. A
-    single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted. History and detections are
-    unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say the same of their count: a
-    recording may have no History row (never linked, or trimmed) and may belong to a Signal search detection, so "the
-    call stays in History" would not hold (issue #809 B3).
+    the hidden block, so a sole recording found missing still says so (B3); a refused resume is said once per refusal
+    (its playlist and `playbackRefusals`, as the bar), so a move that keeps it standing shows it without reading it
+    again; a transient focus loss reads `playbackInterrupted` ("Paused for another app's audio", the button Pause, B4);
+    with no player the block says "Recordings can't be played on this device." and chips only select (B6); a part played
+    from the sheet whose file is gone at the press is refused before the play is taken (`playRecordingOwned()` answers
+    0, what plays plays on, a play of the sheet's own still the sheet's, so its close stops it, nothing is published,
+    the store looks again; that one file check is its only one, and the start after it never reaches `playRecording()`'s
+    missing-file stop, `decoder_host_test_hooks.h` taking the file between them in `UI_QT_ANDROID_HOST`) and the sheet
+    says "This recording is gone.". Item commands carry the play token captured when the gesture began
+    (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`): the play button reads its action, the host's
+    generation and token and the part shown at the press (`PlayCircle.pressBegan`, `tapping` while a tap's `clicked()`
+    runs) and the seek bar its token (`GatedTapHandler.pressBegan`), and a tap, or a drag's start, once any of that
+    moved does nothing (the now-playing bar's Pause/Resume reads its action and playlist the same way); the seek bar
+    reads `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted.
+    History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say
+    the same of their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal
+    search detection, so "the call stays in History" would not hold (issue #809 B3).
     `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
     editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
     with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added

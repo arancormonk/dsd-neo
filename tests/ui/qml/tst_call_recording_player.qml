@@ -1250,7 +1250,7 @@ Item {
             compare(lastHostCall().name, "resumePlaybackFor");
             compare(decoderHost.playbackState, 2, "the platform took it this time");
             verify(!item("recordingNotice").visible, "playing, it goes");
-            testContext.publishPlaybackReading({playbackState: 3, playbackPausedReason: "unavailable"});
+            testContext.publishPlaybackReading({playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 2});
             compare(item("recordingNotice").text, text);
             compare(player.announcements, said + 2, "a later refusal is said again");
         }
@@ -1672,6 +1672,29 @@ Item {
             openRow(uid);
             compare(item("recordingNotice").text, "Can't play right now. Another app has the audio, such as a phone call.");
             compare(item("historyRecording").announcements, said + 1);
+        }
+
+        // A refusal standing through a move inside the call (Previous from part 2 to part 1: opening, then prepared,
+        // still "unavailable") is shown on, and read out once, as the bar has it.
+        function test_standing_refusal_said_once_across_a_move() {
+            var a = rec("t-1", pathA, 12000);
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([a, b]);
+            playPlaylist([itemOf(a, 0, 1, 2, uid), itemOf(b, 0, 2, 2, uid)]);
+            testContext.publishPlaybackReading({item: 1, playbackState: 3, playbackToken: 4, playbackPausedReason: "unavailable", playbackRefusals: 1, playbackDurationMs: 8000});
+            var player = item("historyRecording");
+            var said = player.announcements;
+            openRow(uid);
+            var text = "Can't play right now. Another app has the audio, such as a phone call.";
+            compare(item("recordingNotice").text, text);
+            compare(player.announcements, said + 1, "said as it opens");
+            testContext.publishPlaybackReading({item: 0, playbackState: 1, playbackToken: 5});
+            compare(checkedParts(2), [0], "on to part 1");
+            testContext.publishPlaybackReading({playbackState: 3});
+            compare(item("recordingNotice").text, text, "still shown");
+            compare(player.announcements, said + 1, "not read again");
+            testContext.publishPlaybackReading({playbackRefusals: 2});
+            compare(player.announcements, said + 2, "a new refusal is");
         }
 
         // Asked again and refused again with the same reading, the refusal is said again.

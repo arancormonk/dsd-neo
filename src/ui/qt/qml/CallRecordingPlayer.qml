@@ -73,6 +73,8 @@ Column {
     // The failure last said ("" while none stands), so each is said once.
     property string failureKey: ""
     property string failureNotice: ""
+    // The refused resume read out last (its playlist and refusal count).
+    property string refusalSaid: ""
     // What the last share, save, delete or play came to; empty when there is nothing to say.
     property string notice: ""
     property bool noticeProblem: false
@@ -228,11 +230,14 @@ Column {
     }
     // Each failure is said once, and read out; the line clears once the reading
     // that said it has moved on (a resume the platform took after all). A
-    // resume refused again reads the same but for the host's refusal count,
-    // which makes it a failure of its own, said again.
+    // refused resume is one failure per refusal, as the bar has it: its
+    // playlist and the host's refusal count, so a move that keeps it standing
+    // (Previous to another part, opening then prepared) shows it without
+    // reading it again, and a resume refused again (the count moved) is said.
     function noteFailure() {
         var text = failureText();
-        var key = text.length === 0 ? "" : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath, decoderHost.playbackRefusals].join("|");
+        var refusal = text.length > 0 && decoderHost.playbackState !== 4;
+        var key = text.length === 0 ? "" : refusal ? ["refused", decoderHost.playbackGeneration, decoderHost.playbackRefusals].join("|") : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath].join("|");
         // The same failure again is news only after a press asked once more
         // (failureKey cleared, its sentence still up).
         if (key === failureKey && (key.length > 0 || failureNotice.length === 0))
@@ -243,10 +248,17 @@ Column {
         failureNotice = sheetShown ? text : "";
         if (!sheetShown)
             return;
-        if (text.length > 0)
+        if (text.length > 0 && refusal && key === refusalSaid) {
+            // The refusal read out already: shown again, not read again.
+            notice = text;
+            noticeProblem = true;
+        } else if (text.length > 0) {
+            if (refusal)
+                refusalSaid = key;
             say(text, true);
-        else if (said.length > 0 && notice === said && noticeProblem)
+        } else if (said.length > 0 && notice === said && noticeProblem) {
             say("", false);
+        }
     }
 
     // Issue #909: what the play button would do now and what it would do it
@@ -409,6 +421,7 @@ Column {
         refusedPath = "";
         failureKey = "";
         failureNotice = "";
+        refusalSaid = "";
         missingAway = "";
         notice = "";
         noticeProblem = false;
