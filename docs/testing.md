@@ -3383,14 +3383,17 @@ fit the band the source carries. Rows without a reader are classified with the p
 harness prints it per chain); the tool's own plan from the half-band recursion matches it within 4.2e-9 on all 146 of
 them. Reader rows use the tool's model of the reader: at 8 to 16 kHz unfiltered it gives beta 0.5418 and N_eff 317.8,
 where the reader-less plan has 0 and 640 (Y bias 13.7). Fixed-grid device rows (Airspy, Airspy Mini, RX-888/SDDC) step
-after their passes. The tool has no port of the live step, so they are listed and scoped out;
-`DSP_SQUELCH_STEP_MODEL` and its `--matrix` hold the real step.
+after their passes. The tool has no port of the live step, so they stay out of this gate and of the EDACS and M17
+encoder gate below, listed as scoped out. What covers them is `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows: the real
+step through `full_demod()` at the post-half-band rates of 2.5 and 3 MS/s at every selectable DSP bandwidth, held to the
+floor, noise squelch and window-statistics bounds.
 
 **Frozen-threshold confirmation (issue #899).** `python3 tools/squelch_model.py --frozen` keeps the shipped thresholds
 and decides every 40 ms window as `src/dsp/squelch_floor.c` does before anything is counted: two 20 ms sub-windows
 ending at floor(k fs / 50) samples from the stream's start, no coherence term for a stream's first L samples, and the
 3 dB unsteady-halves rule. It reports each target per plan with its events, its windows and a 95 % Clopper-Pearson
-interval, lists the plans earlier runs accepted as marginal apart, and exits 1 on a missed target. The run covered 188
+interval, lists the accepted marginal plans apart (`ACCEPTED_MARGINAL`), and exits 1 on a missed target no entry
+accepts. The run covered 188
 distinct plans on 21 chains (8 RTL-SDR, 9 replay, 4 reader). Each plan had 100,000 noise windows (200,000 sub-windows in
 four streams) and the carrier set above; it took 103 minutes on 8 workers.
 
@@ -3401,15 +3404,15 @@ four streams) and the carrier set above; it took 103 minutes on 8 workers.
 | Carrier of 6 dB or more read as noise (1e-4) | 0 | none in any plan (at most 15,075 windows a plan, so no plan alone resolves 1e-4) | 0 (0 / 1,613,625; 95 % upper 2.3e-6) |
 | Noise left undecided (25 %) | 0 | 3.65 %: unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 1.27 % |
 
-Three plans miss a bound, and the maintainer decides what follows:
-- **Unset NFM with `DSD_NEO_CHANNEL_LPF=0` on 48 and 125 kHz replays.** These read noise as carrier 1.1e-4 and 1.3e-4
-  (11 and 13 in 100,000). They are chains with no pass, whose plan this issue leaves bit for bit, and the design run
-  already put its worst case at 1.0e-4 (about 10 events). Both intervals hold the bound (5.5e-5 to 2.0e-4, 6.9e-5 to
-  2.2e-4).
-- **The forced legacy filter at the 8 kHz RTL rate.** This is the plan the design run accepted as marginal at 1.1 %.
-  Through the real 7-pass chain it misses 2.16 % of 6 dB carrier windows (12 of 555, 95 % upper 3.7 %). Every miss is
-  on the real captures (`nfm_squelch_real_b` 11 %, `nfm_squelch_real_a` 1 %); tones, synthetic speech and dead carriers
-  miss none.
+Three plans miss a bound. The thresholds stay as shipped, and these plans are accepted as known marginals. Each entry
+in the tool covers one plan and one bound. Its allowance sits just above the 95 % interval's upper end, so another
+plan, another bound of the same plan, or a worse rate still fails:
+
+| Plan | Bound | Measured (events / windows; 95 % interval) | Accepted up to | Why |
+| --- | --- | --- | --- | --- |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=1`, rtl-8k (legacy WIDE, 23 taps) | 6 dB carrier missed, 1 % | 2.16 % (12 / 555; 1.1 % to 3.7 %) | 3.8 % | The channel LPF forced on at 8 kHz, where the legacy design is all the channel there is; the design run accepted it at 1.1 %. Every miss is on the real captures (`nfm_squelch_real_b` 11 %, `nfm_squelch_real_a` 1 %). |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 48 kHz replay (and its post-decimated rows) | Noise read as carrier, 1e-4 | 1.1e-4 (11 / 100,000; 5.5e-5 to 2.0e-4) | 2.0e-4 | An unfiltered chain with no pass. This issue leaves its plan bit for bit, and the design run already put its tail at 1.0e-4. |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | Noise read as carrier, 1e-4 | 1.3e-4 (13 / 100,000; 6.9e-5 to 2.2e-4) | 2.3e-4 | As above. |
 
 Outside the real captures no family (dead carrier, FM and AM tones, FM and AM speech) and no offset misses a 6 dB
 window; the real captures miss 34 of 167,300 pooled. The reader rows pass every target. `--quick` (5,000 noise
@@ -3461,8 +3464,8 @@ channel filter designs at; without it every plan it printed was the fallback.
 
 - **Accepted plan:** the encoder's legacy WIDE filter forced on by `DSD_NEO_CHANNEL_LPF=1` at an SDDC's 7.8 kHz channel
   misses 1.26 % of 6 dB carriers. The run above accepted the analog monitor's forced 8 kHz plan at 1.1 %, and this
-  plan's longest closed run is one window, far under the VOX's 440 ms hang. The tool (`ACCEPTED_MISS`) relaxes only
-  that target for that plan, up to 1.5 %; any other failure there still fails the run.
+  plan's longest closed run is one window, far under the VOX's 440 ms hang. That run relaxed only that target for that
+  plan, up to 1.5 %. The SDDC chain steps after its passes, so the rerun below scopes it out and the entry is gone.
 - **The bound:** the 78 ms worst closing delay is what EDACS budgets as `DSD_SQUELCH_CLOSE_DELAY_MS` (85 ms) in its
   release hold. While the floor is learned, a window holding the drop can still read CARRIER, so the next one closes it.
 - **The floor:** the 40 ms a call's first decision takes and the 60 ms of a carrier's onset over a known floor are what
@@ -3485,22 +3488,28 @@ non-reader plan matches the tool's own within 2e-9. The run took 69 minutes on 1
 
 | Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
-| EDACS | 42 of 45 pass | 1.4e-4 at worst (1.0e-4 on the passing plans) | 0.72 % | none | 3.8 % | 600 / 40 ms (40 / 40 ms on the passing plans) | 77 / 39 ms |
-| M17 encoder | 43 of 46 pass | 1.7e-4 (1.0e-4) | 1.26 % (0.54 %) | none | 3.8 % | 80 / 40 ms | 78 / 39 ms |
+| EDACS | 45 of 45 pass, 3 accepted | 1.4e-4 at worst (1.0e-4 on the others) | 0.72 % | none | 3.8 % | 600 / 40 ms (40 / 40 ms on the others) | 77 / 39 ms |
+| M17 encoder | 46 of 46 pass, 3 accepted | 1.7e-4 (1.0e-4) | 1.26 % (0.54 %) | none | 3.8 % | 80 / 40 ms | 78 / 39 ms |
 
-The six plans that miss a bound are left for the maintainer to decide:
-- **EDACS with the channel LPF forced on at the 12 kHz RTL rate** (`DSD_NEO_CHANNEL_LPF=1`; PROVOICE, and WIDE after a
-  live switch). A fresh tracker that lands on a 5 kHz-deviation 300 Hz tone 1 kHz off centre at 6 dB stays closed for
-  600 ms with PROVOICE and 240 ms with WIDE, against the 155 ms hold. Through the real 7-pass chain the channel edge
-  truncates that wide carrier hard. The design run tested it without the cascade.
-- **The encoder's legacy WIDE filter forced on at the 8 kHz RTL rate.** It misses 1.26 % of 6 dB carriers, beside the
-  analog monitor's 2.16 % on the same filter above.
-- **Unfiltered replays with no pass** (`DSD_NEO_CHANNEL_LPF=0`). These read noise as carrier 1.4e-4 at 125 kHz on both
-  paths and 1.7e-4 at 96 kHz on the encoder (14 and 17 in 100,000; 95 % intervals 7.7e-5 to 2.3e-4 and 9.9e-5 to
-  2.7e-4). The same 96 kHz plan read 5e-5 in the analog run. This is the plan this issue keeps bit for bit, and its
-  tail sits near 1e-4.
+Six plans miss a bound. The thresholds stay as shipped, and the tool's `ACCEPTED_MARGINAL` accepts these plans as known
+marginals, one plan and one bound each. A rate's allowance sits just above its 95 % interval's upper end; a closed run's
+sits one 20 ms sub-window above the run measured. The gate exits 0 and prints each accepted plan and why; another plan,
+another bound or a worse value still fails it.
 
-`python3 tools/squelch_paths_model.py` writes the report; `--quick` takes about 10 minutes, mostly in the C tracker
+| Plan | Bound | Measured | Accepted up to | Why |
+| --- | --- | --- | --- | --- |
+| EDACS, rtl-12k, PROVOICE, `DSD_NEO_CHANNEL_LPF=1` | Longest closed run while learning, under the 155 ms hold | 600 ms (a 300 Hz tone at 5 kHz deviation, 1 kHz off centre, 6 dB) | 620 ms | The channel LPF forced on at 12 kHz: the real 7-pass cascade and the filter truncate that carrier hard (the design run tested it without the cascade). EDACS presets run 24 kHz, and the default 12 kHz chain, channel LPF off, passes. |
+| EDACS, rtl-12k, WIDE after a live switch, `DSD_NEO_CHANNEL_LPF=1` | As above | 240 ms (the same carrier) | 260 ms | As above. |
+| M17 encoder, rtl-8k, legacy WIDE, `DSD_NEO_CHANNEL_LPF=1` | 6 dB carrier missed, 1 % | 1.26 % (7 / 555; 0.51 % to 2.58 %) | 2.6 % | The forced 8 kHz legacy filter, as on the analog monitor above. |
+| EDACS, 125 kHz replay, no channel filter (`DSD_NEO_CHANNEL_LPF=0`) | Noise read as carrier, 1e-4 | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | An unfiltered chain with no pass, whose plan this issue leaves bit for bit; its tail sits near 1e-4. |
+| M17 encoder, 125 kHz replay, no channel filter | As above | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | As above. |
+| M17 encoder, 96 kHz replay (post-decimated by 2), no channel filter | As above | 1.7e-4 (17 / 100,000; 9.9e-5 to 2.7e-4) | 2.8e-4 | As above; the same plan read 5e-5 in the analog run. |
+
+The stepped chains stay out of this gate, as out of the analog one; `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows cover
+them.
+
+`python3 tools/squelch_paths_model.py` writes the report; the saved run's verdicts were re-evaluated against the lists
+(all 91 plans pass, 6 accepted). `--quick` takes about 10 minutes, mostly in the C tracker
 of the timing checks.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (regression cases)

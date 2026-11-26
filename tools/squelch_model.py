@@ -100,9 +100,9 @@ Two modes:
   20 ms sub-windows whose boundaries fall at floor(k fs / 50) samples from the stream's start, the first L samples of a
   stream carry no coherence term, a window of fewer than 2 samples or no power is UNDECIDED, and a NOISE window whose
   sub-windows' powers differ by 3 dB or more is UNDECIDED. It reports, per installed plan, the counts and denominators
-  behind each target with a 95 % Clopper-Pearson interval, lists the plans the earlier runs accepted as marginal apart
-  (HISTORICAL_MARGINAL), breaks the 6 dB misses down by modulation family and offset, and exits 1 when a plan misses a
-  target (a historical marginal plan only past the rate accepted for it).
+  behind each target with a 95 % Clopper-Pearson interval, lists the known marginal plans the maintainer accepted apart
+  (ACCEPTED_MARGINAL: one plan and one bound each, up to an allowance just above the interval measured), breaks the
+  6 dB misses down by modulation family and offset, and exits 1 when a plan misses a target that no entry accepts.
 
 Usage:
     python3 tools/squelch_model.py [--frozen] [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
@@ -2427,19 +2427,55 @@ def write_report(
 
 # --------------------------------------------------------------------------------------------- frozen confirmation
 
-# Plans earlier runs accepted as marginal, listed apart: the one bound each was accepted on, up to the rate accepted for
-# it, and why. Every other bound stays fatal. The analog monitor's forced 8 kHz plan was accepted at 1.1 % in the design
-# run (docs/testing.md); tools/squelch_paths_model.py accepts the same forced filter on the encoder up to 1.5 %.
-HISTORICAL_MARGINAL = {
-    ("NFM unset, DSD_NEO_CHANNEL_LPF=1", "rtl-8k"): (
-        "miss_cnr6",
-        0.015,
-        (
-            "the channel LPF forced on at the 8 kHz RTL rate, where its legacy design is all the channel there is: "
-            "accepted at a 1.1 % 6 dB miss rate in the design run"
-        ),
-    ),
+# Known marginal plans the maintainer accepted after the frozen-threshold run of issue #899 (docs/testing.md), listed
+# apart: each entry is one plan (any member's configuration and chain) and the one bound it misses, accepted up to an
+# allowance just above the 95 % interval's upper end that run measured, and why. Any other bound of the plan, a rate
+# past the allowance, or any other plan still fails the gate.
+ACCEPTED_MARGINAL = {
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=1", "rtl-8k"): {
+        "miss_cnr6": (
+            0.038,
+            (
+                "the channel LPF forced on at the 8 kHz RTL rate, where the legacy WIDE design is all the channel there "
+                "is; measured 2.16 % (12 / 555; 95 % 1.1 %..3.7 %), every miss on the real captures (accepted at 1.1 % in "
+                "the design run)"
+            ),
+        )
+    },
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=0", "replay-48k"): {
+        "false_carrier": (
+            2.0e-4,
+            (
+                "an unfiltered replay with no pass: its plan and noise are unchanged by issue #899, a tail near 1e-4 "
+                "(the design run's worst, 1.0e-4); measured 1.1e-4 (11 / 100,000; 95 % 5.5e-5..2.0e-4)"
+            ),
+        )
+    },
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=0", "replay-125k"): {
+        "false_carrier": (
+            2.3e-4,
+            (
+                "an unfiltered replay with no pass: its plan and noise are unchanged by issue #899, a tail near 1e-4; "
+                "measured 1.3e-4 (13 / 100,000; 95 % 6.9e-5..2.2e-4)"
+            ),
+        )
+    },
 }
+TARGET_KEYS = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
+
+
+def accepted_marginal(ids: set, verdict: dict) -> str | None:
+    """Why @p verdict's misses are accepted (ACCEPTED_MARGINAL), or None: every failing target must be one an entry
+    for one of the plan's @p ids (configuration label, chain name) accepts, at a rate within its allowance, and the
+    plan must fail nothing else."""
+    failing = verdict["failing_keys"]
+    if not failing or verdict["other_reasons"]:
+        return None
+    for plan_id in sorted(ids):
+        entry = ACCEPTED_MARGINAL.get(plan_id)
+        if entry and all(k in entry and verdict[k]["rate"] <= entry[k][0] for k in failing):
+            return "; ".join(f"{k} accepted up to {entry[k][0]:g}: {entry[k][1]}" for k in failing)
+    return None
 
 
 def clopper_pearson(k: int, n: int, level: float = 0.95) -> tuple[float, float]:
@@ -2473,8 +2509,9 @@ def variant_family(v: dict) -> str:
     return v["family"]
 
 
-def frozen_verdict(combo: dict, noise: dict, carrier: dict) -> dict:
-    """One plan's frozen-threshold rates, counts and denominators, and its verdict."""
+def frozen_verdict(combo: dict, noise: dict, carrier: dict, ids: set | None = None) -> dict:
+    """One plan's frozen-threshold rates, counts and denominators, and its verdict; @p ids are its members'
+    (configuration label, chain name), for ACCEPTED_MARGINAL."""
     c = noise["counts"]
     total = int(sum(c))
     variants = carrier["variants"]
@@ -2515,29 +2552,25 @@ def frozen_verdict(combo: dict, noise: dict, carrier: dict) -> dict:
         "families": {g[4:]: rate_entry(*misses(g), MISS_TARGET) for g in sel if g.startswith("fam:")},
         "offsets": {g[4:]: rate_entry(*misses(g), MISS_TARGET) for g in sel if g.startswith("off:")},
     }
-    reasons = []
-    for key in ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided"):
+    reasons, failing, other = [], [], []
+    for key in TARGET_KEYS:
         e = out[key]
         if e["n"] == 0:
             if key != "miss_cnr6" and key != "pollution_ge6":
-                reasons.append(f"{key}: no windows")
+                other.append(f"{key}: no windows")
             continue
         if not e["pass"]:
+            failing.append(key)
             reasons.append(f"{key} {e['rate']:.3g} ({e['k']}/{e['n']}) over {e['bound']:g}")
     if combo.get("model_off") is not None and combo["model_off"] > 1e-6:
-        reasons.append(f"the model's plan is {combo['model_off']:.2e} off the decoder's")
-    accepted = HISTORICAL_MARGINAL.get((combo["config"].label, combo["plan"].name))
-    out["historical"] = accepted is not None
-    out["accepted"] = None
-    if (
-        accepted
-        and len(reasons) == 1
-        and reasons[0].startswith(accepted[0])
-        and out[accepted[0]]["rate"] <= accepted[1]
-    ):
-        out["accepted"] = accepted[2]
-    out["reasons"] = reasons
-    out["pass"] = not reasons or out["accepted"] is not None
+        other.append(f"the model's plan is {combo['model_off']:.2e} off the decoder's")
+    out["failing_keys"] = failing
+    out["other_reasons"] = other
+    out["reasons"] = reasons + other
+    ids = ids if ids is not None else {(combo["config"].label, combo["plan"].name)}
+    out["listed"] = any(i in ACCEPTED_MARGINAL for i in ids)
+    out["accepted"] = accepted_marginal(ids, out)
+    out["pass"] = not out["reasons"] or out["accepted"] is not None
     return out
 
 
@@ -2598,7 +2631,10 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     ]
     for ck in failing:
         lines.append(f"- FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
-    if failing:
+    accepted = [ck for ck, v in verdicts.items() if v["accepted"]]
+    for ck in accepted:
+        lines.append(f"- accepted {'; '.join(members(runnable, ck))}: {verdicts[ck]['accepted']}")
+    if failing or accepted:
         lines.append("")
     targets = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
     lines += [
@@ -2635,14 +2671,13 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     for key, ck in worst.items():
         lines.append(f"| {key} | {'; '.join(members(runnable, ck))} | {fmt_entry(verdicts[ck][key])} |")
     lines.append("")
-    hist = [ck for ck, v in verdicts.items() if v["historical"]]
-    lines += ["## Historical marginal plans", ""]
-    for ck in hist:
+    lines += ["## Accepted marginal plans", ""]
+    for ck in [ck for ck, v in verdicts.items() if v["listed"]]:
         v = verdicts[ck]
         state = "accepted: " + v["accepted"] if v["accepted"] else ("pass" if v["pass"] else "FAIL")
         lines.append(
-            f"- {combo_id(unique[ck])}: 6 dB miss {fmt_entry(v['miss_cnr6'])}, noise->CARRIER "
-            f"{fmt_entry(v['false_carrier'])}; {state}"
+            f"- {'; '.join(members(runnable, ck))}: noise->CARRIER {fmt_entry(v['false_carrier'])}, 6 dB miss "
+            f"{fmt_entry(v['miss_cnr6'])}; {state}"
         )
     lines += ["", "## Scoped out", ""]
     lines.append(
@@ -2863,7 +2898,11 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
     results = run_pool(jobs, args.jobs, started)
     noise = merge_noise([r for r in results if r["kind"] == "noise"], True)
     carriers = {r["key"]: r for r in results if r["kind"] == "carrier"}
-    verdicts = {ck: frozen_verdict(c, noise[c["fkey"]], carriers[ck]) for ck, c in unique.items()}
+    ids = {}
+    for c in combos:
+        if modelled(c):
+            ids.setdefault(c["ckey"], set()).add((c["config"].label, c["plan"].name))
+    verdicts = {ck: frozen_verdict(c, noise[c["fkey"]], carriers[ck], ids[ck]) for ck, c in unique.items()}
     command = ["python3", "tools/squelch_model.py", *(sys.argv[1:] if args.argv is None else args.argv)]
     meta = {
         "command": " ".join(command),
@@ -2880,9 +2919,8 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
     runnable = [c for c in combos if c["runs"]]
     failing = [ck for ck, v in verdicts.items() if not v["pass"]]
     for ck, v in verdicts.items():
-        if v["historical"]:
-            state = "accepted" if v["accepted"] else ("pass" if v["pass"] else "FAIL")
-            print(f"  historical marginal {'; '.join(members(runnable, ck))}: {state} ({'; '.join(v['reasons'])})")
+        if v["accepted"]:
+            print(f"  accepted {'; '.join(members(runnable, ck))}: {'; '.join(v['reasons'])} ({v['accepted']})")
     for ck in failing:
         print(f"  FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
     print(

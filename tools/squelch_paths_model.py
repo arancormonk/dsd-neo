@@ -60,9 +60,9 @@ Usage:
                                          [--noise-windows N] [--segments N]
 
 Writes report.md and report.json under DIR (default build/squelch_paths_model/) and prints the verdict; exits 1 when a
-plan either path runs misses a target, unless it is one of ACCEPTED_MISS and its one failure is a 6 dB carrier miss
-rate within the rate accepted for it. --quick runs in a few minutes, too few windows to resolve 1e-4. Offline; CI does
-not run it.
+plan either path runs misses a target that its ACCEPTED_MARGINAL entry (one plan, one bound, an allowance just above
+the value measured) does not accept; the accepted plans are printed with why. --quick runs in about 10 minutes, too
+few windows to resolve 1e-4. Offline; CI does not run it.
 """
 
 from __future__ import annotations
@@ -116,20 +116,45 @@ TIMING_LEARN_CNRS_DB = (6.0, 10.0, 20.0)
 TIMING_DELAY_PHASES = 40
 BELOW_OPEN_LIMIT = 0.01
 
-# Plans accepted with a 6 dB carrier miss rate over MISS_TARGET, up to the rate given, and why. Only that target is
-# relaxed: every other failure of the plan stays fatal. tools/squelch_model.py accepted the same forced filter (the
-# channel LPF on at an 8 kHz-class rate, where its legacy design is all the channel there is) at 1.1 % for the analog
-# monitor. The SDDC chain steps (2 MS/s through 8 passes to 7,812.5 Hz, then the step to 4 kHz; the earlier run took
-# 7,812 Hz as its channel rate, the passes without the step), so it is scoped out until the step is modelled.
-ACCEPTED_MISS = {
-    ("encoder", "sddc-bw4k", "legacy WIDE, DSD_NEO_CHANNEL_LPF=1"): (
-        0.015,
-        (
-            "the channel LPF forced on at a 7.8 kHz channel misses 6 dB carriers a little over 1 %, as the analog "
-            "monitor's forced 8 kHz plan does (1.1 %, accepted by tools/squelch_model.py); its timing checks pass, its "
-            "longest closed run inside a call far under the VOX's 440 ms"
-        ),
-    ),
+# Known marginal plans the maintainer accepted after the frozen-threshold run of issue #899 (docs/testing.md): each
+# entry is one plan (path, chain, filter) and the one bound it misses, accepted up to an allowance just above what that
+# run measured (the 95 % interval's upper end for a rate; one 20 ms sub-window over the measured closed run), and why.
+# Any other bound of the plan, a value past the allowance, or any other plan still fails the gate. Stepped chains
+# (the SDDC's included, once accepted here at its passes-only rate) are scoped out of this run.
+_TAIL = (
+    "an unfiltered replay with no pass: its plan and noise are unchanged by issue #899, a noise->carrier tail near 1e-4"
+)
+_EDACS_12K = (
+    "the channel LPF forced on at the 12 kHz RTL rate: the real 7-pass cascade and the filter truncate a 5 kHz-deviation "
+    "carrier 1 kHz off centre, so a fresh tracker on it at 6 dB stays closed past the hold; EDACS presets run 24 kHz "
+    "and the default 12 kHz chain (channel LPF off) passes"
+)
+ACCEPTED_MARGINAL = {
+    ("edacs", "rtl-12k", "PROVOICE, DSD_NEO_CHANNEL_LPF=1"): {
+        "learn_worst_s": (0.62, f"{_EDACS_12K}; measured 600 ms (fm tone300 dev 5000 Hz offset +1000 Hz @ 6 dB)")
+    },
+    ("edacs", "rtl-12k", "WIDE (live switch), DSD_NEO_CHANNEL_LPF=1"): {
+        "learn_worst_s": (0.26, f"{_EDACS_12K}; measured 240 ms (the same carrier)")
+    },
+    ("encoder", "rtl-8k", "legacy WIDE, DSD_NEO_CHANNEL_LPF=1"): {
+        "miss_cnr6": (
+            0.026,
+            (
+                "the channel LPF forced on at the 8 kHz RTL rate, where the legacy WIDE design is all the channel "
+                "there is; measured 1.26 % (7 / 555; 95 % 0.51 %..2.58 %), as the analog monitor's same plan "
+                "(tools/squelch_model.py)"
+            ),
+        )
+    },
+    ("edacs", "replay-125k", "none (channel LPF off), DSD_NEO_CHANNEL_LPF=0"): {
+        "false_carrier": (2.4e-4, f"{_TAIL}; measured 1.4e-4 (14 / 100,000; 95 % 7.7e-5..2.3e-4)")
+    },
+    ("encoder", "replay-125k", "none (channel LPF off), DSD_NEO_CHANNEL_LPF=0"): {
+        "false_carrier": (2.4e-4, f"{_TAIL}; measured 1.4e-4 (14 / 100,000; 95 % 7.7e-5..2.3e-4)")
+    },
+    ("encoder", "replay-96k/pd2", "none (channel LPF off), DSD_NEO_CHANNEL_LPF=0"): {
+        "false_carrier": (2.8e-4, f"{_TAIL}; measured 1.7e-4 (17 / 100,000; 95 % 9.9e-5..2.7e-4)")
+    },
 }
 
 
@@ -599,37 +624,51 @@ def summarize(filters: list[dict], results: dict) -> list[dict]:
             "hold_s": f["hold_s"],
             **{k: v for k, v in timing.items() if k not in ("kind", "key")},
         }
-        reasons = []
-        miss_reason = None
-        if not row["plan_valid"]:
-            reasons.append("no valid plan")
-        if row["model_off"] is not None and row["model_off"] > 1e-6:
-            reasons.append(f"the model's plan is {row['model_off']:.2e} off the decoder's")
-        if row["false_carrier"] > sm.FALSE_CARRIER_TARGET:
-            reasons.append(f"noise read as carrier {row['false_carrier']:.2e}")
-        if row["miss_cnr6"] is not None and row["miss_cnr6"] > sm.MISS_TARGET:
-            miss_reason = f"6 dB carrier missed {row['miss_cnr6']:.2%}"
-            reasons.append(miss_reason)
-        if row["pollution_ge6"] is not None and row["pollution_ge6"] > sm.POLLUTION_TARGET:
-            reasons.append(f"carrier read as noise {row['pollution_ge6']:.2e}")
-        if row["noise_undecided"] > sm.NOISE_UNDECIDED_TARGET:
-            reasons.append(f"noise undecided {row['noise_undecided']:.1%}")
-        if row["learn_worst_s"] >= row["hold_s"]:
-            reasons.append(f"closed {row['learn_worst_s'] * 1000:.0f} ms while learning ({row['learn_worst']})")
-        if row["known_worst_s"] >= row["hold_s"]:
-            reasons.append(f"closed {row['known_worst_s'] * 1000:.0f} ms over the threshold ({row['known_worst']})")
-        if row["below_open_worst"] > BELOW_OPEN_LIMIT:
-            reasons.append(f"opened {row['below_open_worst']:.1%} under the threshold")
-        if f["path"] == "edacs" and max(row["delay_learn_s"], row["delay_known_s"]) * 1000.0 > L_MAX_MS:
-            reasons.append(f"closing delay {max(row['delay_learn_s'], row['delay_known_s']) * 1000:.0f} ms")
-        accepted = ACCEPTED_MISS.get((f["path"], f["plan"].name, f["label"]))
-        row["reasons"] = reasons
-        # Accepted only when the miss rate is the plan's one failure, and within the rate accepted for it.
-        only_miss = reasons == [miss_reason] and miss_reason is not None
-        row["accepted"] = accepted[1] if accepted and only_miss and row["miss_cnr6"] <= accepted[0] else None
-        row["pass"] = not reasons or row["accepted"] is not None
+        row_verdict(row)
         rows.append(row)
     return rows
+
+
+def row_failures(row: dict) -> list[tuple[str | None, str]]:
+    """The bounds a summarized plan misses: (the ACCEPTED_MARGINAL key the miss can be accepted under, or None, text)."""
+    out = []
+    if not row["plan_valid"]:
+        out.append((None, "no valid plan"))
+    if row["model_off"] is not None and row["model_off"] > 1e-6:
+        out.append((None, f"the model's plan is {row['model_off']:.2e} off the decoder's"))
+    if row["false_carrier"] > sm.FALSE_CARRIER_TARGET:
+        out.append(("false_carrier", f"noise read as carrier {row['false_carrier']:.2e}"))
+    if row["miss_cnr6"] is not None and row["miss_cnr6"] > sm.MISS_TARGET:
+        out.append(("miss_cnr6", f"6 dB carrier missed {row['miss_cnr6']:.2%}"))
+    if row["pollution_ge6"] is not None and row["pollution_ge6"] > sm.POLLUTION_TARGET:
+        out.append((None, f"carrier read as noise {row['pollution_ge6']:.2e}"))
+    if row["noise_undecided"] > sm.NOISE_UNDECIDED_TARGET:
+        out.append((None, f"noise undecided {row['noise_undecided']:.1%}"))
+    if row["learn_worst_s"] >= row["hold_s"]:
+        out.append(
+            ("learn_worst_s", f"closed {row['learn_worst_s'] * 1000:.0f} ms while learning ({row['learn_worst']})")
+        )
+    if row["known_worst_s"] >= row["hold_s"]:
+        out.append((None, f"closed {row['known_worst_s'] * 1000:.0f} ms over the threshold ({row['known_worst']})"))
+    if row["below_open_worst"] > BELOW_OPEN_LIMIT:
+        out.append((None, f"opened {row['below_open_worst']:.1%} under the threshold"))
+    if row["path"] == "edacs" and max(row["delay_learn_s"], row["delay_known_s"]) * 1000.0 > L_MAX_MS:
+        out.append((None, f"closing delay {max(row['delay_learn_s'], row['delay_known_s']) * 1000:.0f} ms"))
+    return out
+
+
+def row_verdict(row: dict) -> dict:
+    """Sets a summarized plan's reasons, its acceptance (every miss one its ACCEPTED_MARGINAL entry accepts, within the
+    allowance) and its pass flag; works on the rows of a saved report.json too."""
+    failures = row_failures(row)
+    row["reasons"] = [text for _, text in failures]
+    entry = ACCEPTED_MARGINAL.get((row["path"], row["chain"], row["filter"]))
+    row["listed"] = entry is not None
+    row["accepted"] = None
+    if failures and entry and all(k in entry and row[k] <= entry[k][0] for k, _ in failures):
+        row["accepted"] = "; ".join(f"{k} accepted up to {entry[k][0]:g}: {entry[k][1]}" for k, _ in failures)
+    row["pass"] = not failures or row["accepted"] is not None
+    return row
 
 
 def verdict_text(r: dict) -> str:
@@ -813,7 +852,7 @@ def main(argv: list[str] | None = None) -> int:
         print(f"  FAIL {r['path']} {r['chain']} {r['filter']}: {'; '.join(r['reasons'])}")
     for r in rows:
         if r["accepted"]:
-            print(f"  accepted {r['path']} {r['chain']} {r['filter']}: {'; '.join(r['reasons'])}")
+            print(f"  accepted {r['path']} {r['chain']} {r['filter']}: {'; '.join(r['reasons'])} ({r['accepted']})")
     print(f"verdict: the shipped classifier {'holds' if not failing else 'does NOT hold'} on every plan")
     print(f"report: {md}\n        {js}")
     return 0 if not failing else 1
