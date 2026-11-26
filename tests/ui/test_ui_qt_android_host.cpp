@@ -2774,10 +2774,27 @@ check_recording_playback() {
           "and stops what plays first, as the base host's failures do");
 
     r.commands.clear();
-    check(host.playRecordingOwned(dir.filePath(QStringLiteral("gone.wav"))) == 0, "a missing file answers none");
+    const QString gone = dir.filePath(QStringLiteral("gone.wav"));
+    host.playRecording(gone);
     check(r.commands == QStringList({QStringLiteral("stop")}) && r.plays == 4,
-          "a missing file stops what plays and never reaches the player");
-    check(host.playbackError() == QStringLiteral("missing"), "and fails as missing, as before");
+          "a missing file played by path stops what plays and never reaches the player");
+    check(host.playbackError() == QStringLiteral("missing") && host.playbackPath() == gone,
+          "and fails as missing, as before");
+
+    /* A sheet's own play of a file that is gone is refused before it is taken: a playlist playing plays on. */
+    r.nextGeneration = 10;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 10,
+          "a playlist plays");
+    r.commands.clear();
+    seen.missing.clear();
+    const int changes = seen.changed;
+    const int plays = r.plays + r.arrayPlays;
+    check(host.playRecordingOwned(gone) == 0, "a missing file answers no generation");
+    check(r.commands.isEmpty() && r.plays + r.arrayPlays == plays, "it stops nothing and never reaches the player");
+    check(host.playbackGeneration() == 10 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackMode() == DecoderHost::PlaybackPlaylist && seen.changed == changes,
+          "the playlist plays on, and nothing is published");
+    check(seen.missing == QStringList({gone}), "the store is asked to look again");
 }
 
 /* #909: a playlist's items reach RecordingPlayback.play() as its arrays, and only a play it can take does. */

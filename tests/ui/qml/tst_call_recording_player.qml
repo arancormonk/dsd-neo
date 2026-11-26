@@ -1485,10 +1485,29 @@ Item {
             compare(lastHostCall().name, "pausePlaybackFor");
         }
 
-        // A sheet's own start the host refused with a failed reading (generation 0) is cleared at the close, so a
-        // recording found missing shows again when the sheet opens next (until the store drops it).
+        // A recording gone at the press: the host refuses the sheet's play before taking it, publishing nothing, and
+        // the sheet says the recording is gone, read out once; it has nothing of its own to stop at the close.
+        function test_gone_at_the_press() {
+            openWith([rec("t-1", pathA, 12000)]);
+            var player = item("historyRecording");
+            var said = player.announcements;
+            testContext.setPlaybackRefusal("missing");
+            tap("recordingPlayButton");
+            testContext.setPlaybackRefusal("");
+            compare(lastHostCall().name, "playRecordingOwned");
+            compare(decoderHost.playbackState, 0, "nothing published");
+            compare(item("recordingNotice").text, "This recording is gone.");
+            compare(player.announcements, said + 1, "read out");
+            compare(player.announced, "This recording is gone.");
+            var stops = stopCalls();
+            sheet().visible = false;
+            compare(stopCalls(), stops, "the close stops nothing");
+        }
+
+        // A sheet's own start the host refused with a failed reading (generation 0, the platform refused it) is
+        // cleared at the close, as no one owns it.
         function test_refused_start_cleared_at_close_data() {
-            return [{tag: "missing", error: "missing"}, {tag: "failed", error: "failed"}];
+            return [{tag: "failed", error: "failed"}];
         }
         function test_refused_start_cleared_at_close(data) {
             var uid = openWith([rec("t-1", pathA, 12000)]);

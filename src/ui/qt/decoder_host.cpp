@@ -277,6 +277,15 @@ DecoderHost::playRecording(const QString& path) {
 
 int
 DecoderHost::playRecordingOwned(const QString& path) {
+    // A file that is gone is refused before the play is taken, as a refused playlist is: what plays plays on and
+    // nothing is published; the store is asked to look again, and the sheet says the recording is gone.
+    if (path.isEmpty()) {
+        return 0;
+    }
+    if (!QFileInfo(path).isFile()) {
+        reportRecordingsMissing({path});
+        return 0;
+    }
     playRecording(path);
     // A play the platform took is published Preparing under its generation; one that failed at once is not.
     const bool taken = m_playback.state == PlaybackPreparing && m_playback.path == path && !path.isEmpty();

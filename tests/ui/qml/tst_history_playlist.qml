@@ -454,6 +454,38 @@ Item {
             compare(bar(screen).announcements, 0, "nothing read on return");
         }
 
+        // A sheet's play of a recording gone at the press is refused before it is taken: the playlist plays on, its
+        // bar stays, and the sheet says the recording is gone, read out once; closing the sheet stops nothing.
+        function test_sheet_play_of_a_gone_recording_keeps_the_playlist() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var generation = playAll(screen, calls);
+            playing({item: 0});
+            var sheet = findChild(screen, "historyDetailSheet");
+            sheet.open(callHistory.recordFor(calls[1].uid));
+            waitForRendering(sheet);
+            var player = findChild(sheet, "historyRecording");
+            var said = player.announcements;
+            testContext.setPlaybackRefusal("missing");
+            var play = findChild(sheet, "recordingPlayButton");
+            verify(play.visible && play.enabled);
+            mouseClick(play, play.width / 2, play.height / 2);
+            testContext.setPlaybackRefusal("");
+            compare(hostCallsNamed("playRecordingOwned").length, 1, "asked");
+            compare(decoderHost.playbackGeneration, generation, "the playlist plays on");
+            compare(decoderHost.playbackState, 2);
+            compare(hostCallsNamed("stopPlayback").length + hostCallsNamed("stopPlaybackGeneration").length, 0);
+            compare(findChild(sheet, "recordingNotice").text, "This recording is gone.");
+            compare(player.announcements, said + 1, "read out once");
+            compare(player.announced, "This recording is gone.");
+            verify(bar(screen).visible, "the bar still shows the playlist");
+            compare(line(screen), "Call 1 of 2 · 0:12 / 0:31");
+            sheet.visible = false;
+            compare(hostCallsNamed("stopPlayback").length + hostCallsNamed("stopPlaybackGeneration").length, 0, "the close stops nothing");
+            verify(bar(screen).visible);
+        }
+
         // Show in list: the playing call's row in view and its sheet open; a row the list does not show now says so.
         function test_show_in_list() {
             var calls = logCalls(30);

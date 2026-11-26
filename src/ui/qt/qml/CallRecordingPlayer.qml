@@ -63,7 +63,7 @@ Column {
     property string startingPath: ""
     // A play of this block the host refused at once with a failed reading of
     // its own (generation 0, on the path asked for): cleared with the sheet, as
-    // no one owns it, so a "missing" one does not hide the part next time.
+    // no one owns it.
     property string refusedPath: ""
     // The failure last said ("" while none stands), so each is said once.
     property string failureKey: ""
@@ -266,7 +266,9 @@ Column {
         }
         playShown();
     }
-    // The part shown, alone, as this block's own play.
+    // The part shown, alone, as this block's own play. The host refuses one
+    // with no reading only when its file is gone (what plays plays on, and
+    // the store looks again).
     function playShown() {
         if (!supported || !part || storageAway)
             return;
@@ -274,12 +276,12 @@ Column {
         say("", false);
         startOwned(path, function () {
             return decoderHost.playRecordingOwned(path);
-        });
+        }, qsTr("This recording is gone."));
     }
     // Ask the host for a play of this block (@p ask answers its generation),
-    // its first recording @p path: a failure published before the answer, or a
-    // refusal, is said.
-    function startOwned(path, ask) {
+    // its first recording @p path: a failure published before the answer is
+    // said, and so is a refusal with no reading, as @p refusedText when given.
+    function startOwned(path, ask, refusedText) {
         failureKey = "";
         failureNotice = "";
         startingPath = path;
@@ -288,7 +290,7 @@ Column {
         ownedGeneration = generation > 0 ? generation : 0;
         refusedPath = generation <= 0 && refusedReading(path) ? path : "";
         if (generation <= 0 && failureKey === "")
-            say(qsTr("Couldn't start playing. Try again."), true);
+            say(refusedText !== undefined ? refusedText : qsTr("Couldn't start playing. Try again."), true);
     }
     function select(index) {
         current = Math.max(0, Math.min(index, parts.length - 1));

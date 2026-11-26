@@ -577,7 +577,10 @@ class DecoderHost : public QObject {
 
     /**
      * @brief playRecording() for a sheet that owns the play it starts (issue #909): the same play, and its generation,
-     *        above 0, once the platform took it; 0 when it failed at once (gone, unsupported, refused).
+     *        above 0, once the platform took it; 0 when it failed at once (unsupported, refused).
+     *
+     * A file that is gone is refused before the play is taken: what plays plays on, nothing is published, the store is
+     * asked to look again (recordingFilesMissing()) and the answer is 0.
      */
     Q_INVOKABLE int playRecordingOwned(const QString& path);
 

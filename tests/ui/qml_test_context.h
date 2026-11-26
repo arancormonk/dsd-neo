@@ -3644,6 +3644,11 @@ class ReadingMap : public QQmlPropertyMap {
     Q_INVOKABLE int
     playRecordingOwned(const QString& path) {
         noteCall(QStringLiteral("playRecordingOwned"), {{QStringLiteral("path"), path}});
+        // A sheet's own play of a file that is gone is refused before it is taken, as the host refuses it: nothing
+        // changes and nothing is published.
+        if (refuseWith == QLatin1String("missing")) {
+            return 0;
+        }
         if (refusePlay(path) || !playAccepted || path.isEmpty()) {
             return 0;
         }
@@ -4063,7 +4068,8 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     /* A single play refused with a failed reading of its own (generation 0, @p path, refuseWith), as the base host's
-     * missing file and the Android host's refused start publish one; false while refuseWith is empty. */
+     * missing file played by path and the Android host's refused start publish one; false while refuseWith is empty.
+     * A sheet's own play of a "missing" file publishes none (playRecordingOwned()). */
     bool
     refusePlay(const QString& path) {
         if (refuseWith.isEmpty()) {
@@ -6379,7 +6385,8 @@ class Setup : public QObject {
         return m_host_readings->lastGeneration;
     }
 
-    /** @brief Issue #909: a single play refused with a failed reading of @p error under generation 0 (empty: none). */
+    /** @brief Issue #909: a single play refused with a failed reading of @p error under generation 0 (empty: none);
+     * "missing" refuses a sheet's own play (playRecordingOwned()) with no reading, what plays playing on. */
     Q_INVOKABLE void
     setPlaybackRefusal(const QString& error) {
         m_host_readings->refuseWith = error;
