@@ -1648,6 +1648,24 @@ private fun invalidItemsFailThePlay() {
     check(rig.state == FAILED && rig.status.itemIndex == -1) { "a start outside the items" }
 }
 
+// ---- the focus requests the platform holds
+
+private fun onlyAGrantedFocusRequestIsKept() {
+    val given = mutableListOf<String>()
+    val requests = FocusRequests<String> { given += it }
+    check(!requests.request("first") { false } && given == listOf("first")) { "a refused one is given back at once" }
+    check(!requests.request("second") { false } && given == listOf("first", "second")) { "each refusal, every time" }
+    requests.abandon()
+    check(given.size == 2) { "nothing refused is kept to give back later" }
+    check(requests.request("third") { true } && given.size == 2) { "a granted one is kept" }
+    requests.abandon()
+    check(given == listOf("first", "second", "third")) { "and given back once it is let go" }
+    requests.abandon()
+    check(given.size == 3) { "once" }
+    check(requests.request("fourth") { true } && requests.request("fifth") { true }) { "granted twice" }
+    check(given == listOf("first", "second", "third", "fourth")) { "a request superseded is given back" }
+}
+
 fun main() {
     aPlayStartsOncePreparedAndHoldsTheFocus()
     aPauseOrTheBackgroundWhilePreparingOnlyChangesWhatIsWanted()
@@ -1689,5 +1707,6 @@ fun main() {
     theTenMinuteDeadlineCountsFromThePause()
     theTerminalRecordStaysUntilTheNextPlay()
     invalidItemsFailThePlay()
+    onlyAGrantedFocusRequestIsKept()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

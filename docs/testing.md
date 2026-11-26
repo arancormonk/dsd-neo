@@ -201,8 +201,9 @@ state/action table row by row (a command a state forbids is dropped), interrupti
 Pause, noisy in each state, the 10-minute deadline with a clock jump, a late task and deep sleep (the screen turning on
 ends it, `onAwake()`), play tokens (Pause and Resume for the item in a gap with no player after its last part failed, no
 seek there), task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before
-and after the play, refused, timed out and late, PARTS's failure rule and duration 0, and a throwing player factory. A
-second build of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
+and after the play, refused, timed out and late, PARTS's failure rule and duration 0, a throwing player factory, and
+`FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build of the
+same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
 the retire check after every delivery, `onDestroy` fenced to its generation, and `release()` with a promoted service and

@@ -566,11 +566,12 @@ object RecordingPlayback {
 
     /**
      * The audio focus, one request per ask (lasting for a playlist, transient for a sheet's play), its changes
-     * delivered on the looper with the epoch of the request they answer. Speech pauses when it would be ducked.
+     * delivered on the looper with the epoch of the request they answer. Speech pauses when it would be ducked. Only a
+     * granted request is kept; a refused one is abandoned at once ([FocusRequests]).
      */
     private class AudioFocus(context: Context, private val looper: Handler) : RecordingPlayer.Focus {
         private val audio = context.getSystemService(AudioManager::class.java)
-        private var request: AudioFocusRequest? = null
+        private val requests = FocusRequests<AudioFocusRequest> { audio?.abandonAudioFocusRequest(it) }
 
         override fun request(mode: RecordingPlayer.FocusMode, epoch: Int): Boolean {
             val gain = when (mode) {
@@ -582,14 +583,10 @@ object RecordingPlayback {
                 .setWillPauseWhenDucked(true)
                 .setOnAudioFocusChangeListener({ change -> onLooper { it.onFocusChange(epoch, kind(change)) } }, looper)
                 .build()
-            request = made
-            return audio?.requestAudioFocus(made) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+            return requests.request(made) { audio?.requestAudioFocus(it) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED }
         }
 
-        override fun abandon() {
-            request?.let { audio?.abandonAudioFocusRequest(it) }
-            request = null
-        }
+        override fun abandon() = requests.abandon()
 
         private fun kind(change: Int): RecordingPlayer.FocusChange = when (change) {
             AudioManager.AUDIOFOCUS_LOSS -> RecordingPlayer.FocusChange.LOST

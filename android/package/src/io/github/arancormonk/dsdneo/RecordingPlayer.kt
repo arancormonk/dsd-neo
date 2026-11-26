@@ -33,6 +33,34 @@ class RecordingRecheck {
 }
 
 /**
+ * The audio focus requests the app holds (#909), for RecordingPlayback's focus: a request is kept only when it is
+ * granted. Android registers a request's listener before it answers, so a refused one is given back ([give]) at once,
+ * and repeated refusals (Resume pressed during a phone call) leave no listener behind. [T] is the platform's request,
+ * so the JVM tests drive it with their own.
+ */
+class FocusRequests<T : Any>(private val give: (T) -> Unit) {
+    private var held: T? = null
+
+    /** Send [made] through [ask]; true when it was granted, and then it is the request [abandon] gives back. */
+    fun request(made: T, ask: (T) -> Boolean): Boolean {
+        abandon() // one at a time: an earlier request is superseded
+        if (!ask(made)) {
+            give(made)
+            return false
+        }
+        held = made
+        return true
+    }
+
+    /** Give back the request granted, if one is held. */
+    fun abandon() {
+        val granted = held ?: return
+        held = null
+        give(granted)
+    }
+}
+
+/**
  * The call recording player's state machine (#708 D6/D7/D10, #909): a queue of recordings beside the live audio.
  *
  * A play is one of three modes. SINGLE plays one recording by path, unchecked, and keeps #708's readings. PARTS plays a
