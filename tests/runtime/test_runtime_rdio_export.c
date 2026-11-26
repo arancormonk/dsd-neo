@@ -5373,6 +5373,105 @@ test_api_no_system_skip_said_once_a_run(void) {
 #endif
 }
 
+/* One export of a new WAV @p leaf in @p dir with stderr captured: the export's result, and in *@p warned how many
+   times it said @p needle (-1 when stderr could not be captured). */
+static int
+rdio_export_counting(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* needle,
+                     int* warned) {
+    char wav[DSD_TEST_PATH_MAX];
+    *warned = -1;
+    if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        return -2;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_nosys_any") == 0;
+    int queued = 0;
+    const int rc = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    if (capturing) {
+        char out[4096] = "";
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        *warned = 0;
+        for (const char* p = out; (p = strstr(p, needle)) != NULL; p++) {
+            (*warned)++;
+        }
+    }
+    return rc;
+}
+
+// Issue #931 (gate r1): a call with no system ID is skipped, not failed, in a build without libcurl too: its export
+// succeeds with its sidecar in place, and the run says so once. Without libcurl, an upload with a system ID (one the
+// build would have to send) and a call with no API key still fail, as before.
+static int
+test_api_no_system_skip_in_every_build(void) {
+    static const char* const k_no_system = "Rdio API upload skipped: no system ID (set --rdio-system-id)";
+    static const int modes[] = {DSD_RDIO_MODE_API, DSD_RDIO_MODE_BOTH};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        char dir[DSD_TEST_PATH_MAX] = {0};
+        char json[DSD_TEST_PATH_MAX] = {0};
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+        if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system_any")
+            || dsd_test_path_join(json, sizeof(json), dir, "skip_a.json") != 0) {
+            free(hist);
+            free(opts);
+            return 1;
+        }
+        opts->rdio_mode = modes[i];
+        opts->rdio_system_id = 0;
+        opts->rdio_upload_timeout_ms = 100;
+        opts->rdio_upload_retries = 1;
+        DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", "http://127.0.0.1:1");
+        DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+        dsd_rdio_session_reset();
+        int warned = 0;
+        int got = rdio_export_counting(opts, hist, dir, "skip_a.wav", k_no_system, &warned);
+        if (got != 0 || warned != 1 || !file_exists(json)) {
+            DSD_FPRINTF(stderr, "mode %d, no system ID: returned %d, warned %d, sidecar %d; want 0, 1, 1\n", modes[i],
+                        got, warned, file_exists(json));
+            rc = 1;
+        }
+        got = rdio_export_counting(opts, hist, dir, "skip_b.wav", k_no_system, &warned);
+        if (got != 0 || warned != 0) {
+            DSD_FPRINTF(stderr, "mode %d, second call: returned %d, warned %d; want 0, 0\n", modes[i], got, warned);
+            rc = 1;
+        }
+#ifndef USE_CURL
+        opts->rdio_system_id = 5;
+        got = rdio_export_counting(opts, hist, dir, "needs_curl.wav", "compiled without libcurl", &warned);
+        if (got != -1 || warned != 1) {
+            DSD_FPRINTF(stderr, "mode %d, no libcurl, system 5: returned %d, warned %d; want -1, 1\n", modes[i], got,
+                        warned);
+            rc = 1;
+        }
+        opts->rdio_system_id = 0;
+        opts->rdio_api_key[0] = '\0';
+        got = rdio_export_counting(opts, hist, dir, "no_key.wav", "compiled without libcurl", &warned);
+        if (got != -1) {
+            DSD_FPRINTF(stderr, "mode %d, no libcurl, no API key: returned %d; want -1\n", modes[i], got);
+            rc = 1;
+        }
+#endif
+        dsd_rdio_upload_shutdown();
+        static const char* const k_leaves[] = {"skip_a.wav",     "skip_a.json",     "skip_b.wav", "skip_b.json",
+                                               "needs_curl.wav", "needs_curl.json", "no_key.wav", "no_key.json"};
+        for (size_t k = 0; k < sizeof(k_leaves) / sizeof(k_leaves[0]); k++) {
+            char leaf[DSD_TEST_PATH_MAX];
+            if (dsd_test_path_join(leaf, sizeof(leaf), dir, k_leaves[k]) == 0) {
+                (void)remove(leaf);
+            }
+        }
+        remove_empty_dir(dir);
+        free(hist);
+        free(opts);
+    }
+    return rc;
+}
+
 // Issue #931 B4: in both modes with an API side, a call skipped for having no system ID still publishes its sidecar,
 // makes no private upload inputs (--rdio-mode both) and queues nothing; a sidecar that cannot be put in place (its name
 // taken by a folder) is still an export failure on that path. The API key is checked first: a call with neither a key
@@ -5613,6 +5712,7 @@ main(void) {
     rc |= test_both_mode_failed_private_removal_said_once();
     rc |= test_api_no_system_skip_said_once_a_run();
     rc |= test_api_no_system_skip_keeps_the_sidecar_rule();
+    rc |= test_api_no_system_skip_in_every_build();
     rc |= test_both_mode_delete_after_warning_once_a_run();
     /* Last: it leaves the upload worker failed for good. */
     rc |= test_failed_join_releases_queued_jobs();

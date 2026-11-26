@@ -80,6 +80,18 @@ dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win)
 
 static int dsd_rdio_path_with_suffix(const char* wav_path, const char* suffix, char* out, size_t out_size);
 
+/* A call not uploaded for want of a system ID is no export failure: said once a decoder run (dsd_rdio_session_reset()),
+   whether this build uploads or not (issue #931). */
+static atomic_int g_rdio_no_system_warned = 0;
+
+static void
+dsd_rdio_note_no_system(void) {
+    if (atomic_exchange(&g_rdio_no_system_warned, 1) == 0) {
+        LOG_WARN("Rdio API upload skipped: no system ID (set --rdio-system-id); later calls without one are "
+                 "skipped silently\n");
+    }
+}
+
 #ifdef USE_CURL
 typedef struct {
     int system_id;
@@ -123,10 +135,9 @@ dsd_rdio_remove_after_upload(const char* path, const char* kind) {
     }
 }
 
-/* Once a decoder run (dsd_rdio_session_reset()): a private input left behind, a call not uploaded for want of a system
-   ID, delete-after-upload ignored beside DirWatch. */
+/* Once a decoder run (dsd_rdio_session_reset()): a private input left behind, delete-after-upload ignored beside
+   DirWatch; and, in every build, a call not uploaded for want of a system ID (g_rdio_no_system_warned). */
 static atomic_int g_rdio_private_remove_warned = 0;
-static atomic_int g_rdio_no_system_warned = 0;
 static atomic_int g_rdio_delete_after_upload_dirwatch_warned = 0;
 
 void
@@ -502,10 +513,7 @@ dsd_rdio_validate_api_config(const dsd_rdio_api_config* api) {
     }
 
     if (api->system_id <= 0) {
-        if (atomic_exchange(&g_rdio_no_system_warned, 1) == 0) {
-            LOG_WARN("Rdio API upload skipped: no system ID (set --rdio-system-id); later calls without one are "
-                     "skipped silently\n");
-        }
+        dsd_rdio_note_no_system();
         return DSD_RDIO_UPLOAD_NO_SYSTEM;
     }
 
@@ -808,7 +816,9 @@ dsd_rdio_prepare_api_job(const dsd_opts* opts, int system_id, const char* wav_pa
 }
 #else
 void
-dsd_rdio_session_reset(void) {}
+dsd_rdio_session_reset(void) {
+    atomic_store(&g_rdio_no_system_warned, 0);
+}
 
 void
 dsd_rdio_upload_shutdown(void) {}
@@ -1882,12 +1892,16 @@ static int
 dsd_rdio_export_api(const dsd_opts* opts, int system_id, const char* wav_path, const char* meta_path,
                     const char* temp_meta_path, int* api_queued) {
 #ifndef USE_CURL
-    (void)opts;
-    (void)system_id;
     (void)wav_path;
     (void)api_queued;
     if (dsd_rdio_publish_temp_meta_file(temp_meta_path, meta_path) != 0) {
         return -1;
+    }
+    /* As with libcurl: the API key is checked first, and a call with no system ID is skipped, no failure (issue #931).
+       Only an upload this build would have to send fails for want of libcurl. */
+    if (opts->rdio_api_key[0] != '\0' && system_id <= 0) {
+        dsd_rdio_note_no_system();
+        return 0;
     }
     LOG_WARN("Rdio API upload requested but this build was compiled without libcurl support\n");
     return -1;
