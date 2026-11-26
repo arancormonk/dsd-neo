@@ -210,7 +210,8 @@ its late prepare ignored, and a Resume pressed in time waiting on across a hung 
 after the deadline, which plays, ending finished when every remaining part fails, "timeout" when refused), the setup
 thread (a fake setup held, run late or failed: a setup stuck in a read failing its part at 10 s with Stop working
 meanwhile and the late results released, every part stuck ending "unplayable", a result after a move released, a
-prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), and
+prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), an error in the gap
+releasing the part's player so that Previous reopens the file, and
 `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build of the
 same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start

@@ -94,8 +94,9 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * forward ends the play: "unplayable" when every recording of the play failed, else finished. One backward with no
  * open player goes on forward. Each search visits each recording at most once; the next candidate after a failure
  * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
- * of its call at once, then the gap before the next call; an error from the part that completed, in the gap, is
- * ignored. Play in a paused gap opens the next call at once.
+ * of its call at once, then the gap before the next call; an error from the part that completed, in the gap, releases
+ * its player but is not counted (the gap runs on, and Previous reopens the file). Play in a paused gap opens the next
+ * call at once.
  *
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
  * which nothing was wanted or the focus was away, checked by a task, at every event and when the device wakes
@@ -756,12 +757,20 @@ class RecordingPlayer(
 
     /**
      * The player failed: [REASON_PLAYER] ends the play; anything else is this recording's fault ([REASON_DAMAGED]).
-     * In the gap the player is the part that already played to its end, so an error from it is ignored: the part is
-     * not marked failed, no skip is counted and the gap runs on. An error while the part's setup runs drops the setup.
+     * In the gap the player is the part that already played to its end: an error from it releases that player, which
+     * is no longer usable, but the part is not marked failed, no skip is counted and the gap runs on with the part's
+     * readings; Previous then reopens the file. An error while the part's setup runs drops the setup.
      */
     fun onFailed(token: Long, reason: String) {
         val open = player != null || opening?.token == token
-        if (!open || token != this.token || expireIfDue() || gap) {
+        if (!open || token != this.token || expireIfDue()) {
+            return
+        }
+        if (gap) {
+            player?.release()
+            player = null
+            prepared = false
+            publish()
             return
         }
         failItem(if (reason == REASON_PLAYER) REASON_PLAYER else REASON_DAMAGED)

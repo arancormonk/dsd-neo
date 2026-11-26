@@ -1337,18 +1337,25 @@ private fun previousDuringASkipDoesNotWaitForTheTurn() {
 }
 
 private fun anErrorFromThePartThatPlayedOutIsIgnoredInTheGap() {
-    // The gap after a call's last part, the part that completed still current: its late error changes nothing.
+    // The gap after a call's last part, the part that completed still current: its late error releases that player
+    // (MediaPlayer's Error state takes nothing but a release) and changes nothing else.
     val rig = Rig()
     rig.queue(1, 1)
     rig.prepared()
     val finished = rig.current
     rig.complete()
     val gapTask = rig.scheduler.live().single()
+    val token = rig.status.playToken
     rig.nowMs += 400
-    rig.machine.onFailed(finished.token, RecordingPlayer.REASON_DAMAGED)
+    rig.error(finished, RecordingPlayer.REASON_DAMAGED)
     rig.turn()
     check(rig.status.gap && rig.state == PLAYING && rig.status.skipped == 0) { "still the gap, no skip counted" }
-    check(rig.scheduler.live().single() === gapTask && !finished.released) { "the gap is not restarted" }
+    check(rig.scheduler.live().single() === gapTask && finished.released) {
+        "the gap is not restarted; the player is let go"
+    }
+    check(rig.status.playToken == token && rig.status.call == 0 && rig.status.durationMs == 60_000L) {
+        "the gap keeps the completed part's readings"
+    }
     rig.elapse(600)
     check(rig.last.path == path(1, 1) && !rig.status.gap) { "it runs out on time and the next call opens" }
     rig.prepared()
@@ -1366,10 +1373,44 @@ private fun anErrorFromThePartThatPlayedOutIsIgnoredInTheGap() {
     held.turn()
     check(held.status.gap && held.status.skipped == 1 && held.current === played) { "the gap, on the part that played" }
     val heldGap = held.scheduler.live().single()
-    held.machine.onFailed(played.token, RecordingPlayer.REASON_PLAYER)
+    held.error(played, RecordingPlayer.REASON_PLAYER)
     held.turn()
     check(held.status.gap && held.state == PLAYING && held.status.skipped == 1) { "ignored: not failed, not ended" }
-    check(held.scheduler.live().single() === heldGap) { "and the gap runs on" }
+    check(held.scheduler.live().single() === heldGap && played.released) { "and the gap runs on, the player let go" }
+}
+
+/** An error in the gap releases the part's player: Previous reopens the file, never seeks or starts the failed one. */
+private fun previousAfterAnErrorInTheGapReopensTheFile() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    val finished = rig.current
+    rig.complete()
+    rig.error(finished, RecordingPlayer.REASON_DAMAGED)
+    val calls = finished.calls.size
+    rig.machine.previous()
+    check(finished.calls.size == calls && finished.released) { "no seek or start on the failed player" }
+    check(rig.players.size == 2 && rig.last !== finished && rig.last.path == path(0, 1)) {
+        "a new player opens the part"
+    }
+    check(rig.opener.opened.count { it == path(0, 1) } == 2 && !rig.status.gap) { "the file is opened again" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 0 && rig.last.started && rig.status.skipped == 0) {
+        "it plays the call again, nothing skipped"
+    }
+
+    // Paused in the gap, the same: Previous reopens, and stays paused.
+    val paused = Rig()
+    paused.queue(1, 1)
+    paused.prepared()
+    val heard = paused.current
+    paused.complete()
+    paused.machine.pause()
+    paused.error(heard, RecordingPlayer.REASON_DAMAGED)
+    check(paused.status.gap && paused.state == PAUSED && heard.released) { "the paused gap, its player let go" }
+    paused.machine.previous()
+    paused.prepared()
+    check(paused.last !== heard && paused.state == PAUSED && paused.status.call == 0) { "reopened, still paused" }
 }
 
 private fun aRefusedResumeStaysPausedInEveryMode() {
@@ -2105,6 +2146,7 @@ fun main() {
     previousPassesOverACallWhoseRecordingsAllFailed()
     previousDuringASkipDoesNotWaitForTheTurn()
     anErrorFromThePartThatPlayedOutIsIgnoredInTheGap()
+    previousAfterAnErrorInTheGapReopensTheFile()
     aRefusedResumeStaysPausedInEveryMode()
     theSkipNoticeIsOnTheCallThatPlayedAfterIt()
     aPauseHoldsWhileItSearches()
