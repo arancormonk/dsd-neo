@@ -311,15 +311,19 @@ Item {
     // That reservation never takes the whole header: in a short window at a
     // large text size the bar and a row of list leave it nothing, and Search,
     // the filters, Export and Clear could not be reached without ending the
-    // playlist. The header keeps one control row of room (the search field's
-    // height), scrolling for the rest, within what the bar leaves.
+    // playlist. The header keeps its top row (the title's line, with Map and
+    // Play all), or at least a 48 px control row, within what the bar leaves,
+    // and scrolls for the rest. Squeezed below its top row, it scrolls that
+    // row's controls whole into view (alignTopRow()).
     readonly property real listMinHeight: Math.ceil(height * 0.4)
     readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
     // A day's heading over the rows (the list's section delegate).
     readonly property real sectionHeight: 34
     readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + sectionHeight + rowHeight : 0)
-    readonly property real headerFloor: Math.min(headerScroll.contentHeight, Theme.screenPadding + Math.max(Theme.minimumTouchSize, search.height),
+    readonly property real topRowBottom: chrome.y + headerButtons.places.topRow
+    readonly property real headerFloor: Math.min(headerScroll.contentHeight,
+                                                 Math.max(Theme.minimumTouchSize, topRowBottom),
                                                  Math.max(0, height - barHeight - logList.anchors.topMargin))
 
     PlexFlickable {
@@ -339,8 +343,11 @@ Item {
         interactive: contentHeight > height
         boundsBehavior: Flickable.StopAtBounds
         // A smaller room (the keyboard up, a larger text size) keeps the
-        // focused control in view.
-        onHeightChanged: revealFocusLater.restart()
+        // focused control in view, or (nothing focused there) the top row's.
+        onHeightChanged: {
+            revealFocusLater.restart();
+            alignTopRowLater.restart();
+        }
         // TapHandlers never take exclusive grabs, so with the confirm sheet up a
         // tap on the dimmed search field would still pop the keyboard, a dimmed
         // pill would cycle its filter, and the dimmed Clear label would re-open
@@ -401,7 +408,8 @@ Item {
                     readonly property real spacing: 10
                     anchors.fill: parent
 
-                    // {height, titleLine (the first line's height), at: [{x, y}, ...] per control, in its order}.
+                    // {height, titleLine (the first line's height), topRow (the bottom of the first line with
+                    // controls on it), at: [{x, y}, ...] per control, in its order}.
                     readonly property var places: {
                         var room = header.width;
                         var titleRoom = screen.showTitle ? room - historyTitle.implicitWidth - Theme.gap : room;
@@ -474,14 +482,17 @@ Item {
                         var titleLine = Math.max(header.titleHeight, heightOf(first));
                         place(first, 0, titleLine);
                         var top = titleLine;
+                        var topRow = first.length > 0 ? titleLine : 0;
                         for (var l = 0; l < lines.length; l++) {
                             if (top > 0)
                                 top += spacing;
                             var lineHeight = heightOf(lines[l]);
                             place(lines[l], top, lineHeight);
                             top += lineHeight;
+                            if (topRow === 0)
+                                topRow = top;
                         }
-                        return {height: top, titleLine: titleLine, at: at};
+                        return {height: top, titleLine: titleLine, topRow: topRow, at: at};
                     }
 
                     // A glyph, as the top bars' other icon actions.
@@ -648,8 +659,26 @@ Item {
     // into the header's view, as it does on the other scrolling screens.
     function revealHeaderFocus() {
         var window = screen.Window.window;
-        if (window && visible)
-            Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        if (!window || !visible)
+            return;
+        Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+    }
+    // A header squeezed below its top row (a short window, the bar docked)
+    // with nothing of it focused shows that row's controls whole, its title's
+    // margin above them scrolled away.
+    function alignTopRow() {
+        var window = screen.Window.window;
+        for (var item = window ? window.activeFocusItem : null; item; item = item.parent) {
+            if (item === chrome)
+                return;
+        }
+        if (visible && headerScroll.height < topRowBottom)
+            Theme.revealFocus(headerScroll, chrome, historyMapButton);
+    }
+    Timer {
+        id: alignTopRowLater
+        interval: 0
+        onTriggered: screen.alignTopRow()
     }
     Connections {
         target: screen.Window.window

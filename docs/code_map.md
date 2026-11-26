@@ -20101,9 +20101,12 @@ Qt Quick frontend (`src/ui/qt`):
       again (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the
       first call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the
       block). The bar's height and a row of list come out of the list's share before the header gives room up, but
-      the header always keeps one control row (`HistoryScreen.headerFloor`, the search field's height) above the bar,
-      scrolling for the rest, so in a short window at a large text size Search, the filters, Export and Clear stay in
-      reach.
+      the header keeps its top control row, or at least a 48 px control row, within what the bar leaves
+      (`HistoryScreen.headerFloor`), scrolling for the rest. Squeezed below that row (360×240 at 2x text leaves it 56
+      px), it scrolls the row's controls whole into view when its height changes and nothing in it has the focus
+      (`alignTopRow()`), so Map and Play all show whole and Search, the filters, Export and Clear are reached by
+      scrolling (a field taller than the room shows in part, and focusing it raises the keyboard, which hides the
+      bar). Where the bar leaves under 48 px, no control row fits whole.
     - Documented limits: calls recorded after the press are not added; the limit or a delete can take a queued
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is

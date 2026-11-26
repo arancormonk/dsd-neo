@@ -1059,9 +1059,10 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
-        // In a short window at 2x text the bar and a row of list would leave the header no room at all: it keeps one
-        // control row, above the bar and scrolling, so Search (and the filters, Export and Clear under it) stays in
-        // reach without ending the playlist.
+        // In a short window at 2x text the bar and a row of list would leave the header no room at all: it keeps what
+        // the bar leaves (56 px here), at least a 48 px control row, with its top row's controls (Map, Play all) whole
+        // in it, and scrolls, so Search (and the filters, Export and Clear under it) stays in reach without ending the
+        // playlist.
         function test_short_window_keeps_the_header_data() {
             return [{tag: "idle", session: false}, {tag: "session", session: true}];
         }
@@ -1082,9 +1083,20 @@ Item {
                 var barRect = rectIn(bar(screen), screen);
                 verify(barRect.height > 0 && bar(screen).visible, "the bar shows: " + describe(barRect));
                 verify(scroll.height > 0, "the header keeps room: " + scroll.height);
-                verify(scroll.height >= Math.min(scroll.contentHeight, 48, barRect.y - 4) - 0.5, "at least a control row: " + scroll.height);
                 verify(scroll.y + scroll.height <= barRect.y + 0.5, "above the bar: " + scroll.height + " " + describe(barRect));
                 verify(scroll.interactive, "and it scrolls for the rest");
+                // The top row's controls lie whole inside the header's room, with no tolerance.
+                var view = rectIn(scroll, screen);
+                tryVerify(function () {
+                    for (var name of ["historyMapButton", "historyPlayAll"]) {
+                        var c = rectIn(findChild(screen, name), screen);
+                        if (c.y < view.y || c.y + c.height > view.y + view.height)
+                            return false;
+                    }
+                    return true;
+                }, 2000, "Map and Play all whole in the header: "
+                         + describe(rectIn(findChild(screen, "historyMapButton"), screen)) + " in " + describe(view));
+                verify(scroll.height >= 48, "at least a 48 px control row: " + scroll.height);
                 var search = findChild(screen, "historySearch");
                 search.forceActiveFocus();
                 tryVerify(function () {

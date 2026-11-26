@@ -260,10 +260,10 @@ press acting only on the target it began on (the bar's ✕, Previous and Next he
 held while the playlist moves on, an ended result's ✕, the sheet's Play across a reread of the same path with another
 size, and a keyboard activation during a held press, each followed by a fresh press that acts), a sheet's Play all parts
 waiting for its first token, a pending delete ended with its sheet (and with History hidden), History's header keeping a
-control row at 360×240 and 2x text, the row marker paused while a call opens interrupted, a sheet's own play kept its
-own after it refused a gone part, and Play all parts playing on when its row's last listed part is deleted, against the
-fake host's queue model in `qml_test_context.h` (which, as the real host does, publishes no change for a reading
-published again as it stands),
+48 px control row with its top row's controls whole at 360×240 and 2x text, the row marker paused while a call opens
+interrupted, a sheet's own play kept its own after it refused a gone part, and Play all parts playing on when its row's
+last listed part is deleted, against the fake host's queue model in `qml_test_context.h` (which, as the real host does,
+publishes no change for a reading published again as it stands),
 with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
 names and gating). What only
 Android decides (the service's promotion, the media session and notification, the media keys and the session's own
