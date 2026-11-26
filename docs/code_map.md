@@ -19941,7 +19941,10 @@ Qt Quick frontend (`src/ui/qt`):
       is a `MediaPlayer` that cannot be made, a thread that cannot start and a hand-off the owner refuses because it
       has quit), so a result is posted on every path. The player's callbacks arrive on the owner's Looper and are
       forwarded to the looper with the token; the duration is read on the owner in `onPrepared`, before the forward.
-      Start, pause, seek and release are posted to the owner in order; release posts the release, then `quitSafely()`.
+      Start, pause, seek and release are posted to the owner in order; the posted release quits the owner's Looper
+      (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit earlier refuses the native events
+      still in flight from a pause just before ("sending message to a Handler on a dead thread"); release clears the
+      native listener, so nothing is posted after it, and an event already queued, for a released player, is dropped.
       Until the result is back the looper never touches that player (a prepare answering first is noted and applied at
       adoption; an error drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end,
       a replacement) only releases its player; one that found its file gone or changed still puts the path it tried

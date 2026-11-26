@@ -570,8 +570,9 @@ object RecordingPlayback {
      * then [create] and [prepare]), and every later call is posted to it, in order. The player's callbacks arrive on
      * the owner's Looper and are forwarded to the playback looper with the part's token; the duration is read there in
      * onPrepared, before the forward. The playback looper never touches the MediaPlayer. [release] posts the release,
-     * then lets the thread end once it has run: a setup stuck in a read releases and ends when the read returns. A
-     * media server that died is the player's fault and ends the play; any other error is the file's.
+     * and the thread ends from inside it, once the MediaPlayer is released: a setup stuck in a read releases and ends
+     * when the read returns. A media server that died is the player's fault and ends the play; any other error is the
+     * file's.
      */
     private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val thread = HandlerThread("dsd-neo-playback-player").apply { start() }
@@ -638,8 +639,12 @@ object RecordingPlayback {
             owner.post {
                 media?.release()
                 media = null
+                // Only now: until release() returns, the native player may still post an event (one a pause just
+                // before it raised), and a Looper that has quit refuses it ("sending message to a Handler on a dead
+                // thread"). Release clears the native listener, so nothing is posted after it; an event already
+                // queued is for a released player, and quit() drops it unread. Nothing of ours is posted after this.
+                thread.quit()
             }
-            thread.quitSafely() // after what is posted already, the release included
         }
 
         /** [call] on the owner, after everything posted before it; nothing once the player is released. */
