@@ -222,7 +222,9 @@ the retire check after every delivery, `onDestroy` fenced to its generation, `re
 with a start issued but not delivered, a media session command acting only on the target it was queued for
 (`SessionTarget`: another playlist's commands, or another item's seek, dropped), and the headset's taps
 (`PlayPauseTaps`: a tap kept across a part change and toggling at its timeout, a double tap as Next, a long press or
-another key settling it, another playlist, the end and the teardown dropping it with its timeout). A third build runs
+another key settling it, another playlist, the end and the teardown dropping it with its timeout), and the transport
+keys (`SessionKeys`: paused, a tap, then a dedicated Pause within the wait: the tap plays, then the Pause pauses; ups
+and repeats ignored; each key its command on the player's state). A third build runs
 `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media session while a
 playlist's session is open, the same keys left with Qt while none is, and every other key (Back, volume, typing, the
 microphone mute) left with Qt either way. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs

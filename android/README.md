@@ -836,8 +836,9 @@ Android 12L, Stop is in the expanded quick settings player), and a tap opens DSD
 **Call recordings**. The lock screen's media controls show the call's name and time, also on a secure lock screen.
 Android shows these controls even when DSD-neo is not allowed to post notifications. Media buttons work too while a
 playlist is open, with DSD-neo on screen or not: a headset's button pauses and resumes (pressed twice quickly, it goes
-to the next call), and Bluetooth headsets and car systems can pause, resume and skip calls. With no playlist open,
-DSD-neo leaves the media buttons alone, as before.
+to the next call), and Bluetooth headsets and car systems can pause, resume and skip calls; a button pressed right
+after another acts on what the first one did. With no playlist open, DSD-neo leaves the media buttons
+alone, as before.
 
 - **Pause** anywhere (the bar, the sheet, the notification, the lock screen, a media button or a headset tap) keeps the
   position and the notification, with Play to go on. A playlist left paused ends after 10 minutes (**Stopped after 10

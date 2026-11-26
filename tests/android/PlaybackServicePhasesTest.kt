@@ -628,6 +628,66 @@ fun headsetTapsBelongToThePlaylistNotThePart() {
     check(t.timeouts.isEmpty()) { "no playlist, no tap" }
 }
 
+/**
+ * The transport keys are the session's own queue commands against the player's state on the looper (#909): paused, a
+ * headset tap and then a dedicated Pause within the double-tap wait: the tap plays first, then the Pause pauses.
+ */
+fun transportKeysFollowAWaitingTapOnThePlayersState() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val t = Taps(playing)
+    val seen = mutableListOf<Int>()
+    val keys = SessionKeys(t.taps) { g, command ->
+        seen += machine.status.sessionState
+        if (playing.rig.phases.isOwner(g)) command(machine, g)
+    }
+    val g = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    machine.pause(g)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "paused" }
+
+    check(keys.onKey(g, MediaKeys.HEADSETHOOK, down = true, repeat = 0)) { "the tap is the session's" }
+    check(keys.onKey(g, MediaKeys.HEADSETHOOK, down = false, repeat = 0) && t.toggles.isEmpty()) { "it waits" }
+    check(keys.onKey(g, MediaKeys.MEDIA_PAUSE, down = true, repeat = 0)) { "Pause is the session's too" }
+    check(t.toggles == listOf(g) && seen == listOf(RecordingPlayer.SESSION_PLAYING)) {
+        "the waiting tap counts first, as a single tap: it plays, and the Pause finds it playing"
+    }
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "then the Pause pauses: paused at the end" }
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.size == 1 && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+        "nothing left waiting"
+    }
+
+    // Their ups and repeats are taken and ignored.
+    check(keys.onKey(g, MediaKeys.MEDIA_PAUSE, down = false, repeat = 0) && seen.size == 1) { "an up does nothing" }
+    check(keys.onKey(g, MediaKeys.MEDIA_PLAY, down = true, repeat = 1) && seen.size == 1) { "a repeat does nothing" }
+
+    // Each key is its command, on whatever state the player is in; one the state does not allow does nothing.
+    check(keys.onKey(g, MediaKeys.MEDIA_PAUSE, down = true, repeat = 0)) { "taken" }
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "Pause while paused: still paused" }
+    keys.onKey(g, MediaKeys.MEDIA_PLAY, down = true, repeat = 0)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "Play plays" }
+    keys.onKey(g, MediaKeys.MEDIA_PLAY, down = true, repeat = 0)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "Play while playing: still playing" }
+    keys.onKey(g, MediaKeys.MEDIA_NEXT, down = true, repeat = 0)
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.call == 1) { "Next" }
+    keys.onKey(g, MediaKeys.MEDIA_PREVIOUS, down = true, repeat = 0)
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.call == 0) { "Previous" }
+    keys.onKey(g, MediaKeys.MEDIA_STOP, down = true, repeat = 0)
+    check(machine.status.endedReason == RecordingPlayer.ENDED_STOPPED) { "Stop" }
+
+    // Any other key is the framework's, after a waiting tap counts as single.
+    val h = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    keys.onKey(h, MediaKeys.HEADSETHOOK, down = true, repeat = 0)
+    check(!keys.onKey(h, MediaKeys.MEDIA_REWIND, down = true, repeat = 0)) { "Rewind is left to the framework" }
+    check(t.toggles.last() == h && t.timeouts.isEmpty()) { "after the waiting tap counted" }
+}
+
 fun main() {
     aPromoteForTheCurrentRequestMakesItTheOwner()
     aPromoteForASettledRequestOnlyRetires()
@@ -645,5 +705,6 @@ fun main() {
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
     headsetTapsBelongToThePlaylistNotThePart()
+    transportKeysFollowAWaitingTapOnThePlayersState()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

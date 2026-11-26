@@ -20046,23 +20046,27 @@ Qt Quick frontend (`src/ui/qt`):
       instance's, for the playlist's generation, not its item), which counts them as the framework does (a second tap
       within `ViewConfiguration.getDoubleTapTimeout()` is Next when offered; else the timeout, posted on the playback
       looper, toggles Pause while the session plays or Play; a long-press repeat or another media key settles a waiting
-      tap at once); another playlist, its end or `onDestroy` drop the tap and its timeout, a part change keeps it; every
-      other key goes to the framework; metadata (title the call name, subtitle the line and "Call 3 of 41", the part's
-      duration) and a PlaybackState with exactly the table's action bits plus a Stop custom action (`onCustomAction`);
-      the session goes inactive when its play ends and is released in `onDestroy`. Channel `dsdneo_playback` ("Call
-      recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen visibility, tap opens the
-      launcher intent.
-      On 29-32 the compact Previous / Play-Pause / Next and Stop are immutable `getService` PendingIntents (a request
-      code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A
-      partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the
-      `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any play is open,
-      and the `SCREEN_ON` one (the same way) while a playlist is open.
-      While a playlist owns the service (`RecordingPlayback.playlistSessionOpen()`, the phases' owner, under their
-      lock), `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause,
-      play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity
-      consumes every key, so with the app in front Android routes them to the playlist's session; with no playlist open
-      they stay with Qt, as before #909, so a headset's Play never resumes another app over the live audio or a sheet
-      play.
+      tap at once); another playlist, its end or `onDestroy` drop the tap and its timeout, a part change keeps it. Play,
+      Pause, Next, Previous and Stop are not left to the framework either (`SessionKeys`, plain Kotlin beside the taps):
+      on ACTION_DOWN with no repeat, after a waiting tap counts as single, each is the queue command for the callback's
+      generation, applied on the looper against the player's state then, which ignores a command its state does not
+      allow; the framework would check the PlaybackState last published, posted to the main thread later, so a Pause
+      right after a tap that resumed found the paused actions and was dropped. Their ups and repeats are taken and
+      ignored. Every other key goes to the framework, after a waiting tap counts as single; metadata (title the call
+      name, subtitle the line and "Call 3 of 41", the part's duration) and a PlaybackState with exactly the table's
+      action bits plus a Stop custom action (`onCustomAction`); the session goes inactive when its play ends and is
+      released in `onDestroy`. Channel `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is
+      1), default (private) lock-screen visibility, tap opens the launcher intent. On 29-32 the compact Previous /
+      Play-Pause / Next and Stop are immutable `getService` PendingIntents (a request code per generation and action;
+      `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A partial wake lock
+      (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the `AUDIO_BECOMING_NOISY`
+      receiver (a protected broadcast, registered with no export flag) while any play is open, and the `SCREEN_ON` one
+      (the same way) while a playlist is open. While a playlist owns the service
+      (`RecordingPlayback.playlistSessionOpen()`, the phases' owner, under their lock),
+      `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause, play/pause,
+      stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity consumes
+      every key, so with the app in front Android routes them to the playlist's session; with no playlist open they stay
+      with Qt, as before #909, so a headset's Play never resumes another app over the live audio or a sheet play.
     - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
       Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,

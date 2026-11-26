@@ -386,3 +386,51 @@ class PlayPauseTaps(
         }
     }
 }
+
+/**
+ * The media buttons the playlist's session takes itself (#909), as RecordingPlaybackService.onMediaButtonEvent hands
+ * them over on the playback looper. The headset hook and play/pause are counted by [taps]. Play, Pause, Next, Previous
+ * and Stop are each sent ([send]) as the queue command for the playlist [generation] names, applied to the player's
+ * state as it is then; not left to the framework, which checks the actions the session last published, and those are
+ * posted to the main thread later: a Pause right after a waiting tap resumed the play would find the paused session's
+ * actions and be dropped. A waiting tap counts as single first, so the keys act in order. These keys' ups and repeats
+ * are taken and ignored; any other key is left to the framework ([onKey] false), after a waiting tap counts as single.
+ */
+class SessionKeys(
+    private val taps: PlayPauseTaps,
+    private val send: (generation: Int, command: (RecordingPlayer, Int) -> Unit) -> Unit,
+) {
+    /** A media key event for playlist [generation]: true when it is taken here. */
+    fun onKey(generation: Int, keyCode: Int, down: Boolean, repeat: Int): Boolean {
+        if (keyCode == MediaKeys.HEADSETHOOK || keyCode == MediaKeys.MEDIA_PLAY_PAUSE) {
+            if (down) {
+                taps.keyDown(generation, repeat)
+            }
+            return true
+        }
+        val command = transport(keyCode)
+        if (command == null) {
+            if (down) {
+                taps.otherKey()
+            }
+            return false
+        }
+        if (down && repeat == 0) {
+            taps.otherKey()
+            send(generation, command)
+        }
+        return true
+    }
+
+    companion object {
+        /** The queue command of a transport key, or null for another key. Each is dropped where the state has none. */
+        fun transport(keyCode: Int): ((RecordingPlayer, Int) -> Unit)? = when (keyCode) {
+            MediaKeys.MEDIA_PLAY -> { player, generation -> player.resume(generation) }
+            MediaKeys.MEDIA_PAUSE -> { player, generation -> player.pause(generation) }
+            MediaKeys.MEDIA_NEXT -> { player, generation -> player.next(generation) }
+            MediaKeys.MEDIA_PREVIOUS -> { player, generation -> player.previous(generation) }
+            MediaKeys.MEDIA_STOP -> { player, generation -> player.stop(generation) }
+            else -> null
+        }
+    }
+}

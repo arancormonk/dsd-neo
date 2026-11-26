@@ -45,7 +45,8 @@ import androidx.core.content.IntentCompat
  * A callback is installed for each target the session shows (a playlist and its item, [SessionTarget]) and acts only on
  * that one, so a command the framework had queued for the target before cannot reach a later playlist or item. The
  * headset's play/pause taps are counted here ([PlayPauseTaps], for the playlist, across its parts), not by the
- * framework, whose waiting single tap a callback swap at a part change would drop.
+ * framework, whose waiting single tap a callback swap at a part change would drop; the transport keys (Play, Pause,
+ * Next, Previous, Stop) are applied here too ([SessionKeys]), against the player's state on the looper.
  */
 class RecordingPlaybackService : Service() {
     /** This instance, as PlaybackServicePhases knows it. */
@@ -67,6 +68,11 @@ class RecordingPlaybackService : Service() {
         { generation -> RecordingPlayback.sessionCommand(generation) { player, g -> PlayPauseTaps.next(player, g) } },
     )
 
+    /** The media buttons the session takes itself: the taps, and the transport keys as queue commands. */
+    private val keys = SessionKeys(taps) { generation, command ->
+        RecordingPlayback.sessionCommand(generation, command)
+    }
+
     /** The metadata last set on the session, so a state change with the same item sets none. */
     private var shownMetadata: List<Any>? = null
 
@@ -80,7 +86,7 @@ class RecordingPlaybackService : Service() {
         super.onCreate()
         ensureNotificationChannel()
         session = MediaSession(this, SESSION_TAG)
-        session.setCallback(SessionCallbacks(published, taps), RecordingPlayback.playbackHandler())
+        session.setCallback(SessionCallbacks(published, keys), RecordingPlayback.playbackHandler())
         serial = RecordingPlayback.serviceCreated(this)
     }
 
@@ -154,7 +160,7 @@ class RecordingPlaybackService : Service() {
             // A callback of its own for the new target: what the framework queued for the old one (setCallback()
             // drops it, or it runs on the old callback) still names the old playlist and item, and is dropped.
             published = SessionTarget(status.generation, status.playToken)
-            session.setCallback(SessionCallbacks(published, taps), RecordingPlayback.playbackHandler())
+            session.setCallback(SessionCallbacks(published, keys), RecordingPlayback.playbackHandler())
         }
         val title = title(status)
         val subtitle = subtitle(status)
@@ -363,12 +369,13 @@ class RecordingPlaybackService : Service() {
 
     /**
      * The session's commands, on the playback looper, for the [target] this callback was installed for only. The
-     * headset hook and play/pause keys are counted by [taps] (single, double and long press as the framework counts
-     * them); every other key goes to the framework, after a waiting tap counts as single.
+     * headset hook and play/pause keys are counted (single, double and long press as the framework counts them) and
+     * the transport keys applied as queue commands by [keys]; every other key goes to the framework, after a waiting
+     * tap counts as single.
      */
     private class SessionCallbacks(
         private val target: SessionTarget,
-        private val taps: PlayPauseTaps,
+        private val keys: SessionKeys,
     ) : MediaSession.Callback() {
         override fun onMediaButtonEvent(mediaButtonIntent: Intent): Boolean {
             val key = if (mediaButtonIntent.action == Intent.ACTION_MEDIA_BUTTON) {
@@ -376,16 +383,9 @@ class RecordingPlaybackService : Service() {
             } else {
                 null
             }
-            if (key != null && key.keyCode in TAP_KEYS) {
-                if (key.action == KeyEvent.ACTION_DOWN) {
-                    taps.keyDown(target.generation, key.repeatCount)
-                }
-                return true
-            }
-            if (key != null && key.action == KeyEvent.ACTION_DOWN) {
-                taps.otherKey()
-            }
-            return super.onMediaButtonEvent(mediaButtonIntent)
+            val taken = key != null &&
+                keys.onKey(target.generation, key.keyCode, key.action == KeyEvent.ACTION_DOWN, key.repeatCount)
+            return taken || super.onMediaButtonEvent(mediaButtonIntent)
         }
 
         override fun onPlay() = command(target::play)
@@ -427,9 +427,6 @@ class RecordingPlaybackService : Service() {
         private const val EXTRA_PROCESS = "io.github.arancormonk.dsdneo.extra.PLAYBACK_PROCESS"
         private const val EXTRA_GENERATION = "io.github.arancormonk.dsdneo.extra.PLAYBACK_GENERATION"
         private const val EXTRA_COMMAND = "io.github.arancormonk.dsdneo.extra.PLAYBACK_COMMAND"
-
-        /** The keys whose taps [PlayPauseTaps] counts. */
-        private val TAP_KEYS = setOf(KeyEvent.KEYCODE_HEADSETHOOK, KeyEvent.KEYCODE_MEDIA_PLAY_PAUSE)
 
         private const val COMMAND_PLAY = 1
         private const val COMMAND_PAUSE = 2
