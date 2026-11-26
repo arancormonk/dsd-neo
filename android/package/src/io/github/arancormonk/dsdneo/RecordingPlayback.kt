@@ -13,7 +13,9 @@ import android.media.MediaPlayer
 import android.os.Handler
 import android.os.HandlerThread
 import android.os.SystemClock
+import java.io.File
 import java.io.FileInputStream
+import java.io.FileNotFoundException
 import java.util.concurrent.atomic.AtomicInteger
 
 /**
@@ -38,6 +40,9 @@ object RecordingPlayback {
     @Volatile
     private var player: RecordingPlayer? = null
 
+    /** The recordings found gone or changed at their turn, for the store to look at again (#909); for the process. */
+    private val recheck = RecordingRecheck()
+
     private val attributes: AudioAttributes by lazy {
         AudioAttributes.Builder()
             .setUsage(AudioAttributes.USAGE_MEDIA)
@@ -56,8 +61,12 @@ object RecordingPlayback {
         looper.post {
             val machine = player ?: RecordingPlayer(
                 ::MediaItem,
+                FileOpener,
                 AudioFocus(application, looper),
-                SystemClock::elapsedRealtime,
+                RecordingPlayer.Clock(SystemClock::elapsedRealtime),
+                LooperScheduler(looper),
+                NoService,
+                recheck,
                 foreground,
             ).also { player = it }
             machine.play(generation, path)
@@ -77,9 +86,13 @@ object RecordingPlayback {
     @JvmStatic
     fun stop() = post { it.stop() }
 
-    /** The player's status record ([RecordingPlayer.Status.record]); empty before the first play. */
+    /**
+     * The first five fields of the player's status record ([RecordingPlayer.Status.record]: generation, state,
+     * position, duration, error), which DecoderHostAndroid parses; empty before the first play.
+     */
     @JvmStatic
-    fun status(): String = player?.status?.record(SystemClock.elapsedRealtime()) ?: ""
+    fun status(): String =
+        player?.status?.record(SystemClock.elapsedRealtime())?.split('\t')?.take(5)?.joinToString("\t") ?: ""
 
     /** The Activity started or stopped (not for a configuration change). */
     fun setForeground(foreground: Boolean) {
@@ -97,18 +110,49 @@ object RecordingPlayback {
         synchronized(lock) { handler }?.post { player?.let(action) }
     }
 
+    /** A recording opened by path, unchecked (a single play): its descriptor, which MediaPlayer copies. */
+    private class StreamSource(val stream: FileInputStream) : RecordingPlayer.Source {
+        override fun close() = stream.close()
+    }
+
+    private object FileOpener : RecordingPlayer.Opener {
+        override fun open(item: RecordingPlayer.Item): RecordingPlayer.OpenResult = try {
+            // A descriptor rather than the path: the file opened is the one that plays, and a gone one says so here.
+            RecordingPlayer.OpenResult.Opened(StreamSource(FileInputStream(item.path)))
+        } catch (_: FileNotFoundException) {
+            // Also thrown for a file there that cannot be opened (no access, a folder): only one gone is missing.
+            val reason = if (File(item.path).exists()) RecordingPlayer.REASON_CHANGED else RecordingPlayer.REASON_GONE
+            RecordingPlayer.OpenResult.Refused(reason)
+        }
+    }
+
+    /** Tasks on the looper, cancelled by taking their message back. */
+    private class LooperScheduler(private val looper: Handler) : RecordingPlayer.Scheduler {
+        override fun post(delayMs: Long, task: () -> Unit): RecordingPlayer.Cancellable {
+            val message = Runnable(task)
+            looper.postDelayed(message, delayMs)
+            return RecordingPlayer.Cancellable { looper.removeCallbacks(message) }
+        }
+    }
+
+    /** Only single plays start here, which no service follows. */
+    private object NoService : RecordingPlayer.ServiceLink {
+        override fun changed(status: RecordingPlayer.Status) = Unit
+
+        override fun ended(generation: Int, reason: String) = Unit
+    }
+
     /** One recording in a MediaPlayer, made and called on the looper, which its callbacks also arrive on. */
-    private class MediaItem(private val generation: Int) : RecordingPlayer.Player {
+    private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val media = MediaPlayer()
 
-        override fun prepare(path: String) {
+        override fun prepare(source: RecordingPlayer.Source) {
             media.setAudioAttributes(attributes)
-            // A descriptor rather than the path: the file opened is the one that plays, and a gone one says so here.
-            FileInputStream(path).use { media.setDataSource(it.fd) }
-            media.setOnPreparedListener { player?.onPrepared(generation) }
-            media.setOnCompletionListener { player?.onCompleted(generation) }
+            media.setDataSource((source as StreamSource).stream.fd)
+            media.setOnPreparedListener { player?.onPrepared(token) }
+            media.setOnCompletionListener { player?.onCompleted(token) }
             media.setOnErrorListener { _, _, _ ->
-                player?.onFailed(generation, RecordingPlayer.ERROR_FAILED)
+                player?.onFailed(token, RecordingPlayer.REASON_DAMAGED)
                 true
             }
             media.prepareAsync()
@@ -126,19 +170,27 @@ object RecordingPlayback {
         override fun release() = media.release()
     }
 
-    /** The transient audio focus, its changes delivered on the looper. */
-    private class AudioFocus(context: Context, looper: Handler) : RecordingPlayer.Focus {
+    /** The audio focus, its changes delivered on the looper with the epoch of the request they answer. */
+    private class AudioFocus(context: Context, private val looper: Handler) : RecordingPlayer.Focus {
         private val audio = context.getSystemService(AudioManager::class.java)
-        private val request = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN_TRANSIENT)
-            .setAudioAttributes(attributes)
-            .setOnAudioFocusChangeListener({ change -> player?.onFocusChange(kind(change)) }, looper)
-            .build()
+        private var request: AudioFocusRequest? = null
 
-        override fun request(): Boolean =
-            audio?.requestAudioFocus(request) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        override fun request(mode: RecordingPlayer.FocusMode, epoch: Int): Boolean {
+            val gain = when (mode) {
+                RecordingPlayer.FocusMode.GAIN -> AudioManager.AUDIOFOCUS_GAIN
+                RecordingPlayer.FocusMode.GAIN_TRANSIENT -> AudioManager.AUDIOFOCUS_GAIN_TRANSIENT
+            }
+            val made = AudioFocusRequest.Builder(gain)
+                .setAudioAttributes(attributes)
+                .setOnAudioFocusChangeListener({ change -> player?.onFocusChange(epoch, kind(change)) }, looper)
+                .build()
+            request = made
+            return audio?.requestAudioFocus(made) == AudioManager.AUDIOFOCUS_REQUEST_GRANTED
+        }
 
         override fun abandon() {
-            audio?.abandonAudioFocusRequest(request)
+            request?.let { audio?.abandonAudioFocusRequest(it) }
+            request = null
         }
 
         private fun kind(change: Int): RecordingPlayer.FocusChange = when (change) {
