@@ -87,6 +87,10 @@
  * with one NFM burst from 1.0 to 2.0 s, and a sidecar that records DSP_KHZ through BASE half-band decimation (post 1),
  * writes it to the private directory and adds `--iq-replay` for it: the multi-pass chain of a dongle at that rate,
  * with no fixture committed.
+ * On a radio input whose stream ran a dynamic squelch, the stop hook prints one "ANALOG SQUELCH: tracker_ms=MS
+ * noise_ms=MS state=NAME" line after the METRIC line (issue #899): the stream time read while the stream's last block
+ * ran the floor tracker (AUTO, or NOISE run as AUTO) and while it ran the noise squelch, and the tracker's floor state
+ * after the last read that ran one (learning, known, seeded or provisional), from rtl_stream_get_squelch_status().
  * --analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS (issue #667) replays the first AT_MS of the --iq-replay capture, then
  * a GAP_MS gap in the radio stream as a USB recovery records one (a RETUNE to the same centre, the muted samples and a
  * RESET, each named usb_recovery), then the first THEN_MS of FIXTURE, another committed 48 kHz capture named without
@@ -1494,11 +1498,14 @@ analog_synth_burst_capture(analog_capture* cap, const analog_synth_burst_chain* 
     double phase = 0.0;
     for (size_t k = 0; k < n; k++) {
         const double t = (double)k / rate;
-        const double swell = 0.6 + (0.4 * sin(2.0 * ANALOG_PI * 3.0 * t));
-        const double voice = (0.6 * sin(2.0 * ANALOG_PI * 700.0 * t)) + (0.4 * sin(2.0 * ANALOG_PI * 1300.0 * t));
-        phase =
-            fmod(phase + (2.0 * ANALOG_PI * ANALOG_SYNTH_BURST_DEVIATION_HZ * voice * swell / rate), 2.0 * ANALOG_PI);
         const double carrier = amplitude * analog_synth_burst_envelope(t);
+        if (carrier > 0.0) {
+            /* The modulation only where it is on the air: two thirds of the capture is noise alone. */
+            const double swell = 0.6 + (0.4 * sin(2.0 * ANALOG_PI * 3.0 * t));
+            const double voice = (0.6 * sin(2.0 * ANALOG_PI * 700.0 * t)) + (0.4 * sin(2.0 * ANALOG_PI * 1300.0 * t));
+            phase = fmod(phase + (2.0 * ANALOG_PI * ANALOG_SYNTH_BURST_DEVIATION_HZ * voice * swell / rate),
+                         2.0 * ANALOG_PI);
+        }
         const double r = sigma * sqrt(-2.0 * log(analog_synth_uniform(&rng)));
         const double theta = 2.0 * ANALOG_PI * analog_synth_uniform(&rng);
         cap->data[2U * k] = analog_synth_cu8((carrier * cos(phase)) + (r * cos(theta)));
@@ -1508,8 +1515,9 @@ analog_synth_burst_capture(analog_capture* cap, const analog_synth_burst_chain* 
 }
 
 /* Writes a made capture to the private directory and replays it: adds `--iq-replay CAPTURE`, or with --analog-pcm-tap
-   `-i TAP.wav` (args has room for two more). @p made is 0 when the capture was made, @p option names the host option
-   that made it. 0, or -1 with a message. */
+   `-i TAP.wav` (only --analog-synth-pauses takes a tap; analog_input_options_ok() refuses --analog-pcm-tap beside
+   --analog-synth-burst), args having room for two more. @p made is 0 when the capture was made, @p option names
+   the host option that made it. 0, or -1 with a message. */
 static int
 analog_replay_made(char** args, int* count, analog_capture* cap, int made, const char* option) {
     int rc = -1;
@@ -2697,7 +2705,32 @@ analog_capture_blast(const dsd_opts* opts, dsd_state* state, size_t nbytes, cons
     analog_take_write(analog_consumed_ms(), (const short*)data, n, &tone, pcm_input ? 960U : 0U);
 }
 
+/* Which dynamic squelch the radio stream ran (issue #899): stream time read while the stream's last block ran the floor
+   tracker (AUTO, or NOISE as AUTO) and while it ran the noise squelch, and the tracker's dsd_squelch_floor_state after
+   the last read that ran either. The stop hook prints it as the "ANALOG SQUELCH:" line when either ran. */
+static struct {
+    double tracker_ms;
+    double noise_ms;
+    int state;
+} g_squelch_ran;
+
 #ifdef USE_RADIO
+/* Adds a read of @p ms to g_squelch_ran by what the stream's last block ran (rtl_stream_get_squelch_status()). */
+static void
+analog_note_squelch_ran(double ms) {
+    rtl_stream_squelch_status status;
+    DSD_MEMSET(&status, 0, sizeof status);
+    if (rtl_stream_get_squelch_status(&status) != 0 || !status.active) {
+        return;
+    }
+    if (status.noise) {
+        g_squelch_ran.noise_ms += ms;
+    } else {
+        g_squelch_ran.tracker_ms += ms;
+    }
+    g_squelch_ran.state = status.state;
+}
+
 /* The decoder's reads, flagged (the monitor's, with the auto squelch's gate) or not, counted alike. */
 static int
 analog_counting_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count, int* out_got) {
@@ -2705,7 +2738,9 @@ analog_counting_read_ex(void* rtl_ctx, float* out, uint8_t* flags, size_t count,
     if (rc >= 0 && out_got != NULL && *out_got > 0) {
         analog_note_rate(dsd_rtl_stream_metrics_hook_output_rate_hz());
         if (g_totals.rate_hz > 0U) {
-            g_totals.read_ms += (double)*out_got * 1000.0 / (double)g_totals.rate_hz;
+            const double ms = (double)*out_got * 1000.0 / (double)g_totals.rate_hz;
+            g_totals.read_ms += ms;
+            analog_note_squelch_ran(ms);
         } else {
             g_totals.unclocked_reads += (uint64_t)*out_got;
         }
@@ -3215,6 +3250,20 @@ analog_report_measure(analog_report_ctx* ctx) {
     ctx->inband_db = analog_db(g_totals.inband_energy / outband);
 }
 
+/* The "ANALOG SQUELCH:" line (g_squelch_ran), when a dynamic squelch ran: tracker_ms=MS noise_ms=MS state=NAME, NAME
+   the tracker's floor state after the last read that ran one (learning, known, seeded or provisional). */
+static void
+analog_print_squelch_line(void) {
+    static const char* const k_states[] = {"learning", "known", "seeded", "provisional"};
+    if (g_squelch_ran.tracker_ms <= 0.0 && g_squelch_ran.noise_ms <= 0.0) {
+        return;
+    }
+    const int st = g_squelch_ran.state;
+    const char* name = st >= 0 && st < (int)(sizeof k_states / sizeof k_states[0]) ? k_states[st] : "unknown";
+    DSD_FPRINTF(stderr, "ANALOG SQUELCH: tracker_ms=%.2f noise_ms=%.2f state=%s\n", g_squelch_ran.tracker_ms,
+                g_squelch_ran.noise_ms, name);
+}
+
 static void
 analog_print_metric_line(const analog_report_ctx* ctx) {
     char line[512];
@@ -3417,6 +3466,7 @@ analog_report(void) {
     DSD_MEMSET(&ctx, 0, sizeof(ctx));
     analog_report_measure(&ctx);
     analog_print_metric_line(&ctx);
+    analog_print_squelch_line();
     analog_print_raw_wav_line();
     analog_write_audio_out();
     analog_report_probes(&ctx, 0);
@@ -3576,31 +3626,41 @@ analog_prepare_gap(char** args, int count) {
     return analog_replay_gap(args, count);
 }
 
-/* --analog-synth-burst, which makes the I/Q input and so takes no other option that makes or replaces it, and the raw
-   WAV; 0, or -1 with a message. */
+/* --analog-synth-burst, which makes the I/Q input (analog_input_options_ok() refused any option that makes or
+   replaces it), and the raw WAV; 0, or -1 with a message. */
 static int
 analog_prepare_synth_burst(char** args, int* count) {
-    if (g_scene.scene != NULL || g_synth_pauses.set || g_iq_gain_db.set || g_pcm_tap_hz.set || g_gap_join.set) {
-        DSD_FPRINTF(stderr, "analog replay: %s makes the I/Q input, alone\n", k_synth_burst_arg);
-        return -1;
-    }
     if (analog_replay_synth_burst(args, count) != 0) {
         return -1;
     }
     return (g_raw_wav_min_rms_dbfs.set && analog_raw_wav_add(args, count) != 0) ? -1 : 0;
 }
 
+/* The host options that make or replace the input, taken together only where they combine; 1, or 0 with a message. */
+static int
+analog_input_options_ok(void) {
+    if (g_iq_gain_db.set && (g_pcm_tap_hz.set || g_synth_pauses.set)) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales a committed capture, --analog-pcm-tap and "
+                            "--analog-synth-pauses replace it\n");
+        return 0;
+    }
+    if (g_scene.scene != NULL && (g_synth_pauses.set || g_iq_gain_db.set)) {
+        DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input, as --analog-synth-pauses does\n");
+        return 0;
+    }
+    if (g_synth_burst.set
+        && (g_scene.scene != NULL || g_synth_pauses.set || g_iq_gain_db.set || g_pcm_tap_hz.set || g_gap_join.set)) {
+        DSD_FPRINTF(stderr, "analog replay: %s makes the I/Q input, alone\n", k_synth_burst_arg);
+        return 0;
+    }
+    return 1;
+}
+
 /* Applies the host options that change the dsd-neo arguments: the capture replayed (a scaled copy, a made one, or its
    discriminator tap as audio input) and the raw WAV. 0, or -1 with a message. */
 static int
 analog_prepare_args(char** args, int* count) {
-    if (g_iq_gain_db.set && (g_pcm_tap_hz.set || g_synth_pauses.set)) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-iq-gain-db scales a committed capture, --analog-pcm-tap and "
-                            "--analog-synth-pauses replace it\n");
-        return -1;
-    }
-    if (g_scene.scene != NULL && (g_synth_pauses.set || g_iq_gain_db.set)) {
-        DSD_FPRINTF(stderr, "analog replay: --analog-scene makes the input, as --analog-synth-pauses does\n");
+    if (!analog_input_options_ok()) {
         return -1;
     }
     if (g_synth_burst.set) {
