@@ -27,6 +27,16 @@ QtObject {
             return decoderHost.fontPixelSize(16) / 16;
         return Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16));
     }
+    // Whether the on-screen keyboard is shown: the host's visible-IME
+    // indicator (Android reports a keyboard top, 0 or more, only while it
+    // shows), else Qt's. Where it overlaps an item is keyboardTop()'s to
+    // measure; a window already resized above the keyboard has no overlap.
+    function keyboardShown() {
+        var host = typeof decoderHost !== "undefined" ? decoderHost : null;
+        if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)
+            return true;
+        return Qt.inputMethod.visible === true;
+    }
     function keyboardTop(item) {
         var host = typeof decoderHost !== "undefined" ? decoderHost : null;
         if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)

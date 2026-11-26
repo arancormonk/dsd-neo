@@ -336,7 +336,10 @@ Item {
     // top row, it scrolls that row's controls whole into view (alignTopRow()).
     // With no bar the list keeps its 40% share, as before the playlist.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
-    readonly property bool keyboardUp: Theme.keyboardTop(screen) < height - 0.5
+    // By the keyboard's visibility, not its overlap: a window Android has
+    // resized above the keyboard has none, and the bar would keep taking
+    // room from the list it already shortened.
+    readonly property bool keyboardUp: Theme.keyboardShown()
     readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
     // A day's heading over the rows (the list's section delegate).
     readonly property real sectionHeight: 34

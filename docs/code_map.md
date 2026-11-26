@@ -20130,15 +20130,17 @@ Qt Quick frontend (`src/ui/qt`):
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,
       its saved end, its events with an event id and a heard flag (a refused resume is an event each time: its reason
       turning "unavailable", or `playbackRefusals` moving on the same reading, which the sheet's notice line says again
-      too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up)
-      shows it, says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call
-      playing: the player names the call that followed the skips, so a call Qt sees first after a stretch away never
-      takes an earlier skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event
-      once, only while its screen is visible, reachable and the application active, after the host has read the platform
-      on a foreground return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose
-      uid is `playbackKey` (History, Monitor, Home), paused while it is paused, opens paused or is halted for another
-      app's audio (`Util.playlistMark()`, as the bar and the sheet read "Paused for another app's audio"). Clear history
-      ends a History playlist. History closes its detail sheet when its screen hides (B5); a sheet's recording block
+      too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up,
+      by the host's visible-IME indicator, `Theme.keyboardShown()`: `decoderHost.keyboardTop >= 0` on Android, else
+      `Qt.inputMethod.visible`, never by overlap, which a window resized above the keyboard does not have) shows it,
+      says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call playing: the
+      player names the call that followed the skips, so a call Qt sees first after a stretch away never takes an earlier
+      skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event once, only while
+      its screen is visible, reachable and the application active, after the host has read the platform on a foreground
+      return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose uid is
+      `playbackKey` (History, Monitor, Home), paused while it is paused, opens paused or is halted for another app's
+      audio (`Util.playlistMark()`, as the bar and the sheet read "Paused for another app's audio"). Clear history ends
+      a History playlist. History closes its detail sheet when its screen hides (B5); a sheet's recording block
       ends its delete confirmation (forgetting the file it named) and its save picker when its sheet hides or opens
       again (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the
       first call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the

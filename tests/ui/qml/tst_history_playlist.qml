@@ -1191,6 +1191,32 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
+        // The bar hides while the keyboard shows, by the host's visible-IME indicator rather than by overlap: a
+        // window Android resized above the keyboard reports the keyboard's top at or below the screen's bottom, and
+        // the bar still hides there, History laid out as without one.
+        function test_bar_hides_for_a_keyboard_below_the_screen_data() {
+            return [{tag: "at the bottom", below: 0}, {tag: "below it", below: 120}];
+        }
+        function test_bar_hides_for_a_keyboard_below_the_screen(data) {
+            var calls = logCalls(25);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 3});
+            var barItem = bar(screen);
+            verify(barItem.visible);
+            decoderHost.keyboardTop = screen.mapToItem(null, 0, screen.height).y + data.below;
+            compare(Ui.Theme.keyboardTop(screen), screen.height, "no overlap with the screen");
+            verify(waitForPolish(screen));
+            verify(!barItem.visible, "hidden while the keyboard shows");
+            compare(screen.barHeight, 0, "and it takes no room");
+            var list = findChild(screen, "callLogList");
+            var listRect = rectIn(list, screen);
+            verify(Math.abs(listRect.y + listRect.height - screen.height) < 0.5, "the list as without a bar: " + describe(listRect));
+            decoderHost.keyboardTop = -1;
+            verify(barItem.visible, "back once the keyboard hides");
+        }
+
         // In a short window at 2x text the bar and a row of list would leave the header no room at all: it keeps what
         // the bar leaves (56 px here), at least a 48 px control row, with its top row's controls (Map, Play all) whole
         // in it, and scrolls, so Search (and the filters, Export and Clear under it) stays in reach without ending the
