@@ -1375,6 +1375,23 @@ Item {
             compare(checkedParts(2), [1], "on to the next part");
         }
 
+        // D9 for Play all parts: the row's last listed part deleted while it plays (the others deleted before) leaves
+        // the open part playing to its end, since the row is still there; the row itself trimmed stops the sheet's play.
+        function test_last_part_deleted_keeps_play_all_parts() {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            tap("recordingPlayAll");
+            var parts = decoderHost.playbackGeneration;
+            testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackToken: 5});
+            verify(callHistory.setRowRecordings(uid, [rec("t-2", pathB, 8000)]));
+            compare(stopCalls(), 0, "an earlier part deleted: it plays on");
+            verify(callHistory.setRowRecordings(uid, []));
+            verify(!item("historyRecording").visible, "no recording is listed");
+            compare(stopCalls(), 0, "the part playing deleted, the row still there: it plays to its end");
+            verify(callHistory.trimRow(uid));
+            compare(lastHostCall().name, "stopPlaybackGeneration", "the row gone: the sheet's play stops");
+            compare(lastHostCall().generation, parts);
+        }
+
         // B10: while a Delete confirmation is out the chip stays put and its words and target are the ones pressed;
         // following catches up once it is dismissed.
         function test_following_waits_for_a_delete_confirmation() {

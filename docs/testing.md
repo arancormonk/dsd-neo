@@ -238,12 +238,13 @@ shown for any seek: only the player's record moves it), the replacement point, t
 reading, a sheet's own play whose file goes right after its one check (`decoder_host_test_hooks.h`) stopping nothing,
 and no status reads while idle or on position-only ticks); and
 `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
-the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three,
-against the fake host's queue model in `qml_test_context.h` (which, as the real host does, publishes no change for a
-reading published again as it stands), with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN`
-(`tst_a11y_now_playing.qml`, the bar's reach, names and gating). What only Android decides (the service's promotion, the
-media session and notification, the media keys, the noisy broadcast, the lock screen, the 10-minute pause with the real
-clock and the release APK's R8 keeps) is
+the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a
+press acting only on the target it began on, a sheet's own play kept its own after it refused a gone part, and Play all
+parts playing on when its row's last listed part is deleted, against the fake host's queue model in `qml_test_context.h`
+(which, as the real host does, publishes no change for a reading published again as it stands), with `playbackSupported`
+set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach, names and gating). What only
+Android decides (the service's promotion, the media session and notification, the media keys, the noisy broadcast, the
+lock screen, the 10-minute pause with the real clock and the release APK's R8 keeps) is
 checked on emulators; `ANDROID_R8` checks the keep rules against the native upcalls, and
 `tools/check_android_r8.py` the release APK.
 `ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the

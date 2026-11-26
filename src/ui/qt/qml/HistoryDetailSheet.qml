@@ -77,6 +77,10 @@ ModalSheet {
         return row >= 0 && historyView.mapFromSource(callHistory.index(row, 0)).valid;
     }
     accessibleName: qsTr("Activity details")
+    // Issue #909: the row is still in the log (not trimmed or cleared), whatever recordings it lists.
+    function rowListed() {
+        return rowUidKey > 0 && callHistory.rowForUid(rowUidKey) >= 0;
+    }
     function open(value) {
         recordingPlayer.reset();
         record = value;
@@ -173,6 +177,7 @@ ModalSheet {
         objectName: "historyRecording"
         width: parent.width
         recordingList: sheet.rowRecordings
+        rowPresent: sheet.rowListed
         dialogParent: sheet
         noticeLine: recordingNotice
         title: sheet.record.when > 0 ? Util.fill(qsTr("%1 · %2"), [sheet.record.name || "", Qt.formatDateTime(new Date(sheet.record.when * 1000), "yyyy-MM-dd hh:mm")]) : (sheet.record.name || "")

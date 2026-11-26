@@ -19974,12 +19974,14 @@ Qt Quick frontend (`src/ui/qt`):
       Resume for the item also in the gap after its call with no player held (its last part failed while it played), a
       seek only on the item's open player; the bar's Next/Previous/Pause/Resume are queue-wide, and its Stop names its
       generation (`stopPlaybackGeneration()`; a Stop for a generation no longer current does nothing). A Delete never
-      stops a queue: only a SINGLE play's own Delete stops it, as before. The playlist belongs to the app
-      (`historyPlaylist`, `playlistStatus` in `Main.qml`), never to a sheet: a sheet stops on close only what it started
-      (a positive generation equal to `playbackGeneration`), and a sheet that follows a playlist item (by path and
-      indexed identity, until the user picks a chip, never while a Save picker or a Delete confirmation is out, never on
-      position ticks) holds none. Part chips and Play all parts start a sheet play, replacing the playlist. D10 (leaving
-      pauses, closing the sheet stops) now applies only to sheet plays.
+      stops a queue: only a SINGLE play's own Delete stops it, as before; a sheet's Play all parts plays on while its
+      History row is there (`CallRecordingPlayer.rowPresent`), even once the row lists none of its parts, and stops
+      when the row is trimmed or cleared or the sheet closes. The playlist belongs to the app (`historyPlaylist`,
+      `playlistStatus` in `Main.qml`), never to a sheet: a sheet stops on close only what it started (a positive
+      generation equal to `playbackGeneration`), and a sheet that follows a playlist item (by path and indexed identity,
+      until the user picks a chip, never while a Save picker or a Delete confirmation is out, never on position ticks)
+      holds none. Part chips and Play all parts start a sheet play, replacing the playlist. D10 (leaving pauses, closing
+      the sheet stops) now applies only to sheet plays.
     - Service (`RecordingPlaybackService.kt`, `foregroundServiceType="mediaPlayback"`, not exported, `START_NOT_STICKY`;
       the decoder's `DecoderService` may run beside it) and its order (`PlaybackServicePhases.kt`, plain Kotlin, one
       lock over admission, the phase NONE / ISSUED / PROMOTED / RETIRING, the reserved request and the owner).

@@ -43,6 +43,11 @@ Column {
     // The sheet's line that shows `notice`, through which a problem is read out
     // (null: this block reads it out itself).
     property Item noticeLine: null
+    // Issue #909: whether the row these recordings belong to is still listed,
+    // asked when the recordings change (null: always, a list with no row of
+    // its own). A row that lists no recording any more is still there; only
+    // the row going (trimmed, cleared) stops this block's Play all parts.
+    property var rowPresent: null
 
     // The part shown, kept on its recording by path: a part that leaves (deleted,
     // or found missing) moves no other part's selection, and the index every label
@@ -567,16 +572,17 @@ Column {
     onPartsChanged: {
         // What this block plays no longer listed: a single recording (the row
         // trimmed away, or its file gone from a call of several) stops, as no
-        // control is left on screen for it. Its parts play on while the row
-        // lists any recording (a part deleted plays to its end and the queue
-        // goes on), and stop once it lists none.
+        // control is left on screen for it. Its parts play on while the row is
+        // there, even once it lists none (D9: a delete never stops a queue, and
+        // the part open plays to its end); the row itself going stops them.
         if (ownsPlay && hostOpen) {
             var listed = false;
             for (var p = 0; p < parts.length; p++) {
                 if (playsFile(parts[p]))
                     listed = true;
             }
-            if (decoderHost.playbackMode === 0 ? !listed : parts.length === 0)
+            var rowThere = typeof rowPresent !== "function" || rowPresent();
+            if (decoderHost.playbackMode === 0 ? !listed : !rowThere)
                 decoderHost.stopPlaybackGeneration(ownedGeneration);
         }
         var kept = false;
