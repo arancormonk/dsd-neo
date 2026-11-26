@@ -3624,12 +3624,38 @@ class ReadingMap : public QQmlPropertyMap {
 
     /* Issue #708: the call recording player, export and share, as the decoderHost map plays them. A play opens at
      * once (Preparing), pause and resume flip the state, a seek moves the position and a stop clears the path, as a
-     * platform host publishes them; a case scripts the rest (Playing, the end, a failure) with setHostReading(). Every
-     * call is kept, oldest first, as {name, ...}. */
+     * platform host publishes them; a case scripts the rest (Playing, the end, a failure) with setHostReading() or
+     * publishPlaybackReading(). Every call is kept, oldest first, as {name, ...}.
+     *
+     * Issue #909, the queue: every play the map takes opens under the next generation (from 1, never reused) at its
+     * first item, Preparing with token 0, and keeps its items for publishPlaybackReading()'s "item". playRecordings()
+     * checks its items as the host does (DecoderHost::playbackItemsValid()) and, while playAccepted is false, refuses
+     * every play: 0, nothing changes. The item commands (seekPlaybackFor() and its kin) act only for the token the
+     * readings show; stopPlaybackGeneration() only for the generation they show while it is open. */
     Q_INVOKABLE void
     playRecording(const QString& path) {
         noteCall(QStringLiteral("playRecording"), {{QStringLiteral("path"), path}});
-        publishPlayback(path, 1, 0, 0, QString());
+        (void)openPlay({QVariantMap{{QStringLiteral("path"), path}}}, dsd_qt::DecoderHost::PlaybackSingle, QString());
+    }
+
+    Q_INVOKABLE int
+    playRecordingOwned(const QString& path) {
+        noteCall(QStringLiteral("playRecordingOwned"), {{QStringLiteral("path"), path}});
+        if (!playAccepted || path.isEmpty()) {
+            return 0;
+        }
+        return openPlay({QVariantMap{{QStringLiteral("path"), path}}}, dsd_qt::DecoderHost::PlaybackSingle, QString());
+    }
+
+    Q_INVOKABLE int
+    playRecordings(const QVariantList& items, int mode, const QString& origin) {
+        noteCall(
+            QStringLiteral("playRecordings"),
+            {{QStringLiteral("items"), items}, {QStringLiteral("mode"), mode}, {QStringLiteral("origin"), origin}});
+        if (!playAccepted || !dsd_qt::DecoderHost::playbackItemsValid(items, mode)) {
+            return 0;
+        }
+        return openPlay(items, mode, origin);
     }
 
     Q_INVOKABLE void
@@ -3649,6 +3675,16 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     Q_INVOKABLE void
+    nextPlayback() {
+        noteCall(QStringLiteral("nextPlayback"), {});
+    }
+
+    Q_INVOKABLE void
+    previousPlayback() {
+        noteCall(QStringLiteral("previousPlayback"), {});
+    }
+
+    Q_INVOKABLE void
     seekPlayback(qint64 positionMs) {
         noteCall(QStringLiteral("seekPlayback"), {{QStringLiteral("ms"), positionMs}});
         if (!seekApplied) {
@@ -3659,9 +3695,114 @@ class ReadingMap : public QQmlPropertyMap {
     }
 
     Q_INVOKABLE void
+    seekPlaybackFor(qint64 token, qint64 positionMs) {
+        noteCall(QStringLiteral("seekPlaybackFor"),
+                 {{QStringLiteral("token"), token}, {QStringLiteral("ms"), positionMs}});
+        if (!tokenCurrent(token) || !seekApplied || !value(QStringLiteral("playbackCanSeek")).toBool()) {
+            return;
+        }
+        insert(QStringLiteral("playbackPositionMs"), positionMs);
+        Q_EMIT playbackPositionChanged();
+    }
+
+    Q_INVOKABLE void
+    pausePlaybackFor(qint64 token) {
+        noteCall(QStringLiteral("pausePlaybackFor"), {{QStringLiteral("token"), token}});
+        if (tokenCurrent(token)) {
+            publishPlaybackReading({{QStringLiteral("playbackState"), 3},
+                                    {QStringLiteral("playbackPausedReason"), QStringLiteral("user")}});
+        }
+    }
+
+    Q_INVOKABLE void
+    resumePlaybackFor(qint64 token) {
+        noteCall(QStringLiteral("resumePlaybackFor"), {{QStringLiteral("token"), token}});
+        if (tokenCurrent(token)) {
+            publishPlaybackReading(
+                {{QStringLiteral("playbackState"), 2}, {QStringLiteral("playbackPausedReason"), QString()}});
+        }
+    }
+
+    Q_INVOKABLE void
+    stopPlaybackGeneration(int generation) {
+        noteCall(QStringLiteral("stopPlaybackGeneration"), {{QStringLiteral("generation"), generation}});
+        const int state = value(QStringLiteral("playbackState")).toInt();
+        if (generation > 0 && generation == value(QStringLiteral("playbackGeneration")).toInt() && state >= 1
+            && state <= 3) {
+            publishIdlePlayback();
+        }
+    }
+
+    Q_INVOKABLE void
     stopPlayback() {
         noteCall(QStringLiteral("stopPlayback"), {});
-        publishPlayback(QString(), 0, 0, 0, QString());
+        publishIdlePlayback();
+    }
+
+    /** @brief Every playback reading at rest: no play, nothing open (DecoderHost::PlaybackReading's defaults). */
+    static QVariantMap
+    idlePlaybackReadings() {
+        return {{QStringLiteral("playbackPath"), QString()},
+                {QStringLiteral("playbackState"), 0},
+                {QStringLiteral("playbackPositionMs"), qint64{0}},
+                {QStringLiteral("playbackDurationMs"), qint64{0}},
+                {QStringLiteral("playbackError"), QString()},
+                {QStringLiteral("playbackGeneration"), 0},
+                {QStringLiteral("playbackMode"), 0},
+                {QStringLiteral("playbackOrigin"), QString()},
+                {QStringLiteral("playbackToken"), qint64{0}},
+                {QStringLiteral("playbackKey"), QString()},
+                {QStringLiteral("playbackTitle"), QString()},
+                {QStringLiteral("playbackCallIndex"), -1},
+                {QStringLiteral("playbackCallCount"), 0},
+                {QStringLiteral("playbackPartOrdinal"), 0},
+                {QStringLiteral("playbackPartCount"), 0},
+                {QStringLiteral("playbackGap"), false},
+                {QStringLiteral("playbackInterrupted"), false},
+                {QStringLiteral("playbackCanSeek"), false},
+                {QStringLiteral("playbackPausedReason"), QString()},
+                {QStringLiteral("playbackEndedReason"), QString()},
+                {QStringLiteral("playbackSkipped"), 0},
+                {QStringLiteral("playbackHoldPath"), QString()}};
+    }
+
+    /** @brief Every reading back at rest, announced once (a host stop). */
+    void
+    publishIdlePlayback() {
+        const QVariantMap idle = idlePlaybackReadings();
+        for (auto it = idle.cbegin(); it != idle.cend(); ++it) {
+            insert(it.key(), it.value());
+        }
+        Q_EMIT playbackChanged();
+        Q_EMIT playbackPositionChanged();
+    }
+
+    /**
+     * @brief Set the playback readings @p readings names (full property names, e.g. playbackToken) at once, as one
+     * platform record does: playbackChanged once when any but the position is named, playbackPositionChanged when
+     * the position is. "item" names an index into the open play's items instead, setting playbackPath, Title, Key,
+     * CallIndex, PartOrdinal and PartCount from it. playbackHoldPath follows (a single recording's path while open)
+     * unless @p readings names it.
+     */
+    void
+    publishPlaybackReading(const QVariantMap& readings) {
+        for (auto it = readings.cbegin(); it != readings.cend(); ++it) {
+            if (it.key() == QLatin1String("item")) {
+                showItem(it.value().toInt());
+            } else {
+                insert(it.key(), it.value());
+            }
+        }
+        if (!readings.contains(QStringLiteral("playbackHoldPath"))) {
+            followHold();
+        }
+        const bool moved = readings.contains(QStringLiteral("playbackPositionMs"));
+        if (readings.size() > (moved ? 1 : 0)) {
+            Q_EMIT playbackChanged();
+        }
+        if (moved) {
+            Q_EMIT playbackPositionChanged();
+        }
     }
 
     Q_INVOKABLE bool
@@ -3845,6 +3986,8 @@ class ReadingMap : public QQmlPropertyMap {
         noteFileCall(QStringLiteral("cancelFileRequest"), {{QStringLiteral("id"), requestId}});
     }
 
+    /* The five #708 readings at once; the queue's are kept, but for playbackCanSeek (Playing or Paused with a length,
+     * as the base host's single reading) and playbackHoldPath. */
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -3852,8 +3995,61 @@ class ReadingMap : public QQmlPropertyMap {
         insert(QStringLiteral("playbackPositionMs"), positionMs);
         insert(QStringLiteral("playbackDurationMs"), durationMs);
         insert(QStringLiteral("playbackError"), error);
+        insert(QStringLiteral("playbackCanSeek"), (state == 2 || state == 3) && durationMs > 0);
+        followHold();
         Q_EMIT playbackChanged();
         Q_EMIT playbackPositionChanged();
+    }
+
+    /* Open @p items as @p mode under the next generation, at its first item: Preparing, nothing else known yet. */
+    int
+    openPlay(const QVariantList& items, int mode, const QString& origin) {
+        const int generation = ++lastGeneration;
+        playedItems = items;
+        const QVariantMap idle = idlePlaybackReadings();
+        for (auto it = idle.cbegin(); it != idle.cend(); ++it) {
+            insert(it.key(), it.value());
+        }
+        insert(QStringLiteral("playbackGeneration"), generation);
+        insert(QStringLiteral("playbackMode"), mode);
+        insert(QStringLiteral("playbackOrigin"), origin);
+        insert(QStringLiteral("playbackState"), 1);
+        showItem(0);
+        followHold();
+        Q_EMIT playbackChanged();
+        Q_EMIT playbackPositionChanged();
+        return generation;
+    }
+
+    /* The open play's item @p index as the readings' item (an index out of its items changes nothing). */
+    void
+    showItem(int index) {
+        if (index < 0 || index >= playedItems.size()) {
+            return;
+        }
+        const QVariantMap item = playedItems.at(index).toMap();
+        insert(QStringLiteral("playbackPath"), item.value(QStringLiteral("path")).toString());
+        insert(QStringLiteral("playbackTitle"), item.value(QStringLiteral("title")).toString());
+        insert(QStringLiteral("playbackKey"), item.value(QStringLiteral("key")).toString());
+        insert(QStringLiteral("playbackCallIndex"), item.value(QStringLiteral("call")).toInt());
+        insert(QStringLiteral("playbackCallCount"),
+               playedItems.last().toMap().value(QStringLiteral("call")).toInt() + 1);
+        insert(QStringLiteral("playbackPartOrdinal"), item.value(QStringLiteral("partOrdinal")).toInt());
+        insert(QStringLiteral("playbackPartCount"), item.value(QStringLiteral("partCount")).toInt());
+    }
+
+    /* playbackHoldPath as the host derives it: a single recording's path while it is open. */
+    void
+    followHold() {
+        const int state = value(QStringLiteral("playbackState")).toInt();
+        const bool single = value(QStringLiteral("playbackMode")).toInt() == dsd_qt::DecoderHost::PlaybackSingle;
+        insert(QStringLiteral("playbackHoldPath"),
+               single && state >= 1 && state <= 3 ? value(QStringLiteral("playbackPath")).toString() : QString());
+    }
+
+    bool
+    tokenCurrent(qint64 token) const {
+        return token > 0 && token == value(QStringLiteral("playbackToken")).toLongLong();
     }
 
     QVariantList calls;
@@ -3863,6 +4059,11 @@ class ReadingMap : public QQmlPropertyMap {
     bool shareAccepted = true;
     /* Issue #782: false for a host that ignores a seek (a platform player that clamps it or drops it). */
     bool seekApplied = true;
+    /* Issue #909: false for a host that refuses every play before taking it (0, nothing changes). */
+    bool playAccepted = true;
+    /* Issue #909: the last play's generation (each play takes the next one) and items. */
+    int lastGeneration = 0;
+    QVariantList playedItems;
 
   Q_SIGNALS:
     void playbackChanged();
@@ -5997,7 +6198,9 @@ class Setup : public QObject {
         }
         m_host_readings->shareAccepted = true;
         m_host_readings->seekApplied = true;
-        m_host_readings->publishPlayback(QString(), 0, 0, 0, QString());
+        m_host_readings->playAccepted = true;
+        m_host_readings->playedItems.clear();
+        m_host_readings->publishIdlePlayback();
         setHostReading(QStringLiteral("recordingTransferActive"), false);
         setHostReading(QStringLiteral("recordingTransferBytes"), 0);
         setHostReading(QStringLiteral("recordingTransferTotalBytes"), 0);
@@ -6007,6 +6210,47 @@ class Setup : public QObject {
     Q_INVOKABLE void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         m_host_readings->publishPlayback(path, state, positionMs, durationMs, error);
+    }
+
+    /**
+     * @brief Issue #909: publish the playback readings @p readings names at once, as one platform record does (see
+     * ReadingMap::publishPlaybackReading(): full property names, plus "item" for an index into the open play's items).
+     */
+    Q_INVOKABLE void
+    publishPlaybackReading(const QVariantMap& readings) {
+        m_host_readings->publishPlaybackReading(readings);
+    }
+
+    /** @brief Issue #909: the items of the last play the decoderHost map took. */
+    Q_INVOKABLE QVariantList
+    playedItems() const {
+        return m_host_readings->playedItems;
+    }
+
+    /** @brief Issue #909: the generation of the last play the decoderHost map took (0: none yet). */
+    Q_INVOKABLE int
+    lastPlaybackGeneration() const {
+        return m_host_readings->lastGeneration;
+    }
+
+    /** @brief Issue #909: whether the decoderHost map takes plays (false: each is refused, answering 0). */
+    Q_INVOKABLE void
+    setPlaybackAccepted(bool accepted) {
+        m_host_readings->playAccepted = accepted;
+    }
+
+    /**
+     * @brief Issue #909 (B6): whether the decoderHost map has a player; false until a case says. Production reads it as
+     * a CONSTANT, so set it before loading the screen under test.
+     */
+    Q_INVOKABLE void
+    setPlaybackSupported(bool supported) {
+        m_host[QStringLiteral("playbackSupported")] = supported;
+        m_host_readings->insert(QStringLiteral("playbackSupported"), supported);
+        QQmlContext* ctx = m_engine->rootContext();
+        if (ctx->contextProperty(QStringLiteral("decoderHost")).value<QObject*>() == m_host_readings) {
+            ctx->setContextProperty(QStringLiteral("decoderHost"), m_host_readings);
+        }
     }
 
     /** @brief What the decoderHost map's shareRecording() answers. */
@@ -8197,11 +8441,7 @@ class Setup : public QObject {
         host[QStringLiteral("keyboardTop")] = -1;
         /* Issue #708: no player and no zip, as the base host; a case scripts the playback and transfer states. */
         host[QStringLiteral("playbackSupported")] = false;
-        host[QStringLiteral("playbackPath")] = QString();
-        host[QStringLiteral("playbackState")] = 0;
-        host[QStringLiteral("playbackPositionMs")] = 0;
-        host[QStringLiteral("playbackDurationMs")] = 0;
-        host[QStringLiteral("playbackError")] = QString();
+        host.insert(ReadingMap::idlePlaybackReadings());
         host[QStringLiteral("recordingExportSupported")] = false;
         host[QStringLiteral("recordingTransferActive")] = false;
         host[QStringLiteral("recordingTransferBytes")] = 0;
