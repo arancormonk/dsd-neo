@@ -32,7 +32,7 @@ observed, not inferred; the synthetic addition is explicitly identified.
 | `trs_details_edacs.xml`, `trs_sites_edacs.xml`, `trs_talkgroups_edacs.xml` | sid 220 | Hillsborough County FL, EDACS Networked Standard — 2 sites, 8 contiguous LCNs each |
 | `trs_details_dmr_conv.xml`, `trs_sites_dmr_conv.xml`, `trs_talkgroups_dmr_conv.xml` | sid 9340 | Iowa DMR Users Group, DMR **Conventional Networked** — **36 single-frequency sites**, 14 talkgroups |
 | `trs_sites_dmr_conv_small.xml` | sid 12244 | Linn County REC, DMR Conventional Networked — 2 sites, the ordinary small case |
-| `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` `11-24-2026` |
+| `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` moved from the captured `11-24-2026` to `11-24-2099`, so the account the tests sign in with stays valid under the real clock |
 | `fault_auth.xml` | `getUserData` with a wrong password | HTTP 500, `faultcode` `AUTH` |
 | `trs_details_tetra.xml`, `trs_sites_tetra.xml`, `trs_talkgroups_tetra.xml`, `trs_talkgroup_cats_tetra.xml` | sid 10880 | Kordia KorKor (Auckland, NZ), TETRA — 9 sites, 24 freqs, 16 TGs, 1 category; captured 2026-11-01, see below |
 
