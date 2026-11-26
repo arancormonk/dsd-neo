@@ -55,12 +55,14 @@ ModalSheet {
     // Monitor, Home, Signal search). Shown while the host has a player and the
     // row has a recording that can be played and is among the rows History
     // shows. The press asks History first (playFromHereRequested), so a search
-    // still being typed is part of what the list shows.
+    // still being typed is part of what the list shows. A row whose only
+    // recordings wait for their delete still shows it: the press answers that
+    // nothing of this call can be played now.
     property bool showPlayFromHere: false
     signal playFromHereRequested
     readonly property bool rowPlayable: {
         for (var i = 0; i < rowRecordings.length; i++) {
-            if (rowRecordings[i].available !== false && rowRecordings[i].deleteQueued !== true)
+            if (rowRecordings[i].available !== false)
                 return true;
         }
         return false;

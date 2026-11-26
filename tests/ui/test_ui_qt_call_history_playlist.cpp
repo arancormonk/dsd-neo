@@ -363,6 +363,10 @@ test_play_from_here() {
     expect(__LINE__, is_outcome(playlist.start(std::numeric_limits<double>::quiet_NaN()), "gone", 0, 0));
     expect(__LINE__, is_outcome(playlist.start(std::numeric_limits<double>::infinity()), "gone", 0, 0));
     expect(__LINE__, f.provider.batchReads == reads + 3 && f.host.plays == 2);
+    // A start row whose only recording waits for its delete has nothing to play now either.
+    f.provider.byFragment[QStringLiteral("F3")] = {recording(QStringLiteral("/r/f3.wav"), 1300, true, true)};
+    expect(__LINE__, is_outcome(playlist.start(f.uid(QStringLiteral("Fire East"))), "rowNone", 0, 0));
+    expect(__LINE__, f.host.plays == 2);
 
     // A row the search hides (as after the search flush) is gone; shown again, it plays.
     const double city = f.uid(QStringLiteral("City Fire"));

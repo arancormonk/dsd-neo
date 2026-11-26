@@ -1372,7 +1372,11 @@ Item {
             verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000, {available: false})]));
             verify(!button.visible, "nothing that can be played");
             verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000, {deleteQueued: true})]));
-            verify(!button.visible, "a delete waiting");
+            verify(button.visible, "a delete waiting is the press's to answer");
+            testContext.setHistoryPlaylistAnswer("rowNone", []);
+            press("historyPlayFromHere");
+            verify(sheet().visible);
+            compare(item("recordingNotice").text, "This call's recording can't be played now.");
             verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000)]));
             verify(button.visible);
             historyView.filterText = "no-row-matches-this";
