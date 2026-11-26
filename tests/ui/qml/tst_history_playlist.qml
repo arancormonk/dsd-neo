@@ -335,6 +335,32 @@ Item {
             compare(line(idle()), "Skipped 2 recordings that couldn't be played");
         }
 
+        // A skip seen on a call's last part or in the gap after it is said on the next call that plays, not on the
+        // call it happened on; the records passed on the way (the next call opening, or failing in its turn) keep it.
+        function test_skip_in_the_gap_said_on_the_call_after() {
+            var calls = logCalls(5);
+            playAll(idle(), calls, [2, 1, 1, 1, 1]);
+            playing({item: 0, playbackToken: 7});
+            // Call 1's last part failed while it played: the gap after it.
+            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 8, playbackSkipped: 1});
+            playing({item: 1, playbackToken: 8, playbackGap: true, playbackPositionMs: 31000});
+            compare(line(idle()), "Call 1 of 5 · part 2 of 2 · 0:31 / 0:31", "not said on the call it happened on");
+            testContext.publishPlaybackReading({item: 2, playbackState: 1, playbackToken: 9, playbackGap: false});
+            compare(line(idle()), "Opening…");
+            playing({item: 2, playbackToken: 9});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played", "said on the call after");
+            playing({item: 2, playbackToken: 9, playbackPositionMs: 20000});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played", "while that call plays");
+            // In call 2's gap call 3 fails in its turn (a record on call 3), and call 4 plays.
+            playing({item: 2, playbackToken: 9, playbackGap: true});
+            testContext.publishPlaybackReading({item: 3, playbackState: 1, playbackToken: 10, playbackGap: false, playbackSkipped: 2});
+            compare(line(idle()), "Opening…");
+            testContext.publishPlaybackReading({item: 4, playbackState: 1, playbackToken: 11});
+            playing({item: 4, playbackToken: 11});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played", "the record passed on the way kept it");
+            compare(status.skipCall, 3, "on call 4, the call after");
+        }
+
         // Previous, Pause/Resume and Next drive the whole playlist; Next is not offered at the last call.
         function test_bar_controls() {
             var calls = logCalls(2);

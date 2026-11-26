@@ -29,9 +29,13 @@ QtObject {
     property var ended: null
     // Its audio started ("Playing 41 calls" was said).
     property bool started: false
-    // The recordings it skipped before the call it is on, said on the bar
-    // while that call plays ("on the call after a skip").
+    // The recordings it skipped on the way to the call it is on, said on the
+    // bar while that call plays ("on the call after a skip"): a skip waits
+    // (skipPending) until a part plays after it, never the gap after the
+    // call it happened on, nor a record passed on the way, and is said on
+    // that part's call until the call changes.
     property int skippedSeen: 0
+    property int skipPending: 0
     property int skipCall: -1
     property int skipCount: 0
     property string pausedReason: ""
@@ -95,6 +99,7 @@ QtObject {
         ended = null;
         started = false;
         skippedSeen = 0;
+        skipPending = 0;
         skipCall = -1;
         skipCount = 0;
         pausedReason = "";
@@ -152,11 +157,21 @@ QtObject {
                 note(endedText(ended));
             return;
         }
+        var call = Number(host.playbackCallIndex);
+        if (skipCall >= 0 && call !== skipCall) {
+            skipCall = -1;
+            skipCount = 0;
+        }
         var skipped = Number(host.playbackSkipped) || 0;
         if (skipped > skippedSeen) {
-            skipCount = (skipCall === host.playbackCallIndex ? skipCount : 0) + skipped - skippedSeen;
-            skipCall = host.playbackCallIndex;
+            skipPending += skipped - skippedSeen;
             skippedSeen = skipped;
+        }
+        if (skipPending > 0 && state === 2 && !host.playbackGap) {
+            // Added to one already said on this call (a part of it skipped).
+            skipCount += skipPending;
+            skipCall = call;
+            skipPending = 0;
         }
         if (state === 2 && !started) {
             started = true;
