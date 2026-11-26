@@ -616,11 +616,13 @@ private fun theGapReadsFrozenAndPausesWithIt() {
     rig.elapse(60_000)
     check(rig.players.size == 1) { "a paused gap does not run out" }
     rig.machine.resume()
-    check(!finished.started && rig.players.size == 1) { "Play does not replay the finished part" }
-    rig.elapse(399)
-    check(rig.players.size == 1) { "the gap goes on with what was left of it" }
-    rig.elapse(1)
-    check(rig.last.path == path(1, 1)) { "then the next call opens" }
+    check(!finished.started && finished.seeks.isEmpty()) { "Play does not replay the finished part" }
+    check(rig.last.path == path(1, 1) && !rig.status.gap && rig.focus.requests.size == 2) {
+        "Play in a paused gap opens the next call at once, the gap not resumed"
+    }
+    check(rig.scheduler.live().none { it.delayMs > 0 }) { "no gap task is left" }
+    rig.prepared()
+    check(rig.state == PLAYING) { "and plays it" }
 }
 
 private fun nextOpensTheNextCallAtOnceAlsoFromTheGap() {
@@ -771,10 +773,18 @@ private fun lateCallbacksTasksAndFocusAreDropped() {
     pauses.machine.resume()
     pauses.machine.pause()
     pauses.nowMs += 300_000
+    val secondDeadline = pauses.scheduler.live().single()
     firstDeadline.force()
-    check(pauses.state == PAUSED) { "an earlier pause's deadline task is dropped" }
-    pauses.elapse(300_000)
-    check(pauses.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "the second pause's runs out" }
+    check(pauses.state == PAUSED && pauses.scheduler.live() == listOf(secondDeadline)) {
+        "an earlier pause's deadline task is dropped: it neither ends the play nor waits again"
+    }
+    pauses.machine.resume()
+    firstDeadline.force()
+    secondDeadline.force()
+    check(pauses.state == PLAYING && pauses.scheduler.live().isEmpty()) { "after a resume neither deadline acts" }
+    pauses.machine.pause()
+    pauses.elapse(600_000)
+    check(pauses.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "the third pause's runs out" }
 
     // A focus change for an earlier request.
     val epochs = Rig()
@@ -922,14 +932,40 @@ private fun goneChangedAndDamagedRecordingsAreSkipped() {
         }
     }
 
-    // A damaged error from a part already playing skips forward too.
+    // A damaged error from a call's last part while it plays is followed as a completion: the gap, then the next call.
     val playing = Rig()
     playing.queue(1, 1)
     playing.prepared()
+    playing.nowMs += 2_000
     playing.machine.onFailed(playing.current.token, RecordingPlayer.REASON_DAMAGED)
     check(playing.status.skipped == 1 && playing.players.size == 1) { "skipped on the next turn, not at once" }
     playing.turn()
+    check(playing.status.gap && playing.players.size == 1 && playing.state == PLAYING) { "the gap after its call" }
+    check(playing.position == 2_000L && !playing.status.canSeek) { "frozen where it failed, no seek" }
+    playing.elapse(999)
+    check(playing.players.size == 1) { "the gap lasts a second" }
+    playing.elapse(1)
     check(playing.last.path == path(1, 1)) { "then the next call opens" }
+
+    // One from a part before the call's last: the rest of the call at once, no gap.
+    val part = Rig()
+    part.queue(2, 1)
+    part.prepared()
+    part.machine.onFailed(part.current.token, RecordingPlayer.REASON_DAMAGED)
+    part.turn()
+    check(part.last.path == path(0, 2) && !part.status.gap) { "the call's next part at once" }
+
+    // The last call's last part: it ends, finished, with the skip counted.
+    val end = Rig()
+    end.queue(1, 1)
+    end.playOut()
+    end.elapse(1_000)
+    end.prepared()
+    end.machine.onFailed(end.current.token, RecordingPlayer.REASON_DAMAGED)
+    end.turn()
+    check(end.state == STOPPED && end.status.endedReason == RecordingPlayer.ENDED_FINISHED && end.status.skipped == 1) {
+        "finished: not every recording failed"
+    }
 }
 
 private fun allFailedEndsAndGoodThenFailuresFinishes() {
@@ -950,7 +986,24 @@ private fun allFailedEndsAndGoodThenFailuresFinishes() {
     good.elapse(1_000)
     good.turn()
     check(good.state == STOPPED && good.status.endedReason == RecordingPlayer.ENDED_FINISHED) { "good then failures finishes" }
-    check(good.status.call == 0 && good.focus.abandons == 1) { "on the call that played" }
+    check(good.status.call == 0 && good.focus.abandons == 1 && good.status.skipped == 2) {
+        "on the call that played, with the skipped count"
+    }
+
+    // Every recording failed, even one that played in part first: couldn't play these recordings.
+    val partly = Rig()
+    partly.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+    val p = partly.queue(1, 1)
+    partly.prepared()
+    partly.nowMs += 5_000
+    partly.machine.onFailed(partly.current.token, RecordingPlayer.REASON_DAMAGED)
+    partly.turn()
+    partly.elapse(1_000)
+    partly.turn()
+    check(partly.state == FAILED && partly.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
+        "every item failed: unplayable, whatever played in part"
+    }
+    check(partly.service.ends == listOf(p to RecordingPlayer.ENDED_UNPLAYABLE)) { "settled once" }
 
     // Many failures in a row: one per turn, and a Stop between turns ends the search.
     val many = Rig()
@@ -1057,7 +1110,97 @@ private fun previousPassesOverACallWhoseRecordingsAllFailed() {
     ahead.fail(path(0, 1), RecordingPlayer.REASON_GONE)
     ahead.queue(1, 1)
     ahead.machine.previous()
+    ahead.turn()
     check(ahead.last.path == path(1, 1)) { "Previous during the first skip still reaches what plays" }
+    check(ahead.opener.opened == listOf(path(0, 1), path(1, 1))) { "without reopening the failed one" }
+
+    val nothing = Rig()
+    for (call in 0..2) nothing.fail(path(call, 1), RecordingPlayer.REASON_GONE)
+    nothing.queue(1, 1, 1, start = 1)
+    nothing.machine.previous()
+    nothing.turn()
+    check(nothing.state == FAILED && nothing.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
+        "backward, then forward with no player: every item failed, unplayable"
+    }
+    check(nothing.opener.opened.sorted() == (0..2).map { path(it, 1) }) { "each tried once" }
+
+    val rest = Rig()
+    rest.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+    rest.fail(path(2, 1), RecordingPlayer.REASON_GONE)
+    rest.queue(1, 1, 1, start = 1)
+    rest.machine.previous()
+    check(rest.last.path == path(0, 1)) { "backward it reaches the call before the start" }
+}
+
+private fun previousDuringASkipDoesNotWaitForTheTurn() {
+    // A good, B's first part gone, B's second part good: Previous issued before or after B1's skip turn reaches A.
+    for (beforeTurn in listOf(true, false)) {
+        val rig = Rig()
+        rig.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+        rig.queue(1, 2, 1)
+        rig.prepared()
+        val a = rig.current
+        rig.complete()
+        rig.nowMs += 1_000
+        rig.scheduler.live().single().force() // the gap's task: B1 is tried and fails
+        check(rig.opener.opened.last() == path(1, 1) && rig.status.skipped == 1) { "B1 failed" }
+        if (!beforeTurn) {
+            rig.turn()
+            check(rig.last.path == path(1, 2) && rig.state == PREPARING) { "B2 is opening" }
+        }
+        rig.machine.previous()
+        check(rig.current === a && a.seeks == listOf(0L) && rig.status.call == 0 && rig.position == 0L) {
+            "before the turn = $beforeTurn: A restarts at 0 on its open player"
+        }
+        rig.turn()
+        check(rig.current === a && a.started && rig.state == PLAYING) { "and plays; the skip search is over" }
+        check(rig.opener.opened.count { it == path(1, 1) } == 1) { "B1 is not tried again" }
+    }
+}
+
+private fun aRefusedResumeStaysPausedInEveryMode() {
+    // A playlist paused while its first part opens, resumed during a phone call: still paused, not failed.
+    val opening = Rig()
+    opening.queue(1, 1)
+    opening.machine.pause()
+    opening.prepared()
+    opening.focus.grants = false
+    opening.machine.resume()
+    check(opening.state == PAUSED && opening.status.pausedReason == RecordingPlayer.PAUSED_UNAVAILABLE) {
+        "a resume refused the focus stays paused, though no request had been granted yet"
+    }
+    check(opening.status.endedReason.isEmpty() && !opening.current.released) { "it has not ended" }
+    opening.focus.grants = true
+    opening.machine.resume()
+    check(opening.state == PLAYING) { "a later resume plays" }
+
+    // The same in a paused gap: Play is refused and nothing opens.
+    val gap = Rig()
+    gap.queue(1, 1)
+    gap.prepared()
+    gap.complete()
+    gap.machine.pause()
+    gap.focus.grants = false
+    gap.machine.resume()
+    check(gap.state == PAUSED && gap.status.gap && gap.players.size == 1) { "a refused Play leaves the gap paused" }
+
+    // SINGLE and PARTS too; only the play's own start refused fails it.
+    for (mode in listOf(-1, MODE_PARTS)) {
+        val rig = Rig()
+        if (mode < 0) rig.play() else rig.queue(2, mode = mode)
+        rig.prepared()
+        rig.machine.pause()
+        rig.focus.grants = false
+        rig.machine.resume()
+        check(rig.state == PAUSED && rig.status.pausedReason == RecordingPlayer.PAUSED_UNAVAILABLE) {
+            "mode $mode: a refused resume stays paused"
+        }
+    }
+    val parts = Rig()
+    parts.focus.grants = false
+    parts.queue(2, mode = MODE_PARTS)
+    parts.prepared()
+    check(parts.state == FAILED && parts.status.error == RecordingPlayer.ERROR_UNAVAILABLE) { "refused at its start it fails" }
 }
 
 private fun aPauseHoldsWhileItSearches() {
@@ -1377,6 +1520,8 @@ fun main() {
     allFailedEndsAndGoodThenFailuresFinishes()
     failuresArePerRecordingAndKeepTheirDirection()
     previousPassesOverACallWhoseRecordingsAllFailed()
+    previousDuringASkipDoesNotWaitForTheTurn()
+    aRefusedResumeStaysPausedInEveryMode()
     aPauseHoldsWhileItSearches()
     theRecheckListOutlivesThePlayAndHandsEachPathOnce()
     theTableDrivesStateSpeedAndActions()

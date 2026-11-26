@@ -53,15 +53,20 @@ class RecordingRecheck {
  * not current is dropped.
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
- * when the part open is not the call's first playable part, the position is past [RESTART_MS] or it is in the gap;
- * otherwise it opens the previous call's first playable part, and at the first call it restarts. Restarting the part
- * already open is a seek to 0 on that player, never a reopen; moving to another part keeps the open player until the
- * new one has prepared, and a backward move whose every candidate fails stays on it at 0. A move that finds nothing
- * forward finishes (or, when nothing ever played, ends "unplayable"); one backward with no open player goes on forward.
- * Each search visits each recording at most once; the next candidate after a failure opens on the next looper turn.
+ * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
+ * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. Restarting the
+ * part already open is a seek to 0 on that player, never a reopen; moving to another part keeps the open player until
+ * the new one has prepared, and a backward move whose every candidate fails stays on it at 0. A move that finds nothing
+ * forward ends the play: "unplayable" when every recording of the play failed, else finished. One backward with no
+ * open player goes on forward. Each search visits each recording at most once; the next candidate after a failure
+ * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
+ * of its call at once, then the gap before the next call. Play in a paused gap opens the next call at once.
  *
- * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS] from the pause, checked by a task and at every event
- * against the elapsed clock; navigating while paused does not extend it. A transient focus loss interrupts (the request
+ * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
+ * which nothing was wanted or the focus was away, checked by a task and at every event against the elapsed clock.
+ * Neither navigating while paused, the app's Pause during an interruption nor a refused resume restarts or extends
+ * it; only audio carrying on (or wanted again) ends the stretch. A focus request refused for the play's own start ends
+ * it as unavailable; one refused for a resume leaves it paused (any mode). A transient focus loss interrupts (the request
  * stays outstanding, Play is a no-op, the app's Pause cancels the carry-on); a lasting one ends a PLAYLIST and pauses
  * SINGLE and PARTS. Headphones unplugged ([onNoisy]) pause every mode. An ended play keeps its terminal reading
  * (generation, reason, the item it ended on) until the next play, so the host reads a Stop it did not ask for.
@@ -207,7 +212,7 @@ class RecordingPlayer(
         val endedReason: String,
         val skipped: Int,
         val recheckSerial: Int,
-        /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED or SESSION_STOPPED (§1.2's table). */
+        /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED or SESSION_STOPPED (the playlist table). */
         val sessionState: Int,
         /** The ACTION_* bits the session offers. */
         val actions: Int,
@@ -294,7 +299,7 @@ class RecordingPlayer(
         /** PLAYLIST: paused or interrupted for [PAUSED_LIMIT_MS]. */
         const val ENDED_TIMEOUT = "timeout"
 
-        /** PLAYLIST: no recording could be played, and none had played. FAILED, error "failed". */
+        /** PLAYLIST: every recording of the play failed (one that played in part included). FAILED, error "failed". */
         const val ENDED_UNPLAYABLE = "unplayable"
 
         /** PLAYLIST: the service was refused or not promoted in time. FAILED, error "failed". */
@@ -374,14 +379,14 @@ class RecordingPlayer(
     private var durationMs = 0L
     private var held: Held? = null
     private var move: Move? = null
-    private var playedAny = false
     private var wanted = false
     private var pausedReason = ""
     private var promoted = true
     private var earlyPromoted = 0
     private var earlyRefused = 0
     private var focusHeld = false
-    private var focusEverHeld = false
+    /** The next focus request is the play's own start (not a resume): refused, it ends the play. */
+    private var startRequest = true
     private var focusEpoch = 0
     private var interrupted = false
     private var gap = false
@@ -446,7 +451,12 @@ class RecordingPlayer(
         if (!wanted) {
             wanted = true
             pausedReason = ""
-            advance()
+            startRequest = false
+            if (gap) {
+                resumeFromGap()
+            } else {
+                advance()
+            }
         }
     }
 
@@ -564,7 +574,6 @@ class RecordingPlayer(
             return
         }
         prepared = true
-        playedAny = true
         durationMs = current.durationMs.coerceAtLeast(0)
         positionMs = 0
         releaseHeld()
@@ -666,8 +675,9 @@ class RecordingPlayer(
         move = null
         val open = held
         when {
-            search.gapAfter && open != null && hasCallAfter(items[open.index].call) -> {
-                adopt(open, open.durationMs)
+            search.gapAfter && hasCallAfter(currentCall()) -> {
+                // A held player is the part that completed; with none (it failed while playing), the gap has none.
+                open?.let { adopt(it, it.durationMs) }
                 enterGap()
             }
             !search.forward && open != null -> {
@@ -676,7 +686,8 @@ class RecordingPlayer(
                 advance()
             }
             !search.forward -> beginMove(Move(after(search.resumeAfter), forward = true))
-            playedAny -> {
+            failed.all { it } -> end(FAILED, ERROR_FAILED, ENDED_UNPLAYABLE)
+            else -> {
                 if (open != null) {
                     index = open.index
                     token = open.token
@@ -685,7 +696,6 @@ class RecordingPlayer(
                 }
                 end(STOPPED, "", ENDED_FINISHED)
             }
-            else -> end(FAILED, ERROR_FAILED, ENDED_UNPLAYABLE)
         }
     }
 
@@ -703,8 +713,10 @@ class RecordingPlayer(
 
     private fun moveBack() {
         val call = currentCall()
-        val first = (callStarts[call]..callEnd(call)).firstOrNull { !failed[it] } ?: -1
-        val restart = gap || index != first || currentPositionMs() > RESTART_MS
+        // A playable part of this call before the current one (never the current one itself, which may have just
+        // failed and wait for its skip): restart the call.
+        val playableBefore = (callStarts[call] until index).any { !failed[it] }
+        val restart = gap || playableBefore || currentPositionMs() > RESTART_MS
         val earlier = if (restart) emptyList() else (call - 1 downTo 0).flatMap { callStarts[it]..callEnd(it) }
         val candidates = (earlier + span(callStarts[call], callEnd(call)).asList()).toIntArray()
         if (candidates.firstOrNull { !failed[it] } == index && player != null && !prepared) {
@@ -759,6 +771,8 @@ class RecordingPlayer(
 
     /** The current recording cannot be played: end the play, or (PLAYLIST) mark it and search on, next turn. */
     private fun failItem(reason: String) {
+        val wasOpen = prepared
+        positionMs = currentPositionMs()
         player?.release()
         player = null
         prepared = false
@@ -784,7 +798,12 @@ class RecordingPlayer(
             skipped++
         }
         if (move == null) {
-            move = Move(after(index), forward = true)
+            // Outside a move it failed while it played (or held the gap): go on as if it had completed.
+            move = if (wasOpen) {
+                Move(span(index + 1, callEnd(currentCall())), forward = true, gapAfter = true)
+            } else {
+                Move(after(index), forward = true)
+            }
         }
         publish()
         schedule(Slot.SEARCH, 0) { tryNext() }
@@ -830,14 +849,14 @@ class RecordingPlayer(
         val epoch = ++focusEpoch
         if (focus.request(if (mode == MODE_PLAYLIST) FocusMode.GAIN else FocusMode.GAIN_TRANSIENT, epoch)) {
             focusHeld = true
-            focusEverHeld = true
+            startRequest = false
             interrupted = false
             return true
         }
-        if (mode == MODE_PLAYLIST && focusEverHeld) {
-            hold(PAUSED_UNAVAILABLE)
-        } else {
+        if (startRequest) {
             end(FAILED, ERROR_UNAVAILABLE, ENDED_FAILED)
+        } else {
+            hold(PAUSED_UNAVAILABLE)
         }
         return false
     }
@@ -885,6 +904,17 @@ class RecordingPlayer(
         gapRemainingMs = GAP_MS
         gapSinceMs = -1
         advance()
+    }
+
+    /** Play in a paused gap: the next call at once, never the rest of the gap, with the focus asked for now. */
+    private fun resumeFromGap() {
+        if (!promoted || (mode != MODE_PLAYLIST && !foreground)) {
+            publish()
+            return
+        }
+        if (ensureFocus()) {
+            beginMove(Move(after(callEnd(currentCall())), forward = true))
+        }
     }
 
     private fun runGap() {
@@ -1009,9 +1039,8 @@ class RecordingPlayer(
         pausedReason = ""
         pausedSinceMs = -1
         promoted = true
-        playedAny = false
         skipped = 0
-        focusEverHeld = false
+        startRequest = true
         ended = null
         dropFocus()
     }
