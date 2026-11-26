@@ -21,7 +21,9 @@ import android.media.session.PlaybackState
 import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.Handler
 import android.os.IBinder
+import android.os.Looper
 import android.os.SystemClock
 import android.util.Log
 import android.view.KeyEvent
@@ -80,6 +82,24 @@ class RecordingPlaybackService : Service() {
     private val intents = HashMap<Int, PendingIntent>()
     private var intentsFor = 0
 
+    /**
+     * The notification's updates, at most one per [NotificationPace.INTERVAL_MS] with a trailing post of the latest
+     * status, so Android's rate limit never sheds the last one; the session follows every render at once.
+     */
+    private val main = Handler(Looper.getMainLooper())
+    private val pace = NotificationPace<RecordingPlayer.Status>(
+        { delayMs, task ->
+            val message = Runnable(task)
+            main.postDelayed(message, delayMs)
+            RecordingPlayer.Cancellable { main.removeCallbacks(message) }
+        },
+        { SystemClock.elapsedRealtime() },
+        { status ->
+            getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
+            true
+        },
+    )
+
     override fun onBind(intent: Intent?): IBinder? = null
 
     override fun onCreate() {
@@ -117,6 +137,7 @@ class RecordingPlaybackService : Service() {
         // after the next instance was created leaves the state they share, the key handoff and the notification, to
         // that one (PlaybackServicePhases.Destroyed).
         val current = RecordingPlayback.serviceDestroyed(this, serial)
+        pace.cancel()
         // Released with the playlist: a later media key no longer restarts it.
         session.release()
         if (current) {
@@ -138,6 +159,7 @@ class RecordingPlaybackService : Service() {
         RecordingPlayback.retire(serial) {
             val stopped = stopSelfResult(lastStartId)
             if (stopped) {
+                pace.cancel()
                 stopForeground(STOP_FOREGROUND_REMOVE)
                 getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
             }
@@ -192,7 +214,7 @@ class RecordingPlaybackService : Service() {
         }
         // The Activity hands media keys past Qt only from here on, for this playlist (RecordingPlayback).
         RecordingPlayback.sessionRendered(status.generation, open && session.isActive, session.sessionToken)
-        getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
+        pace.offer(status)
     }
 
     /** Enter the foreground, first and always on a start; false when Android refused it (API 31+). */
@@ -202,6 +224,7 @@ class RecordingPlaybackService : Service() {
             notification(RecordingPlayback.foregroundStatus()),
             ServiceInfo.FOREGROUND_SERVICE_TYPE_MEDIA_PLAYBACK,
         )
+        pace.postedNow()
         true
     } catch (e: IllegalStateException) {
         if (Build.VERSION.SDK_INT < Build.VERSION_CODES.S || e !is ForegroundServiceStartNotAllowedException) {

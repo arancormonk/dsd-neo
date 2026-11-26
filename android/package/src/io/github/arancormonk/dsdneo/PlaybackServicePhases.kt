@@ -248,6 +248,71 @@ class PlaybackServicePhases(private val processToken: Long) {
 }
 
 /**
+ * The pace of the playlist notification's updates (#909). Android sheds an app's notification updates while its
+ * enqueue rate is over the limit (NotificationManagerService.DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE, 5 per second for
+ * the package, an exponentially weighted estimate that a quick pair alone can push over it), so a burst of renders (a
+ * skip through missing recordings) could lose the last one and leave its controls stale: Pause shown on a paused
+ * playlist on API 29-32. The decoder's notification shares that budget and is updated at most once a second (its
+ * status poll). So the playlist's is posted at most once per [intervalMs]: the first of a burst at once, the rest as
+ * one trailing post of the latest value [offer] was given. The media session follows every render at once; only the
+ * notification waits. [post] posts a value and says whether it did. Not thread-safe: the service's main thread only.
+ */
+class NotificationPace<T : Any>(
+    private val scheduler: RecordingPlayer.Scheduler,
+    private val clock: RecordingPlayer.Clock,
+    private val post: (T) -> Boolean,
+    private val intervalMs: Long = INTERVAL_MS,
+) {
+    private var lastPostMs = 0L
+    private var posted = false
+    private var latest: T? = null
+    private var trailing: RecordingPlayer.Cancellable? = null
+
+    /** [value] is the newest to show: posted now, or by the trailing post, which then shows the newest given. */
+    fun offer(value: T) {
+        latest = value
+        if (trailing != null) {
+            return
+        }
+        val waitMs = if (posted) lastPostMs + intervalMs - clock.elapsedMs() else 0
+        if (waitMs <= 0) {
+            flush()
+        } else {
+            trailing = scheduler.post(waitMs) {
+                trailing = null
+                flush()
+            }
+        }
+    }
+
+    /** The notification was posted another way (startForeground): it counts as a post. */
+    fun postedNow() {
+        lastPostMs = clock.elapsedMs()
+        posted = true
+    }
+
+    /** The notification is taken down (the service retires or goes): nothing waiting is posted. */
+    fun cancel() {
+        trailing?.cancel()
+        trailing = null
+        latest = null
+    }
+
+    private fun flush() {
+        val value = latest ?: return
+        latest = null
+        if (post(value)) {
+            postedNow()
+        }
+    }
+
+    companion object {
+        /** At most two a second: with the decoder's one a second, well under the package's five. */
+        const val INTERVAL_MS = 500L
+    }
+}
+
+/**
  * What a media session's callback acts on (#909): the playlist [generation] and the item ([token]) the session showed
  * when the callback was installed. RecordingPlaybackService installs a callback of its own for each target it
  * publishes, so a command the framework queued for the one before (a headset's double-tap wait, a seek from a system

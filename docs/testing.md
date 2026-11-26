@@ -226,7 +226,7 @@ of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order,
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
 the retire check after every delivery, `onDestroy` fenced to its generation (a late destroy leaving the next
-instance's key handoff and notification),
+instance's key handoff and notification), the notification paced (a burst ending on its latest status),
 `release()` with a promoted service and
 with a start issued but not delivered, a media session command acting only on the target it was queued for
 (`SessionTarget`: another playlist's commands, or another item's seek, dropped), and the headset's taps

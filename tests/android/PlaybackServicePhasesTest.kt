@@ -473,6 +473,61 @@ fun aLateDestroyLeavesTheSharedStateToTheNextInstance() {
     check(handoff.sessionFor(b) == null && !notificationUp) { "the instance alive clears them as it goes" }
 }
 
+/**
+ * The notification's updates are paced: a burst posts its first at once and the rest as one trailing post of the latest
+ * value, never more than one per interval; a cancel (the service retiring) drops what waits.
+ */
+fun notificationUpdatesArePacedAndEndOnTheLatest() {
+    var nowMs = 10_000L
+    val tasks = mutableListOf<Pair<Long, () -> Unit>>()
+    val posts = mutableListOf<Pair<Long, String>>()
+    val pace = NotificationPace<String>(
+        { delayMs, task ->
+            val entry = (nowMs + delayMs) to task
+            tasks += entry
+            RecordingPlayer.Cancellable { tasks.remove(entry) }
+        },
+        { nowMs },
+        { value -> posts += nowMs to value; true },
+    )
+    fun elapse(ms: Long) {
+        nowMs += ms
+        for (task in tasks.filter { it.first <= nowMs }) {
+            if (tasks.remove(task)) task.second()
+        }
+    }
+    val interval = NotificationPace.INTERVAL_MS
+    pace.offer("opening 1")
+    check(posts == listOf(10_000L to "opening 1")) { "the first of a burst posts at once" }
+    for (state in listOf("skipped 1", "opening 2", "skipped 2", "opening 3", "paused 3")) {
+        elapse(40)
+        pace.offer(state)
+    }
+    check(posts.size == 1) { "the rest wait: ${posts.map { it.second }}" }
+    elapse(interval - 201)
+    check(posts.size == 1) { "not before the interval" }
+    elapse(1)
+    check(posts.map { it.second } == listOf("opening 1", "paused 3")) { "the burst ends on the latest: $posts" }
+    check(posts[1].first - posts[0].first == interval) { "one interval after the first" }
+    check(tasks.isEmpty()) { "nothing more waits" }
+    elapse(interval)
+    pace.offer("playing 3")
+    check(posts.last() == nowMs to "playing 3") { "a render an interval later posts at once" }
+    for (i in 1 until posts.size) {
+        check(posts[i].first - posts[i - 1].first >= interval) { "never two within the interval: $posts" }
+    }
+
+    // A start's own notification counts; a cancel drops the trailing post.
+    pace.postedNow()
+    pace.offer("stopped")
+    check(posts.last().second == "playing 3") { "just after startForeground: it waits" }
+    pace.cancel()
+    elapse(interval)
+    check(posts.last().second == "playing 3" && tasks.isEmpty()) { "cancelled: nothing posted after the retire" }
+    pace.offer("next owner")
+    check(posts.last().second == "next owner") { "a later render posts" }
+}
+
 fun theTaskRemovedEndsWhatTheServiceServesOrWaitsFor() {
     val rig = ServiceRig()
     check(rig.phases.current() == 0)
@@ -740,6 +795,7 @@ fun main() {
     aRefusedStartSettlesWhateverWaitedForIt()
     aNewInstanceEndsTheRetiringPhase()
     aLateDestroyLeavesTheSharedStateToTheNextInstance()
+    notificationUpdatesArePacedAndEndOnTheLatest()
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
     headsetTapsBelongToThePlaylistNotThePart()
