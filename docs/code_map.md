@@ -20053,7 +20053,10 @@ Qt Quick frontend (`src/ui/qt`):
       generation still owns the service. After every delivery and every asynchronous end the instance retires
       (`stopSelfResult(lastStartId)`, removing only its own notification) when there is no owner, no request and no
       start outstanding, so a stale action that creates a fresh instance after the end leaves nothing running.
-      `onDestroy` settles only the generation it served; `onTaskRemoved` ends the playlist. Teardown:
+      `onDestroy` settles only the generation it served, always releases its own session and taps, and clears the
+      media key handoff and cancels notification id 2 only while it is still the instance alive
+      (`PlaybackServicePhases.Destroyed`, the same fence), so a destroy reported after the next instance was created
+      leaves those to the new one; `onTaskRemoved` ends the playlist. Teardown:
       `DsdNeoActivity.onDestroy` (not a configuration change) → `RecordingPlayback.release()` closes admission and
       settles every request and owner; a promoted service is stopped with `stopService()`, a start issued but not
       promoted is left to its delivery, which promotes and retires with no owner (stopping it first would raise

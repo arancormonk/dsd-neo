@@ -272,15 +272,19 @@ object RecordingPlayback {
         return phases.created()
     }
 
-    /** [instance] is destroyed: the playlist it served, if still open, ends (never a newer one). */
-    internal fun serviceDestroyed(instance: RecordingPlaybackService, serial: Int) {
+    /**
+     * [instance] is destroyed: the playlist it served, if still open, ends (never a newer one). True when it was still
+     * the instance alive, so the state instances share (the session handoff, the notification) is its to clear.
+     */
+    internal fun serviceDestroyed(instance: RecordingPlaybackService, serial: Int): Boolean {
         if (service === instance) {
             service = null
         }
-        val served = phases.destroyed(serial)
-        if (served != 0) {
-            post { it.stop(served) }
+        val destroyed = phases.destroyed(serial)
+        if (destroyed.served != 0) {
+            post { it.stop(destroyed.served) }
         }
+        return destroyed.current
     }
 
     /** The owner's status, for the notification a start's delivery enters the foreground with; null: none owns it. */

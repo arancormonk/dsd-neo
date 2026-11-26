@@ -113,14 +113,20 @@ class RecordingPlaybackService : Service() {
     }
 
     override fun onDestroy() {
-        // Settles only the playlist this instance served, if it is still open: never a newer one.
-        RecordingPlayback.serviceDestroyed(this, serial)
+        // Settles only the playlist this instance served, if it is still open: never a newer one. A destroy reported
+        // after the next instance was created leaves the state they share, the key handoff and the notification, to
+        // that one (PlaybackServicePhases.Destroyed).
+        val current = RecordingPlayback.serviceDestroyed(this, serial)
         // Released with the playlist: a later media key no longer restarts it.
         session.release()
-        RecordingPlayback.sessionReleased()
+        if (current) {
+            RecordingPlayback.sessionReleased()
+        }
         // After the release, which removes the callback, so no tap can be counted after the drop.
         taps.drop()
-        getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        if (current) {
+            getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
+        }
         super.onDestroy()
     }
 

@@ -57,6 +57,14 @@ class PlaybackServicePhases(private val processToken: Long) {
     /** What a start's delivery did: the playlist it promoted, or the one whose start was refused (0: none). */
     class Promotion(val promoted: Int, val refused: Int)
 
+    /**
+     * What an instance's destroy settles: the playlist it served, for the caller to end (0: none), and whether it was
+     * still the instance alive ([current]). Its own session and taps always go with it; the state the process shares
+     * between instances (the media key handoff's active session, the notification id) is cleared only when [current],
+     * since a destroy reported after the next instance was created would otherwise take the new one's.
+     */
+    class Destroyed(val served: Int, val current: Boolean)
+
     private val lock = Any()
     private var open = true
     private var generations = 0
@@ -205,12 +213,12 @@ class PlaybackServicePhases(private val processToken: Long) {
     }
 
     /**
-     * [instance] is destroyed: the playlist it served, for the caller to settle (0: none). A start issued since it
-     * retired is the next instance's and stays outstanding.
+     * [instance] is destroyed: the playlist it served, for the caller to settle, and whether it is still the instance
+     * alive ([Destroyed]). A start issued since it retired is the next instance's and stays outstanding.
      */
-    fun destroyed(instance: Int): Int = synchronized(lock) {
+    fun destroyed(instance: Int): Destroyed = synchronized(lock) {
         if (instance != alive) {
-            return 0
+            return Destroyed(0, false)
         }
         alive = 0
         val served = owner
@@ -218,7 +226,7 @@ class PlaybackServicePhases(private val processToken: Long) {
         if (phase == Phase.PROMOTED || phase == Phase.RETIRING) {
             phase = Phase.NONE
         }
-        served
+        Destroyed(served, true)
     }
 
     /**

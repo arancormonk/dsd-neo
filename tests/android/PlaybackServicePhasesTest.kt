@@ -96,7 +96,7 @@ private class ServiceRig {
 
     /** onDestroy, once a retired (or stopped) instance goes: what it served. */
     fun destroy(): Int {
-        val served = phases.destroyed(instance)
+        val served = phases.destroyed(instance).served
         instance = 0
         foreground = false
         return served
@@ -431,10 +431,46 @@ fun aNewInstanceEndsTheRetiringPhase() {
     val old = rig.instance
     val fresh = rig.phases.created()
     check(rig.phases.currentPhase == Phase.NONE) { "a new instance means the old one is gone" }
-    check(rig.phases.destroyed(old) == 0 && rig.phases.currentPhase == Phase.NONE) { "its late destroy is a no-op" }
+    val late = rig.phases.destroyed(old)
+    check(late.served == 0 && !late.current && rig.phases.currentPhase == Phase.NONE) { "its late destroy is a no-op" }
     rig.instance = fresh
     rig.play()
     check(rig.starts.last() == Start.ISSUE) { "the next playlist issues a start, never waits on a phase left stuck" }
+}
+
+/**
+ * The late destroy, as RecordingPlaybackService.onDestroy follows it: the instance before is destroyed after the next
+ * one was created and has rendered its playlist. It releases only its own session and taps; the key handoff and the
+ * notification are the new instance's and stay. An instance destroyed while it is the one alive clears them.
+ */
+fun aLateDestroyLeavesTheSharedStateToTheNextInstance() {
+    val rig = ServiceRig()
+    val handoff = ActiveSession<String>()
+    var notificationUp = false
+    fun onDestroy(instance: Int) {
+        val destroyed = rig.phases.destroyed(instance)
+        if (destroyed.current) {
+            handoff.released()
+            notificationUp = false
+        }
+    }
+    val a = rig.play()
+    rig.deliverStart()
+    rig.ended(a)
+    check(rig.retired) { "A's end retires the old instance" }
+    val old = rig.instance
+    rig.instance = rig.phases.created()
+    rig.startId = 0
+    val b = rig.play()
+    rig.deliverStart()
+    check(rig.phases.currentOwner == b) { "the new instance serves B" }
+    handoff.rendered(b, active = true, "session 2")
+    notificationUp = true
+    onDestroy(old)
+    check(handoff.sessionFor(b) == "session 2") { "the late destroy leaves B's media keys with B's session" }
+    check(notificationUp && rig.phases.currentOwner == b) { "and B's notification and ownership" }
+    onDestroy(rig.instance)
+    check(handoff.sessionFor(b) == null && !notificationUp) { "the instance alive clears them as it goes" }
 }
 
 fun theTaskRemovedEndsWhatTheServiceServesOrWaitsFor() {
@@ -703,6 +739,7 @@ fun main() {
     theTaskRemovedEndsWhatTheServiceServesOrWaitsFor()
     aRefusedStartSettlesWhateverWaitedForIt()
     aNewInstanceEndsTheRetiringPhase()
+    aLateDestroyLeavesTheSharedStateToTheNextInstance()
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
     headsetTapsBelongToThePlaylistNotThePart()
