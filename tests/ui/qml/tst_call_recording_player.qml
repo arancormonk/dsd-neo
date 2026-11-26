@@ -1789,6 +1789,34 @@ Item {
             verify(!confirm.visible && confirm.target === null, "opened again for another call: ended too");
         }
 
+        // Previous opens the part shown again under a new token (a player is never reused): the sheet's own Play all
+        // parts stays its own on the same chip, a seek waiting for its landing is forgotten, a Pause pressed on the
+        // pass before is dropped, and a fresh one carries the new token.
+        function test_a_reopen_moves_the_token_on_the_same_part() {
+            openWith([rec("t-1", pathA, 10000), rec("t-2", pathB, 10000)]);
+            tap("recordingPlayAll");
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 5, playbackPositionMs: 4000, playbackDurationMs: 10000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            var generation = player.ownedGeneration;
+            testContext.setSeekApplied(false); // the player's record lands a seek later, as on Android
+            item("recordingSeekBar").seekTo(8000, 5);
+            testContext.setSeekApplied(true);
+            compare(player.seekTargetMs, 8000, "a seek waits for its landing");
+            var button = item("recordingPlayButton");
+            mousePress(button, button.width / 2, button.height / 2);
+            // The poll after the reopen finds the new pass already playing (it missed the opening reading).
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 6, playbackPositionMs: 0, playbackCanSeek: true});
+            mouseRelease(button, button.width / 2, button.height / 2);
+            compare(hostCallsNamed("pausePlaybackFor").length, 0, "the Pause pressed on the pass before is dropped");
+            verify(player.ownsPlay && player.ownedGeneration === generation, "still this sheet's own play");
+            compare(checkedParts(2), [0], "on the same chip");
+            compare(player.seekTargetMs, -1, "the waiting seek is forgotten");
+            compare(player.positionMs, 0, "the position is the new pass's");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "pausePlaybackFor");
+            compare(lastHostCall().token, 6, "a fresh press carries the new token");
+        }
+
         // While a seek waits for its landing, the bar shows where it goes (the Android host shows nothing until the
         // player's record); the record that lands it, a seek the host can no longer take, or another recording falls
         // back on the host's position.

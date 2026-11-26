@@ -342,6 +342,19 @@ Item {
             compare(line(idle()), "Call 3 of 4 · 0:12 / 0:31", "a notice that names another call says nothing here");
         }
 
+        // Previous on the call with the skip notice opens it again under a new token: the notice stays on that call,
+        // and Show in list still names its row.
+        function test_a_reopen_keeps_the_skip_notice() {
+            var calls = logCalls(3);
+            playAll(idle(), calls);
+            playing({item: 1, playbackSkipped: 1, playbackSkipNoticeCall: 1, playbackSkipNoticeCount: 1});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played");
+            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 8, playbackPositionMs: 0});
+            compare(line(idle()), "Opening…", "opening it again");
+            playing({item: 1, playbackToken: 8, playbackPositionMs: 0});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played", "the notice stays on its call");
+        }
+
         // A skip observed late is no skip on the call observed: A skipped, B played while the app was away (no reading
         // reached Qt), and the first reading is C's, with the cumulative count moved but no notice on C.
         function test_skip_not_said_on_a_later_call_seen_first() {
