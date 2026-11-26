@@ -104,21 +104,37 @@ private class HeldSetup(
     fun land() = deliver(result ?: work())
 }
 
-/** The opener; each setup runs at once on the caller's thread unless [holding], when it waits in [setups]. */
+/**
+ * The opener; each setup runs at once on the caller's thread unless its setup thread is [stuck] ([holding]: the current
+ * one), when it waits in [setups]. [threads] numbers the setup threads made: a timed-out setup makes the next one go to
+ * a new thread ([setupTimedOut]), which is not stuck unless a case says so.
+ */
 private class FakeOpener : RecordingPlayer.Opener {
     val refusals = HashMap<String, String>()
     val throwing = HashSet<String>()
     val opened = mutableListOf<String>()
     val sources = mutableListOf<FakeSource>()
-    var holding = false
+    val stuck = mutableSetOf<Int>()
+    var threads = 1
+    var holding: Boolean
+        get() = threads in stuck
+        set(value) {
+            if (value) stuck += threads else stuck -= threads
+        }
     val setups = mutableListOf<HeldSetup>()
+    val threadOf = mutableListOf<Int>()
 
     override fun setup(work: () -> RecordingPlayer.SetupResult, deliver: (RecordingPlayer.SetupResult) -> Unit) {
+        threadOf += threads
         if (holding) {
             setups += HeldSetup(work, deliver)
         } else {
             deliver(work())
         }
+    }
+
+    override fun setupTimedOut() {
+        threads++
     }
 
     override fun open(item: RecordingPlayer.Item): OpenResult {
@@ -2024,7 +2040,7 @@ private fun aPrepareThatNeverAnswersFailsItsPart() {
 private fun aPartsSetupRunsOffTheMachinesThread() {
     val limit = RecordingPlayer.PREPARE_TIMEOUT_MS
 
-    // Blocked in a read: the timeout fails the part at 10 s, the next setup queues behind it, Stop works meanwhile.
+    // Blocked in a read: the timeout fails the part at 10 s, Stop works meanwhile, and the late result is released.
     val blocked = Rig()
     blocked.opener.holding = true
     val g = blocked.queue(1, 1)
@@ -2038,10 +2054,13 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     blocked.machine.resumeFor(g, stuck.token)
     blocked.elapse(limit - 1)
     check(blocked.state == PREPARING && blocked.status.skipped == 0 && !stuck.released) { "still opening at 9.999 s" }
+    blocked.opener.stuck += 2 // the next call's read stalls too
     blocked.elapse(1)
     check(blocked.status.skipped == 1 && !stuck.released) { "at 10 s the part fails; its player is still the setup's" }
+    check(blocked.opener.threads == 2) { "and the stuck setup thread is replaced" }
     blocked.turn()
-    check(blocked.opener.setups.size == 2 && blocked.status.call == 1) { "the next call's setup queues behind it" }
+    check(blocked.opener.setups.size == 2 && blocked.status.call == 1) { "the next call's setup is handed over" }
+    check(blocked.opener.threadOf == listOf(1, 2)) { "on the fresh thread" }
     val queued = blocked.last
     blocked.machine.stop(g)
     check(blocked.state == STOPPED && blocked.status.endedReason == RecordingPlayer.ENDED_STOPPED) {
@@ -2052,14 +2071,15 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     check(stuck.released && queued.released && !stuck.started && !queued.started) { "the late results are released" }
     check(blocked.state == STOPPED && blocked.focus.requests.isEmpty()) { "and nothing is adopted" }
 
-    // Every setup stuck: each part times out in turn and the playlist ends by itself.
+    // Every setup stuck, each on its own thread: each part times out in turn and the playlist ends by itself.
     val stalled = Rig()
-    stalled.opener.holding = true
+    stalled.opener.stuck += setOf(1, 2)
     val s = stalled.queue(1, 1)
     stalled.elapse(limit)
     stalled.turn()
     stalled.elapse(limit)
     stalled.turn()
+    check(stalled.opener.threads == 3) { "each stuck thread replaced" }
     check(stalled.state == FAILED && stalled.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
         "every part timed out: unplayable"
     }
@@ -2133,6 +2153,38 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     parts.opener.setups.last().land()
     parts.prepared()
     check(parts.state == PLAYING && parts.status.partOrdinal == 2) { "Play all parts goes through its parts" }
+}
+
+/**
+ * A setup stuck in a read past the prepare timeout gives way to a fresh setup thread: the next item's setup runs there
+ * and plays, and so does a later sheet play, which would otherwise wait for good behind the stuck read.
+ */
+private fun aStuckSetupThreadIsReplaced() {
+    val rig = Rig()
+    rig.opener.holding = true
+    rig.queue(1, 1)
+    val stuck = rig.last
+    rig.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+    check(rig.status.skipped == 1 && rig.opener.threads == 2) { "item 1 timed out; its thread is given up" }
+    rig.turn()
+    check(rig.opener.threadOf == listOf(1, 2) && rig.last.asked && rig.status.call == 1) {
+        "item 2's setup runs on the new thread"
+    }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 1) { "and plays" }
+    rig.machine.stop(rig.generation)
+    rig.play()
+    check(rig.opener.threadOf.last() == 2 && rig.last.asked) { "a later sheet play is set up at once" }
+    rig.prepared()
+    check(rig.state == PLAYING) { "and plays" }
+    rig.opener.setups.single().land()
+    check(stuck.released && rig.state == PLAYING) { "the stuck read's late result is released, nothing else changes" }
+
+    // A setup that came back in time (the prepare is what hangs) keeps its thread.
+    val slow = Rig()
+    slow.queue(1, 1)
+    slow.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS)
+    check(slow.status.skipped == 1 && slow.opener.threads == 1) { "a hung prepare is not a stuck setup" }
 }
 
 /**
@@ -2291,6 +2343,7 @@ fun main() {
     aPrepareThatNeverAnswersFailsItsPart()
     aPartsSetupRunsOffTheMachinesThread()
     aCompletionAroundPreviousNeverReachesTheNewPass()
+    aStuckSetupThreadIsReplaced()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

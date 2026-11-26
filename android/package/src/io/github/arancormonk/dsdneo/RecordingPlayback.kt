@@ -81,12 +81,15 @@ object RecordingPlayback {
     private val activeSession = ActiveSession()
 
     /**
-     * The setup thread, beside the looper and as long-lived: each part's blocking open, data source and prepare start
-     * ([RecordingPlayer.Opener.setup]), one after another.
+     * The setup thread, beside the looper: each part's blocking open, data source and prepare start
+     * ([RecordingPlayer.Opener.setup]), one after another. One stuck past the prepare timeout is replaced
+     * ([RecordingPlayer.Opener.setupTimedOut]); under [setupLock].
      */
-    private val setupThread: ExecutorService by lazy {
+    private var setupThread: ExecutorService? = null
+    private val setupLock = Any()
+
+    private fun newSetupThread(): ExecutorService =
         Executors.newSingleThreadExecutor { work -> Thread(work, "dsd-neo-playback-setup").apply { isDaemon = true } }
-    }
 
     /** Looper only: the playlist's wake lock and the receivers' registrations. */
     private var wakeLock: PowerManager.WakeLock? = null
@@ -543,7 +546,8 @@ object RecordingPlayback {
             deliver: (RecordingPlayer.SetupResult) -> Unit,
         ) {
             try {
-                setupThread.execute {
+                val thread = synchronized(setupLock) { setupThread ?: newSetupThread().also { setupThread = it } }
+                thread.execute {
                     val result = work()
                     post { deliver(result) }
                 }
@@ -551,6 +555,15 @@ object RecordingPlayback {
                 Log.w(TAG, "could not hand a call recording to its setup", e)
                 post { deliver(RecordingPlayer.SetupResult(RecordingPlayer.REASON_PLAYER)) }
             }
+        }
+
+        /**
+         * The stuck thread is abandoned: shut down, it takes no new work but finishes what it holds (the stuck read,
+         * whose late result the looper releases); the next setup starts a fresh one.
+         */
+        override fun setupTimedOut() {
+            val stuck = synchronized(setupLock) { setupThread.also { setupThread = null } }
+            stuck?.shutdown()
         }
 
         private fun openUnchecked(path: String): RecordingPlayer.OpenResult = try {

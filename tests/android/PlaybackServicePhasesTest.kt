@@ -132,6 +132,8 @@ private class Playing(val rig: ServiceRig) {
                 deliver: (RecordingPlayer.SetupResult) -> Unit,
             ) = deliver(work())
 
+            override fun setupTimedOut() = Unit
+
             override fun open(item: RecordingPlayer.Item) =
                 RecordingPlayer.OpenResult.Opened(
                     object : RecordingPlayer.Source {

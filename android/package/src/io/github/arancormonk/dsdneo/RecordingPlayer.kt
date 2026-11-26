@@ -182,6 +182,13 @@ class RecordingPlayer(
          * time out with it.
          */
         fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
+
+        /**
+         * The setup running now did not come back within [PREPARE_TIMEOUT_MS] (a read that does not return): later
+         * setups go to a fresh setup thread, and the stuck one takes no new work. It finishes, if ever, on its own;
+         * its result is delivered and released as any late one.
+         */
+        fun setupTimedOut()
     }
 
     enum class FocusMode { GAIN, GAIN_TRANSIENT }
@@ -903,6 +910,10 @@ class RecordingPlayer(
         val opened = token
         schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
             if (token == opened && !prepared) {
+                if (opening?.token == opened) {
+                    // Its setup is still running: a stuck read would hold every later setup behind it.
+                    opener.setupTimedOut()
+                }
                 onFailed(opened, REASON_DAMAGED)
             }
         }

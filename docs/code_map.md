@@ -19921,9 +19921,11 @@ Qt Quick frontend (`src/ui/qt`):
       closes what it opened and posts its result (done, or failed with the reason) with the part's token. Until then
       the looper never touches that player (a prepare answering first is noted and applied at adoption; an error
       drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement)
-      only releases its player. A setup stuck in a read holds those queued behind it, which time out in turn, so a
-      playlist ends by itself; Stop always works. The JVM tests drive it with a fake setup that holds, runs late or
-      fails.
+      only releases its player. A setup still running when its prepare timeout fires (a read that does not return) gives
+      its thread up (`Opener.setupTimedOut()`: that executor is shut down, so it takes no new work, and finishes on its
+      own, its late result released as any), and the next setup starts a fresh thread, so later items and sheet plays
+      are never stuck behind it; threads stuck for good are bounded by the stuck reads themselves. Stop always works.
+      The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
