@@ -487,7 +487,11 @@ class RecordingPlayer(
         }
     }
 
-    /** [pause] for the item whose play token the host captured; dropped when that item is not current. */
+    /**
+     * [pause] for the item whose play token the host captured; dropped when that item is not current. The item is
+     * current while its player is open, and in the gap after its call even with none (its call's last part failed
+     * while it played): the status names it there, and Pause and Resume act on the play.
+     */
     fun pauseFor(generation: Int, token: Long) {
         if (isCurrent(generation, token)) {
             pause(generation)
@@ -500,8 +504,9 @@ class RecordingPlayer(
         }
     }
 
+    /** [seek] for the item whose play token the host captured: only on that item's own open player. */
     fun seekFor(generation: Int, token: Long, positionMs: Long) {
-        if (isCurrent(generation, token)) {
+        if (isCurrent(generation, token) && player != null) {
             seek(positionMs)
         }
     }
@@ -1100,7 +1105,7 @@ class RecordingPlayer(
     }
 
     private fun isCurrent(generation: Int, token: Long) =
-        token != 0L && generation == this.generation && token == this.token && player != null
+        token != 0L && generation == this.generation && token == this.token && (player != null || gap)
 
     private fun currentCall(): Int = items[index].call
 

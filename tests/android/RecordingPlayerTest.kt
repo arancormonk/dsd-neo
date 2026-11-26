@@ -966,6 +966,30 @@ private fun itemCommandsCarryTheirToken() {
     check(rig.state == PLAYING) { "and resumes" }
 }
 
+/** A call's last part failed while it played: the gap after it holds no player, and its token still steers the play. */
+private fun theGapWithNoPlayerTakesItsItemsPauseAndResume() {
+    val rig = Rig()
+    val g = rig.queue(1, 1)
+    rig.prepared()
+    val failed = rig.current
+    rig.machine.onFailed(failed.token, RecordingPlayer.REASON_DAMAGED)
+    rig.turn()
+    check(rig.status.gap && failed.released && rig.players.size == 1) { "the gap, with no player held" }
+    val token = rig.status.playToken
+    check(token == failed.token) { "the status still names the part that failed" }
+    rig.machine.pauseFor(g, token)
+    check(rig.state == PAUSED && rig.status.gap && rig.status.pausedReason == RecordingPlayer.PAUSED_USER) {
+        "its Pause freezes the gap"
+    }
+    rig.machine.seekFor(g, token, 1_000)
+    check(rig.state == PAUSED && rig.players.size == 1) { "a seek needs a live player: dropped" }
+    rig.machine.resumeFor(g + 1, token)
+    rig.machine.resumeFor(g, token + 1)
+    check(rig.state == PAUSED) { "another generation's or token's Resume is dropped" }
+    rig.machine.resumeFor(g, token)
+    check(rig.last.path == path(1, 1) && !rig.status.gap) { "its Resume opens the next call at once" }
+}
+
 // ---- PLAYLIST: skips and failures
 
 private fun goneChangedAndDamagedRecordingsAreSkipped() {
@@ -1619,6 +1643,7 @@ fun main() {
     lateCallbacksTasksAndFocusAreDropped()
     theServiceIsPromotedOnceInEitherOrder()
     itemCommandsCarryTheirToken()
+    theGapWithNoPlayerTakesItsItemsPauseAndResume()
     goneChangedAndDamagedRecordingsAreSkipped()
     allFailedEndsAndGoodThenFailuresFinishes()
     failuresArePerRecordingAndKeepTheirDirection()

@@ -198,8 +198,9 @@ with the deadline unchanged, and a Resume while the next call opens whose focus 
 pause), skips of gone, changed and damaged recordings first, middle and last, per recording and in
 both directions (A good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and
 replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
-and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump and a late task, play tokens,
-task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after the
+and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump and a late task, play tokens
+(Pause and Resume for the item in a gap with no player after its last part failed, no seek there), task ids and focus
+epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after the
 play, refused, timed out and late, PARTS's failure rule and duration 0, and a throwing player factory. A second build of
 the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with `PlaybackServicePhasesTest.kt`: a
 PROMOTE for a current, a settled and a foreign-token request, at most one start outstanding (join, hand-over), a stale
