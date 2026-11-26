@@ -873,6 +873,8 @@ the media controls are current all along. After a playlist ends, a media button 
   every control, so a playlist left paused in a phone in deep sleep ends when you next turn the screen on.
 - Which headset and Bluetooth buttons reach DSD-neo, and whether the media player can be hidden, depends on the
   phone and its Android version.
+- A seek on the lock screen or in the media controls moves the call part playing when it arrives: one made in the
+  instant a part ends lands on the next part.
 
 ### Exporting and deleting
 

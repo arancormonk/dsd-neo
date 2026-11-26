@@ -231,8 +231,9 @@ outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stal
 the retire check after every delivery, `onDestroy` fenced to its generation (a late destroy leaving the next
 instance's key handoff and notification), the notification paced (a burst ending on its latest status, a trailing
 post shown only for the owner and dropped by a start's notification that covers it), `release()` with a promoted
-service and with a start issued but not delivered, a media session command acting only on the target it was queued for
-(`SessionTarget`: another playlist's commands, or another item's seek, dropped), and the headset's taps
+service and with a start issued but not delivered, a media session command acting only on the playlist it was queued
+for (`SessionTarget`, one per playlist: another playlist's commands dropped, a seek on the item current when it runs,
+and Next, Next, Stop queued on one callback all acting), and the headset's taps
 (`PlayPauseTaps`: a tap kept across a part change and toggling at its timeout, a double tap as Next, a long press or
 another key settling it, another playlist, the end and the teardown dropping it with its timeout), and the transport
 keys (`SessionKeys`: paused, a tap, then a dedicated Pause within the wait: the tap plays, then the Pause pauses; ups

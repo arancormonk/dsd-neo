@@ -20073,13 +20073,14 @@ Qt Quick frontend (`src/ui/qt`):
       promotes and retires.
     - Session and notification: one framework `MediaSession` per service instance, made in `onCreate`, so the first
       `startForeground()` already carries its token (`Notification.MediaStyle().setMediaSession()`: the
-      POST_NOTIFICATIONS exemption); callbacks on the playback looper, one callback object per target the session shows
-      (`SessionTarget` in `PlaybackServicePhases.kt`: the playlist's generation and the item's play token, installed
-      with `setCallback()` at each change), so a command the framework queued for the target before (a seek, a
-      transport command) names that one and is dropped (play, pause, next, previous and stop by its generation,
-      while it owns the service; a seek by its token too; `setCallback()` also drops a command still queued at an item
-      change, a small window). The headset hook and play/pause keys are not left to the framework, whose single tap
-      waits on the old callback's handler: `onMediaButtonEvent` hands them to `PlayPauseTaps` (plain Kotlin, the
+      POST_NOTIFICATIONS exemption); callbacks on the playback looper, one callback object per playlist the session
+      shows, never one per part (R36: `SessionTarget` in `PlaybackServicePhases.kt`, the playlist's generation,
+      installed with `setCallback()` when the generation changes), so a command the framework queued for an earlier
+      playlist names that one and is dropped (by its generation, while it owns the service), while keys queued behind a
+      move all reach the queue: every move opens its part under a new token, and a callback swapped per part dropped
+      them (Next, Next, Stop lost the Stop). Queue-wide commands act on the queue's state when the looper runs them; a
+      seek applies to the item current then. The headset hook and play/pause keys are not left to the framework, whose
+      single tap waits on its callback's handler: `onMediaButtonEvent` hands them to `PlayPauseTaps` (plain Kotlin, the
       instance's, for the playlist's generation, not its item), which counts them as the framework does (a second tap
       within `ViewConfiguration.getDoubleTapTimeout()` is Next when offered; else the timeout, posted on the playback
       looper, toggles Pause while the session plays or Play; a long-press repeat or another media key settles a waiting
@@ -20144,7 +20145,9 @@ Qt Quick frontend (`src/ui/qt`):
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is
       in the background Qt does not update the bar or the rows (the notification does); after the end a media key no
-      longer restarts it; interrupted, the lock screen shows Play, which changes nothing.
+      longer restarts it; interrupted, the lock screen shows Play, which changes nothing; a lock-screen or system seek
+      applies to the part current when the looper runs it, so one sent in the instant a part changes lands on the new
+      part.
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,

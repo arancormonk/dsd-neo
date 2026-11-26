@@ -44,11 +44,12 @@ import androidx.core.content.IntentCompat
  *
  * The session is made in [onCreate], so the first startForeground() already carries its token: MediaStyle with a
  * session is what exempts the notification from the notification permission. Its callbacks run on the playback looper.
- * A callback is installed for each target the session shows (a playlist and its item, [SessionTarget]) and acts only on
- * that one, so a command the framework had queued for the target before cannot reach a later playlist or item. The
- * headset's play/pause taps are counted here ([PlayPauseTaps], for the playlist, across its parts), not by the
- * framework, whose waiting single tap a callback swap at a part change would drop; the transport keys (Play, Pause,
- * Next, Previous, Stop) are applied here too ([SessionKeys]), against the player's state on the looper.
+ * A callback is installed for each playlist the session shows ([SessionTarget], R36), never for each part, and acts
+ * only on that playlist, so a command the framework had queued for an earlier playlist cannot reach a later one, while
+ * keys queued behind a move (each move opens its part under a new token) all reach the queue. The headset's
+ * play/pause taps are counted here ([PlayPauseTaps], for the playlist, across its parts), not by the framework; the
+ * transport keys (Play, Pause, Next, Previous, Stop) are applied here too ([SessionKeys]), against the player's state
+ * on the looper.
  */
 class RecordingPlaybackService : Service() {
     /** This instance, as PlaybackServicePhases knows it. */
@@ -59,7 +60,7 @@ class RecordingPlaybackService : Service() {
 
     private lateinit var session: MediaSession
 
-    /** The playlist and item the session's state was last published for, and its callback installed for. */
+    /** The playlist the session's state was last published for, and its callback installed for. */
     private var published = SessionTarget.NONE
 
     /** The headset's play/pause taps, waiting for a double tap on the playback looper; for the instance's playlists. */
@@ -188,9 +189,9 @@ class RecordingPlaybackService : Service() {
         // A tap waiting for its double tap is the playlist's: another playlist drops it, a part change keeps it.
         taps.follow(status.generation)
         if (!published.shows(status)) {
-            // A callback of its own for the new target: what the framework queued for the old one (setCallback()
-            // drops it, or it runs on the old callback) still names the old playlist and item, and is dropped.
-            published = SessionTarget(status.generation, status.playToken)
+            // A callback of its own for a new playlist, never for a new part (R36): what the framework queued for the
+            // old one (setCallback() drops it, or it runs on the old callback) still names the old playlist.
+            published = SessionTarget(status.generation)
             session.setCallback(SessionCallbacks(published, keys), RecordingPlayback.playbackHandler())
         }
         val title = title(status)

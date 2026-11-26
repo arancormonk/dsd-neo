@@ -324,13 +324,14 @@ class NotificationPace<T : Any>(
 }
 
 /**
- * What a media session's callback acts on (#909): the playlist [generation] and the item ([token]) the session showed
- * when the callback was installed. RecordingPlaybackService installs a callback of its own for each target it
- * publishes, so a command the framework queued for the one before (a headset's double-tap wait, a seek from a system
- * player) carries that one's generation and token, and the player drops it. The commands are queue-wide but for the
- * seek, which needs the item.
+ * What a media session's callback acts on (#909, R36): the playlist [generation] the session showed when the callback
+ * was installed. RecordingPlaybackService installs a callback of its own for each playlist, never for each part: every
+ * move opens its part under a new token, so a callback swapped per part dropped the keys queued behind a move (Next,
+ * Next, Stop lost the Stop). A command the framework queued for an earlier playlist carries that one's generation, and
+ * the player drops it. The commands are queue-wide and act on the queue's state when the looper runs them; a seek
+ * applies to the item current then (a seek sent as a part changes lands on the new part).
  */
-class SessionTarget(val generation: Int, val token: Long) {
+class SessionTarget(val generation: Int) {
     fun play(player: RecordingPlayer) = on { player.resume(generation) }
 
     fun pause(player: RecordingPlayer) = on { player.pause(generation) }
@@ -339,12 +340,13 @@ class SessionTarget(val generation: Int, val token: Long) {
 
     fun previous(player: RecordingPlayer) = on { player.previous(generation) }
 
-    fun seek(player: RecordingPlayer, positionMs: Long) = on { player.seekFor(generation, token, positionMs) }
+    fun seek(player: RecordingPlayer, positionMs: Long) =
+        on { player.seekFor(generation, player.status.playToken, positionMs) }
 
     fun stop(player: RecordingPlayer) = on { player.stop(generation) }
 
-    /** Whether this is the target of [status]: its playlist and its item. */
-    fun shows(status: RecordingPlayer.Status): Boolean = generation == status.generation && token == status.playToken
+    /** Whether this is the target of [status]: its playlist, whatever its item. */
+    fun shows(status: RecordingPlayer.Status): Boolean = generation == status.generation
 
     /** Generation 0 is no playlist: the player would read it as "whatever plays", so nothing is sent for it. */
     private inline fun on(command: () -> Unit) {
@@ -355,15 +357,15 @@ class SessionTarget(val generation: Int, val token: Long) {
 
     companion object {
         /** Before anything was published: no generation, which no command reaches. */
-        val NONE = SessionTarget(0, 0)
+        val NONE = SessionTarget(0)
     }
 }
 
 /**
- * The headset's play/pause taps on the playlist's media session (#909), held here instead of by the framework: the
- * service installs a session callback per target ([SessionTarget]), and the framework keeps a single tap waiting for a
- * double tap on the callback's own handler, so a tap pending as one part gave way to the next was lost. The rules are
- * the framework's (MediaSession.Callback.onMediaButtonEvent): a tap waits [timeoutMs] (the double-tap timeout), a
+ * The headset's play/pause taps on the playlist's media session (#909), held here instead of by the framework, which
+ * keeps a single tap waiting for a double tap on the callback's own handler and toggles against the state it last
+ * published, posted to the main thread later (see [SessionKeys]). The rules are the framework's
+ * (MediaSession.Callback.onMediaButtonEvent): a tap waits [timeoutMs] (the double-tap timeout), a
  * second within it is Next, and once it runs out the tap toggles play and pause; a long press (a repeat) or another
  * media key counts a waiting tap as single at once, so keys act in order. A tap belongs to its playlist (generation),
  * never to a part: a part change keeps it, while another playlist, the end or the service going drops it, and its

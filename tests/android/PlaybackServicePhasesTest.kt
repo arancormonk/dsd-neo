@@ -164,7 +164,7 @@ private class Playing(val rig: ServiceRig) {
     val items = listOf(RecordingPlayer.Item("/r/a.wav", 10, 1, 0), RecordingPlayer.Item("/r/b.wav", 10, 1, 0, call = 1))
 
     /** A History playlist accepted and posted as RecordingPlayback does: the play, then a hand-over's promotion. */
-    fun playlist(): Int {
+    fun playlist(items: List<RecordingPlayer.Item> = this.items): Int {
         var start = Start.NONE
         val generation = rig.phases.accept(true) { g, s ->
             start = s
@@ -633,7 +633,7 @@ fun aSessionCommandActsOnTheTargetItWasQueuedFor() {
     val a = playing.playlist()
     playing.deliver()
     machine.onPrepared(playing.tokens.last())
-    val onA = SessionTarget(a, machine.status.playToken)
+    val onA = SessionTarget(a)
     check(onA.shows(machine.status) && machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "A plays" }
     val b = playing.playlist()
     machine.onPrepared(playing.tokens.last())
@@ -646,19 +646,44 @@ fun aSessionCommandActsOnTheTargetItWasQueuedFor() {
         "A's queued Pause, Next and Stop leave B playing where it was"
     }
     check(playing.seeks.isEmpty()) { "and A's seek is dropped" }
-    val onB = SessionTarget(b, machine.status.playToken)
+    val onB = SessionTarget(b)
     onB.seek(machine, 5_000)
     check(playing.seeks == listOf(machine.status.playToken to 5_000L)) { "B's own seek applies" }
     machine.next(b)
     machine.onPrepared(playing.tokens.last())
-    check(!onB.shows(machine.status) && machine.status.call == 1) { "B's next call is another target" }
+    check(onB.shows(machine.status) && machine.status.call == 1) { "B's next call: the same target" }
     onB.seek(machine, 1_000)
-    check(playing.seeks.size == 1) { "a seek queued for B's first call is dropped on its second" }
+    check(playing.seeks.last() == machine.status.playToken to 1_000L) {
+        "a seek applies to the item current when it runs (the documented limit)"
+    }
     SessionTarget.NONE.stop(machine)
     SessionTarget.NONE.pause(machine)
     check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "no target, no command" }
-    SessionTarget(b, machine.status.playToken).pause(machine)
+    onB.pause(machine)
     check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the current target's Pause pauses" }
+}
+
+/**
+ * R36: one session callback per playlist. Next, Next and Stop queued back to back on the callback the session showed
+ * before them all act, each on the queue as it then is: the moves never make another target, so the service installs
+ * no new callback, and nothing the framework queued is dropped.
+ */
+fun keysQueuedBehindAMoveAllAct() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val calls = (0..3).map { RecordingPlayer.Item("/r/k$it.wav", 10, 1, 0, call = it) }
+    val g = playing.playlist(calls)
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    val callback = SessionTarget(g)
+    callback.next(machine)
+    check(callback.shows(machine.status) && machine.status.call == 1) { "the first Next moves; still this callback's" }
+    callback.next(machine)
+    check(callback.shows(machine.status) && machine.status.call == 2) { "the second Next moves on from the new part" }
+    callback.stop(machine)
+    check(machine.status.state == RecordingPlayer.STOPPED &&
+        machine.status.endedReason == RecordingPlayer.ENDED_STOPPED) { "and the Stop queued behind them stops" }
+    check(playing.ends == listOf(g to RecordingPlayer.ENDED_STOPPED)) { "once" }
 }
 
 /** The session's play/pause taps against the player, as the service counts them on the looper (#909). */
@@ -851,6 +876,7 @@ fun main() {
     aTrailingPostShowsOnlyTheOwner()
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
+    keysQueuedBehindAMoveAllAct()
     headsetTapsBelongToThePlaylistNotThePart()
     transportKeysFollowAWaitingTapOnThePlayersState()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
