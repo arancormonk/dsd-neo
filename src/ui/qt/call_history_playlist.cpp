@@ -61,11 +61,22 @@ playable(const QVariantMap& recording) {
            && !recording.value(QStringLiteral("path")).toString().isEmpty();
 }
 
+/* The line under a call's name (the notification's subtitle): its day and time, "<day> · <time>", or whichever of
+ * them the row has, so a call from another day never reads as a bare time. */
+QString
+call_line(const CallHistoryModel::PlaylistRow& row) {
+    if (row.dayLabel.isEmpty() || row.timeText.isEmpty()) {
+        return row.dayLabel.isEmpty() ? row.timeText : row.dayLabel;
+    }
+    return row.dayLabel + QStringLiteral(" \u00B7 ") + row.timeText;
+}
+
 /* @p row's playable recordings appended to @p items as call @p call, each with its place among all the row's
  * recordings (a three-part call with only part 2 playable plays "part 2 of 3"); how many were appended. */
 int
 append_call(QVariantList& items, const CallHistoryModel::PlaylistRow& row, int call) {
     const int count = static_cast<int>(row.recordings.size());
+    const QString line = call_line(row);
     int appended = 0;
     for (int part = 0; part < count; part++) {
         const QVariantMap recording = row.recordings.at(part).toMap();
@@ -81,7 +92,7 @@ append_call(QVariantList& items, const CallHistoryModel::PlaylistRow& row, int c
             {QStringLiteral("partOrdinal"), part + 1},
             {QStringLiteral("partCount"), count},
             {QStringLiteral("title"), row.name},
-            {QStringLiteral("line"), row.timeText},
+            {QStringLiteral("line"), line},
             {QStringLiteral("key"), row.uid},
         });
         appended++;
@@ -133,7 +144,7 @@ CallHistoryPlaylist::start(double startUid) {
         return outcome(uid > 0 ? "rowNone" : "none");
     }
     const int generation = m_host->playRecordings(items, DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
-    return generation > 0 ? outcome("accepted", generation, calls) : outcome("unsupported");
+    return generation > 0 ? outcome("accepted", generation, calls) : outcome("refused");
 }
 
 } // namespace dsd_qt

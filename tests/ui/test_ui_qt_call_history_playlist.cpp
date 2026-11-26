@@ -9,6 +9,8 @@
 // every result code, and the host's base play.
 
 #include <QCoreApplication>
+#include <QDate>
+#include <QDateTime>
 #include <QDir>
 #include <QHash>
 #include <QJsonArray>
@@ -21,6 +23,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QTime>
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
@@ -36,6 +39,7 @@
 #include "call_recording_provider.h"
 #include "decoder_host.h"
 #include "json_store.h"
+#include "local_day_watch.h"
 
 using dsd_qt::CallHistoryFilterModel;
 using dsd_qt::CallHistoryModel;
@@ -324,8 +328,11 @@ test_play_all_order_and_items() {
                          && item.value(QStringLiteral("mtimeNanos")).toInt() == 402);
     expect(__LINE__, item.value(QStringLiteral("title")).toString() == QLatin1String("Fire North")
                          && item.value(QStringLiteral("title")) == f.model.data(idx, CallHistoryModel::NameRole));
-    expect(__LINE__, item.value(QStringLiteral("line")) == f.model.data(idx, CallHistoryModel::TimeTextRole)
-                         && !item.value(QStringLiteral("line")).toString().isEmpty());
+    // The row's list section and its time: the day is said, not only the time.
+    const QString day = f.model.data(idx, CallHistoryModel::DayLabelRole).toString();
+    const QString time = f.model.data(idx, CallHistoryModel::TimeTextRole).toString();
+    expect(__LINE__, !day.isEmpty() && !time.isEmpty()
+                         && item.value(QStringLiteral("line")).toString() == day + QStringLiteral(" \u00B7 ") + time);
     expect(__LINE__,
            item.value(QStringLiteral("key")).toLongLong() == f.model.data(idx, CallHistoryModel::UidRole).toLongLong());
 }
@@ -419,7 +426,8 @@ test_bound_to_its_view() {
     expect(__LINE__, is_outcome(city.start(f.uid(QStringLiteral("Fire Tac"))), "gone", 0, 0));
 }
 
-/* unsupported: a host with no player (asked nothing, nothing read) or one that refuses the play (0). A playlist
+/* unsupported: a host with no player (asked nothing, nothing read); refused: one with a player that does not take the
+ * items (generation 0), the base host's play among them. A playlist
  * without a host, or over a view of another log, plays nothing. */
 void
 test_unsupported_and_unwired() {
@@ -431,10 +439,12 @@ test_unsupported_and_unwired() {
     expect(__LINE__, f.host.plays == 0 && f.provider.batchReads == 0);
     f.host.supported = true;
     f.host.generation = 0;
-    expect(__LINE__, is_outcome(playlist.start(0), "unsupported", 0, 0) && f.host.plays == 1);
+    expect(__LINE__, is_outcome(playlist.start(0), "refused", 0, 0) && f.host.plays == 1);
+    expect(__LINE__,
+           is_outcome(playlist.start(f.uid(QStringLiteral("Fire Tac"))), "refused", 0, 0) && f.host.plays == 2);
     // A host with a player whose play is the base host's: refused, its reading Failed "unsupported".
     f.host.base = true;
-    expect(__LINE__, is_outcome(playlist.start(0), "unsupported", 0, 0) && f.host.plays == 2);
+    expect(__LINE__, is_outcome(playlist.start(0), "refused", 0, 0) && f.host.plays == 3);
     expect(__LINE__, f.host.playbackState() == DecoderHost::PlaybackFailed
                          && f.host.playbackError() == QLatin1String("unsupported")
                          && f.host.playbackPath() == QLatin1String("/r/f2a.wav"));
@@ -450,7 +460,37 @@ test_unsupported_and_unwired() {
     expect(__LINE__, is_outcome(unwired.start(0), "none", 0, 0));
     expect(__LINE__, is_outcome(unwired.start(f.uid(QStringLiteral("Fire Tac"))), "gone", 0, 0));
     CallHistoryPlaylist viewless(nullptr, &f.model, &f.host, nullptr);
-    expect(__LINE__, is_outcome(viewless.start(0), "none", 0, 0) && f.host.plays == 2);
+    expect(__LINE__, is_outcome(viewless.start(0), "none", 0, 0) && f.host.plays == 3);
+}
+
+/* An item's line names the call's day with its time ("YESTERDAY · 12:04"), and a row with no start, which has no
+ * time, has its day label alone. */
+void
+test_item_line() {
+    const QDate today = dsd_qt::LocalDayWatch::current().date;
+    const qint64 yesterday = QDateTime(today.addDays(-1), QTime(12, 4)).toSecsSinceEpoch();
+    FakeProvider provider;
+    save_store(QJsonArray{stored_row(yesterday, 201, QStringLiteral("Fire Ops"), {"Y1"}),
+                          stored_row(0, 202, QStringLiteral("Fire Undated"), {"Y0"})});
+    provider.byFragment = {{QStringLiteral("Y1"), {recording(QStringLiteral("/r/y1.wav"), 2100)}},
+                           {QStringLiteral("Y0"), {recording(QStringLiteral("/r/y0.wav"), 2000)}}};
+    CallHistoryModel model;
+    model.setRecordingProvider(&provider);
+    CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    FakeHost host;
+    CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
+    const QVariantMap outcome = playlist.start(0);
+    expect(__LINE__, result_of(outcome) == QLatin1String("accepted"));
+    QHash<QString, QString> lines;
+    for (const QVariant& item : host.items) {
+        const QVariantMap map = item.toMap();
+        lines.insert(map.value(QStringLiteral("path")).toString(), map.value(QStringLiteral("line")).toString());
+    }
+    expect(__LINE__, lines.value(QStringLiteral("/r/y1.wav")) == QStringLiteral("YESTERDAY \u00B7 12:04"));
+    expect(__LINE__, model.count() == 2 && host.items.size() == 2);
+    expect(__LINE__, lines.value(QStringLiteral("/r/y0.wav")) == QLatin1String("TIME UNKNOWN"));
+    model.setRecordingProvider(nullptr);
 }
 
 /* The base host has no player: a play publishes the first item's path Failed "unsupported" and returns 0. */
@@ -535,6 +575,7 @@ main(int argc, char** argv) {
     test_bound_to_its_view();
     test_unsupported_and_unwired();
     test_base_host_play();
+    test_item_line();
     test_full_log_one_read();
     if (g_failures != 0) {
         DSD_FPRINTF(stderr, "UI_QT_CALL_HISTORY_PLAYLIST: %d failure(s)\n", g_failures);

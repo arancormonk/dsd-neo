@@ -47,8 +47,9 @@ class CallHistoryPlaylist : public QObject {
      * @return `{result, generation, calls}`: result `accepted` (the host took it: generation above 0, calls the
      *         number of calls in it), `none` (no shown call has a recording that can be played now), `gone` (no shown
      *         row has @p startUid), `rowNone` (the row of @p startUid is shown but has no recording that can be played
-     *         now) or `unsupported` (the host has no player, or refused the play). Every result but `accepted` leaves
-     *         what plays playing, with generation and calls 0.
+     *         now), `unsupported` (the host has no player) or `refused` (the host has a player but did not take the
+     *         items: generation 0). Every result but `accepted` leaves what plays playing, with generation and calls
+     *         0. Each item's `line` is the row's day and time, "<day> · <time>", or whichever of them it has.
      */
     Q_INVOKABLE QVariantMap start(double startUid);
 
