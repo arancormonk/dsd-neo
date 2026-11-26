@@ -30325,6 +30325,8 @@ if(DSD_ENABLE_QT_UI)
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
     )
+    # A detection with a NaN power and an infinite noise floor, which fast-math folds away (and clang rejects).
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_signal_search)
     add_test(NAME UI_QT_SIGNAL_SEARCH COMMAND dsd-neo_test_ui_qt_signal_search)
     # Exercise Ubuntu's shared-library retention policy on local Linux builds too.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -30384,6 +30386,8 @@ if(DSD_ENABLE_QT_UI)
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
     )
+    # A start uid of NaN or infinity is refused, which fast-math folds away (and clang rejects).
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_call_history_playlist)
     add_test(
         NAME UI_QT_CALL_HISTORY_PLAYLIST
         COMMAND dsd-neo_test_ui_qt_call_history_playlist
