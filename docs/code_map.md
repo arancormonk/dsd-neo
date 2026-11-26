@@ -18609,9 +18609,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     changing text in a `ComboBox` model"); `reload()` takes the stored value afresh, and each caller calls it where it
     loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan list's `openFor`). A value changed from
     elsewhere (a Settings restore, a RadioReference import clearing a width TETRA cannot use) reloads by itself. App
-    default stays -1: opening or saving never turns it into a number. Names: Settings `settingsBandwidth` (note
-    `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
-    `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
+    default stays -1: opening or saving never turns it into a number. With `meaningShown` (Settings and the system
+    editor; issue #899, where the bandwidth was taken for the NFM width) a line under the note says "The slice of
+    spectrum the decoder processes. The NFM channel width is set in the Radio sheet."; the scan list, whose rows can
+    set their own width, leaves it off. Names: Settings `settingsBandwidth` (note `settingsBandwidthNote`, line
+    `settingsBandwidthMeaning`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
+    `systemBandwidthNote`, line `systemBandwidthMeaning`), the scan list `scanTuner_bandwidthKhz` (draft
     `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
     `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.

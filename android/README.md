@@ -30,7 +30,9 @@ gain is for RTL-SDR and RTL-TCP sources; an Airspy has its own gain controls.
 shows an error and is not saved.
 
 **Bandwidth** is a list of the widths every radio can run: 4, 6, 8, 12, 16, 24,
-48 and 72 kHz. TETRA needs 72 kHz, which **App default** gives a TETRA system. A
+48 and 72 kHz. It is the slice of spectrum the decoder processes, not a
+channel's width: an FM channel's width is set in the Radio sheet, under **NFM
+channel width**. TETRA needs 72 kHz, which **App default** gives a TETRA system. A
 bandwidth saved by an older version, in Settings, a system or a scan list, may
 be a width that is not on the list, such as 25 kHz. It stays as it was and shows
 as its own entry, with a note of what it really runs at: 48 kHz on an RTL-SDR,

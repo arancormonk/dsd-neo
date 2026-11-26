@@ -1897,6 +1897,8 @@ Item {
                             inheritable: true
                             comboObjectName: "systemBandwidthField"
                             noteObjectName: "systemBandwidthNote"
+                            meaningShown: true
+                            meaningObjectName: "systemBandwidthMeaning"
                             value: wizard.bandwidthRequestKhz()
                             inheritNote: {
                                 var appDefault = prefs.bandwidthKhz; // dependency: follow a change to the default
