@@ -96,6 +96,11 @@ Item {
             compare(row.playback, 2);
             compare(String(glyph.color), String(Ui.Theme.textSubdued), "dimmed while paused");
             compare(row.node.Accessible.name, row.accessibleName + ", paused");
+            // Opening paused (Next while paused): the player says why it pauses, so the row reads paused.
+            testContext.publishPlaybackReading({playbackState: 1, playbackToken: 4});
+            compare(row.playback, 2, "opening, paused");
+            testContext.publishPlaybackReading({playbackState: 1, playbackPausedReason: ""});
+            compare(row.playback, 1, "opening, wanted");
 
             testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished"});
             compare(row.playback, 0, "gone once it ends");

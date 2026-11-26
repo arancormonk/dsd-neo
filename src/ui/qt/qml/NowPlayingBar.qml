@@ -47,9 +47,12 @@ Rectangle {
     readonly property var end: shown && status.ended ? status.ended : null
     readonly property int playState: live ? decoderHost.playbackState : 0
     readonly property bool interrupted: live && decoderHost.playbackInterrupted === true
+    // Opening with nothing wanted (paused while it opens, or Next while
+    // paused): the player names why it pauses; it reads paused, with Resume.
+    readonly property bool pausedOpening: playState === 1 && String(decoderHost.playbackPausedReason || "").length > 0
     // Wanted: its button pauses (B4: an interruption carries on by itself, so
     // it reads Pause too).
-    readonly property bool wanted: playState === 1 || playState === 2 || (playState === 3 && interrupted)
+    readonly property bool wanted: (playState === 1 && !pausedOpening) || playState === 2 || (playState === 3 && interrupted)
     readonly property real durationMs: live ? Math.max(0, Number(decoderHost.playbackDurationMs) || 0) : 0
     readonly property real positionMs: live ? Math.max(0, durationMs > 0 ? Math.min(decoderHost.playbackPositionMs, durationMs) : decoderHost.playbackPositionMs) : 0
     readonly property string title: live ? decoderHost.playbackTitle : end ? end.title : ""
@@ -88,14 +91,14 @@ Rectangle {
             return "";
         if (interrupted)
             return qsTr("Paused for another app's audio");
-        if (playState === 1)
-            return qsTr("Opening…");
-        if (playState === 3) {
+        if (playState === 3 || pausedOpening) {
             var reason = decoderHost.playbackPausedReason;
             if (reason === "unavailable")
                 return spoken === true ? status.unavailableText : qsTr("Paused: another app has the audio.");
             return reason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         }
+        if (playState === 1)
+            return qsTr("Opening…");
         // The player's skip notice: the recordings skipped before this call
         // played, while it is the call playing (the player knows which call
         // followed them, whenever the app looked).

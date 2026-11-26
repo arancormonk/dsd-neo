@@ -153,7 +153,9 @@ QtObject {
             if (!quiet)
                 note(playingText(Number(host.playbackCallCount) || 0));
         }
-        var reason = state === 3 ? String(host.playbackPausedReason || "") : "";
+        // Opening counts too: a call opening paused (Next while paused) keeps
+        // the reason it paused for, so a refusal standing is not said again.
+        var reason = state === 1 || state === 3 ? String(host.playbackPausedReason || "") : "";
         var refusals = Number(host.playbackRefusals) || 0;
         // A resume the platform refused the audio (a phone call), the first
         // time or again (the refusal count moved on the same reading).

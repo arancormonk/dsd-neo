@@ -283,7 +283,9 @@ Item {
                     {tag: "headphones", reading: {playbackState: 3, playbackPausedReason: "noisy"}, line: "Paused: headphones unplugged", pause: false},
                     {tag: "interrupted", reading: {playbackState: 3, playbackInterrupted: true, playbackPausedReason: "focus"}, line: "Paused for another app's audio", pause: true},
                     {tag: "refused resume", reading: {playbackState: 3, playbackPausedReason: "unavailable"}, line: "Paused: another app has the audio.", pause: false},
-                    {tag: "opening", reading: {playbackState: 1}, line: "Opening…", pause: true}];
+                    {tag: "opening", reading: {playbackState: 1}, line: "Opening…", pause: true},
+                    {tag: "opening paused", reading: {playbackState: 1, playbackPausedReason: "user"}, line: "Paused", pause: false},
+                    {tag: "opening unplugged", reading: {playbackState: 1, playbackPausedReason: "noisy"}, line: "Paused: headphones unplugged", pause: false}];
         }
         function test_bar_lines(data) {
             var calls = logCalls(3);
@@ -351,6 +353,40 @@ Item {
             compare(line(idle()), "Call 3 of 3 · 0:20 / 0:31", "nor later on C");
             testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished", playbackSkipped: 1});
             compare(part(idle(), "nowPlayingResult").text, "Finished · 3 calls · 1 skipped", "the total is the summary's");
+        }
+
+        // Paused while a call opens (or moved while paused): Kotlin publishes Preparing with the reason it pauses for,
+        // and the bar offers Resume, which resumes, never another Pause.
+        function test_opening_paused_offers_resume() {
+            var calls = logCalls(2);
+            var screen = idle();
+            playAll(screen, calls);
+            playing({item: 0});
+            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 8, playbackPausedReason: "user"});
+            var play = part(screen, "nowPlayingPlay");
+            verify(!play.showPause);
+            compare(play.Accessible.name, "Resume");
+            compare(line(screen), "Paused");
+            play.activate();
+            compare(hostCallsNamed("resumePlayback").length, 1, "Resume is sent");
+            compare(hostCallsNamed("pausePlayback").length, 0, "no Pause");
+        }
+
+        // A refused resume stands across Next while paused: the next call opens and prepares with the same reason
+        // and refusal count, which is no new refusal to say.
+        function test_standing_refusal_not_said_again_after_a_move() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            var barItem = bar(screen);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            tryCompare(barItem, "announcements", 1);
+            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 8});
+            compare(line(screen), "Paused: another app has the audio.", "opening, still paused for it");
+            playing({item: 1, playbackState: 3, playbackToken: 8});
+            wait(30);
+            compare(barItem.announcements, 1, "not said again");
         }
 
         // A Resume refused, then refused again with the same reading but for the host's refusal count: each refusal

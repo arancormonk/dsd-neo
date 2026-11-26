@@ -104,7 +104,12 @@ Column {
     // Issue #909 (B4): halted for another app's audio, carrying on by itself
     // after it: wanted still, so its button pauses it (that cancels the carry-on).
     readonly property bool interrupted: loaded && decoderHost.playbackInterrupted
-    readonly property bool wantsPlay: playState === 1 || playState === 2 || (playState === 3 && interrupted)
+    // Still opening, with nothing wanted (paused while it opens, or moved
+    // while paused): the player names why it pauses, as the media session
+    // offers Play then; it reads paused, not opening.
+    readonly property bool pausedOpening: playState === 1 && String(decoderHost.playbackPausedReason || "").length > 0
+    readonly property bool paused: (playState === 3 && !interrupted) || pausedOpening
+    readonly property bool wantsPlay: (playState === 1 && !pausedOpening) || playState === 2 || (playState === 3 && interrupted)
     // A play of someone else's (a playlist) still opening, with no recording
     // token yet: a pause or resume from here could reach nothing, so none is
     // offered until it has one.
@@ -179,10 +184,10 @@ Column {
             return "";
         if (interrupted)
             return qsTr("Paused for another app's audio");
+        if (paused)
+            return decoderHost.playbackPausedReason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         if (playState === 1)
             return qsTr("Opening…");
-        if (playState === 3)
-            return decoderHost.playbackPausedReason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         return "";
     }
     // Why it cannot play, or what is wrong with it: a sentence, under the
@@ -205,7 +210,7 @@ Column {
     // platform refused the audio (it stays paused).
     function failureText() {
         var state = decoderHost.playbackState;
-        if (state === 3 && decoderHost.playbackPausedReason === "unavailable" && loaded)
+        if (paused && decoderHost.playbackPausedReason === "unavailable")
             return unavailableText;
         var mine = ownsPlay || (startingPath.length > 0 && decoderHost.playbackPath === startingPath);
         if (state !== 4 || !mine)
@@ -254,7 +259,7 @@ Column {
                 decoderHost.pausePlayback();
             return;
         }
-        if (playState === 3) {
+        if (paused) {
             // A resume refused before is asked again; its sentence stays while
             // it stands, and a refusal read again (its count moved) is said again.
             if (decoderHost.playbackPausedReason !== "unavailable")
@@ -618,7 +623,7 @@ Column {
             featured: player.wantsPlay
             showPause: player.wantsPlay
             enabled: !player.storageAway && !player.awaitingToken
-            accessibleName: player.wantsPlay ? qsTr("Pause recording") : player.playState === 3 ? qsTr("Resume recording") : qsTr("Play recording")
+            accessibleName: player.wantsPlay ? qsTr("Pause recording") : player.paused ? qsTr("Resume recording") : qsTr("Play recording")
             onClicked: player.toggle()
         }
 

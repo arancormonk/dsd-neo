@@ -1199,6 +1199,25 @@ Item {
             compare(lastHostCall().token, 3);
         }
 
+        // A playlist's part opening paused (Next while paused): the reading is Preparing with the reason it pauses for,
+        // so the sheet reads Paused and offers Resume, which resumes it by its token.
+        function test_opening_paused_reads_paused() {
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([b]);
+            playPlaylist([itemOf(b, 0, 1, 1, uid)]);
+            testContext.publishPlaybackReading({playbackState: 1, playbackToken: 4, playbackPausedReason: "user"});
+            openRow(uid);
+            compare(item("recordingStatus").text, "Paused");
+            verify(!item("recordingPlayButton").showPause);
+            compare(item("recordingPlayButton").accessibleName, "Resume recording");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "resumePlaybackFor");
+            compare(lastHostCall().token, 4);
+            testContext.publishPlaybackReading({playbackState: 1, playbackPausedReason: ""});
+            compare(item("recordingStatus").text, "Opening…", "wanted again, it opens");
+            verify(item("recordingPlayButton").showPause);
+        }
+
         // A single play the host publishes before the platform answers (generation 0, Preparing) is opening, not idle.
         function test_single_play_starting_reads_opening() {
             openWith([rec("t-1", pathA, 12000)]);
