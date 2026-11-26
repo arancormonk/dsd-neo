@@ -577,7 +577,7 @@ object RecordingPlayback {
      * also arrive on; only [prepare] runs on the setup thread, before the looper touches it. A media server that died
      * is the player's fault and ends the play; any other error is the file's.
      */
-    private class MediaItem(private var token: Long) : RecordingPlayer.Player {
+    private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val media = MediaPlayer()
 
         override fun prepare(source: RecordingPlayer.Source) {
@@ -602,12 +602,6 @@ object RecordingPlayback {
         override fun pause() = media.pause()
 
         override fun seekTo(positionMs: Long) = media.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
-
-        override fun restart(token: Long) {
-            media.seekTo(0, MediaPlayer.SEEK_CLOSEST)
-            // Behind what the looper already holds: a completion queued before the restart keeps the old token.
-            synchronized(lock) { handler }?.post { this.token = token }
-        }
 
         override val durationMs: Long
             get() = media.duration.toLong()

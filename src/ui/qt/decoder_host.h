@@ -422,8 +422,9 @@ class DecoderHost : public QObject {
      * ended play's last reading (playbackEndedReason says how it ended) until the next play or a stop. Generation 0
      * with Preparing is a sheet's single play starting, published before the platform is asked (so the store holds its
      * file first); the platform's generation follows once it takes it. playbackToken names the recording open now (0:
-     * none); a new one is opened under a new token, even the same file again, so a command carrying the token of a
-     * gesture begun on another recording is dropped (seekPlaybackFor() and its kin).
+     * none); every open is under a new token, a Previous that starts the same file again included (a platform player
+     * is never reused), so a command carrying the token of a gesture begun on another open is dropped
+     * (seekPlaybackFor() and its kin).
      * playbackPath, playbackTitle and playbackKey are the open item's path, call name and History row uid, as the play
      * listed them, and playbackSize, playbackMtimeSec and playbackMtimeNanos the file's identity as the play listed it
      * (the recording store's indexed identity; size -1 for a single recording's play, which names its file by path

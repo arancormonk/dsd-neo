@@ -31,19 +31,9 @@ private class FakeSource(val path: String) : RecordingPlayer.Source {
     }
 }
 
-/**
- * A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. [token] is the one
- * its callbacks carry: a restart's new token is taken behind what the looper already holds ([post]), as
- * RecordingPlayback's MediaItem takes it.
- */
-private class FakePlayer(
-    var token: Long,
-    private val length: Long,
-    private val damaged: Set<String>,
-    private val post: (() -> Unit) -> Unit,
-) : RecordingPlayer.Player {
-    /** A restart's token, not taken yet. */
-    var restartedTo = 0L
+/** A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. */
+private class FakePlayer(val token: Long, private val length: Long, private val damaged: Set<String>) :
+    RecordingPlayer.Player {
     var path = ""
     var asked = false
     var prepared = false
@@ -86,15 +76,6 @@ private class FakePlayer(
     override fun seekTo(positionMs: Long) {
         valid("seek", prepared)
         seeks += positionMs
-    }
-
-    override fun restart(token: Long) {
-        seekTo(0)
-        restartedTo = token
-        post {
-            this.token = token
-            restartedTo = 0
-        }
     }
 
     override val durationMs: Long
@@ -222,9 +203,6 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     val opener = FakeOpener()
     val focus = FakeFocus()
     val scheduler = FakeScheduler { nowMs }
-
-    /** What the players posted to the looper themselves (a restart's token), apart from the machine's tasks. */
-    val looper = ArrayDeque<() -> Unit>()
     val service = FakeService()
     val recheck = RecordingRecheck()
     val machine = RecordingPlayer(
@@ -232,7 +210,7 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
             if (factoryFails) {
                 throw RuntimeException("the media server is away")
             }
-            FakePlayer(token, length, damaged) { task -> looper += task }.also { players += it }
+            FakePlayer(token, length, damaged).also { players += it }
         },
         opener,
         focus,
@@ -255,9 +233,8 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
      */
     val given: List<FakePlayer> get() = players.filter { it.asked }
 
-    /** The player the status names (a restart's new token included, before the player takes it). */
-    val current: FakePlayer
-        get() = players.last { it.token == status.playToken || it.restartedTo == status.playToken }
+    /** The player the status names. */
+    val current: FakePlayer get() = players.last { it.token == status.playToken }
 
     fun play(path: String = "/r/Explore/a.wav"): Int = (++generation).also { machine.play(it, path) }
 
@@ -300,22 +277,11 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
         complete()
     }
 
-    /** The looper's next turn: what the players posted, then the tasks due. */
-    fun turn() {
-        drain()
-        scheduler.runDue()
-    }
+    fun turn() = scheduler.runDue()
 
     fun elapse(ms: Long) {
-        drain()
         nowMs += ms
         scheduler.runDue()
-    }
-
-    fun drain() {
-        while (looper.isNotEmpty()) {
-            looper.removeFirst()()
-        }
     }
 
     fun fail(path: String, reason: String) {
@@ -767,11 +733,11 @@ private fun previousFollowsTheThreeSecondRule() {
     val open = at.current
     at.machine.previous()
     check(at.last.path == path(0, 1) && at.status.call == 0) { "at 3,000 ms Previous goes to the previous call" }
-    check(!open.released && !open.started) { "the open player is kept until the new one opens" }
+    check(open.released) { "the part left lets its player go at once" }
     at.prepared()
-    check(open.released && at.state == PLAYING) { "and let go once it has" }
+    check(at.state == PLAYING) { "the previous call plays" }
 
-    // At 3,001 ms: a restart, a seek to 0 on the open player, never a reopen.
+    // At 3,001 ms: a restart, which opens the part again on a new player, under a new token.
     val past = Rig()
     past.queue(1, 1)
     past.playOut()
@@ -781,11 +747,10 @@ private fun previousFollowsTheThreeSecondRule() {
     val playing = past.current
     val token = past.status.playToken
     past.machine.previous()
-    check(past.players.size == 2 && playing.seeks == listOf(0L) && past.position == 0L) { "past 3,000 ms it restarts" }
-    check(past.state == PLAYING && playing.started && past.current === playing) { "on the same player, playing" }
-    check(past.status.playToken != token && playing.restartedTo == past.status.playToken) {
-        "as a new pass, under a new token the player takes behind what the looper holds"
-    }
+    check(past.players.size == 3 && playing.released && playing.seeks.isEmpty()) { "past 3,000 ms it reopens the part" }
+    check(past.last.path == path(1, 1) && past.status.playToken != token && past.position == 0L) { "under a new token" }
+    past.prepared()
+    check(past.state == PLAYING && past.current === past.last) { "on the new player, playing" }
 
     // A later part: restart the call on its first part.
     val part = Rig()
@@ -796,7 +761,7 @@ private fun previousFollowsTheThreeSecondRule() {
     part.prepared()
     val second = part.current
     part.machine.previous()
-    check(part.last.path == path(1, 1) && !second.released) { "Previous on part 2 restarts the call at its first part" }
+    check(part.last.path == path(1, 1) && second.released) { "Previous on part 2 restarts the call at its first part" }
 
     // The first call restarts.
     val first = Rig()
@@ -804,22 +769,26 @@ private fun previousFollowsTheThreeSecondRule() {
     first.prepared()
     first.nowMs += 1_000
     first.machine.previous()
-    check(first.players.size == 1 && first.current.seeks == listOf(0L) && first.state == PLAYING) {
-        "Previous at the first call restarts it"
+    check(first.players.size == 2 && first.players[0].released && first.last.path == path(0, 1)) {
+        "Previous at the first call restarts it, opening it again"
     }
+    first.prepared()
+    check(first.state == PLAYING && first.players[0].seeks.isEmpty()) { "on a new player" }
 
-    // In the gap: restart the call just heard.
+    // In the gap: restart the call just heard, opened again (the gap holds no player).
     val gap = Rig()
     gap.queue(1, 1)
     gap.prepared()
     val heard = gap.current
     gap.complete()
+    check(gap.status.gap && heard.released) { "the part that completed let its player go" }
     gap.machine.previous()
-    check(!gap.status.gap && gap.players.size == 1 && heard.seeks == listOf(0L) && heard.started) {
-        "Previous in the gap restarts the call just heard, on its open player"
+    check(!gap.status.gap && gap.players.size == 2 && gap.last.path == path(0, 1) && heard.seeks.isEmpty()) {
+        "Previous in the gap opens the call just heard again"
     }
+    gap.prepared()
     gap.elapse(5_000)
-    check(gap.players.size == 1) { "the gap is over" }
+    check(gap.players.size == 2 && gap.status.call == 0) { "the gap is over" }
 
     val parts = Rig()
     parts.queue(2, 1)
@@ -1295,10 +1264,10 @@ private fun previousPassesOverACallWhoseRecordingsAllFailed() {
     rig.prepared()
     val c = rig.current
     rig.machine.previous()
-    check(rig.last.path == path(0, 1) && !c.released) { "Previous at C's start reaches A" }
+    check(rig.last.path == path(0, 1) && c.released) { "Previous at C's start reaches A" }
     check(rig.opener.opened.count { it.startsWith("/r/c1") } == 2) { "B's failed parts are not tried again" }
 
-    // The current call gone too: A fails now, so it stays on C's open player at 0, reopening nothing failed.
+    // The current call gone too: A fails now, and C opened again is gone: each skipped and counted, then the end.
     val gone = Rig()
     gone.fail(path(1, 1), RecordingPlayer.REASON_GONE)
     gone.queue(1, 1, 1)
@@ -1311,14 +1280,17 @@ private fun previousPassesOverACallWhoseRecordingsAllFailed() {
     gone.fail(path(0, 1), RecordingPlayer.REASON_GONE)
     gone.fail(path(2, 1), RecordingPlayer.REASON_GONE)
     gone.machine.previous()
-    check(gone.opener.opened.last() == path(0, 1) && !open.released) { "A is tried, C kept open" }
+    check(gone.opener.opened.last() == path(0, 1) && open.released) { "A is tried, C let go" }
     gone.turn()
-    check(gone.current === open && open.seeks == listOf(0L) && open.started && gone.state == PLAYING) {
-        "every candidate failed: it stays on C at 0"
+    check(gone.opener.opened.last() == path(2, 1) && open.seeks.isEmpty()) { "C is opened again, never reused" }
+    gone.turn()
+    check(gone.state == FAILED && gone.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE) {
+        "every candidate failed: B before, A and C gone since: unplayable"
     }
-    check(gone.opener.opened == listOf(path(0, 1), path(1, 1), path(2, 1), path(0, 1))) { "bounded: one try each" }
-    gone.machine.previous()
-    check(gone.opener.opened.size == 4 && open.seeks == listOf(0L, 0L)) { "Previous again: a restart, no failed file reopened" }
+    check(gone.status.skipped == 3) { "A and C skipped and counted, as any gone recording" }
+    check(gone.opener.opened == listOf(path(0, 1), path(1, 1), path(2, 1), path(0, 1), path(2, 1))) {
+        "bounded: one try each"
+    }
 
     // With no open player and nothing playable behind, it goes on forward, then ends.
     val ahead = Rig()
@@ -1364,43 +1336,62 @@ private fun previousDuringASkipDoesNotWaitForTheTurn() {
             check(rig.last.path == path(1, 2) && rig.state == PREPARING) { "B2 is opening" }
         }
         rig.machine.previous()
-        check(rig.current === a && a.seeks == listOf(0L) && rig.status.call == 0 && rig.position == 0L) {
-            "before the turn = $beforeTurn: A restarts at 0 on its open player"
+        check(a.released && rig.last !== a && rig.last.path == path(0, 1) && rig.status.call == 0 && rig.position == 0L) {
+            "before the turn = $beforeTurn: A is opened again at 0, on a new player"
         }
         rig.turn()
-        check(rig.current === a && a.started && rig.state == PLAYING) { "and plays; the skip search is over" }
+        rig.prepared()
+        check(rig.current === rig.last && rig.last.started && rig.state == PLAYING) { "and plays; the skip search is over" }
         check(rig.opener.opened.count { it == path(1, 1) } == 1) { "B1 is not tried again" }
     }
 }
 
-private fun anErrorFromThePartThatPlayedOutIsIgnoredInTheGap() {
-    // The gap after a call's last part, the part that completed still current: its late error releases that player
-    // (MediaPlayer's Error state takes nothing but a release) and changes nothing else.
+/**
+ * A part done with (completed, or left by a move) has released its player: an error it reports after that never
+ * reaches the gap, the part that plays next or the call opened again, and no skip is counted.
+ */
+private fun anErrorFromAPartDoneWithNeverReachesALaterPlay() {
     val rig = Rig()
     rig.queue(1, 1)
     rig.prepared()
     val finished = rig.current
     rig.complete()
+    check(rig.status.gap && finished.released) { "the gap holds no player" }
     val gapTask = rig.scheduler.live().single()
     val token = rig.status.playToken
     rig.nowMs += 400
     rig.error(finished, RecordingPlayer.REASON_DAMAGED)
     rig.turn()
     check(rig.status.gap && rig.state == PLAYING && rig.status.skipped == 0) { "still the gap, no skip counted" }
-    check(rig.scheduler.live().single() === gapTask && finished.released) {
-        "the gap is not restarted; the player is let go"
-    }
+    check(rig.scheduler.live().single() === gapTask) { "the gap is not restarted" }
     check(rig.status.playToken == token && rig.status.call == 0 && rig.status.durationMs == 60_000L) {
         "the gap keeps the completed part's readings"
     }
-    rig.elapse(600)
-    check(rig.last.path == path(1, 1) && !rig.status.gap) { "it runs out on time and the next call opens" }
-    rig.prepared()
+    val calls = finished.calls.size
     rig.machine.previous()
+    check(rig.players.size == 2 && rig.last.path == path(0, 1) && finished.calls.size == calls) {
+        "Previous in the gap opens the call again on a new player, never the old one"
+    }
     rig.prepared()
-    check(rig.status.call == 0 && rig.opener.opened.count { it == path(0, 1) } == 2) { "the part is not marked failed" }
+    rig.error(finished, RecordingPlayer.REASON_PLAYER)
+    check(rig.state == PLAYING && rig.status.call == 0 && rig.status.skipped == 0) { "the old error reaches nothing" }
 
-    // The gap entered after the call's other part failed: the part that played is held into it, and its error too.
+    // Left by a move: Next while it plays, then its error.
+    val left = Rig()
+    left.queue(1, 1)
+    left.prepared()
+    val first = left.current
+    left.machine.next()
+    check(first.released) { "the part left lets its player go" }
+    left.error(first, RecordingPlayer.REASON_DAMAGED)
+    left.prepared()
+    check(left.state == PLAYING && left.status.call == 1 && left.status.skipped == 0) { "the next call plays, unskipped" }
+    left.machine.previous()
+    left.turn()
+    left.prepared()
+    check(left.status.call == 0 && left.state == PLAYING && left.status.skipped == 0) { "the first call opens and plays" }
+
+    // A call of two parts: part 1 completed, part 2 gone: the gap names part 1, with no player kept for it.
     val held = Rig()
     held.fail(path(0, 2), RecordingPlayer.REASON_GONE)
     held.queue(2, 1)
@@ -1408,46 +1399,38 @@ private fun anErrorFromThePartThatPlayedOutIsIgnoredInTheGap() {
     val played = held.current
     held.complete()
     held.turn()
-    check(held.status.gap && held.status.skipped == 1 && held.current === played) { "the gap, on the part that played" }
-    val heldGap = held.scheduler.live().single()
+    check(held.status.gap && held.status.skipped == 1 && held.status.partOrdinal == 1 && played.released) {
+        "the gap, named for the part that played, its player gone"
+    }
     held.error(played, RecordingPlayer.REASON_PLAYER)
     held.turn()
-    check(held.status.gap && held.state == PLAYING && held.status.skipped == 1) { "ignored: not failed, not ended" }
-    check(held.scheduler.live().single() === heldGap && played.released) { "and the gap runs on, the player let go" }
+    check(held.status.gap && held.state == PLAYING && held.status.skipped == 1) { "its error reaches nothing" }
+    held.machine.previous()
+    held.prepared()
+    check(held.state == PLAYING && held.status.partOrdinal == 1 && held.last !== played) {
+        "Previous opens part 1 again on a new player, which plays"
+    }
 }
 
-/** An error in the gap releases the part's player: Previous reopens the file, never seeks or starts the failed one. */
-private fun previousAfterAnErrorInTheGapReopensTheFile() {
+/** A Previous on a recording deleted while it played opens it again, as any move does: a failed open, skipped. */
+private fun previousOnADeletedRecordingSkipsIt() {
     val rig = Rig()
-    rig.queue(1, 1)
+    rig.queue(1, 1, 1)
     rig.prepared()
-    val finished = rig.current
-    rig.complete()
-    rig.error(finished, RecordingPlayer.REASON_DAMAGED)
-    val calls = finished.calls.size
+    rig.machine.next()
+    rig.prepared()
+    val playing = rig.current
+    rig.fail(path(1, 1), RecordingPlayer.REASON_GONE) // deleted under it
+    rig.nowMs += 5_000
+    check(rig.state == PLAYING && !playing.released) { "D9: the part playing plays on from its descriptor" }
     rig.machine.previous()
-    check(finished.calls.size == calls && finished.released) { "no seek or start on the failed player" }
-    check(rig.players.size == 2 && rig.last !== finished && rig.last.path == path(0, 1)) {
-        "a new player opens the part"
+    check(playing.released && rig.status.skipped == 1 && rig.recheck.take().toList() == listOf(path(1, 1))) {
+        "past 3 s Previous opens it again: gone, skipped, counted and rechecked"
     }
-    check(rig.opener.opened.count { it == path(0, 1) } == 2 && !rig.status.gap) { "the file is opened again" }
+    rig.turn()
+    check(rig.last.path == path(2, 1)) { "with nothing playable behind in its call, it goes on forward" }
     rig.prepared()
-    check(rig.state == PLAYING && rig.status.call == 0 && rig.last.started && rig.status.skipped == 0) {
-        "it plays the call again, nothing skipped"
-    }
-
-    // Paused in the gap, the same: Previous reopens, and stays paused.
-    val paused = Rig()
-    paused.queue(1, 1)
-    paused.prepared()
-    val heard = paused.current
-    paused.complete()
-    paused.machine.pause()
-    paused.error(heard, RecordingPlayer.REASON_DAMAGED)
-    check(paused.status.gap && paused.state == PAUSED && heard.released) { "the paused gap, its player let go" }
-    paused.machine.previous()
-    paused.prepared()
-    check(paused.last !== heard && paused.state == PAUSED && paused.status.call == 0) { "reopened, still paused" }
+    check(rig.state == PLAYING && rig.status.call == 2) { "the next call plays" }
 }
 
 private fun aRefusedResumeStaysPausedInEveryMode() {
@@ -2152,25 +2135,46 @@ private fun aPartsSetupRunsOffTheMachinesThread() {
     check(parts.state == PLAYING && parts.status.partOrdinal == 2) { "Play all parts goes through its parts" }
 }
 
-/** A completion queued before Previous restarted the open part is the pass before's: dropped, the part replays. */
-private fun aCompletionQueuedBeforeARestartIsDropped() {
-    val rig = Rig()
-    rig.queue(1, 1)
-    rig.prepared()
-    val open = rig.current
-    val before = open.token
-    rig.nowMs += 60_000 // at its end: the completion is queued behind the Previous
-    rig.machine.previous()
-    check(rig.state == PLAYING && open.seeks == listOf(0L) && rig.current === open) { "Previous restarts it in place" }
-    rig.machine.onCompleted(before)
-    check(rig.state == PLAYING && !rig.status.gap && rig.status.call == 0 && rig.position == 0L) {
-        "the completion from before the restart is dropped: it replays"
+/**
+ * A completion of the pass before never reaches the pass Previous opened, in either order: after the Previous it carries
+ * a token no open has any more; before it, it entered the gap, and Previous in the gap opens the call again.
+ */
+private fun aCompletionAroundPreviousNeverReachesTheNewPass() {
+    // The completion after the Previous (at the part's end, in flight as the user presses), before and after the new
+    // pass has prepared and started.
+    for (late in listOf("opening", "playing")) {
+        val rig = Rig()
+        rig.queue(1, 1)
+        rig.prepared()
+        val old = rig.current
+        rig.nowMs += 60_000
+        rig.machine.previous()
+        check(old.released && rig.last !== old && rig.status.playToken == rig.last.token) { "$late: a new pass" }
+        if (late == "playing") {
+            rig.prepared()
+        }
+        rig.machine.onCompleted(old.token)
+        check(!rig.status.gap && rig.status.call == 0 && rig.position == 0L) { "$late: the old completion is dropped" }
+        rig.prepared()
+        check(rig.state == PLAYING && !rig.status.gap) { "$late: the new pass plays" }
+        rig.nowMs += 60_000
+        rig.complete()
+        check(rig.status.gap) { "$late: the new pass's own completion reaches the gap" }
     }
-    rig.turn()
-    rig.nowMs += 60_000
-    rig.complete()
-    check(rig.status.gap && rig.status.call == 0) { "the new pass's completion: the gap" }
-    check(rig.opener.opened.size == 1 && !open.released) { "on the same open descriptor" }
+
+    // The completion first: the gap, then Previous in it opens the call again; nothing of the old pass follows.
+    val first = Rig()
+    first.queue(1, 1)
+    first.prepared()
+    val old = first.current
+    first.nowMs += 60_000
+    first.complete()
+    check(first.status.gap) { "completed: the gap" }
+    first.machine.previous()
+    check(!first.status.gap && first.last !== old && first.last.path == path(0, 1)) { "Previous reopens the call" }
+    first.machine.onCompleted(old.token)
+    first.prepared()
+    check(first.state == PLAYING && !first.status.gap && first.status.call == 0) { "the new pass plays" }
 }
 
 /**
@@ -2270,8 +2274,8 @@ fun main() {
     failuresArePerRecordingAndKeepTheirDirection()
     previousPassesOverACallWhoseRecordingsAllFailed()
     previousDuringASkipDoesNotWaitForTheTurn()
-    anErrorFromThePartThatPlayedOutIsIgnoredInTheGap()
-    previousAfterAnErrorInTheGapReopensTheFile()
+    anErrorFromAPartDoneWithNeverReachesALaterPlay()
+    previousOnADeletedRecordingSkipsIt()
     aRefusedResumeStaysPausedInEveryMode()
     theSkipNoticeIsOnTheCallThatPlayedAfterIt()
     aPauseHoldsWhileItSearches()
@@ -2286,7 +2290,7 @@ fun main() {
     onlyAGrantedFocusRequestIsKept()
     aPrepareThatNeverAnswersFailsItsPart()
     aPartsSetupRunsOffTheMachinesThread()
-    aCompletionQueuedBeforeARestartIsDropped()
+    aCompletionAroundPreviousNeverReachesTheNewPass()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

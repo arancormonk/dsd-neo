@@ -19933,9 +19933,9 @@ Qt Quick frontend (`src/ui/qt`):
       not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play
       (never its whole call), and the next not-failed one in the move's direction opens on the next looper turn (a long
       run of failures stays stoppable; each search visits each recording once); PARTS ends on its first failure as
-      before. An error from the part that completed, in the gap after its call, releases that player, which
-      `MediaPlayer`'s Error state leaves usable for nothing else, and is otherwise ignored (it played: not failed, no
-      skip, the gap runs on with the part's readings, and Previous there reopens the file). The paths of `gone` and
+      before. A player is never reused: it is released as soon as its part completes, fails or is left, so an error or
+      completion it reports later reaches nothing (its token is never opened again); the gap after a call holds no
+      player, only the completed part's readings (item, token, duration, position). The paths of `gone` and
       `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement
       never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a `String[]`, no
       delimiter) when the serial moved, on every foreground return and with the next play, and hands the paths to
@@ -19954,14 +19954,14 @@ Qt Quick frontend (`src/ui/qt`):
       advance at the end does (finished, or "unplayable" when every recording failed), and at the last call it is
       dropped. Previous (D7): restart
       the call when a playable part of it comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or
-      it is in the gap, else the previous call's first playable part, and at the first call restart; restarting the open
-      part is a seek to 0 on that player, never a reopen (D9: its descriptor is kept), under a new play token that the
-      player's callbacks take behind what the looper already holds, so a completion it queued just before the restart
-      is dropped rather than taken for the end of the new pass; a move keeps the open player until the new one prepared
-      (if every candidate fails it stays there at 0). Next/Previous while paused stay paused. A transient focus loss
-      interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the carry-on,
-      B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
-      every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
+      it is in the gap, else the previous call's first playable part, and at the first call restart. A restart opens
+      the part again, as any move does (R31: a new `MediaPlayer` and play token, through the setup thread), so nothing
+      of the pass before reaches it, and a part deleted while it played is then a failed open, skipped and counted (D9
+      still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
+      backward move whose every candidate fails goes on forward. Next/Previous while paused stay paused. A transient
+      focus loss interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the
+      carry-on, B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every
+      mode in every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
       (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume, in a
       part, from the gap, at an interruption's end or by a media key, ends it only when a part starts playing, not at
       the press nor at the focus grant, so one refused, interrupted or paused again as the next part opens keeps the
@@ -19973,8 +19973,8 @@ Qt Quick frontend (`src/ui/qt`):
       checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's
       awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered
       on the looper while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.
-      Identities: every prepare, and every restart of the open part, gets a fresh play token (unique in the process,
-      never reused); each scheduled task (gap,
+      Identities: every open (a restart included) gets a fresh player and play token (unique in the process, never
+      reused); each scheduled task (gap,
       skip search, deadline, promotion timeout, prepare timeout) has its own id and is cancelled when superseded; focus
       callbacks carry an epoch; a callback, task or command whose identity is not current is dropped. The last
       generation's terminal reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced; the item it
@@ -20010,8 +20010,8 @@ Qt Quick frontend (`src/ui/qt`):
       seek (the player may be on the next item since the poll the token came from, and drop it): the player's next
       record moves the position, and the sheet counts a seek as landed from that record (meanwhile it shows the target,
       so the thumb does not jump back for a poll, until the landing, another token, no seek or 2 s without one); the
-      player takes a Pause or Resume for the item also in the gap after its call with no player held (its last part
-      failed while it played), a seek only on the item's open player; the bar's Next/Previous/Pause/Resume are
+      player takes a Pause or Resume for the item also in the gap after its call (which holds no player), a seek only
+      on the item's open player; the bar's Next/Previous/Pause/Resume are
       queue-wide, and its Stop names its generation (`stopPlaybackGeneration()`; a Stop for a generation no longer
       current does nothing). A Delete never stops a queue: only a SINGLE play's own Delete stops it, as before; a
       sheet's Play all parts plays on while its History row is there (`CallRecordingPlayer.rowPresent`), even once the

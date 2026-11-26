@@ -122,7 +122,6 @@ private class Playing(val rig: ServiceRig) {
                 override fun seekTo(positionMs: Long) {
                     seeks += token to positionMs
                 }
-                override fun restart(token: Long) = Unit
                 override val durationMs: Long get() = 10_000
                 override fun release() = Unit
             }

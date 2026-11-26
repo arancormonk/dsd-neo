@@ -75,8 +75,9 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  *
  * It keeps what the user asked for (play or pause) apart from what the player does, and starts a player only when it
  * is prepared, play is wanted, the foreground (SINGLE, PARTS) and the service (PLAYLIST) allow it and the focus is
- * granted. Every prepare, and every restart of an open part, gets a fresh play token, unique in the process and never
- * reused, which the player's callbacks and the host's item commands carry; each scheduled task (gap, skip search,
+ * granted. Every open gets a fresh play token and a fresh player: a player is never reused, and it is released as soon
+ * as its part completes, fails or is left. The token is unique in the process and never reused, and the player's
+ * callbacks and the host's item commands carry it; each scheduled task (gap, skip search,
  * paused deadline, promotion timeout, prepare timeout) has its own id; focus callbacks carry the epoch of the request
  * they answer. A callback, task or command whose identity is not current is dropped.
  *
@@ -89,16 +90,14 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
- * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. Restarting the
- * part already open is a seek to 0 on that player, never a reopen, under a new token so that a completion the player
- * had already queued is dropped; moving to another part keeps the open player until
- * the new one has prepared, and a backward move whose every candidate fails stays on it at 0. A move that finds nothing
- * forward ends the play: "unplayable" when every recording of the play failed, else finished. One backward with no
- * open player goes on forward. Each search visits each recording at most once; the next candidate after a failure
+ * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. A restart
+ * opens the part again, as any move does (a new player and token, through the setup thread), so the pass before can
+ * deliver nothing to it; a part gone since is a failed open, skipped and counted. A move that finds nothing forward
+ * ends the play: "unplayable" when every recording of the play failed, else finished. A backward move whose every
+ * candidate fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
  * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
- * of its call at once, then the gap before the next call; an error from the part that completed, in the gap, releases
- * its player but is not counted (the gap runs on, and Previous reopens the file). Play in a paused gap opens the next
- * call at once.
+ * of its call at once, then the gap before the next call. The gap holds no player, only the readings of the part that
+ * completed (its item, token, duration and position). Play in a paused gap opens the next call at once.
  *
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
  * which nothing was wanted or the focus was away, checked by a task, at every event and when the device wakes
@@ -145,13 +144,6 @@ class RecordingPlayer(
         fun pause()
 
         fun seekTo(positionMs: Long)
-
-        /**
-         * Seek to 0 for a new pass of the part, whose callbacks carry [token] from now on. A callback the player had
-         * already queued on the machine's thread (its completion at the end of the pass before) still carries the old
-         * token, so the machine drops it.
-         */
-        fun restart(token: Long)
 
         /** The length, once prepared. */
         val durationMs: Long
@@ -452,13 +444,16 @@ class RecordingPlayer(
 
     private class Pending(val id: Int, val handle: Cancellable)
 
-    /** The player that was open when a move began: kept until the move's player prepares. */
-    private class Held(val player: Player, val index: Int, val token: Long, val durationMs: Long, val positionMs: Long)
+    /**
+     * The readings of the part that played last (completed, or left by a move), its player already released: the gap
+     * after its call and a forward move that finds nothing name it.
+     */
+    private class Left(val index: Int, val token: Long, val durationMs: Long, val positionMs: Long)
 
     /**
      * A search for the next playable recording: [candidates] in order, each visited once. Exhausted, a forward move
-     * finishes; a backward one stays on the held player at 0, or goes on forward after [resumeAfter]; one with
-     * [gapAfter] (the rest of a call after its part completed) puts the held player in the gap before the next call.
+     * finishes, a backward one goes on forward after [resumeAfter], and one with [gapAfter] (the rest of a call after
+     * its part completed) enters the gap before the next call, on the part that completed.
      */
     private class Move(
         val candidates: IntArray,
@@ -501,7 +496,7 @@ class RecordingPlayer(
     private var positionMs = 0L
     private var playingSinceMs = -1L
     private var durationMs = 0L
-    private var held: Held? = null
+    private var left: Left? = null
     private var move: Move? = null
     private var wanted = false
     private var pausedReason = ""
@@ -738,7 +733,7 @@ class RecordingPlayer(
         cancel(Slot.PREPARE)
         durationMs = current.durationMs.coerceAtLeast(0)
         positionMs = 0
-        releaseHeld()
+        left = null
         move = null
         cancel(Slot.SEARCH)
         advance()
@@ -752,6 +747,8 @@ class RecordingPlayer(
         playing = false
         playingSinceMs = -1
         positionMs = durationMs
+        // Done with: its player goes now (a later callback from it carries a token no open has again).
+        leave()
         val call = currentCall()
         when {
             mode == MODE_SINGLE -> end(STOPPED, "", ENDED_FINISHED)
@@ -764,20 +761,12 @@ class RecordingPlayer(
 
     /**
      * The player failed: [REASON_PLAYER] ends the play; anything else is this recording's fault ([REASON_DAMAGED]).
-     * In the gap the player is the part that already played to its end: an error from it releases that player, which
-     * is no longer usable, but the part is not marked failed, no skip is counted and the gap runs on with the part's
-     * readings; Previous then reopens the file. An error while the part's setup runs drops the setup.
+     * An error while the part's setup runs drops the setup. A part that completed or was left has no player any more,
+     * so nothing from it reaches a later play.
      */
     fun onFailed(token: Long, reason: String) {
         val open = player != null || opening?.token == token
         if (!open || token != this.token || expireIfDue()) {
-            return
-        }
-        if (gap) {
-            player?.release()
-            player = null
-            prepared = false
-            publish()
             return
         }
         failItem(if (reason == REASON_PLAYER) REASON_PLAYER else REASON_DAMAGED)
@@ -816,13 +805,10 @@ class RecordingPlayer(
         gapSinceMs = -1
         halt()
         opening = null
-        val current = player
-        if (current != null && prepared) {
-            releaseHeld()
-            held = Held(current, index, token, durationMs, positionMs)
-        } else {
-            current?.release()
+        if (player != null && prepared) {
+            leave()
         }
+        player?.release()
         player = null
         prepared = false
         positionMs = 0
@@ -831,7 +817,15 @@ class RecordingPlayer(
         tryNext()
     }
 
-    /** Open the move's next candidate not failed; restarting the held player's own part is a seek on it. */
+    /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
+    private fun leave() {
+        left = Left(index, token, durationMs, currentPositionMs())
+        player?.release()
+        player = null
+        prepared = false
+    }
+
+    /** Open the move's next candidate not failed: always a new player, never the one left. */
     private fun tryNext() {
         val search = move ?: return
         while (search.next < search.candidates.size && failed[search.candidates[search.next]]) {
@@ -841,61 +835,34 @@ class RecordingPlayer(
             exhausted(search)
             return
         }
-        val candidate = search.candidates[search.next++]
-        val open = held
-        if (open != null && open.index == candidate) {
-            restart(open)
-            return
-        }
-        open(candidate)
-    }
-
-    /**
-     * Make the held player current again at 0, on its own open descriptor (D9), as a new pass with a new token: a
-     * completion it queued before the restart (it had just reached its end) is then dropped, not taken for the end
-     * of the new pass.
-     */
-    private fun restart(open: Held) {
-        adopt(open, positionMs = 0)
-        token = tokens.incrementAndGet()
-        open.player.restart(token)
-        advance()
+        open(search.candidates[search.next++])
     }
 
     private fun exhausted(search: Move) {
         move = null
-        val open = held
         when {
             search.gapAfter && hasCallAfter(currentCall()) -> {
-                // A held player is the part that completed; with none (it failed while playing), the gap has none.
-                open?.let { adopt(it, it.durationMs) }
+                // The gap names the part that completed (none when it failed while playing): no player is kept.
+                showLeft()
                 enterGap()
             }
-            !search.forward && open != null -> restart(open)
             !search.forward -> beginMove(Move(after(search.resumeAfter), forward = true))
             failed.all { it } -> end(FAILED, ERROR_FAILED, ENDED_UNPLAYABLE)
             else -> {
-                if (open != null) {
-                    index = open.index
-                    token = open.token
-                    durationMs = open.durationMs
-                    positionMs = open.positionMs
-                }
+                showLeft()
                 end(STOPPED, "", ENDED_FINISHED)
             }
         }
     }
 
-    /** Make the held player current again, prepared, at [positionMs]. */
-    private fun adopt(open: Held, positionMs: Long) {
-        held = null
-        move = null
-        player = open.player
-        index = open.index
-        token = open.token
-        prepared = true
-        durationMs = open.durationMs
-        this.positionMs = positionMs
+    /** The readings of the part that played last, for the gap or the end; it has no player. */
+    private fun showLeft() {
+        val last = left ?: return
+        left = null
+        index = last.index
+        token = last.token
+        durationMs = last.durationMs
+        positionMs = last.positionMs
     }
 
     private fun moveBack() {
@@ -1004,7 +971,7 @@ class RecordingPlayer(
             skipsPending++
         }
         if (move == null) {
-            // Outside a move it failed while it played (or held the gap): go on as if it had completed.
+            // Outside a move it failed while it played: go on as if it had completed.
             move = if (wasOpen) {
                 Move(span(index + 1, callEnd(currentCall())), forward = true, gapAfter = true)
             } else {
@@ -1269,7 +1236,7 @@ class RecordingPlayer(
         player?.release()
         player = null
         opening = null
-        releaseHeld()
+        left = null
         move = null
         prepared = false
         playing = false
@@ -1294,7 +1261,7 @@ class RecordingPlayer(
         player?.release()
         player = null
         opening = null
-        releaseHeld()
+        left = null
         move = null
         prepared = false
         playing = false
@@ -1318,11 +1285,6 @@ class RecordingPlayer(
         resumeSuspended = false
         ended = null
         dropFocus()
-    }
-
-    private fun releaseHeld() {
-        held?.player?.release()
-        held = null
     }
 
     // ---- tasks
