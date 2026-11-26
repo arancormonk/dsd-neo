@@ -21,10 +21,11 @@ import "Util.js" as Util
 // controls (a phone), the controls take their own line under the text, ✕
 // staying beside it; wider, everything shares one line. The line under the
 // name wraps, between its parts ("Call 3 of 41", "part 2 of 3", the time),
-// never inside one; its box holds as many lines as the longest status it can
-// show takes at this width, so no status is cut short and the bar keeps its
-// height whatever it says. Once ended, the result takes the transport's room
-// as well, the transport gone.
+// never inside one, on at most two lines: its box is the two lines (or one,
+// where every status fits one), whatever it says, so the bar keeps its
+// height. A status longer than that is elided on the bar and read whole in
+// Show in list's description. Once ended, the result takes the transport's
+// room as well, the transport gone.
 Rectangle {
     id: bar
 
@@ -78,7 +79,9 @@ Rectangle {
         return durationMs > 0 ? Util.fill(qsTr("%1 / %2"), [timeAt(ms), Util.playbackLengthText(durationMs)]) : timeAt(ms);
     }
     // What it is doing, when that is more than playing: in place of the time.
-    function statusText() {
+    // @p spoken: the words Show in list's description reads, where the bar
+    // shows a shorter line (a refused resume).
+    function statusText(spoken) {
         if (notice.length > 0)
             return notice;
         if (!live)
@@ -89,7 +92,9 @@ Rectangle {
             return qsTr("Opening…");
         if (playState === 3) {
             var reason = decoderHost.playbackPausedReason;
-            return reason === "noisy" ? qsTr("Paused: headphones unplugged") : reason === "unavailable" ? status.unavailableText : qsTr("Paused");
+            if (reason === "unavailable")
+                return spoken === true ? status.unavailableText : qsTr("Paused: another app has the audio.");
+            return reason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         }
         if (status.skipCount > 0 && status.skipCall === callIndex)
             return status.skippedText(status.skipCount);
@@ -121,7 +126,8 @@ Rectangle {
         if (!live)
             return "";
         var spoken = durationMs > 0 ? Util.fill(qsTr("%1 of %2"), [timeAt(positionMs), Util.playbackLengthText(durationMs)]) : timeAt(positionMs);
-        return [title, placeText(), statusText().length > 0 ? statusText() : spoken].filter(function (part) {
+        var doing = statusText(true);
+        return [title, placeText(), doing.length > 0 ? doing : spoken].filter(function (part) {
             return part.length > 0;
         }).join(", ");
     }
@@ -219,8 +225,9 @@ Rectangle {
         text: qsTr("Call 88 of 88 · 0:00 / 0:00")
     }
     // The longest things the line under the name can say, wrapped at its
-    // width: its box is as tall as the tallest (never fewer than one line).
-    readonly property var lineProbes: [status ? status.unavailableText : "", status ? status.skippedText(88) : "",
+    // width: its box is as tall as the tallest, never fewer than one line nor
+    // more than two.
+    readonly property var lineProbes: [qsTr("Paused: another app has the audio."), status ? status.skippedText(88) : "",
         qsTr("Paused for another app's audio"), qsTr("Paused: headphones unplugged"), qsTr("This call isn't in the list now."),
         wholeParts([qsTr("Call %1 of %2 · part %3 of %4").arg("888").arg("888").arg("8").arg("8"), qsTr("%1 / %2").arg("00:00").arg("00:00")])]
     // The line's width while it plays (never the wider one an ended bar has),
@@ -233,7 +240,7 @@ Rectangle {
             if (probe)
                 tallest = Math.max(tallest, Math.ceil(probe.implicitHeight));
         }
-        return tallest;
+        return Math.min(tallest, 2 * Math.ceil(lineMetrics.height));
     }
     readonly property real textBoxHeight: Math.ceil(nameMetrics.height) + 3 + lineBoxHeight
     readonly property real transportWidth: 48 + controlGap + 52 + controlGap + 48

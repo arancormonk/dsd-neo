@@ -282,7 +282,7 @@ Item {
                     {tag: "paused", reading: {playbackState: 3, playbackPausedReason: "user"}, line: "Paused", pause: false},
                     {tag: "headphones", reading: {playbackState: 3, playbackPausedReason: "noisy"}, line: "Paused: headphones unplugged", pause: false},
                     {tag: "interrupted", reading: {playbackState: 3, playbackInterrupted: true, playbackPausedReason: "focus"}, line: "Paused for another app's audio", pause: true},
-                    {tag: "refused resume", reading: {playbackState: 3, playbackPausedReason: "unavailable"}, line: "Can't play right now. Another app has the audio, such as a phone call.", pause: false},
+                    {tag: "refused resume", reading: {playbackState: 3, playbackPausedReason: "unavailable"}, line: "Paused: another app has the audio.", pause: false},
                     {tag: "opening", reading: {playbackState: 1}, line: "Opening…", pause: true}];
         }
         function test_bar_lines(data) {
@@ -740,9 +740,10 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
-        // Nothing the bar says is cut short at 360 px, at normal or 2x text: the line under the name wraps in a box
-        // as tall as its longest status, and the result takes the transport's room; the bar's height never moves.
-        // On a wide bar too.
+        // The line under the name holds at most two lines: every status it shows fits them whole at 360 px, at
+        // normal or 2x text (and wide), except one whose whole words Show in list's description reads. A refused
+        // resume shows a short line; its full sentence is what is read. The result takes the transport's room and
+        // is never cut. The bar's height never moves.
         function test_bar_text_is_never_cut_data() {
             return [{tag: "360 1x", width: 360, scale: 1.0}, {tag: "360 2x", width: 360, scale: 2.0},
                     {tag: "360 1.6x", width: 360, scale: 1.6}, {tag: "900 1x", width: 900, scale: 1.0}, {tag: "900 2x", width: 900, scale: 2.0}];
@@ -760,8 +761,13 @@ Item {
                 verify(waitForPolish(screen));
                 var height = barItem.height;
                 var lineItem = part(screen, "nowPlayingLine");
+                var show = part(screen, "nowPlayingShowInList");
+                verify(lineItem.maximumLineCount <= 2, "at most two lines");
+                var full = "Can't play right now. Another app has the audio, such as a phone call.";
                 var lines = [{reading: {item: 1, playbackState: 2, playbackDurationMs: 600000, playbackPositionMs: 599000}},
-                             {reading: {playbackState: 3, playbackPausedReason: "unavailable"}, text: "Can't play right now. Another app has the audio, such as a phone call."},
+                             {reading: {playbackState: 1}, text: "Opening…"},
+                             {reading: {playbackState: 3, playbackPausedReason: "user"}, text: "Paused"},
+                             {reading: {playbackState: 3, playbackPausedReason: "unavailable"}, text: "Paused: another app has the audio.", said: full},
                              {reading: {playbackState: 3, playbackPausedReason: "noisy"}, text: "Paused: headphones unplugged"},
                              {reading: {playbackState: 3, playbackInterrupted: true}, text: "Paused for another app's audio"},
                              {reading: {item: 2, playbackState: 2, playbackInterrupted: false, playbackPausedReason: "", playbackSkipped: 12}, text: "Skipped 12 recordings that couldn't be played"}];
@@ -770,7 +776,17 @@ Item {
                     verify(waitForPolish(lineItem));
                     if (l.text)
                         compare(line(screen), l.text);
-                    verify(!lineItem.truncated, "the whole line: " + line(screen));
+                    if (l.said)
+                        tryVerify(function () { return show.Accessible.description.indexOf(l.said) >= 0; }, 2000, "read whole: " + show.Accessible.description);
+                    if (l.said)
+                        tryCompare(barItem, "announced", l.said, 2000, "announced whole");
+                    if (lineItem.truncated) {
+                        verify(l.text !== undefined, "the position line fits: " + line(screen));
+                        tryVerify(function () { return show.Accessible.description.indexOf(l.said || l.text) >= 0; }, 2000,
+                                  "cut on the bar, read whole: " + show.Accessible.description);
+                    }
+                    if (data.width === 360 && l.text !== "Skipped 12 recordings that couldn't be played")
+                        verify(!lineItem.truncated, "fits two lines whole: " + line(screen));
                     compare(barItem.height, height, "one height: " + line(screen));
                 }
                 var result = part(screen, "nowPlayingResult");
