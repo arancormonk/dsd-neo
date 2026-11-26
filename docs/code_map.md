@@ -6062,12 +6062,13 @@ suite runs under this compiler.
     caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
     scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
     ever holds the default; while it is pending the snapshot sets `dsdneoUserConfig::rtl_sql_analog_default`
-    (`dsd_snapshot_opts_to_user_config_as_run()`, a replay's retained `[input]` included) and `render_input_squelch()` writes no squelch
-    key for any source, so the save reloads as a config that never set one and does not end it; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
-    ended it, and so does a failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except
-    that a config apply whose squelch keys ended the default keeps it ended over the session's own squelch when its
-    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`;
-    the in-place Airspy failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
+    (`dsd_snapshot_opts_to_user_config_as_run()`, a replay's retained `[input]` included) and `render_input_squelch()`
+    writes no squelch key for any source, so the save reloads as a config that never set one and does not end it;
+    `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec ended it, and so does a
+    failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except that a config apply whose
+    squelch keys ended the default keeps it ended over the session's own squelch when its input is rolled back
+    (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`; the in-place Airspy
+    failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
     options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and `channel_scan_tune_staged()`, a suspended
     scope's restart on the profile that ran, `svc_rtl_start_on_the_profile_that_ran_locked()`) saves the fields and the
     standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured

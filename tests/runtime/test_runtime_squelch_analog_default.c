@@ -364,6 +364,7 @@ save_and_reload(const dsd_opts* o, const dsd_state* s, char* text, size_t text_s
     FILE* in = dsd_fopen_private(path, "rb");
     assert(in);
     const size_t n = fread(text, 1U, text_size - 1U, in);
+    assert(n < text_size - 1U); /* the whole save: a cut one would hide the keys the callers look for */
     text[n] = '\0';
     const int in_rc = fclose(in);
     assert(in_rc == 0);
@@ -388,8 +389,24 @@ saves_squelch_keys(const char* text) {
     return strstr(text, "rtl_sql") != NULL;
 }
 
+/* Whether the RTL-SDR spec @p dev (rtl:dev:freq:gain:ppm:bw:sql:vol) has @p want in its sql field. */
+static int
+rtl_spec_sql_is(const char* dev, const char* want) {
+    const char* field = dev;
+    for (int colons = 0; colons < 6; colons++) {
+        field = strchr(field, ':');
+        if (!field) {
+            return 0;
+        }
+        field++;
+    }
+    const size_t len = strlen(want);
+    return strncmp(field, want, len) == 0 && (field[len] == ':' || field[len] == '\0');
+}
+
 /* The inputs a save is taken on: a live RTL-SDR, an I/Q replay saving the [input] it loaded (source = "rtl", no
-   squelch key), audio input, and a digital decoder of a live RTL-SDR. */
+   squelch key), audio input, and a digital decoder of a live RTL-SDR. The live RTL-SDR ones run a synthetic frequency,
+   so the save has an rtl_freq and the reload builds its RTL-SDR spec. */
 enum { SAVE_ON_RTL, SAVE_ON_REPLAY, SAVE_ON_AUDIO, SAVE_ON_DIGITAL, SAVE_ON_COUNT };
 
 static void
@@ -398,6 +415,9 @@ session_input(dsd_opts* o, dsd_state* s, int input) {
                       : input == SAVE_ON_AUDIO ? "pulse"
                                                : "rtl";
     DSD_SNPRINTF(o->audio_in_dev, sizeof o->audio_in_dev, "%s", dev);
+    if (input == SAVE_ON_RTL || input == SAVE_ON_DIGITAL) {
+        o->rtlsdr_center_freq = 123456000U;
+    }
     if (input == SAVE_ON_REPLAY) {
         dsdneoUserConfig* loaded = (dsdneoUserConfig*)calloc(1, sizeof(*loaded));
         assert(loaded);
@@ -437,6 +457,9 @@ test_save_keeps_default(void) {
         session_free(o, s);
         next_run(reloaded, &o, &s);
         assert(dsd_squelch_analog_default_pending(o));
+        /* The spec the reload builds from rtl_freq carries the omitted rtl_sql as 0, which ends nothing. */
+        const int builds_spec = input == SAVE_ON_RTL || input == SAVE_ON_DIGITAL;
+        assert(!builds_spec || rtl_spec_sql_is(o->audio_in_dev, "0"));
         assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
         session_free(o, s);
     }
@@ -456,7 +479,6 @@ test_save_after_explicit_squelch(void) {
         dsd_state* s = NULL;
         session_init(&o, &s, 0);
         session_input(o, s, SAVE_ON_RTL);
-        o->rtlsdr_center_freq = 123456000U; /* synthetic: the reload builds its RTL-SDR spec from rtl_freq */
         assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
         assert(dsd_scan_mode_set_configured_squelch_setting(o, s, &edits[i]) == 1);
         save_and_reload(o, s, text, sizeof text, reloaded);
@@ -472,7 +494,7 @@ test_save_after_explicit_squelch(void) {
         assert(o->squelch_default_state == DSD_SQUELCH_DEFAULT_ENDED && !dsd_squelch_analog_default_pending(o));
         assert(dsd_squelch_analog_default_sync(o, s) == 0 && runs_level(o, 0));
         /* The RTL-SDR spec the reload builds carries the setting, which the stream open applies. */
-        assert(is_auto == (strstr(o->audio_in_dev, ":auto+12:") != NULL));
+        assert(rtl_spec_sql_is(o->audio_in_dev, is_auto ? "auto+12" : "0"));
         session_free(o, s);
     }
     free(reloaded);
