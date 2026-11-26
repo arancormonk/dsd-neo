@@ -4219,6 +4219,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             const int sr = cli_clamp_long_to_int(parsed_sr, 8000, 192000);                                             \
+            opts->input_rate_cli_seen = 1; /* bootstrap keeps this rate over a config's file rate (issue #931) */      \
             int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
             dsd_opts_clear_staged_file_sample_rate(opts);                                                              \
             dsd_opts_apply_input_sample_rate(opts, sr);                                                                \

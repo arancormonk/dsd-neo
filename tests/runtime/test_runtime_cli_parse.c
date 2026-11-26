@@ -13654,6 +13654,31 @@ test_bootstrap_steps_over_option_values(void) {
             rc = 1;
         }
     }
+
+    /* Issue #931 (gate r1): only the parse's own getopt says whether it read -s. One that stops at the first operand
+       (POSIXLY_CORRECT, MSVC, musl) never reads the -s after "operand", and the config's rate stays; glibc's
+       permuting getopt does read it. */
+    const char* const after_operand[] = {"--config", "{ini}", "-i", "capture.wav", "operand", "-ps48000"};
+    (void)dsd_test_setenv("POSIXLY_CORRECT", "1", 1);
+    const int posix_rc = boot_values(file_ini, after_operand, 6, &run);
+    (void)dsd_test_unsetenv("POSIXLY_CORRECT");
+    if (posix_rc != 0 || run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != 96000) {
+        DSD_FPRINTF(stderr, "POSIXLY_CORRECT: -s after an operand: bootstrap rc=%d rate=%d (want 96000)\n%s\n",
+                    run.boot, run.sample_rate, run.err);
+        rc = 1;
+    }
+#if defined(__GLIBC__)
+    if (getenv("POSIXLY_CORRECT") == NULL) {
+        if (boot_values(file_ini, after_operand, 6, &run) != 0) {
+            return 1;
+        }
+        if (run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != 48000) {
+            DSD_FPRINTF(stderr, "glibc: -s after an operand: bootstrap rc=%d rate=%d (want 48000)\n%s\n", run.boot,
+                        run.sample_rate, run.err);
+            rc = 1;
+        }
+    }
+#endif
     return rc;
 }
 

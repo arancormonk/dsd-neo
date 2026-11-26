@@ -86,7 +86,6 @@ typedef struct {
     int validate_config_cli;
     int strict_config_cli;
     int list_profiles_cli;
-    int cli_file_rate_override;
     const char* config_path_cli;
     const char* profile_cli;
     const char* validate_path_cli;
@@ -180,63 +179,24 @@ bootstrap_cli_try_own_option(int argc, char** argv, int* i, bootstrap_cli_args* 
            || bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli);
 }
 
-/* getopt's reading of the elements the parser's long-option pass leaves it, as far as bootstrap needs it: whether -s,
-   the file-input rate, is among the options. A short option that takes a value takes the rest of its element, or else
-   the next element whatever it is ("-o -s" sets no rate); a "--" that is no value ends the options, an unknown long
-   option ends the parse, and an operand is stepped over (glibc's getopt permutes past it). */
-typedef struct {
-    int value_pending;
-    int done;
-} bootstrap_short_walk;
-
-static void
-bootstrap_short_walk_feed(bootstrap_short_walk* walk, const char* arg, bootstrap_cli_args* args) {
-    if (walk->done) {
-        return;
-    }
-    if (walk->value_pending) {
-        walk->value_pending = 0;
-        return;
-    }
-    if (strncmp(arg, "--", 2) == 0) {
-        walk->done = 1;
-        return;
-    }
-    if (arg[0] != '-' || arg[1] == '\0') {
-        return;
-    }
-    for (int j = 1; arg[j] != '\0'; j++) {
-        if (arg[j] == 's') {
-            args->cli_file_rate_override = 1;
-        }
-        if (dsd_cli_short_option_takes_value(arg[j])) {
-            walk->value_pending = arg[j + 1] == '\0';
-            return;
-        }
-    }
-}
-
 /* Bootstrap's options, read as the parser reads the argv (issue #931): its long-option pass, up to the first "--" that
    is no long option's value, steps over every long option's value by the parser's arity, so a value that reads like a
    bootstrap option ("--rdio-api-key --print-config", "--rdio-api-key --config x.ini") is the value it is, and nothing
-   after that "--" is an option; getopt reads what the pass leaves, the "--" and what follows it included. */
+   after that "--" is an option. Whether -s gives the file rate is left to getopt itself (opts->input_rate_cli_seen),
+   whose own rules (stopping at an operand or not) only it knows. */
 static void
 bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
     if (!args) {
         return;
     }
     DSD_MEMSET(args, 0, sizeof(*args));
-    bootstrap_short_walk walk = {0, 0};
-    int long_pass = 1;
     for (int i = 1; i < argc && argv[i] != NULL; i++) {
-        if (long_pass && strcmp(argv[i], "--") == 0) {
-            long_pass = 0;
-        } else if (long_pass
-                   && (bootstrap_cli_try_own_option(argc, argv, &i, args)
-                       || bootstrap_cli_try_skip_long_option(argc, argv, &i))) {
-            continue;
+        if (strcmp(argv[i], "--") == 0) {
+            break;
         }
-        bootstrap_short_walk_feed(&walk, argv[i], args);
+        if (!bootstrap_cli_try_own_option(argc, argv, &i, args)) {
+            (void)bootstrap_cli_try_skip_long_option(argc, argv, &i);
+        }
     }
 }
 
@@ -354,10 +314,11 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
 
 static int
 bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** argv, int cfg_path_positional_ini,
-                             const dsdneoUserConfig* user_cfg, int user_cfg_loaded, int cli_file_rate_override,
-                             int* argc_effective, int* out_exit_rc) {
+                             const dsdneoUserConfig* user_cfg, int user_cfg_loaded, int* argc_effective,
+                             int* out_exit_rc) {
     int parse_exit_rc = 1;
     const int parse_argc = cfg_path_positional_ini ? 1 : argc;
+    opts->input_rate_cli_seen = 0; /* set by getopt's -s (issue #931) */
     int parse_rc = dsd_parse_args(parse_argc, argv, opts, state, argc_effective, &parse_exit_rc);
     if (parse_rc == DSD_PARSE_ONE_SHOT) {
         bootstrap_set_exit_rc(out_exit_rc, parse_exit_rc);
@@ -371,7 +332,9 @@ bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** 
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
-    if (user_cfg_loaded && !cli_file_rate_override && user_cfg) {
+    /* A -s getopt read keeps its rate; the config's file input rate comes back otherwise. Only the parse's own getopt
+       knows which -s it reads: one that stops at the first operand (POSIXLY_CORRECT, MSVC) reads none after it. */
+    if (user_cfg_loaded && !opts->input_rate_cli_seen && user_cfg) {
         dsd_finalize_user_config_file_input_after_cli(user_cfg, opts, state);
     }
     /* The config and the command line are both in: say once that a journaled run keeps its uploads (issue #708). */
@@ -966,7 +929,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_apply_trunk_scan_pre_cli_gating(opts, argc, argv, args.cfg_path_positional_ini, user_cfg_loaded,
                                               explicit_profile_selected);
     boot_rc = bootstrap_parse_runtime_args(opts, state, argc, argv, args.cfg_path_positional_ini, &user_cfg,
-                                           user_cfg_loaded, args.cli_file_rate_override, &argc_effective, out_exit_rc);
+                                           user_cfg_loaded, &argc_effective, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }

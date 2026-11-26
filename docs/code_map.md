@@ -5664,9 +5664,11 @@ suite runs under this compiler.
     reads it with: only `--config` and `--validate-config` take their value only when it does not start with `-`; every
     other valued option takes the next argument whatever it is (the eight that validate a port, an address or a TETRA
     value included, so `--api -T --api 0` turns no trunking on). Bootstrap reads its own options in place, `--config`'s
-    optional path, `--validate-config`'s and `--profile`'s name with them, and finds `-s` as getopt will read the
-    elements that pass leaves (`bootstrap_short_walk_feed()`: `-o -s` sets no rate). So `--rdio-api-key --print-config`
-    is a key, a profile named `--` ends no options, and `--no-config -- --print-config` runs no one-shot.
+    optional path, `--validate-config`'s and `--profile`'s name with them, and leaves `-s` to getopt itself: the parse
+    sets `opts->input_rate_cli_seen` where it reads `-s`, so `-o -s` sets no rate and a `-s` after an operand counts
+    only where that getopt reads past operands (glibc's does, unless `POSIXLY_CORRECT`; MSVC's does not). So
+    `--rdio-api-key --print-config` is a key, a profile named `--` ends no options, and `--no-config -- --print-config`
+    runs no one-shot.
     `dsd_cli_option_takes_free_value()` names the options whose value is any text whatever it starts with
     (`--api-token`, `--dmr-chan-overrides`, ...), which compaction steps over even when it starts with `-`. The Android
     receiver's `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user

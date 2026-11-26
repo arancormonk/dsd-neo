@@ -497,6 +497,9 @@ struct dsd_opts {
     uint8_t trunk_cli_seen;
     /* Flag set when the command line names the input (-i), which replaces a loaded config's [input] (issue #743). */
     uint8_t input_cli_seen;
+    /* Flag set when getopt reads -s, the file input's rate, which a loaded config's file rate then does not replace
+       (bootstrap; issue #931). */
+    uint8_t input_rate_cli_seen;
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;
