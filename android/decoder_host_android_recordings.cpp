@@ -7,7 +7,9 @@
  */
 
 #include <QChar>
+#include <QCoreApplication>
 #include <QFileInfo>
+#include <QGuiApplication>
 #include <QLatin1String>
 #include <QList>
 #include <QObject>
@@ -15,6 +17,9 @@
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
+#include <QVariant>
+#include <QVariantList>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <atomic>
@@ -22,9 +27,11 @@
 #include <memory>
 #include <mutex>
 #include <utility>
+#include <vector>
 #include "abandoned_workers.h"
 #include "decoder_host.h"
 #include "decoder_host_android.h"
+#include "playback_status_record.h"
 
 namespace dsd_android {
 namespace {
@@ -74,16 +81,100 @@ DecoderHostAndroid::recordingRoots() const {
     return roots.isEmpty() ? dsd_qt::DecoderHost::recordingRoots() : roots;
 }
 
+namespace {
+
+/* @p items (already checked: DecoderHost::playbackItemsValid()) as RecordingPlayback.play() takes them. */
+DecoderHostAndroid::PlaybackRequest
+playback_request(const QVariantList& items, int mode) {
+    DecoderHostAndroid::PlaybackRequest request;
+    request.mode = mode;
+    for (const QVariant& value : items) {
+        const QVariantMap item = value.toMap();
+        request.paths.append(item.value(QStringLiteral("path")).toString());
+        request.sizes.append(item.value(QStringLiteral("size"), qint64{-1}).toLongLong());
+        request.mtimeSecs.append(item.value(QStringLiteral("mtimeSec")).toLongLong());
+        request.mtimeNanos.append(item.value(QStringLiteral("mtimeNanos")).toInt());
+        request.calls.append(item.value(QStringLiteral("call")).toInt());
+        request.partOrdinals.append(item.value(QStringLiteral("partOrdinal")).toInt());
+        request.partCounts.append(item.value(QStringLiteral("partCount")).toInt());
+        request.titles.append(item.value(QStringLiteral("title")).toString());
+        request.lines.append(item.value(QStringLiteral("line")).toString());
+        request.keys.append(item.value(QStringLiteral("key")).toString());
+    }
+    return request;
+}
+
+} // namespace
+
 void
 DecoderHostAndroid::beginPlayback(const QString& path) {
     const int generation = platformPlayRecording(path);
-    m_playback_generation = generation > 0 ? generation : 0;
-    if (m_playback_generation == 0) {
+    drainRecordingRecheck();
+    if (generation <= 0) {
         // As the base host's failures do: the play replaces what plays, so the player stops before the store is told
         // nothing plays it.
+        m_playback_generation = 0;
         platformStopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("failed"));
+        return;
     }
+    PlaybackRequest single;
+    single.paths = QStringList{path};
+    single.calls = QList<int>{0};
+    single.partOrdinals = QList<int>{0};
+    single.partCounts = QList<int>{0};
+    single.titles = QStringList{QString()};
+    single.keys = QStringList{QString()};
+    openPlayback(generation, QString(), single);
+}
+
+int
+DecoderHostAndroid::playRecordings(const QVariantList& items, int mode, const QString& origin) {
+    if (!playbackItemsValid(items, mode)) {
+        return 0;
+    }
+    const PlaybackRequest request = playback_request(items, mode);
+    const int generation = platformPlayRecordings(request);
+    drainRecordingRecheck();
+    if (generation <= 0) {
+        // Refused before it was accepted (or the call failed): what plays plays on, its readings untouched.
+        return 0;
+    }
+    // Accepted: the platform has replaced what played. Every later reading, a failure to start included, is this
+    // play's, under its generation.
+    openPlayback(generation, origin, request);
+    return generation;
+}
+
+void
+DecoderHostAndroid::openPlayback(int generation, const QString& origin, const PlaybackRequest& request) {
+    m_playback_generation = generation;
+    m_playback_mode = request.mode;
+    m_playback_origin = origin;
+    m_playback_items.clear();
+    m_playback_items.reserve(static_cast<size_t>(request.paths.size()));
+    for (qsizetype i = 0; i < request.paths.size(); ++i) {
+        m_playback_items.push_back({request.paths.at(i), request.titles.value(i), request.keys.value(i)});
+    }
+    const qsizetype first = qBound(qsizetype{0}, static_cast<qsizetype>(request.start), request.paths.size() - 1);
+    PlaybackReading reading;
+    reading.generation = generation;
+    reading.state = PlaybackPreparing;
+    reading.mode = request.mode;
+    reading.origin = origin;
+    reading.path = m_playback_items.at(static_cast<size_t>(first)).path;
+    reading.title = m_playback_items.at(static_cast<size_t>(first)).title;
+    reading.key = m_playback_items.at(static_cast<size_t>(first)).key;
+    reading.callIndex = request.calls.value(first);
+    reading.callCount = request.calls.isEmpty() ? 0 : request.calls.last() + 1;
+    reading.partOrdinal = request.partOrdinals.value(first);
+    reading.partCount = request.partCounts.value(first);
+    publishPlayback(reading);
+}
+
+bool
+DecoderHostAndroid::playbackTokenCurrent(qint64 token) const {
+    return m_playback_generation != 0 && token > 0 && token == playbackToken();
 }
 
 void
@@ -101,15 +192,64 @@ DecoderHostAndroid::resumePlayback() {
 }
 
 void
+DecoderHostAndroid::nextPlayback() {
+    if (m_playback_generation != 0 && m_playback_mode != PlaybackSingle) {
+        platformNextPlayback();
+    }
+}
+
+void
+DecoderHostAndroid::previousPlayback() {
+    if (m_playback_generation != 0 && m_playback_mode != PlaybackSingle) {
+        platformPreviousPlayback();
+    }
+}
+
+void
 DecoderHostAndroid::seekPlayback(qint64 positionMs) {
-    if (m_playback_generation == 0) {
+    seekPlaybackFor(playbackToken(), positionMs);
+}
+
+void
+DecoderHostAndroid::seekPlaybackFor(qint64 token, qint64 positionMs) {
+    // A gesture begun on another recording than the one open now says nothing of this one: nothing is sent or shown.
+    if (!playbackTokenCurrent(token)) {
         return;
     }
-    platformSeekPlayback(positionMs);
+    platformSeekPlaybackFor(token, positionMs);
+    if (!playbackCanSeek()) {
+        return; // the player drops it too
+    }
     // Shown at once: the next poll would otherwise show the old position for a moment.
-    const qint64 length = playbackDurationMs();
-    const qint64 target = length > 0 ? qBound<qint64>(0, positionMs, length) : qMax<qint64>(0, positionMs);
-    publishPlayback(playbackPath(), playbackState(), target, length, playbackError());
+    PlaybackReading reading = playback();
+    const qint64 length = reading.durationMs;
+    reading.positionMs = length > 0 ? qBound<qint64>(0, positionMs, length) : qMax<qint64>(0, positionMs);
+    publishPlayback(reading);
+}
+
+void
+DecoderHostAndroid::pausePlaybackFor(qint64 token) {
+    if (playbackTokenCurrent(token)) {
+        platformPausePlaybackFor(token);
+    }
+}
+
+void
+DecoderHostAndroid::resumePlaybackFor(qint64 token) {
+    if (playbackTokenCurrent(token)) {
+        platformResumePlaybackFor(token);
+    }
+}
+
+void
+DecoderHostAndroid::stopPlaybackGeneration(int generation) {
+    // One that ended (polled no more) or was replaced is left alone: the stop is for that play only.
+    if (generation <= 0 || generation != m_playback_generation) {
+        return;
+    }
+    platformStopPlaybackGeneration(generation);
+    m_playback_generation = 0;
+    dsd_qt::DecoderHost::stopPlayback();
 }
 
 void
@@ -121,38 +261,107 @@ DecoderHostAndroid::stopPlayback() {
 }
 
 void
+DecoderHostAndroid::drainRecordingRecheck() {
+    reportRecordingsMissing(platformTakeRecordingRecheck());
+}
+
+bool
 DecoderHostAndroid::refreshPlayback() {
     if (m_playback_generation == 0) {
-        return;
+        return false;
     }
-    const QStringList fields = platformPlaybackStatus().split(QLatin1Char('\t'));
-    if (fields.size() != 5) {
-        return;
+    PlaybackStatusRecord record;
+    if (!parse_playback_status(platformPlaybackStatus(), &record)) {
+        return false; // a record that cannot be read says nothing
     }
-    bool ok[4] = {};
-    const int generation = fields.at(0).toInt(&ok[0]);
-    const int state = fields.at(1).toInt(&ok[1]);
-    const qint64 position = fields.at(2).toLongLong(&ok[2]);
-    const qint64 length = fields.at(3).toLongLong(&ok[3]);
-    // A record of an earlier play (the player has not reached this one yet) or one that cannot be read says nothing.
-    if (!ok[0] || !ok[1] || !ok[2] || !ok[3] || generation != m_playback_generation || state < PlaybackStopped
-        || state > PlaybackFailed) {
-        return;
+    bool drained = false;
+    if (record.recheckSerial != m_recheck_serial) {
+        m_recheck_serial = record.recheckSerial;
+        drainRecordingRecheck();
+        drained = true;
     }
-    const QString path = playbackPath();
-    if (state == PlaybackFailed) {
+    // A record of an earlier play (the player has not reached this one yet) says nothing of this one.
+    if (record.generation == m_playback_generation) {
+        applyPlaybackRecord(record);
+    }
+    return drained;
+}
+
+void
+DecoderHostAndroid::applyPlaybackRecord(const PlaybackStatusRecord& record) {
+    if (record.itemIndex >= static_cast<int>(m_playback_items.size())) {
+        return; // names no item of this play: not a record of it after all
+    }
+    PlaybackReading reading = playback();
+    if (record.itemIndex >= 0) {
+        const PlaybackItem& item = m_playback_items.at(static_cast<size_t>(record.itemIndex));
+        reading.path = item.path;
+        reading.title = item.title;
+        reading.key = item.key;
+    }
+    reading.generation = record.generation;
+    reading.state = record.state;
+    reading.positionMs = record.positionMs;
+    reading.durationMs = record.durationMs;
+    reading.error = record.error;
+    reading.mode = m_playback_mode;
+    reading.origin = m_playback_origin;
+    reading.token = record.token;
+    reading.callIndex = record.call;
+    reading.callCount = record.calls;
+    reading.partOrdinal = record.partOrdinal;
+    reading.partCount = record.partCount;
+    reading.gap = record.gap;
+    reading.interrupted = record.interrupted;
+    reading.canSeek = record.canSeek;
+    reading.pausedReason = record.pausedReason;
+    reading.endedReason = record.endedReason;
+    reading.skipped = record.skipped;
+    const bool failed = record.state == PlaybackFailed;
+    if (failed) {
+        reading.positionMs = 0;
+        reading.durationMs = 0;
+        reading.canSeek = false;
+        reading.error = record.error.isEmpty() ? QStringLiteral("failed") : record.error;
+    }
+    // Ended (a stop from the notification, the end, a failure): its last reading stays, and it is polled no more.
+    // Zeroed before the publish, so a handler that starts the next play from inside the signal is safe.
+    if (failed || record.state == PlaybackStopped) {
         m_playback_generation = 0;
-        const QString error = fields.at(4).isEmpty() ? QStringLiteral("failed") : fields.at(4);
-        publishPlayback(path, PlaybackFailed, 0, 0, error);
-        if (error == QLatin1String("missing")) {
-            reportRecordingsMissing({path});
-        }
+    }
+    publishPlayback(reading);
+    // A single recording gone is told here; a part or a playlist item gone comes through the recheck list.
+    if (failed && reading.error == QLatin1String("missing") && m_playback_mode == PlaybackSingle) {
+        reportRecordingsMissing({reading.path});
+    }
+}
+
+void
+DecoderHostAndroid::followApplicationState() {
+    auto* app = qobject_cast<QGuiApplication*>(QCoreApplication::instance());
+    if (app == nullptr) {
         return;
     }
-    if (state == PlaybackStopped) {
-        m_playback_generation = 0; // played to its end: nothing more to poll
+    const Qt::ApplicationState state = app->applicationState();
+    m_app_away = state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden;
+    QObject::connect(app, &QGuiApplication::applicationStateChanged, this, &DecoderHostAndroid::noteApplicationState);
+}
+
+void
+DecoderHostAndroid::noteApplicationState(Qt::ApplicationState state) {
+    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
+        m_app_away = true;
+        return;
     }
-    publishPlayback(path, state, position, length, QString());
+    if (state != Qt::ApplicationActive || !m_app_away) {
+        return;
+    }
+    m_app_away = false;
+    // Back on screen: what the player did while Qt was not running (an end, a notification Stop), first, then the
+    // files it found gone meanwhile, even when no play is open any more.
+    if (!refreshPlayback()) {
+        drainRecordingRecheck();
+    }
 }
 
 /*

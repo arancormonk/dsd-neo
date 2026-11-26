@@ -22,16 +22,20 @@
 #include <QString>
 #include <QStringList>
 #include <QThreadPool>
+#include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/platform/file_compat.h>
 #include <functional>
 #include <memory>
 #include <stdint.h>
+#include <vector>
 
 #include "decoder_host.h"
 #include "diagnostics_log.h"
 #include "local_device_state.h"
+#include "playback_status_record.h"
 #include "presentation_scale.h"
 #include "session_state_map.h"
 
@@ -360,13 +364,54 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     /*
      * The player's state reaches the host through refresh(): while a play is open, each poll reads RecordingPlayback's
-     * status record and publishes it. Leaving the foreground pauses it there (D10); Qt is not running then. A play that
-     * ends at the recording's end reads Stopped with its path kept and its position at its length, unlike a stop.
+     * status record (playback_status_record.h) and publishes all of it at once, the item's path, title and key looked
+     * up in the play's own items by the record's item index. No play open, nothing is read. Leaving the foreground
+     * pauses a single recording or a sheet's parts there (D10); a History playlist plays on under its own service
+     * (#909). Qt is not running then: coming back (noteApplicationState()) reads the record at once. A play that ends
+     * keeps its last reading (its generation, its ended reason) until the next play or a stop; a single recording that
+     * ends at its end reads Stopped with its path kept and its position at its length, unlike a stop. The paths the
+     * player found gone or changed (RecordingPlayback.takeRecheck()) go to recordingFilesMissing() when the record's
+     * recheck serial moves, on every return to the foreground and with every play.
      */
     void pausePlayback() override;
     void resumePlayback() override;
+    void nextPlayback() override;
+    void previousPlayback() override;
     void seekPlayback(qint64 positionMs) override;
+    void seekPlaybackFor(qint64 token, qint64 positionMs) override;
+    void pausePlaybackFor(qint64 token) override;
+    void resumePlaybackFor(qint64 token) override;
+    void stopPlaybackGeneration(int generation) override;
     void stopPlayback() override;
+
+    /** @brief A play's items as RecordingPlayback.play() takes them: one array per field, in the items' order. */
+    struct PlaybackRequest {
+        QStringList paths;
+        QList<qint64> sizes; // -1: not checked
+        QList<qint64> mtimeSecs;
+        QList<int> mtimeNanos;
+        QList<int> calls;
+        QList<int> partOrdinals;
+        QList<int> partCounts;
+        QStringList titles;
+        QStringList lines;
+        QStringList keys;
+        int start = 0;
+        int mode = PlaybackSingle;
+    };
+
+    /**
+     * @brief RecordingPlayback.play() with the items' arrays (#909): accepted (a generation above 0) replaces what
+     * plays and publishes the first item Preparing; refused (0) changes nothing.
+     */
+    int playRecordings(const QVariantList& items, int mode, const QString& origin) override;
+
+    /**
+     * @brief The app's state is @p state now (QGuiApplication::applicationStateChanged, followed from construction).
+     * Back to Active after Suspended or Hidden, the play's record is read at once and the recheck list taken, before
+     * QML's own handlers of the same change (connected later) run.
+     */
+    void noteApplicationState(Qt::ApplicationState state);
 
     /** @brief True: RecordingExport writes a ZIP into a picked document (#708 D9). */
     bool
@@ -476,8 +521,27 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
 
     /** @brief Whether @p reference is a content URI, which only the platform's ContentResolver opens. */
     static bool isContentUri(const QString& reference);
-    /** @brief Publish the open play's status record (#708); a play that ended is polled no more. */
-    void refreshPlayback();
+
+    /** @brief One item of the play open now, as its readings show it (#909). */
+    struct PlaybackItem {
+        QString path;
+        QString title;
+        QString key;
+    };
+
+    /** @brief Publish the open play's status record (#708, #909); a play that ended is polled no more. True when it
+     * took the recheck list. */
+    bool refreshPlayback();
+    /** @brief Publish @p record, the open play's, with its item's path, title and key from the play's items. */
+    void applyPlaybackRecord(const PlaybackStatusRecord& record);
+    /** @brief The platform took @p request as play @p generation: it is the play open now, published Preparing. */
+    void openPlayback(int generation, const QString& origin, const PlaybackRequest& request);
+    /** @brief Whether an item command carrying @p token reaches the recording open now. */
+    bool playbackTokenCurrent(qint64 token) const;
+    /** @brief RecordingPlayback.takeRecheck() to recordingFilesMissing(). */
+    void drainRecordingRecheck();
+    /** @brief Connect noteApplicationState() to the application's state, where there is a GUI application. */
+    void followApplicationState();
     /** @brief Publish the running transfer's progress (#708). */
     void refreshRecordingTransfer();
     /** @brief Emit recordingShareFailed() for each share RecordingShare could not hand over (#708). */
@@ -592,12 +656,21 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static QStringList platformRecordingRoots();
     /** @brief RecordingPlayback.play(): the play's generation, 0 when the call failed. */
     static int platformPlayRecording(const QString& path);
+    /** @brief RecordingPlayback.play() with arrays (#909): the generation, 0 when refused or the call failed. */
+    static int platformPlayRecordings(const PlaybackRequest& request);
     static void platformPausePlayback();
     static void platformResumePlayback();
-    static void platformSeekPlayback(qint64 positionMs);
+    static void platformNextPlayback();
+    static void platformPreviousPlayback();
+    static void platformSeekPlaybackFor(qint64 token, qint64 positionMs);
+    static void platformPausePlaybackFor(qint64 token);
+    static void platformResumePlaybackFor(qint64 token);
+    static void platformStopPlaybackGeneration(int generation);
     static void platformStopPlayback();
-    /** @brief RecordingPlayback.status(): "generation, state, position, duration, error", tab-separated. */
+    /** @brief RecordingPlayback.status(): the status record (playback_status_record.h); empty when the call failed. */
     static QString platformPlaybackStatus();
+    /** @brief RecordingPlayback.takeRecheck(): the paths found gone or changed since the last take, each once. */
+    static QStringList platformTakeRecordingRecheck();
     /**
      * @brief RecordingExport.transfer() on the calling (worker) thread, with each file's size and modification time
      * as selected (@p expected): the result code, then the paths it found gone; empty when the call failed.
@@ -859,9 +932,17 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     /* Issue #800: animator duration scale 0 ("Remove animations"), read with the rest of the presentation. */
     bool m_reduced_motion = false;
     bool m_notification_permission_needed = false;
-    // #708: the open play's generation (0: nothing to poll), and the running transfer (0: none) with its total (-1
-    // until the worker counted it).
+    // #708, #909: the open play's generation (0: nothing to poll, none or it ended), its mode and origin, and its
+    // items in the platform's order.
     int m_playback_generation = 0;
+    int m_playback_mode = PlaybackSingle;
+    QString m_playback_origin;
+    std::vector<PlaybackItem> m_playback_items;
+    /* The recheck serial of the last record read; -1 before the first. */
+    qint64 m_recheck_serial = -1;
+    /* The app left the foreground (Suspended or Hidden) and has not come back yet. */
+    bool m_app_away = false;
+    // #708: the running transfer (0: none) with its total (-1 until the worker counted it).
     qint64 m_transfer_id = 0;
     qint64 m_transfer_total = -1;
     // The store holds of the shares queued on the transfer worker, released as each copy is made or fails, and at the
