@@ -168,9 +168,9 @@ int dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps
 
 /**
  * @brief dsd_noise_squelch_plan_design() behind a replay or network I/Q reader's resampler @p reader (a design of the
- * reader's plan, dsd_iq_reader_plan_configure(); NULL: none, which is dsd_noise_squelch_plan_design() bit for bit) ahead
- * of the cascade (issue #899). The reader passes nothing past its passband edge, so the band's upper edge is held to
- * that edge too, and a plan needs its 1200 Hz under it: an upsampled source (8 kHz read into a 48 kHz chain, edge
+ * reader's plan, dsd_iq_reader_plan_configure(); NULL: none, which is dsd_noise_squelch_plan_design() bit for bit)
+ * ahead of the cascade (issue #899). The reader passes nothing past its passband edge, so the band's upper edge is held
+ * to that edge too, and a plan needs its 1200 Hz under it: an upsampled source (8 kHz read into a 48 kHz chain, edge
  * 3.6 kHz) has no band, and the auto squelch runs. Where a band fits, the reader's magnitude response (its bank's, at
  * the frequencies the cascade FIR samples) is folded into the cascade FIR, which then also runs with one stage or none
  * (at the channel rate with none). Allocates nothing.

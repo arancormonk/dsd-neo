@@ -18,7 +18,8 @@
 #include "squelch_cascade_noise.h"
 
 /* The most doubles any one table may take (64 MB): the reader's output covariance, the cascade's workspace, the
-   responses, and the exact plan's covariance. 8,046 Hz read into a 72 kHz chain (L = 4000) takes about 2.6 Mi. */
+   responses, and the exact plan's covariance. 8,046 Hz read into a 72 kHz chain (L = 4000) takes at most about 2.9 Mi
+   (the cascade's workspace). */
 static const size_t k_max_table_doubles = (size_t)8 << 20;
 /* The floor plan takes the phase-averaged covariance while the bound on how far any output phase's covariance strays
    from it after the channel taps stays under this (relative): the step model's rule (squelch_step_model.c). */
@@ -455,9 +456,9 @@ dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squel
     return dsd_squelch_floor_plan_design_periodic_mean(out, taps, taps_len, &noise, rate_hz);
 }
 
-/* The phase-averaged covariance behind the channel taps into chan (exact: the taps are time-invariant), described by
-   @p noise. Returns the bound on how far any output phase's covariance can be from it, relative to its power: the
-   largest per-phase distance times (sum |c|)^2, over R(0); infinite when it cannot be formed. */
+/* The phase-averaged covariance behind the channel taps into mean_chan (exact: the taps are time-invariant),
+   described by @p noise. Returns the bound on how far any output phase's covariance can be from it, relative to its
+   power: the largest per-phase distance times (sum |c|)^2, over R(0); infinite when it cannot be formed. */
 static double
 srm_mean_through_taps(dsd_squelch_reader_model* m, const float* taps, int len,
                       dsd_squelch_floor_periodic_noise* noise) {

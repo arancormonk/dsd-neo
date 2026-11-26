@@ -36,8 +36,9 @@
  * - dsd_squelch_reader_model_floor_plan(): the averaged covariance through the channel taps (exact for the mean: the
  *   taps are time-invariant) with the bound the step model uses on how far an output phase's covariance can stray from
  *   it after the taps (the phases' largest distance times (sum |c|)^2, over the output power). Under 1e-2 the plan is
- *   designed at a period of one; past it, from every output phase in full (dsd_squelch_reader_model_floor_plan_exact()).
- *   An upsampling reader's bank strays by about 2 % (8 kHz to 16 kHz: 2.03 %), so it takes the full periodic design.
+ *   designed at a period of one; past it, from every output phase in full
+ *   (dsd_squelch_reader_model_floor_plan_exact()). An upsampling reader's bank strays by about 2 % (8 kHz to 16 kHz:
+ *   2.03 %), so it takes the full periodic design.
  * - dsd_squelch_reader_model_noise_plan(): the noise squelch's design with the reader's passband edge and magnitude
  *   (dsd_noise_squelch_plan_design_reader()).
  *
@@ -79,8 +80,8 @@ typedef struct dsd_squelch_reader_model {
     int cov_lags;
     double* cov;
     double* chan;
-    /* The averaged plan's scratch: the mean covariance through the channel taps (lags + DSD_NOISE_SQUELCH_MAX_TAPS - 1),
-       and the taps' autocorrelation. */
+    /* The averaged plan's scratch: the mean covariance through the channel taps (lags +
+       DSD_NOISE_SQUELCH_MAX_TAPS - 1), and the taps' autocorrelation. */
     double* mean_chan;
     double rc[DSD_NOISE_SQUELCH_MAX_TAPS];
 } dsd_squelch_reader_model;

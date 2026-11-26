@@ -12,10 +12,10 @@
  *   chain's period through the reader (primed with silence) and full_demod(), the products of each response summed
  *   into the row of the output phase they fall on (the reader's bank makes the noise periodic, so one sum over output
  *   positions would lose it). 8 kHz upsampled to 16 kHz (no pass, with no channel filter and with NFM 12.5k), 8 kHz to
- *   48 kHz (NFM 16k), 40 kHz to 32 kHz and one pass (two output phases survive the decimator), 250 kHz to 192 kHz and two
- *   passes (a downsample by 96/125), 48,001 Hz read into 48,000 Hz (L/M 1/1, NFM 16k), and a source at the cascade's
- *   own input rate (no reader: the cascade's plan). Against independent figures at 8 to 16 kHz: beta 0.54180, N_eff
- *   317.75, noise gain 0.98030.
+ *   48 kHz (NFM 16k), 40 kHz to 32 kHz and one pass (two output phases survive the decimator), 250 kHz to 192 kHz and
+ *   two passes (a downsample by 96/125), 48,001 Hz read into 48,000 Hz (L/M 1/1, NFM 16k), and a source at the
+ *   cascade's own input rate (no reader: the cascade's plan). Against independent figures at 8 to 16 kHz: beta
+ *   0.54180, N_eff 317.75, noise gain 0.98030.
  * - The reader model against the same impulses: every output phase's covariance, its period, the mean over it and the
  *   largest distance from it.
  * - From cold start on a fixed seed, white noise at the source rate through the reader and full_demod() under AUTO
@@ -144,8 +144,8 @@ struct ReaderChain {
     }
 };
 
-/* The context the IO layer builds for a replay (demod_take_squelch_setting()): the chain key, the rate, and the reader's
-   plan. */
+/* The context the IO layer builds for a replay (demod_take_squelch_setting()): the chain key, the rate, and the
+   reader's plan. */
 void
 key_context(demod_state* s) {
     DSD_MEMSET(&s->squelch_context, 0, sizeof(s->squelch_context));
@@ -159,9 +159,9 @@ key_context(demod_state* s) {
     }
 }
 
-/* The FM monitor on @p c under @p mode (margin 10 dB), with the reader's plan published and its model built as the rate
-   plan's commit does (dsd_demod_squelch_reader_model_sync()), and the context keyed as the IO layer keys it. Returns the
-   sync's result. */
+/* The FM monitor on @p c under @p mode (margin 10 dB), with the reader's plan published and its model built as the
+   rate plan's commit does (dsd_demod_squelch_reader_model_sync()), and the context keyed as the IO layer keys it.
+   Returns the sync's result. */
 int
 configure(demod_state* s, const ReaderChain& c, int mode) {
     s->mode_demod = &dsd_fm_demod;
