@@ -909,6 +909,9 @@ test_subscription_expiry(void) {
  */
 static int
 user_data_with_date(const char* date, dsd_rr_user_info* info, dsd_rr_error* err) {
+    /* Set before any early return, so a fixture that cannot be served leaves nothing uninitialized to read. */
+    DSD_MEMSET(info, 0, sizeof(*info));
+    DSD_MEMSET(err, 0, sizeof(*err));
     char* body = NULL;
     size_t len = 0;
     if (read_fixture("user_data.xml", &body, &len) != 0) {
@@ -941,8 +944,6 @@ user_data_with_date(const char* date, dsd_rr_user_info* info, dsd_rr_error* err)
     }
     dsd_rr_auth auth;
     fill_auth(&auth, "user");
-    DSD_MEMSET(info, 0, sizeof(*info));
-    DSD_MEMSET(err, 0, sizeof(*err));
     const int rc = dsd_rr_get_user_data(client, &auth, info, err);
     dsd_rr_client_destroy(client);
     return rc;
@@ -956,7 +957,11 @@ test_user_data_subscription_verdict(void) {
     dsd_rr_user_info info;
     dsd_rr_error err;
 
-    expect_ll("the fixture verifies", user_data_with_date(NULL, &info, &err), 0);
+    const int fixture_rc = user_data_with_date(NULL, &info, &err);
+    expect_ll("the fixture verifies", fixture_rc, 0);
+    if (fixture_rc == -2) {
+        return; /* user_data.xml could not be served: the cases below would test nothing */
+    }
     expect_ll("with no error", (long long)err.status, (long long)DSD_RR_OK);
     expect("and its date decoded", strcmp(info.sub_expire, k_fixture_sub_expire) == 0);
 
