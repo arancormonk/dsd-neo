@@ -284,8 +284,11 @@ Column {
             notice = text;
             noticeProblem = true;
         } else if (text.length > 0) {
-            if (refusal)
+            if (refusal) {
                 refusalSaid = key;
+                // The bar a playlist's refusal waits on reads it as heard.
+                Navigation.refusalSaid = Navigation.refusalKey(decoderHost.playbackGeneration, decoderHost.playbackRefusals);
+            }
             say(text, true);
         } else if (said.length > 0 && notice === said && noticeProblem) {
             say("", false);

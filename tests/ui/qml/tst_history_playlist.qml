@@ -133,6 +133,9 @@ Item {
             return decoderHost.playbackGeneration;
         }
         // Only @p screen shows, as in the app (one History screen at a time).
+        function detailSheet(screen) {
+            return findChild(screen, "historyDetailSheet");
+        }
         function only(screen) {
             for (var s of screens())
                 s.visible = s === screen;
@@ -575,6 +578,54 @@ Item {
         // A refused resume nobody heard (the sheet over the bar, here the app away) is dropped once the host no longer
         // reports it: a resume taken after all is never told "Can't play right now" when the bar is read again. A
         // refusal still standing waits, and so does any other event (the start, the end).
+        // A refused resume is read out once across the sheet and the bar: one the sheet that follows the playing
+        // call read out is heard, and the bar says nothing of it when the sheet closes. A sheet on another call reads
+        // nothing of it, so the bar's event waits and is read once the sheet closes. Each refusal once.
+        function test_refusal_said_once_across_the_sheet_and_the_bar() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            // The playlist names the calls' own recordings, so a sheet on the playing call follows it.
+            testContext.setHistoryPlaylistAnswer("accepted", calls.map(function (call, i) {
+                return {path: "/rec/call-" + i + ".wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: i, partOrdinal: 1,
+                    partCount: 1, title: call.name, line: "", key: String(call.uid)};
+            }));
+            findChild(screen, "historyPlayAll").activate();
+            verify(barItem.visible);
+            playing({item: 0});
+            tryCompare(barItem, "announcements", 1);
+            var sheet = findChild(screen, "historyDetailSheet");
+            var block = findChild(sheet, "historyRecording");
+
+            // The sheet follows the playing call (Show in list opens it): it reads the refusal.
+            part(screen, "nowPlayingShowInList").activate();
+            verify(sheet.visible);
+            compare(sheet.record.uid, calls[0].uid);
+            var said = block.announcements;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            compare(block.announcements, said + 1, "the sheet reads the refusal");
+            compare(block.announced, full);
+            verify(!status.eventHeard && status.eventRefusal, "the bar's event is noted");
+            sheet.visible = false;
+            wait(30);
+            verify(status.eventHeard, "heard: the sheet said it");
+            compare(barItem.announcements, 1, "the bar says nothing for it");
+
+            // A sheet on another call reads nothing of the next refusal: the bar reads it once the sheet closes.
+            detailSheet(screen).open(callHistory.recordFor(calls[1].uid));
+            verify(sheet.visible);
+            said = block.announcements;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 2});
+            compare(block.announcements, said, "the other call's sheet says nothing");
+            wait(30);
+            verify(!status.eventHeard, "the bar's event waits under the sheet");
+            sheet.visible = false;
+            tryCompare(barItem, "announcements", 2);
+            compare(barItem.announced, full, "and the bar reads it");
+        }
+
         function test_unheard_refusal_dropped_once_resumed() {
             var calls = logCalls(2);
             var screen = idle();

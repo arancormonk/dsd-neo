@@ -35,11 +35,12 @@ QtObject {
     property int refusalsSeen: 0
     // The latest event: its id, its words, whether it was read out, and
     // whether it is a refused resume (said only while the host still reports
-    // the refusal).
+    // the refusal), with the refusal count it was noted at.
     property int eventId: 0
     property string eventText: ""
     property bool eventHeard: true
     property bool eventRefusal: false
+    property int eventRefusals: 0
     // The application is in the foreground and active. Followed from the
     // signal's own state: the host acts on the same signal first (a return
     // reads the platform before anything here is said).
@@ -81,7 +82,11 @@ QtObject {
         eventText = text;
         eventHeard = false;
         eventRefusal = refusal === true;
+        eventRefusals = refusalsSeen;
     }
+    // The waiting refused resume was read out already, by the sheet that
+    // follows the play (Navigation.refusalSaid): it is not said again.
+    readonly property bool eventSaidElsewhere: eventRefusal && Navigation.refusalSaid === Navigation.refusalKey(generation, eventRefusals)
     function drop() {
         eventText = "";
         eventHeard = true;

@@ -277,12 +277,13 @@ size, and a keyboard activation during a held press, each followed by a fresh pr
 waiting for its first token, a pending delete ended with its sheet (and with History hidden), History's header keeping a
 48 px control row with its top row's controls whole at 360×240 and 2x text and the list its 40% share with no bar
 (260×145 at 2x text: 58 px), a row placed by Show in list or Back from the map staying in view when the press flushed a
-search whose filter change queued the list's return to its top, the bar hidden for a keyboard whose top is at or below
-the screen's bottom (a window resized above it), the row marker paused while a call opens interrupted, a sheet's own
-play kept its own after it refused a gone part, and Play all parts playing on when its row's last listed part is
-deleted, against the fake host's queue model in `qml_test_context.h` (which, as the real host does, publishes no change
-for a reading published again as it stands),
-with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
+search whose filter change queued the list's return to its top, a refused resume the sheet that follows the play read
+out heard by the bar (one a sheet on another call did not read waiting for the bar), the bar hidden for a keyboard whose
+top is at or below the screen's bottom (a window resized above it), the row marker paused while a call opens
+interrupted, a sheet's own play kept its own after it refused a gone part, and Play all parts playing on when its row's
+last listed part is deleted, against the fake host's queue model in `qml_test_context.h` (which, as the real host does,
+publishes no change for a reading published again as it stands), with `playbackSupported` set by each case) and
+`UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
 names and gating). What only
 Android decides (the service's promotion, the media session and notification, the media keys and the session's own
 handling of a headset's taps (`onMediaButtonEvent`), the noisy and screen-on receivers, the lock screen, the 10-minute

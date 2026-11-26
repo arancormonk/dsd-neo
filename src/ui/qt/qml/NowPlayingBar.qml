@@ -195,8 +195,16 @@ Rectangle {
         if (!status || status.eventHeard || !canSay)
             return;
         var id = status.eventId;
-        if (Navigation.announce(bar, showButton, status.eventText))
+        // A refused resume the sheet over the bar read out already: heard.
+        if (status.eventSaidElsewhere) {
             status.heard(id);
+            return;
+        }
+        if (Navigation.announce(bar, showButton, status.eventText)) {
+            status.heard(id);
+            if (status.eventRefusal)
+                Navigation.refusalSaid = Navigation.refusalKey(status.generation, status.eventRefusals);
+        }
     }
     Connections {
         target: bar.status
