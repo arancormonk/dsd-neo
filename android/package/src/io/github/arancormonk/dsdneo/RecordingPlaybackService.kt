@@ -109,9 +109,10 @@ class RecordingPlaybackService : Service() {
     override fun onDestroy() {
         // Settles only the playlist this instance served, if it is still open: never a newer one.
         RecordingPlayback.serviceDestroyed(this, serial)
-        taps.drop()
         // Released with the playlist: a later media key no longer restarts it.
         session.release()
+        // After the release, which removes the callback, so no tap can be counted after the drop.
+        taps.drop()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         super.onDestroy()
     }
