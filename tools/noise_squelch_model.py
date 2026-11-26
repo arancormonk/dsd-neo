@@ -50,9 +50,10 @@ The receiver's half-band cascade. Each chain decimates through `passes` half-ban
 (src/dsp/demod_pipeline.cpp: the 31-tap stage first, the 15-tap ones after), and the 15-tap stage droops inside the
 band. The passes are the shared chain identity's (tools/squelch_model.py rate_plans(): an RTL-SDR bandwidth's 4 to 8,
 a replay's recorded base decimation). The stepped chains (a fixed-grid device: the passes, then the live step) and the
-reader's chains (a resampler ahead of the passes) are not run here: this model has no port of the step, and
-DSP_SQUELCH_STEP_MODEL holds the stepped noise plans. The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at twice
-the channel rate, through the stages before the last (one linear-phase FIR sampled from their composite response,
+reader's chains (a resampler ahead of the passes) are not run here: this model ports neither the step nor the reader.
+DSP_SQUELCH_STEP_MODEL holds the stepped noise plans, and DSP_SQUELCH_READER the reader's (its "NOISE on a reader
+chain" case). The noise, the calibration and every wanted signal go through the cascade as the chain runs it: made at
+twice the channel rate, through the stages before the last (one linear-phase FIR sampled from their composite response,
 CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last stage. With no channel filter the
 cascade's roll-off is the channel's edge, and it truncates a signal that reaches the rate's Nyquist into the band: such
 a plan needs the widest NFM signal tested (UNFILTERED_SIGNAL_EDGE_HZ from the carrier) to fit under the Nyquist, and

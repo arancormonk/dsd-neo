@@ -33,14 +33,15 @@ capture rates through the 4 to 8 half-band passes they run, the I/Q replay chain
 replay reader's chains (its resampler, then the passes). Noise and carriers are made at the chain's source rate and run
 through the chain's own stages (numpy ports, every stage's history and the windows' boundaries kept across chunks),
 CNR set at the channel filter's output. The plan each filter is classified with is the one full_demod() installs on
-its path (tools/squelch_model_taps.cpp runs the FSK path or the encoder's monitor on that chain), checked against the
-chain model's; a reader row, whose reader the decoder's plan here may not model, uses the model's, and its wanted
-variants must fit the band the source carries (the reader's pass edge). Stepped chains (Airspy, Airspy Mini,
+its path (tools/squelch_model_taps.cpp runs the FSK path or the encoder's monitor on that chain, a reader row through
+the reader), checked against the chain model's. A reader row's wanted variants must fit the band the source carries
+(the reader's pass edge). Stepped chains (Airspy, Airspy Mini,
 RX-888/SDDC: the passes, then the live step) are scoped out: there is no port of the live step here, and
 DSP_SQUELCH_STEP_MODEL holds the real step.
 
-Timing checks run the C tracker itself (squelch_model_taps track, given the plan) on each distinct plan, on noise and
-carriers made through the chain as above:
+Timing checks run the C tracker itself (squelch_model_taps track, given the plan) on each distinct plan, on carriers
+made through the chain as above (each variant's once, mixed at every CNR and margin) and noise drawn through the chain
+afresh for every case:
   - learning: a fresh tracker on a wanted carrier at 6, 10 and 20 dB CNR (a call lands mid-carrier); the longest
     closed run from the call's first sample, the closed window its first decision takes included, must stay under
     the path's hold;
@@ -224,24 +225,30 @@ def path_filters(plans: list[sm.RatePlan]) -> list[dict]:
 
 def run_profile_harness(exe: Path, filters: list[dict], hb_taps: dict) -> None:
     """Fill each filter's taps, protected width and plans: the one full_demod() installs on its path and chain (the
-    decoder's), the chain model's (tools/squelch_model.py), and the one it is classified with (the decoder's, or for a
-    reader row, whose reader the decoder's plan here may not model, the model's)."""
+    decoder's, which each filter is classified with; a reader row's through the reader) and the chain model's
+    (tools/squelch_model.py), held to it."""
     harness_path = {"edacs": HARNESS_PATH_FSK, "encoder": HARNESS_PATH_ENCODER}
-    requests = sorted(
-        {(f["plan"].complex_rate, harness_path[f["path"]], f["profile"], f["plan"].passes) for f in filters}
+
+    def request(f: dict) -> tuple:
+        plan = f["plan"]
+        reader = plan.reader.source_hz if plan.reader else 0
+        return (plan.complex_rate, harness_path[f["path"]], f["profile"], plan.passes, reader)
+
+    requests = sorted({request(f) for f in filters})
+    stdin = "".join(
+        f"{rate} 0 0 {path} {profile} {passes} {reader}\n" for rate, path, profile, passes, reader in requests
     )
-    stdin = "".join(f"{rate} 0 0 {path} {profile} {passes}\n" for rate, path, profile, passes in requests)
     proc = subprocess.run([str(exe)], input=stdin, capture_output=True, text=True, check=True)
     recs = {}
     for line in proc.stdout.splitlines()[1:]:
         rec = json.loads(line)
         if not rec["installed"]:
             raise SystemExit(f"the tracker did not run on {rec['rate_out']} Hz path {rec['path']}")
-        recs[(rec["rate_out"], rec["path"], rec["profile"], rec["passes"])] = rec
+        recs[(rec["rate_out"], rec["path"], rec["profile"], rec["passes"], rec["reader_source_hz"])] = rec
     models: dict = {}
     for f in filters:
         plan = f["plan"]
-        rec = recs[(plan.complex_rate, harness_path[f["path"]], f["profile"], plan.passes)]
+        rec = recs[request(f)]
         taps = np.asarray(rec["taps"], dtype=np.float64)
         f["taps"] = taps if len(taps) else np.ones(1)
         f["taps_len"] = len(rec["taps"])
@@ -257,14 +264,11 @@ def run_profile_harness(exe: Path, filters: list[dict], hb_taps: dict) -> None:
         else:
             f["protected_hz"] = 2.0 * float(rec["protected_edge_hz"])
         f["fkey"] = f"{plan.chain_key}:{sm.taps_key(f['taps'])}"
-        if f["fkey"] not in models:
-            cov = sm.chain_cov(plan, hb_taps, f["taps"])
-            models[f["fkey"]] = (cov, sm.plan_from_cov(cov, f["taps"], plan.complex_rate, sm.gain_scale(plan)))
-        cov, model = models[f["fkey"]]
+        cov, model = sm.filter_model(plan, f["taps"], hb_taps, models)
         f["model_plan"] = model
         f["noise_power"] = float(np.mean(cov[:, 0]))
-        f["floor_plan"] = model if plan.reader else f["decoder_plan"]
-        f["model_off"] = None if plan.reader else sm.plan_distance(model, f["decoder_plan"])
+        f["floor_plan"] = f["decoder_plan"]
+        f["model_off"] = sm.plan_distance(model, f["decoder_plan"])
         f["band_half_hz"] = plan.reader.pass_hz if plan.reader else None
         f["hold_s"] = edacs_hold_s() if f["path"] == "edacs" else VOX_HOLD_S
 
@@ -506,14 +510,10 @@ def timing_job(job: dict) -> dict:
         "delay_known_s": 0.0,
     }
 
-    # Noise through the chain once: a pool whose slices (at random offsets) serve every case. Each variant's carrier
-    # goes through the chain once and is mixed at each CNR and margin.
-    longest = max([round(v["seconds"] * fs) for v in variants] + [2 * fs + window])
-    pool = sm.chain_noise(plan, hb, taps, rng, 2 * longest + 2 * lead)
-
+    # Every case draws noise of its own through the chain (a fresh stream each time); each variant's carrier goes
+    # through the chain once and is mixed at each CNR and margin.
     def noise_only(count):
-        at = int(rng.integers(0, len(pool) - count + 1))
-        return pool[at : at + count]
+        return sm.chain_noise(plan, hb, taps, rng, count)
 
     def carrier_of(variant, count):
         s = sm.chain_signal(plan, hb, taps, lambda n: synth(variant, plan.source_hz, n, rng), count)
@@ -619,7 +619,7 @@ def summarize(filters: list[dict], results: dict) -> list[dict]:
             "false_carrier_events": int(nres[CARRIER]),
             "false_carrier_hi": sm.clopper_pearson(int(nres[CARRIER]), total_noise)[1],
             "carrier6_windows": n6,
-            "plan_source": "model (reader)" if f["plan"].reader else "decoder",
+            "plan_source": "decoder",
             "model_off": f["model_off"],
             "hold_s": f["hold_s"],
             **{k: v for k, v in timing.items() if k not in ("kind", "key")},

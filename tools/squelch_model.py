@@ -55,9 +55,10 @@ Everything comes from the repository, not from invented numbers:
     the chain's noise covariance at the channel output: the half-band recursion (R'[k] = sum_j
     g[j] R[2k - j]) through the channel taps for chains without a reader, every output phase of the
     reader's chain (impulses through the ported chain) otherwise, designed as
-    dsd_squelch_floor_plan_design_periodic_mean() designs it. Rows without a reader are checked
-    against the plan the decoder installs; reader rows, whose reader the plan on this tree may not
-    yet model, run on the script's own model of the reader and print the decoder's plan beside it.
+    dsd_squelch_floor_plan_design_periodic_mean() designs it, choosing the averaged or the full
+    periodic design on the C reader model's bound (mean_bound()). Every row is classified with the
+    plan the decoder installs (a reader row's through the reader: src/dsp/squelch_reader_model.c),
+    and the script's own plan is held to it.
     Reader rows qualify the wanted modulation and offset against the source band too: a variant
     whose occupied band passes the reader's pass edge is reported as "edge", not gated.
   - Rate chains: the RTL DSP bandwidths (4, 6, 8, 12, 16, 24, 48, 72 kHz), I/Q replay chains (the
@@ -1015,14 +1016,26 @@ def periodic_phase_means(cov: np.ndarray, lag: int, window: int) -> tuple[float,
     return neff / period, b / period, rh / period
 
 
-def plan_from_cov(cov: np.ndarray, taps: np.ndarray, rate: int, gain_scale: float) -> dict:
-    """The floor plan for a channel covariance (dsd_squelch_floor_plan_design_periodic_mean()): a covariance whose
-    phases stay within 1e-2 of their mean (relative to its power, the step model's bound) is designed at a period of
-    one. N_eff, beta and rho are means over the tracker's windows, floor(fs / 25) samples or one more as often as the
-    fractional mean window rate / 25 needs. The noise gain is the mean power times @p gain_scale."""
+MEAN_BOUND = 1e-2  # dsd_squelch_cascade_mean_suffices()'s bound (src/dsp/squelch_cascade_noise.c)
+
+
+def mean_bound(cyclo_dev: float, taps: np.ndarray, power: float) -> float:
+    """dsd_squelch_cascade_mean_suffices()'s bound on how far an output phase's covariance can stray from the phase
+    mean after the channel taps: the phases' largest distance ahead of the taps (@p cyclo_dev) times (sum |c|)^2, over
+    the output power. The C reader and step models design at a period of one while it is at most MEAN_BOUND."""
+    return cyclo_dev * float(np.sum(np.abs(taps))) ** 2 / power
+
+
+def plan_from_cov(cov: np.ndarray, taps: np.ndarray, rate: int, gain_scale: float, cyclo_dev: float = 0.0) -> dict:
+    """The floor plan for a channel covariance (dsd_squelch_floor_plan_design_periodic_mean()), choosing the design as
+    the C reader model does: the phase mean at a period of one while mean_bound() on @p cyclo_dev (the phases' largest
+    distance ahead of the channel taps; 0 for a stationary chain) stays at most MEAN_BOUND, every output phase in full
+    past it. N_eff, beta and rho are means over the tracker's windows, floor(fs / 25) samples or one more as often as
+    the fractional mean window rate / 25 needs. The noise gain is the mean power times @p gain_scale."""
     mean = cov.mean(axis=0)
     dev = float(np.max(np.abs(cov - mean[None, :]))) / float(mean[0])
-    use = mean[None, :] if dev < 1e-2 else cov
+    bound = mean_bound(cyclo_dev, taps, float(mean[0]))
+    use = mean[None, :] if bound <= MEAN_BOUND else cov
     lag = plan_lag(taps)
     window = rate // 25
     longer = (rate % 25) / 25.0
@@ -1043,6 +1056,7 @@ def plan_from_cov(cov: np.ndarray, taps: np.ndarray, rate: int, gain_scale: floa
         "noise_gain": float(np.mean(use[:, 0])) * gain_scale,
         "period": int(use.shape[0]),
         "phase_dev": dev,
+        "mean_bound": bound,
     }
 
 
@@ -1058,6 +1072,23 @@ def plan_distance(a: dict, b: dict) -> float:
         return math.inf
     rel = max(abs(a["neff"] / b["neff"] - 1.0), abs(a["noise_gain"] / b["noise_gain"] - 1.0))
     return max(rel, abs(a["beta"] - b["beta"]), abs(a["rho_lag"] - b["rho_lag"]))
+
+
+def filter_model(plan: RatePlan, taps: np.ndarray, hb_taps: dict, cache: dict) -> tuple[np.ndarray, dict]:
+    """The channel noise covariance and the plan the tool designs from it for one chain and its taps, kept in @p cache
+    (by chain and taps). A reader row's design choice takes the phases' distance ahead of the taps, as the C model."""
+    key = f"{plan.chain_key}:{taps_key(taps)}"
+    if key not in cache:
+        cyclo_dev = 0.0
+        if plan.reader:
+            ahead_key = ("ahead", plan.chain_key)
+            if ahead_key not in cache:
+                ahead = impulse_cov(plan, hb_taps, np.ones(1))
+                cache[ahead_key] = float(np.max(np.abs(ahead - ahead.mean(axis=0)[None, :])))
+            cyclo_dev = cache[ahead_key]
+        cov = chain_cov(plan, hb_taps, taps)
+        cache[key] = (cov, plan_from_cov(cov, taps, plan.complex_rate, gain_scale(plan), cyclo_dev))
+    return cache[key]
 
 
 def resample(x: np.ndarray, fs_in: float, fs_out: float, trim_s: float = 0.05) -> np.ndarray:
@@ -1458,9 +1489,11 @@ def taps_key(taps: np.ndarray) -> str:
 
 
 def chain_request(config: Config, plan: RatePlan, res: dict) -> tuple:
-    """The harness chain request whose installed plan is this combination's (analog monitor, no step)."""
+    """The harness chain request whose installed plan is this combination's (analog monitor, no step; a reader row
+    reads its source through the reader)."""
     width, profile = res["request"]
-    return (plan.complex_rate, width, config.kind if width > 0 else FM_KIND, 0, profile, plan.passes)
+    reader = plan.reader.source_hz if plan.reader else 0
+    return (plan.complex_rate, width, config.kind if width > 0 else FM_KIND, 0, profile, plan.passes, reader)
 
 
 def build_combos(plans: list[RatePlan], harness_plans: dict, hb_taps: dict) -> list:
@@ -1483,10 +1516,7 @@ def build_combos(plans: list[RatePlan], harness_plans: dict, hb_taps: dict) -> l
                 if plan.reader:
                     combo["source_half_hz"] = min(combo["source_half_hz"], plan.reader.pass_hz)
                 if "scoped" not in combo:
-                    if fkey not in models:
-                        cov = chain_cov(plan, hb_taps, res["taps"])
-                        models[fkey] = (cov, plan_from_cov(cov, res["taps"], plan.complex_rate, gain_scale(plan)))
-                    cov, model = models[fkey]
+                    cov, model = filter_model(plan, res["taps"], hb_taps, models)
                     combo["model_plan"] = model
                     combo.update(filter_info(res["taps"], cov, model, plan.complex_rate))
             combos.append(combo)
@@ -2052,9 +2082,10 @@ def lag_section(lines: list[str], unique: dict, noise_results: dict) -> None:
             f"L = smallest lag with |R_h(L)| / R_h(0) < {LAG_RHO_LIMIT} on the channel taps: L {min(c['lag'] for c in rows)} "
             f"to {max(c['lag'] for c in rows)} samples ({min(lag_us):.0f} to {max(lag_us):.0f} us); rho_h(L) "
             f"{min(rho_h):+.3f} to {max(rho_h):+.3f}. The noise the classifier sees also carries the chain ahead of "
-            f"the channel filter (the reader, the half-band cascade), so its correlation at L, rho_n(L), runs {min(rho_n):+.3f} to {max(rho_n):+.3f}; noise C (20 ms) has "
-            f"its median at {min(med):.3f} to {max(med):.3f} and its 99.99 % point at {min(top):.3f} to {max(top):.3f}, "
-            f"the bias (pi/4) rho_n(L) plus the window's own scatter, about 1/sqrt(N_eff)."
+            f"the channel filter (the reader, the half-band cascade), so its correlation at L, rho_n(L), runs "
+            f"{min(rho_n):+.3f} to {max(rho_n):+.3f}; noise C (20 ms) has its median at {min(med):.3f} to "
+            f"{max(med):.3f} and its 99.99 % point at {min(top):.3f} to {max(top):.3f}, the bias (pi/4) rho_n(L) plus "
+            f"the window's own scatter, about 1/sqrt(N_eff)."
         ),
         "",
     ]
@@ -2188,13 +2219,31 @@ def rates_table(lines: list[str], name: str, sch: dict, unique: dict, noise_wind
     ]
 
 
+def json_clean(value):
+    """A report value as JSON takes it: infinities as null, keys as text, numpy scalars as Python ones."""
+    if isinstance(value, float) and math.isinf(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): json_clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_clean(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def scoped_text(combos: list[dict]) -> str:
+    """The stepped chains a run scopes out, each with its chain identity ("none" when there are none)."""
+    names = sorted({c["plan"].name + " (" + c["plan"].chain_label + ")" for c in combos if c["runs"] and "scoped" in c})
+    return "; ".join(names) or "none"
+
+
 def write_report(
     out_dir: Path, meta: dict, combos: list[dict], noise_results: dict, carrier_results: dict, analysis: dict
 ) -> tuple[Path, Path]:
     schemes, best, unique = analysis["schemes"], analysis["recommended"], analysis["unique"]
     runnable = [c for c in combos if modelled(c)]
     refused = [c for c in combos if not c["runs"]]
-    scoped = [c for c in combos if c["runs"] and "scoped" in c]
     cpct = {ck: {m: carrier_percentiles(carrier_results[ck], m) for m in WINDOW_MULTIPLES} for ck in unique}
     planned = schemes[PLANNED_SCHEME]
     lines = ["# Auto-squelch classifier design gate", ""]
@@ -2304,7 +2353,7 @@ def write_report(
         "",
         (
             "Scoped out (stepped: no port of the live step here; DSP_SQUELCH_STEP_MODEL holds the real step): "
-            + ("; ".join(sorted({c["plan"].name + " (" + c["plan"].chain_label + ")" for c in scoped})) or "none")
+            + scoped_text(combos)
             + "."
         ),
         "",
@@ -2384,17 +2433,6 @@ def write_report(
         out.update({"taps": len(c["taps"]), "plan_key": c["ckey"]})
         return out
 
-    def clean(value):
-        if isinstance(value, float) and math.isinf(value):
-            return None
-        if isinstance(value, dict):
-            return {str(k): clean(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [clean(v) for v in value]
-        if isinstance(value, np.generic):
-            return value.item()
-        return value
-
     report = {
         "meta": meta,
         "targets": {
@@ -2421,7 +2459,7 @@ def write_report(
         },
     }
     json_path = out_dir / "report.json"
-    json_path.write_text(json.dumps(clean(report), indent=1))
+    json_path.write_text(json.dumps(json_clean(report), indent=1))
     return md_path, json_path
 
 
@@ -2682,9 +2720,7 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     lines += ["", "## Scoped out", ""]
     lines.append(
         "Stepped chains (no port of the live step here; DSP_SQUELCH_STEP_MODEL and its --matrix hold the real step "
-        "through full_demod() to the floor and noise squelch bounds): "
-        + ("; ".join(sorted({c["plan"].name + " (" + c["plan"].chain_label + ")" for c in scoped})) or "none")
-        + "."
+        "through full_demod() to the floor and noise squelch bounds): " + scoped_text(combos) + "."
     )
     lines += ["", "## 6 dB misses by modulation family and offset (all plans pooled)", ""]
     pooled: dict = {}
@@ -2703,25 +2739,26 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     lines += ["", "## Reader rows", ""]
     lines += [
         (
-            "The reader rows run on this script's model of the reader (rows of the noise covariance per output phase, "
-            "designed as the decoder designs a periodic plan); the decoder's plan on this tree, beside it, is the plan "
-            "of the same chain without the reader."
+            "The reader rows are classified with the plan the decoder installs behind the reader. Beside it, the "
+            "script's own plan from its port of the reader: the period it designs at (1: the phase mean, chosen on the "
+            "C model's bound), that bound, the exact phase deviation after the channel taps, and its distance from the "
+            "decoder's plan."
         ),
         "",
         (
-            "| chain | filter | period | phase dev | model lag / beta / N_eff | decoder lag / beta / N_eff | Y bias on "
-            "the decoder's plan |"
+            "| chain | filter | period | bound | phase dev | model lag / beta / N_eff | decoder lag / beta / N_eff | "
+            "distance |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for ck, c in unique.items():
         if not c["plan"].reader:
             continue
         m, d = c["model_plan"], c["decoder_plan"]
-        bias = abs(m["beta"] - d["beta"]) * d["sqrt_neff"]
         lines.append(
-            f"| {c['plan'].name} | {c['filter']} | {m['period']} | {m['phase_dev']:.2e} | {m['lag']} / {m['beta']:.4f} "
-            f"/ {m['neff']:.1f} | {d['lag']} / {d['beta']:.4f} / {d['neff']:.1f} | {bias:.2f} |"
+            f"| {c['plan'].name} | {c['filter']} | {m['period']} | {m['mean_bound']:.2e} | {m['phase_dev']:.2e} | "
+            f"{m['lag']} / {m['beta']:.4f} / {m['neff']:.1f} | {d['lag']} / {d['beta']:.4f} / {d['neff']:.1f} | "
+            f"{c['model_off']:.1e} |"
         )
     lines += [
         "",
@@ -2752,10 +2789,10 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         "## Model against the decoder",
         "",
         (
-            f"Rows without a reader classify with the plan full_demod() installs (the harness's chain requests); the "
-            f"script's own plan from the half-band recursion and the channel taps agrees with it within "
-            f"{max(model_off) if model_off else 0.0:.2e} (lag equal; beta, rho absolute; N_eff, gain relative) over "
-            f"{len(model_off)} plans. The streamed chain (unit impulses at every input phase through the ported "
+            f"Every row classifies with the plan full_demod() installs (the harness's chain requests, a reader row's "
+            f"through the reader); the script's own plan (the half-band recursion, or its port of the reader, and the "
+            f"channel taps) agrees with it within {max(model_off) if model_off else 0.0:.2e} (lag equal; beta, rho "
+            f"absolute; N_eff, gain relative) over {len(model_off)} plans. The streamed chain (unit impulses at every input phase through the ported "
             f"stages) gives the recursion's covariance within {meta['generator_check']:.1e} of the power on every chain "
             "without a reader."
         ),
@@ -2763,17 +2800,6 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     ]
     md = out_dir / "report.md"
     md.write_text("\n".join(lines))
-
-    def clean(value):
-        if isinstance(value, float) and math.isinf(value):
-            return None
-        if isinstance(value, dict):
-            return {str(k): clean(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [clean(v) for v in value]
-        if isinstance(value, np.generic):
-            return value.item()
-        return value
 
     js = out_dir / "report.json"
     payload = {
@@ -2793,7 +2819,7 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         },
         "scoped": sorted({c["plan"].name for c in scoped}),
     }
-    js.write_text(json.dumps(clean(payload), indent=1, default=str))
+    js.write_text(json.dumps(json_clean(payload), indent=1, default=str))
     return md, js
 
 
@@ -2812,13 +2838,21 @@ def harness_requests(plans: list[RatePlan]) -> list[tuple]:
 
 
 def run_chain_requests(exe: Path, requests: list[tuple]) -> dict:
-    """The plans full_demod() installs on each chain request (rate, width, kind, path, profile, passes)."""
+    """The plans full_demod() installs on each chain request (rate, width, kind, path, profile, passes, reader)."""
     stdin = "".join(" ".join(str(v) for v in r) + "\n" for r in requests)
     proc = subprocess.run([str(exe)], input=stdin, capture_output=True, text=True, check=True)
     out = {}
     for line in proc.stdout.splitlines()[1:]:
         rec = json.loads(line)
-        key = (rec["rate_out"], rec["width_hz"], rec["kind"], rec["path"], rec["profile"], rec["passes"])
+        key = (
+            rec["rate_out"],
+            rec["width_hz"],
+            rec["kind"],
+            rec["path"],
+            rec["profile"],
+            rec["passes"],
+            rec["reader_source_hz"],
+        )
         if not rec["installed"]:
             raise SystemExit(f"the tracker did not run on chain request {key}")
         out[key] = rec["floor_plan"]
@@ -2840,9 +2874,9 @@ def load_chain_model(args, out_dir: Path) -> dict:
         if modelled(c):
             decoder = chain_plans[chain_request(c["config"], c["plan"], c)]
             c["decoder_plan"] = decoder
-            c["plan_source"] = "model (reader)" if c["plan"].reader else "decoder"
-            c["classify_plan"] = c["model_plan"] if c["plan"].reader else decoder
-            c["model_off"] = None if c["plan"].reader else plan_distance(c["model_plan"], decoder)
+            c["plan_source"] = "decoder"
+            c["classify_plan"] = decoder
+            c["model_off"] = plan_distance(c["model_plan"], decoder)
     return {
         "exe": exe,
         "plans": plans,

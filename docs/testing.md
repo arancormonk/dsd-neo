@@ -3379,10 +3379,13 @@ decimation's passes, and reader rows the general plan (8 to 16 kHz, 40 to 32 kHz
 48,001 to 48,000 Hz). A post-decimated row is its base row's chain. Noise and carriers are made at the chain's source
 rate and run through ports of its stages. Every stage keeps its history, and the reader's phase and the windows'
 fractional boundaries carry across chunks. CNR is set at the channel output. Wanted variants on a reader row must also
-fit the band the source carries. Rows without a reader are classified with the plan `full_demod()` installs (the tap
-harness prints it per chain); the tool's own plan from the half-band recursion matches it within 4.2e-9 on all 146 of
-them. Reader rows use the tool's model of the reader: at 8 to 16 kHz unfiltered it gives beta 0.5418 and N_eff 317.8,
-where the reader-less plan has 0 and 640 (Y bias 13.7). Fixed-grid device rows (Airspy, Airspy Mini, RX-888/SDDC) step
+fit the band the source carries. Every row is classified with the plan `full_demod()` installs (the tap harness prints
+it per chain, a reader row's through the reader and its C model). The tool's own plan matches it within 4.2e-9 on all
+146 plans without a reader, from the half-band recursion. On the 32 reader plans it matches within 3.6e-9, from its
+port of the reader, choosing the averaged or the full periodic design on the C model's bound. At 8 to 16 kHz
+unfiltered both give beta 0.5418 and N_eff 317.8, where a plan without the reader has 0 and 640 (Y bias 13.7). The
+runs below classified the reader rows with the tool's plan, before the decoder had one; the two agree within 3.6e-9,
+so their verdicts stand. Fixed-grid device rows (Airspy, Airspy Mini, RX-888/SDDC) step
 after their passes. The tool has no port of the live step, so they stay out of this gate and of the EDACS and M17
 encoder gate below, listed as scoped out. What covers them is `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows: the real
 step through `full_demod()` at the post-half-band rates of 2.5 and 3 MS/s at every selectable DSP bandwidth, held to the
@@ -3484,7 +3487,8 @@ channel filter designs at; without it every plan it printed was the fallback.
 RTL-SDR bandwidths at their capture rates through their 4 to 8 passes, the replay and reader chains, noise and
 carriers made at the source rate through the chain, and the plan `full_demod()` installs on each path. Stepped chains
 are scoped out. Each plan had 100,000 noise windows, with the frozen classification of the run above. Every
-non-reader plan matches the tool's own within 2e-9. The run took 69 minutes on 16 workers.
+non-reader plan matches the tool's own within 2e-9; since the decoder models the reader, the 20 reader plans do too
+(within 2.5e-9), and the gate now classifies them with the decoder's plan. The run took 69 minutes on 16 workers.
 
 | Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
 | --- | --- | --- | --- | --- | --- | --- | --- |
@@ -3689,7 +3693,10 @@ quiets by N dB. The question before any C was written: does a quieting statistic
 follow the carrier-to-noise ratio, and stay well above the highest threshold while a strong carrier carries wanted
 modulation, at every plan the FM monitor runs? `tools/noise_squelch_model.py` (numpy/scipy, offline; CI does not run it)
 answers it on `tools/squelch_model.py`'s tap harness and rate chains, with `dsd_fm_demod()`'s discriminator modelled
-exactly. It covers 365 distinct plans:
+exactly. It covers 365 distinct plans. Since issue #899 its chains are the shared chain identities, and it leaves out
+the stepped chains and the replay reader's chains: it ports neither the step nor the reader.
+`DSP_SQUELCH_STEP_MODEL` holds the stepped noise plans, and `DSP_SQUELCH_READER` the reader's (its "NOISE on a reader
+chain" case in `tests/dsp/test_dsp_squelch_reader.cpp`). The 365 plans:
 
 - 119 plans from the 171 NFM combinations the harness runs: every width, the unset default and every rate chain.
 - 246 plans at custom widths: 11.0-12.4 kHz in 100 Hz steps and 13-25 kHz in 1 kHz steps, on every chain at 24 kHz or

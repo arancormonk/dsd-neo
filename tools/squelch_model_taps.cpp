@@ -22,7 +22,9 @@
  * reads), the channel filter (-1 the analog family's design above, -2 the channel LPF off, or a dsd_ch_lpf_profile off
  * the family: PROVOICE, WIDE) and the half-band passes ahead of it at 2^passes times the rate. full_demod() runs a block
  * of that chain under AUTO, and the line also carries the auto squelch plan it installed (the decoder's own: the whole
- * cascade's for two passes or more) and whether the tracker ran.
+ * cascade's for two passes or more) and whether the tracker ran. A seventh field, "<reader_source_hz>", reads that
+ * source through the replay reader's resampler into the cascade (dsd_iq_reader_plan_for(), its squelch model built as
+ * a rate plan's commit builds it), so the plan is the one behind the reader.
  *
  * "squelch_model_taps track" runs the auto squelch's tracker itself instead (tools/squelch_paths_model.py's timing
  * checks): a first stdin line "<margin_db> <rate_hz> <lag> <rho_lag> <beta> <neff> <sqrt_neff> <noise_gain>" sets the
@@ -35,7 +37,9 @@
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
 #include <stdint.h>
@@ -55,6 +59,7 @@ print_taps(const float* taps, int len) {
 
 static void
 release_demod(demod_state* s) {
+    dsd_squelch_reader_model_release(&s->squelch_reader_model);
     dsd_neo_aligned_free(s->post_polydecim_taps);
     dsd_neo_aligned_free(s->post_polydecim_hist);
     s->post_polydecim_taps = NULL;
@@ -85,10 +90,13 @@ design_plan(demod_state* s, int rate_hz, int kind, int width_hz) {
 }
 
 /* Blocks of silence through full_demod() on @p path with @p passes half-band passes and no step, under AUTO, until a
-   block leaves channel samples: the channel filter designs its plan and the tracker installs its own. Returns the
-   channel taps' length (0 with the channel LPF off). */
+   block leaves channel samples: the channel filter designs its plan and the tracker installs its own. With
+   @p reader_source_hz above 0 the chain reads that source through the replay reader's resampler into the cascade's
+   2^passes x rate input, its model built as a rate plan's commit builds it. Returns the channel taps' length (0 with
+   the channel LPF off), or -1 when the reader or its model cannot be built. */
 static int
-run_chain_plan(demod_state* s, int rate_hz, int kind, int width_hz, int path, int profile, int passes) {
+run_chain_plan(demod_state* s, int rate_hz, int kind, int width_hz, int path, int profile, int passes,
+               long reader_source_hz) {
     release_demod(s);
     DSD_MEMSET(s, 0, sizeof(*s));
     s->rate_in = rate_hz;
@@ -114,6 +122,13 @@ run_chain_plan(demod_state* s, int rate_hz, int kind, int width_hz, int path, in
     }
     s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
     s->squelch_margin_db = 10;
+    if (reader_source_hz > 0) {
+        const uint32_t dsp_in = (uint32_t)rate_hz << passes;
+        if (dsd_iq_reader_plan_for(&s->iq_reader, (uint32_t)reader_source_hz, dsp_in, (uint64_t)rate_hz) != 0
+            || dsd_demod_squelch_reader_model_sync(s) != 0) {
+            return -1;
+        }
+    }
     const int pairs = passes >= 6 ? 16384 : (256 << passes);
     for (int i = 0; i < 8; i++) {
         DSD_MEMSET(s->input_cb_buf, 0, (size_t)pairs * 2U * sizeof(float));
@@ -238,23 +253,36 @@ main(int argc, char** argv) {
         const int with_chain = end4 != end3 ? 1 : 0;
         long profile = -1;
         long passes = 0;
+        long reader_source = 0;
         if (with_chain) {
             char* end5 = NULL;
             profile = strtol(end4, &end5, 10);
             char* end6 = NULL;
             passes = strtol(end5, &end6, 10);
+            /* The optional reader field: the source rate the replay reader resamples into the cascade. */
+            char* end7 = NULL;
+            reader_source = strtol(end6, &end7, 10);
+            if (end7 == end6) {
+                reader_source = 0;
+            }
             const int profile_ok = path == 0 ? (profile == -1 || profile == -2)
                                              : (profile == -2 || profile == DSD_CH_LPF_PROFILE_WIDE
                                                 || profile == DSD_CH_LPF_PROFILE_PROVOICE);
-            if (end5 == end4 || end6 == end5 || path < 0 || path > 2 || !profile_ok || passes < 0 || passes > 10) {
+            if (end5 == end4 || end6 == end5 || path < 0 || path > 2 || !profile_ok || passes < 0 || passes > 10
+                || reader_source < 0 || reader_source > 100000000) {
                 DSD_FPRINTF(stderr, "bad request: %s", line);
                 rc = 1;
                 continue;
             }
         }
-        const int taps_len =
-            with_chain ? run_chain_plan(s, (int)rate, (int)kind, (int)width, (int)path, (int)profile, (int)passes)
-                       : design_plan(s, (int)rate, (int)kind, (int)width);
+        const int taps_len = with_chain ? run_chain_plan(s, (int)rate, (int)kind, (int)width, (int)path, (int)profile,
+                                                         (int)passes, reader_source)
+                                        : design_plan(s, (int)rate, (int)kind, (int)width);
+        if (taps_len < 0) {
+            DSD_FPRINTF(stderr, "no reader for request: %s", line);
+            rc = 1;
+            continue;
+        }
         int direct_len = -1;
         int direct_same = 0;
         if (width > 0 && profile == -1) {
@@ -273,8 +301,11 @@ main(int argc, char** argv) {
                     dsd_channel_lpf_legacy_wide_width_hz((int)rate), direct_len, direct_same);
         print_taps(s->channel_lpf_plan_taps, taps_len > 0 ? taps_len : 0);
         if (with_chain) {
-            DSD_FPRINTF(stdout, ",\"path\":%ld,\"profile\":%ld,\"passes\":%ld,\"protected_edge_hz\":%.1f", path,
-                        profile, passes, profile >= 0 ? dsd_channel_lpf_protected_edge_hz((int)profile) : 0.0);
+            DSD_FPRINTF(stdout,
+                        ",\"path\":%ld,\"profile\":%ld,\"passes\":%ld,\"reader_source_hz\":%ld,"
+                        "\"protected_edge_hz\":%.1f",
+                        path, profile, passes, reader_source,
+                        profile >= 0 ? dsd_channel_lpf_protected_edge_hz((int)profile) : 0.0);
             print_floor_plan(&s->squelch_floor.plan, s->squelch_auto_ran);
         }
         DSD_FPRINTF(stdout, "}\n");
