@@ -1927,6 +1927,45 @@ test_config_line_invalid_validation(void) {
     return rc;
 }
 
+/* Issue #931 (gate r3): --validate-config parses an include directive from the whole line, as the loader does, so a
+ * directive after 1030 spaces still has its file checked: the child's 9001-byte comment line is an error reported
+ * against the child, and the validation fails. */
+int
+test_config_include_after_long_indent_validation(void) {
+    char child[DSD_TEST_PATH_MAX];
+    const std::string child_ini = std::string("#") + std::string(9000U, 'c') + "\n[recording]\nrdio_system_id = 5\n";
+    if (write_temp_config(child_ini.c_str(), child, sizeof child) != 0) {
+        return 1;
+    }
+    const std::string root_ini = std::string(1030U, ' ') + "include = \"" + child + "\"\n";
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config(root_ini.c_str(), root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    const int rc_validate = dsd_user_config_validate(root, &diags);
+    int child_errors = 0;
+    for (int i = 0; i < diags.count; i++) {
+        child_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 1
+                        && strstr(diags.items[i].source_path, path_basename(child)) != nullptr;
+    }
+    int rc = 0;
+    if (rc_validate == 0 || child_errors != 1) {
+        DSD_FPRINTF(stderr, "FAIL: an include after a long indent: rc=%d child errors=%d\n", rc_validate, child_errors);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s:%d %.80s\n", diags.items[i].source_path, diags.items[i].line_number,
+                        diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(root);
+    (void)remove(child);
+    return rc;
+}
+
 /* Issue #931 (B11): an rdio_api_url or rdio_api_key the loader refuses as too long is an error that never quotes the
  * value; the largest value that fits is none. */
 int
@@ -2739,6 +2778,7 @@ main(void) {
     rc |= test_rdio_credential_length_validation();
     rc |= test_config_line_too_long_validation();
     rc |= test_config_line_invalid_validation();
+    rc |= test_config_include_after_long_indent_validation();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

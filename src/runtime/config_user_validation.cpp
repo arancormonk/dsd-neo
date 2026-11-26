@@ -1207,9 +1207,10 @@ parse_validation_include(config_validation_scan_t* scan, const char* line, char*
     if (!scan->scan_includes) {
         return 0;
     }
-    char include_line[1024];
-    DSD_SNPRINTF(include_line, sizeof include_line, "%s", line);
-    int rc = user_config_parse_include_directive_line(include_line, include_path, include_path_size);
+    /* The whole line the reader returned, as the loader parses it (process_includes_stream()): only the extracted path
+       has a limit of its own (issue #931). */
+    std::string include_line(line);
+    int rc = user_config_parse_include_directive_line(&include_line[0], include_path, include_path_size);
     if (rc < 0) {
         scan->scan_includes = 0;
         return 0;
