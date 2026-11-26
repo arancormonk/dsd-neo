@@ -73,9 +73,9 @@ object RecordingPlayback {
     private val recheck = RecordingRecheck()
 
     /**
-     * The setups given up with their result still out, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
+     * The setups given up while their work still runs, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
      * thread and a MediaPlayer each, stuck in a read that may never return) an open fails at once, so stalled storage
-     * cannot pile up threads; Stop never waits for one. Looper only.
+     * cannot pile up threads; Stop never waits for one. The work leaves the count on its setup thread as it returns.
      */
     private val abandonedSetups = AbandonedSetups()
 

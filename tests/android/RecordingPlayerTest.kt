@@ -2309,6 +2309,31 @@ private fun stuckSetupsAreBounded() {
     check(rig.state == PLAYING) { "and plays" }
 }
 
+/**
+ * Quick moves on healthy storage never meet the bound: a setup given up whose work is done, its result only waiting
+ * for the looper, counts for nothing, so five moves in a row leave every open working and nothing skipped.
+ */
+private fun quickMovesNeverMeetTheLimit() {
+    val rig = Rig()
+    rig.opener.stuck += (1..8).toSet() // each setup waits for the test to run and deliver it
+    rig.queue(1, 1, 1, 1, 1, 1, 1)
+    repeat(5) {
+        rig.opener.setups.last().run() // done on its setup thread, its result not delivered yet
+        rig.machine.next()
+    }
+    check(rig.status.skipped == 0 && rig.status.call == 5 && rig.state == PREPARING) {
+        "five moves: nothing skipped (${rig.status.skipped}, call ${rig.status.call})"
+    }
+    check(rig.players.size == 6 && rig.opener.setups.size == 6) { "the sixth open made its player and its setup" }
+    rig.opener.setups.last().land()
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 5) { "and plays" }
+    rig.play()
+    check(rig.players.size == 7 && rig.opener.setups.size == 7) { "a sheet play after them is set up too" }
+    rig.opener.setups.forEach { if (it.result != null) it.land() }
+    check(rig.players.take(6).all { it.released }) { "the results delivered late release their players" }
+}
+
 /** Previous while the part opens opens it again: a file deleted meanwhile is skipped; the old open plays nothing. */
 private fun previousWhileOpeningOpensAgain() {
     val rig = Rig()
@@ -2550,6 +2575,7 @@ fun main() {
     theNextPartIsHandedOffBeforeTheCompletedOneIsReleased()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     stuckSetupsAreBounded()
+    quickMovesNeverMeetTheLimit()
     previousWhileOpeningOpensAgain()
     aSupersededSetupStillRechecksItsFile()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")

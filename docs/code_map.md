@@ -19933,11 +19933,14 @@ Qt Quick frontend (`src/ui/qt`):
       (`Opener.abandonSetup()`: that executor is shut down, so it takes no new work, and finishes on its own, its late
       result released as any), and the next setup starts a fresh thread, so nothing ever queues behind a read that does
       not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
-      Setups given up are counted for the process (`AbandonedSetups`, a limit of 2, `LIMIT`): while two are out, each
-      holding a thread and a `MediaPlayer` in a read that may never return, an open makes no player and starts no
-      setup and fails at once as a recording that couldn't be played (a playlist moves on; SINGLE and PARTS end with
-      the damaged-file text), and one leaves the count when its result is delivered, its player released then. Stop
-      never waits for a setup. The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered
+      Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
+      `LIMIT`): while two are running, each holding a thread and a `MediaPlayer` in a read that may never return, an
+      open makes no player and starts no setup and fails at once as a recording that couldn't be played (a playlist
+      moves on; SINGLE and PARTS end with the damaged-file text). One leaves the count when its work returns on its
+      setup thread, before its result is posted (not when the looper takes it), so a setup that is done and waits
+      only for delivery counts for nothing and quick moves on healthy storage never meet the limit; its player is
+      released when the result is delivered. Stop never waits for a setup. The JVM tests drive it with a fake setup that
+      holds, runs late or fails, on numbered
       setup threads.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten

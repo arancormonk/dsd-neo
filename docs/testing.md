@@ -213,8 +213,9 @@ thread (a fake setup held, run late or failed: a setup stuck in a read failing i
 meanwhile and the late results released, every part stuck ending "unplayable", a result after a move released, a
 prepare answering before the result, an error before it, and SINGLE and PARTS on the same path), a stuck setup thread
 replaced at its timeout, or at once when Stop or Next leaves it (the next item and a later sheet play set up on a fresh
-one, never failing; a hung prepare keeps its thread), at most two setups given up out at once (a third open fails at
-once with no player made, and the next one after a stuck setup returns works), a setup's gone file rechecked when
+one, never failing; a hung prepare keeps its thread), at most two setups given up still running at once (a third open
+fails at once with no player made, and the next one after a stuck setup returns works; five quick moves whose setups
+are done but not delivered skip nothing), a setup's gone file rechecked when
 its result comes after Stop or Next, Previous while a part opens opening it again (deleted meanwhile: skipped),
 no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the gap
 opening the call again, and staying paused in a paused gap; an error from a part completed or left reaching nothing; the

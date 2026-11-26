@@ -61,27 +61,50 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
 }
 
 /**
- * The setups given up with their result still out (#909), counted for the process: a setup dropped while it runs (its
+ * The setups given up while their work still runs (#909), counted for the process: a setup dropped while it runs (its
  * part timed out, was moved off, stopped or replaced) keeps its thread and its MediaPlayer until its read returns, and
- * on storage that stopped answering it may never return. While [limit] of them are out, a new open makes no player
- * and starts no setup: its recording fails at once as one that couldn't be played. One leaves the count when its
- * result is delivered, its player released then. RecordingPlayback owns one for the process; on the playback looper
- * only.
+ * on storage that stopped answering it may never return. While [limit] of them are still running, a new open makes no
+ * player and starts no setup: its recording fails at once as one that couldn't be played. One leaves the count when
+ * its work returns on its setup thread, before its result is posted, so a setup that is done and only waits for the
+ * looper to take its result counts for nothing, and quick moves on healthy storage never reach the limit; its player
+ * is released when that result is delivered. RecordingPlayback owns one for the process. [abandoned] and [full] run
+ * on the playback looper, [returned] on the setup thread.
  */
 class AbandonedSetups(val limit: Int = LIMIT) {
-    /** The setups given up and not delivered yet. */
-    var outstanding = 0
-        private set
-
-    val full: Boolean get() = outstanding >= limit
-
-    fun abandoned() {
-        outstanding++
+    /** One setup's work, as the count follows it: given up or not, returned or not. */
+    class Work internal constructor() {
+        internal var abandoned = false
+        internal var returned = false
     }
 
-    fun delivered() {
-        if (outstanding > 0) {
-            outstanding--
+    private val lock = Any()
+    private var running = 0
+
+    /** The setups given up whose work has not returned. */
+    val outstanding: Int get() = synchronized(lock) { running }
+
+    val full: Boolean get() = synchronized(lock) { running >= limit }
+
+    /** A setup's work, as it is handed to its setup thread. */
+    fun begin(): Work = Work()
+
+    /** The machine gave the setup up: counted while its work still runs. */
+    fun abandoned(work: Work) = synchronized(lock) {
+        if (!work.abandoned) {
+            work.abandoned = true
+            if (!work.returned) {
+                running++
+            }
+        }
+    }
+
+    /** Its work returned (or its result came with no work run): it no longer counts. Once; any thread. */
+    fun returned(work: Work) = synchronized(lock) {
+        if (!work.returned) {
+            work.returned = true
+            if (work.abandoned) {
+                running--
+            }
         }
     }
 
@@ -118,7 +141,7 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * current (it timed out, was moved off, stopped or ended); a setup that found its file gone or changed puts it on the
  * recheck list whether or not its part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
  * setup included, fails (a stalled read or a MediaPlayer that never answers would leave the play opening for good):
- * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] setups given up are still out, an open fails
+ * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] setups given up still run, an open fails
  * at once, as a recording that couldn't be played, with no player made.
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
@@ -518,12 +541,15 @@ class RecordingPlayer(
      * A part's player while its setup runs on the setup thread: not touched here until the setup's result is back.
      * [checked]: its play checks identities (not SINGLE), so a file found gone or changed is rechecked.
      */
-    private class Opening(val token: Long, val player: Player, val checked: Boolean) {
+    private class Opening(
+        val token: Long,
+        val player: Player,
+        val checked: Boolean,
+        /** Its work, which [AbandonedSetups] counts once it is given up, until the work returns. */
+        val work: AbandonedSetups.Work,
+    ) {
         /** Its prepare answered before the setup's result came back: it is prepared as soon as it is adopted. */
         var prepared = false
-
-        /** Dropped with its result still out: counted in [AbandonedSetups] until the result is delivered. */
-        var abandoned = false
     }
 
     private var generation = 0
@@ -877,13 +903,12 @@ class RecordingPlayer(
     /**
      * The current part's setup is dropped with its result still out: its thread is given up at once
      * ([Opener.abandonSetup]), so nothing ever queues behind a read that does not return, and it is counted until its
-     * result is delivered.
+     * work returns.
      */
     private fun dropOpening() {
         val dropped = opening ?: return
         opening = null
-        dropped.abandoned = true
-        abandoned.abandoned()
+        abandoned.abandoned(dropped.work)
         opener.abandonSetup()
     }
 
@@ -953,7 +978,7 @@ class RecordingPlayer(
     /**
      * Build the candidate's player here (its callbacks come to this thread), guarded: one that cannot be built ends
      * the play. Then hand it to the setup thread, with the prepare timeout already armed, so it covers the setup too.
-     * With [AbandonedSetups.LIMIT] setups given up still out, no player is made and no setup started: the recording
+     * With [AbandonedSetups.LIMIT] setups given up still running, no player is made and no setup started: the recording
      * fails at once as one that couldn't be played (a playlist moves on; SINGLE and PARTS end).
      */
     private fun open(candidate: Int) {
@@ -972,7 +997,7 @@ class RecordingPlayer(
             failItem(REASON_PLAYER)
             return
         }
-        val setup = Opening(token, made, mode != MODE_SINGLE)
+        val setup = Opening(token, made, mode != MODE_SINGLE, abandoned.begin())
         opening = setup
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it.
@@ -984,25 +1009,29 @@ class RecordingPlayer(
         }
         publish()
         val item = items[candidate]
-        opener.setup({ setUp(opener, item, made) }) { result -> onSetUp(setup, result) }
+        // The work returning, on the setup thread, takes it off the count before its result is posted.
+        opener.setup({
+            try {
+                setUp(opener, item, made)
+            } finally {
+                abandoned.returned(setup.work)
+            }
+        }) { result -> onSetUp(setup, result) }
     }
 
     /**
      * A setup's result, on this thread. A file it found gone or changed goes on the recheck list first, whether or not
      * its part is still current. A part no longer current (timed out, moved off, stopped, ended, replaced) only
-     * releases its player, and a setup given up leaves the count; a current one adopts it, prepared already if its
-     * prepare answered first, or fails.
+     * releases its player; a current one adopts it, prepared already if its prepare answered first, or fails.
      */
     private fun onSetUp(setup: Opening, result: SetupResult) {
+        abandoned.returned(setup.work) // a result that came with no work run (a refused hand-off)
         val serial = recheck.serial
         if (setup.checked && (result.failure == REASON_GONE || result.failure == REASON_CHANGED)) {
             recheck.add(result.path)
         }
         if (opening !== setup) {
             setup.player.release()
-            if (setup.abandoned) {
-                abandoned.delivered()
-            }
             if (recheck.serial != serial) {
                 publish() // The host reads the recheck serial from the status.
             }
