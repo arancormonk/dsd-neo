@@ -32,8 +32,12 @@ private class FakeSource(val path: String) : RecordingPlayer.Source {
 }
 
 /** A MediaPlayer stand-in that refuses every call its state would not take, as the platform's throws. */
-private class FakePlayer(val token: Long, private val length: Long, private val damaged: Set<String>) :
-    RecordingPlayer.Player {
+private class FakePlayer(
+    val token: Long,
+    private val length: Long,
+    private val damaged: Set<String>,
+    private val log: MutableList<String> = mutableListOf(),
+) : RecordingPlayer.Player {
     var path = ""
     var asked = false
     var prepared = false
@@ -87,6 +91,7 @@ private class FakePlayer(val token: Long, private val length: Long, private val 
     override fun release() {
         check(!released) { "released twice" }
         released = true
+        log += "release $token"
     }
 }
 
@@ -214,6 +219,9 @@ private class FakeService : RecordingPlayer.ServiceLink {
 private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     var nowMs = 1_000L
     val players = mutableListOf<FakePlayer>()
+
+    /** What the players did, in order: built, released (by token). */
+    val log = mutableListOf<String>()
     val damaged = HashSet<String>()
     var factoryFails = false
     val opener = FakeOpener()
@@ -226,7 +234,8 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
             if (factoryFails) {
                 throw RuntimeException("the media server is away")
             }
-            FakePlayer(token, length, damaged).also { players += it }
+            log += "build $token"
+            FakePlayer(token, length, damaged, log).also { players += it }
         },
         opener,
         focus,
@@ -2232,6 +2241,34 @@ private fun aStuckSetupThreadIsReplaced() {
     check(slow.status.skipped == 1 && slow.opener.threads == 1) { "a hung prepare is not a stuck setup" }
 }
 
+/** A part that completes hands off the next part first, and is released after: its release is not in the joint. */
+private fun theNextPartIsHandedOffBeforeTheCompletedOneIsReleased() {
+    val rig = Rig()
+    rig.queue(2)
+    rig.prepared()
+    val first = rig.current
+    rig.log.clear()
+    rig.complete()
+    check(rig.log == listOf("build ${rig.last.token}", "release ${first.token}")) {
+        "the next part built and handed off, then the completed one released: ${rig.log}"
+    }
+    check(rig.last.asked && first.released && rig.status.partOrdinal == 2) { "part 2 opens; part 1 let go" }
+
+    // Into the gap, or at the end, it is released all the same.
+    val gap = Rig()
+    gap.queue(1, 1)
+    gap.prepared()
+    val heard = gap.current
+    gap.complete()
+    check(gap.status.gap && heard.released) { "the gap: released" }
+    val end = Rig()
+    end.queue(1)
+    end.prepared()
+    val last = end.current
+    end.complete()
+    check(end.state == STOPPED && last.released) { "the end: released" }
+}
+
 /**
  * A completion of the pass before never reaches the pass Previous opened, in either order: after the Previous it carries
  * a token no open has any more; before it, it entered the gap, and Previous in the gap opens the call again.
@@ -2389,6 +2426,7 @@ fun main() {
     aPartsSetupRunsOffTheMachinesThread()
     aCompletionAroundPreviousNeverReachesTheNewPass()
     aStuckSetupThreadIsReplaced()
+    theNextPartIsHandedOffBeforeTheCompletedOneIsReleased()
     aResumeKeepsThePausedStretchUntilAPartPlays()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
 }

@@ -755,8 +755,10 @@ class RecordingPlayer(
         playing = false
         playingSinceMs = -1
         positionMs = durationMs
-        // Done with: its player goes now (a later callback from it carries a token no open has again).
-        leave()
+        // Done with: never touched again (a later callback from it carries a token no open has again), and released
+        // once the next part is handed off, so its release adds nothing to the joint between parts.
+        val done = player
+        leave(release = false)
         val call = currentCall()
         when {
             mode == MODE_SINGLE -> end(STOPPED, "", ENDED_FINISHED)
@@ -765,6 +767,7 @@ class RecordingPlayer(
             hasCallAfter(call) -> enterGap()
             else -> end(STOPPED, "", ENDED_FINISHED)
         }
+        done?.release()
     }
 
     /**
@@ -837,9 +840,11 @@ class RecordingPlayer(
     }
 
     /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
-    private fun leave() {
+    private fun leave(release: Boolean = true) {
         left = Left(index, token, durationMs, currentPositionMs())
-        player?.release()
+        if (release) {
+            player?.release()
+        }
         player = null
         prepared = false
     }

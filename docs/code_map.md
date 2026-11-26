@@ -19939,9 +19939,10 @@ Qt Quick frontend (`src/ui/qt`):
       not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play
       (never its whole call), and the next not-failed one in the move's direction opens on the next looper turn (a long
       run of failures stays stoppable; each search visits each recording once); PARTS ends on its first failure as
-      before. A player is never reused: it is released as soon as its part completes, fails or is left, so an error or
-      completion it reports later reaches nothing (its token is never opened again); the gap after a call holds no
-      player, only the completed part's readings (item, token, duration, position). The paths of `gone` and
+      before. A player is never reused: it is released as soon as its part completes (just after the next part is
+      handed off, so the release adds nothing to the joint), fails or is left, so an error or completion it reports
+      later reaches nothing (its token is never opened again); the gap after a call holds no player, only the
+      completed part's readings (item, token, duration, position). The paths of `gone` and
       `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement
       never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a `String[]`, no
       delimiter) when the serial moved, on every foreground return and with the next play, and hands the paths to
