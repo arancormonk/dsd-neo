@@ -27322,6 +27322,128 @@ test_scan_quiet_reading_length_deadline(void) {
     return qt_long_deadline_case(891U) | qt_long_deadline_case(892U);
 }
 
+/* The reading length and the lead on a native Airspy (the centred capture policy), at its lowest and highest centred
+   rates (issue #834, D-E): unset, a DMR target's request asks the calibrated reading (0, the detector's nine); 85 ms
+   asks the same nine explicitly; 30 ms asks three sub-windows on a P25 target and the DMR floor of six on a DMR target,
+   each with its WARN lines. Every request carries the centred capture, tuned on the channel, and the 10 ms lead at the
+   Airspy's rate. */
+static int
+test_scan_quiet_centred_reading_length_and_lead(void) {
+    static const uint32_t k_rates[] = {2500000U, 10000000U};
+
+    static const struct {
+        const char* body;
+        int ms;
+        int windows;
+        int warns;
+        const char* what;
+    } k_cases[] = {
+        {k_qt_dwell_targets, 0, 0, 0, "centred, unset on a DMR target: the calibrated reading"},
+        {k_qt_p25_targets, 85, 9, 0, "centred, 85 ms on a P25 target: nine, asked explicitly"},
+        {k_qt_p25_targets, 30, 3, 1, "centred, 30 ms on a P25 target: three"},
+        {k_qt_dwell_targets, 30, 6, 2, "centred, 30 ms on a DMR target: the floor of six"},
+    };
+
+    int rc = 0;
+    g_qt_centred = 1;
+    for (size_t i = 0; i < sizeof k_rates / sizeof k_rates[0]; i++) {
+        g_qt_centred_rate_hz = k_rates[i];
+        for (size_t j = 0; j < sizeof k_cases / sizeof k_cases[0]; j++) {
+            int warns = -1;
+            const int windows = qt_reading_windows(k_cases[j].body, k_cases[j].ms, &warns);
+            rc |= qt_expect(k_cases[j].what, windows == k_cases[j].windows && warns == k_cases[j].warns);
+            const dsd_signal_quiet_request* q = &g_tap.last_request;
+            rc |=
+                qt_expect("on the centred capture, with the 10 ms lead at its rate",
+                          q->capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED && q->capture.rate_hz == k_rates[i]
+                              && q->capture.rotation_hz == 0 && q->capture.capture_offset_hz == 0
+                              && q->frequency_hz == q->capture.capture_hz && q->lead_pairs == k_rates[i] / 100U);
+        }
+    }
+    g_qt_centred_rate_hz = 0U;
+    g_qt_centred = 0;
+    return rc;
+}
+
+/* The landed visit published 10 ms after its landing with its centred capture there: requested at once, and the tap
+   answers quiet. */
+static int
+qt_centred_answered(dsd_opts* opts, dsd_state* state) {
+    g_quiet_rt_ms = qt_landed_ms(state) + 10U;
+    quiet_publish(opts, state);
+    const int requested = scan_quiet_phase_get(state) == SCAN_QUIET_REQUESTED
+                          && g_tap.last_request.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    quiet_tap_finish(1, DSD_SIGNAL_MEASURE_OK);
+    return qt_expect("centred: requested and answered quiet", requested);
+}
+
+/* A retune of a native Airspy before the scan applies a quiet answer (issue #834, D-E). The retune the tap saw (the
+   native path's capture of the new channel: a new output generation, tuned on it, no rotation, as
+   test_io_airspy_signal_tap pins) and the one whose generation the stream runs before the tap's next block each
+   decline the answer, met before the event service takes it or after (READY): no hand-back, by events or by the hunt,
+   and the apply finds the visit DONE. A tune still pending holds a READY answer back until it ends. With no retune the
+   event service hands the answer back at once and the tick applies it. */
+static int
+test_scan_quiet_centred_retune_before_apply(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state_p = qt_shared_state();
+    g_qt_centred = 1;
+    if (qt_portable_start(opts, state_p, dir, sizeof dir, path, sizeof path) != 0) {
+        g_qt_centred = 0;
+        return 1;
+    }
+    static const char* const k_steps[] = {
+        "a retune the tap saw, before the take",
+        "the stream's new generation, before the take",
+        "a retune the tap saw, after the take",
+        "the stream's new generation, after the take",
+    };
+    int rc = 0;
+    for (int step = 0; step < 4; step++) {
+        if (step > 0) {
+            quiet_land_again(state_p, k_qt_hz_a);
+        }
+        rc |= qt_centred_answered(opts, state_p);
+        if (step >= 2) {
+            rc |= qt_expect("taken: READY, handed back",
+                            dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK
+                                && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+        }
+        g_quiet_stream_gen++;
+        if (step % 2 == 0) {
+            quiet_tap_capture(k_qt_hz_b, g_quiet_stream_gen);
+        }
+        const int events = dsd_engine_scan_quiet_event_service(opts, state_p);
+        const int hunt = quiet_service_after(opts, state_p, 1U);
+        const int applied = quiet_apply(opts, state_p, SCAN_QUIET_OWNER_TRUNK);
+        if (events == DSD_SCAN_QUIET_HAND_BACK || hunt == DSD_SCAN_QUIET_HAND_BACK || applied != 0
+            || scan_quiet_phase_get(state_p) != SCAN_QUIET_DONE) {
+            DSD_FPRINTF(stderr,
+                        "FAIL #834 scan quiet: centred, %s: events %d, hunt %d, applied %d, phase %d (want no "
+                        "hand-back, declined, DONE)\n",
+                        k_steps[step], events, hunt, applied, (int)scan_quiet_phase_get(state_p));
+            rc = 1;
+        }
+    }
+    quiet_land_again(state_p, k_qt_hz_a);
+    rc |= qt_centred_answered(opts, state_p);
+    rc |= qt_expect("centred, no retune: handed back at once",
+                    dsd_engine_scan_quiet_event_service(opts, state_p) == DSD_SCAN_QUIET_HAND_BACK);
+    const uint64_t pending = dsd_trunk_tuning_request_begin();
+    rc |= qt_expect("centred, a tune pending: no hand-back",
+                    quiet_service_after(opts, state_p, 1U) != DSD_SCAN_QUIET_HAND_BACK
+                        && scan_quiet_phase_get(state_p) == SCAN_QUIET_READY);
+    dsd_trunk_tuning_request_complete(pending, DSD_TRUNK_TUNE_RESULT_FAILED);
+    rc |= qt_expect("centred, none pending: handed back again, and applied",
+                    quiet_service_after(opts, state_p, 1U) == DSD_SCAN_QUIET_HAND_BACK
+                        && quiet_apply(opts, state_p, SCAN_QUIET_OWNER_TRUNK) == 1);
+    g_qt_centred = 0;
+    quiet_rig_finish(opts, state_p, dir, path);
+    return rc;
+}
+
 /* Issue #834 follow-up: a retryable failure at +950 ms with only short hunts after it (no frame boundary): the event
    service keeps the capture it sees inside the settle. With events alone the first event past the settle requests;
    a hunt point past the 1 s bound then requests it as a frame boundary's sighting lets it (a legacy point requests at
@@ -31266,6 +31388,8 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_event_hand_back_skips_the_target);
     rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_per_visit);
     rc |= run_with_default_tune_hook(test_scan_quiet_reading_length_deadline);
+    rc |= run_with_default_tune_hook(test_scan_quiet_centred_reading_length_and_lead);
+    rc |= run_with_default_tune_hook(test_scan_quiet_centred_retune_before_apply);
     rc |= run_with_default_tune_hook(test_scan_quiet_event_retry_without_frames);
     rc |= run_with_default_tune_hook(test_scan_quiet_event_takes_dead_events_once);
     rc |= run_with_default_tune_hook(test_scan_quiet_event_keeps_legacy_timing);
