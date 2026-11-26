@@ -6027,6 +6027,39 @@ test_config_read_error_mid_line(void) {
 }
 #endif
 
+/* Issue #931 (gate r3): a refused [recording] number is never quoted. A credential put in rdio_system_id by mistake
+   (a generated config) is warned about by key, range and the value kept, and is printed nowhere. */
+static int
+test_recording_refused_number_not_quoted(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* key;
+        const char* want;
+    } cases[] = {
+        {"rdio_system_id", "Config: invalid rdio_system_id (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_analog_system_id", "Config: invalid rdio_analog_system_id (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_analog_talkgroup", "Config: invalid rdio_analog_talkgroup (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_unknown_talkgroup", "Config: invalid rdio_unknown_talkgroup (expected 0 to 2147483647); keeping 77\n"},
+        {"analog_preroll_ms", "Config: invalid analog_preroll_ms (expected 0 to 1000); keeping 77\n"},
+        {"analog_max_gap_ms", "Config: invalid analog_max_gap_ms (expected 0 to 10000); keeping 77\n"},
+    };
+
+    for (const auto& c : cases) {
+        char ini[256];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 77\n%s = \"https://user:SECRETMARK@host.invalid/\"\n", c.key,
+                     c.key);
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_text(ini, &cfg) != 0 || strstr(g_log_text, c.want) == nullptr
+            || strstr(g_log_text, "SECRETMARK") != nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: %s refused a credential as: '%s'\n", c.key, g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
 /* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
    fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
    stays, instead of a value cut to another endpoint or key. */
@@ -7742,6 +7775,7 @@ main(void) {
     rc |= test_recording_rdio_credentials_too_long();
     rc |= test_config_line_too_long_dropped_whole();
     rc |= test_config_line_nul_and_crlf();
+    rc |= test_recording_refused_number_not_quoted();
 #if defined(DSD_TEST_FAULT_READS)
     rc |= test_config_read_error_mid_line();
 #endif

@@ -912,23 +912,23 @@ static void
 apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     int ms = 0;
     if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
-        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to %d); keeping %d\n", val,
-                 DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, cfg->analog_max_gap_ms);
+        LOG_WARN("Config: invalid analog_max_gap_ms (expected 0 to %d); keeping %d\n", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
+                 cfg->analog_max_gap_ms);
         return;
     }
     cfg->analog_max_gap_ms = ms;
 }
 
 /* Issue #668: the NFM pre-roll and rdio-scanner settings (the system IDs too, issue #931) are refused, never clamped:
-   a value outside @p min_value..@p max_value, or not a whole number, is reported under @p name and the one already
-   loaded stays. --validate-config reports it as an error. */
+   a value outside @p min_value..@p max_value, or not a whole number, is reported under @p name, never quoted (a
+   mistaken value can be a credential; issue #931), and the one already loaded stays. --validate-config reports it as
+   an error. */
 namespace {
 void
 apply_recording_refused_range(const char* name, const char* val, int min_value, int max_value, int* out_value) {
     int v = 0;
     if (user_config_parse_int_value(val, &v) != 0 || v < min_value || v > max_value) {
-        LOG_WARN("Config: invalid %s = '%s' (expected %d to %d); keeping %d\n", name, val, min_value, max_value,
-                 *out_value);
+        LOG_WARN("Config: invalid %s (expected %d to %d); keeping %d\n", name, min_value, max_value, *out_value);
         return;
     }
     *out_value = v;
