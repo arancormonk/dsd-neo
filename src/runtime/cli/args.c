@@ -1438,7 +1438,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
     key[len] = '\0';
     const char* value = eq ? eq + 1 : (i + 1 < argc ? argv[i + 1] : NULL);
     if (!value || dsd_airspy_config_set(&opts->airspy, key, value) != 0) {
-        LOG_ERROR("Invalid Airspy option: %s\n", argv[i]);
+        LOG_ERROR("Invalid Airspy option: --%.*s\n", (int)len, name); /* the option, never its value */
         return -1;
     }
     if (strcmp(key, "airspy_serial") == 0) {
@@ -3380,9 +3380,17 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         return;
     }
     /* A token the long-option pass did not recognize reaches getopt as "--name", which it reads as option '-'.
-     * getopt has not finished that element, so it is still argv[optind]. */
+     * getopt has not finished that element, so it is still argv[optind]. Only its name is said: the text after an '='
+     * can be a credential ("--rdio-api-key=...", a form the parser does not take), which is never printed (issue
+     * #931). */
     if (optopt == '-' && optind > 0 && optind < argc && argv[optind] != NULL && strncmp(argv[optind], "--", 2) == 0) {
-        LOG_ERROR("Unrecognized option '%s'\n", argv[optind]);
+        const char* token = argv[optind];
+        const size_t name_len = strcspn(token, "=");
+        if (token[name_len] == '=') {
+            LOG_ERROR("Unrecognized option '%.*s' (given with a value, not shown)\n", (int)name_len, token);
+        } else {
+            LOG_ERROR("Unrecognized option '%s'\n", token);
+        }
         return;
     }
     if (optopt > ' ' && optopt < 0x7f) {

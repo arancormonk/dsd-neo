@@ -8795,6 +8795,87 @@ test_enum_options_checked_per_occurrence(void) {
     return test_rc;
 }
 
+/* dsd_parse_args() of @p argc / @p argv with what it printed on stdout in @p out and on stderr in @p err. */
+static int
+parse_args_capture_both(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* exit_rc, char* out,
+                        size_t out_size, char* err, size_t err_size) {
+    out[0] = '\0';
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_both");
+    if (fd < 0) {
+        return -100;
+    }
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        return -100;
+    }
+    dsd_close(fd);
+    int argc_effective = 0;
+    const int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, exit_rc, err, err_size);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    return read_rc == 0 ? rc : -100;
+}
+
+/* Issue #931 (gate r1): an option written "--name=value" that the parser does not take, a credential's included
+   ("--rdio-api-key=...", "--rdio-api-url=https://user:password@..."), is refused naming the option alone: its value
+   reaches neither stderr nor stdout. So is an Airspy option's refused "=value". */
+static int
+test_rejected_long_option_value_not_echoed(void) {
+    static const struct {
+        const char* token;
+        const char* want;
+    } cases[] = {
+        {"--rdio-api-key=SENTINELKEY", "Unrecognized option '--rdio-api-key' (given with a value, not shown)"},
+        {"--rdio-api-url=https://u:SENTINELPW@host.invalid/api",
+         "Unrecognized option '--rdio-api-url' (given with a value, not shown)"},
+        {"--no-such-option=SENTINELVALUE", "Unrecognized option '--no-such-option' (given with a value, not shown)"},
+        {"--airspy-gain-mode=SENTINELMODE", "Invalid Airspy option: --airspy-gain-mode\n"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char arg0[] = "dsd-neo";
+        char token[128];
+        char print_config[] = "--print-config";
+        DSD_SNPRINTF(token, sizeof token, "%s", cases[i].token);
+        char* argv[] = {arg0, token, print_config, NULL};
+        int exit_rc = -1;
+        static char out[16384];
+        static char err[16384];
+        const int rc = parse_args_capture_both(3, argv, opts, state, &exit_rc, out, sizeof out, err, sizeof err);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, cases[i].want) == NULL || strstr(err, "SENTINEL")
+            || strstr(out, "SENTINEL")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\nstderr:\n%s\nstdout:\n%s\n", cases[i].want, rc, exit_rc, err,
+                        out);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
 /* Issue #931 (B11): --rdio-api-url (1023 bytes at most) and --rdio-api-key (255) take the largest value that fits whole
  * and refuse one byte more with exit 1 and a message naming the option, never the value, instead of cutting it to
  * another endpoint or key. */
@@ -14923,6 +15004,7 @@ main(void) {
     rc |= test_print_config_leaves_out_credentials();
     rc |= test_bootstrap_steps_over_option_values();
     rc |= test_rdio_credentials_too_long_refused();
+    rc |= test_rejected_long_option_value_not_echoed();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

@@ -5655,8 +5655,10 @@ suite runs under this compiler.
     error. No credential is printed (issue #931): the `--rdio-api-url` notice says only that a URL is configured (a URL
     can carry `user:password@`), and `--print-config` renders its snapshot without `rdio_api_key`, `rdio_api_url` and
     the RadioReference `app_key` (`bootstrap_print_config_drop_secrets()`), with or without `--show-keys`, which is for
-    radio keys only; a save to the private config file keeps them. A token, a key or a file name can read like an
-    option (`--print-config`, `--config`, `--`), so every pass over the raw argv -- bootstrap's pre-parse and
+    radio keys only; a save to the private config file keeps them. A `--name=value` token the parser refuses
+    (`--rdio-api-key=...` is no form it takes) is named without its value (`cli_report_short_opt_error()`, the Airspy
+    option error). A token, a key or a file name can read like an option (`--print-config`, `--config`, `--`), so every
+    pass over the raw argv -- bootstrap's pre-parse and
     inherited-trunk-scan checks, the one-shot check, compaction -- steps over every long option's value by the
     parser's arity (`dsd_cli_long_option_span()`, issue #931) and stops at the first `--` that is no value; a new raw
     pass must do the same. The one exception is harmless: eight options the tables list as taking the next argument only
