@@ -95,7 +95,8 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
  * which nothing was wanted or the focus was away, checked by a task, at every event and when the device wakes
  * ([onAwake]) against the elapsed clock.
  * Neither navigating while paused, the app's Pause during an interruption nor a refused resume restarts or extends
- * it; only audio carrying on ends the stretch (a resume ends it once the focus is granted, not when it is pressed). A
+ * it; only audio carrying on ends the stretch (a resume ends it once the focus is granted, not when it is pressed, and
+ * one pressed in time holds the deadline off until its focus answer: refused, the deadline counts from the start). A
  * focus request refused for the play's own start ends it as unavailable; one refused for a resume leaves it paused (any
  * mode). A transient focus loss interrupts (the request stays outstanding, Play is a no-op, the app's Pause cancels the
  * carry-on); a lasting one ends a PLAYLIST and pauses SINGLE and PARTS. Headphones unplugged ([onNoisy]) pause every
@@ -435,6 +436,13 @@ class RecordingPlayer(
     private var focusHeld = false
     /** The next focus request is the play's own start (not a resume): refused, it ends the play. */
     private var startRequest = true
+
+    /**
+     * A PLAYLIST resume pressed before its paused deadline waits for its focus answer (the part preparing first): the
+     * deadline does not end the play meanwhile. A grant ends the stretch; a refusal or another pause puts the deadline
+     * back, from the stretch's start.
+     */
+    private var resumeSuspended = false
     private var focusEpoch = 0
     private var interrupted = false
     private var gap = false
@@ -500,6 +508,11 @@ class RecordingPlayer(
             wanted = true
             pausedReason = ""
             startRequest = false
+            // Pressed before the deadline (command() checked it): the deadline waits for the focus answer.
+            if (mode == MODE_PLAYLIST && pausedSinceMs >= 0) {
+                resumeSuspended = true
+                cancel(Slot.DEADLINE)
+            }
             if (gap) {
                 resumeFromGap()
             } else {
@@ -946,6 +959,7 @@ class RecordingPlayer(
         if (focus.request(if (mode == MODE_PLAYLIST) FocusMode.GAIN else FocusMode.GAIN_TRANSIENT, epoch)) {
             focusHeld = true
             startRequest = false
+            resumeSuspended = false
             interrupted = false
             return true
         }
@@ -965,6 +979,15 @@ class RecordingPlayer(
         halt()
         freezeGap()
         dropFocus()
+        if (resumeSuspended) {
+            // The resume came to nothing (refused, or paused again): the stretch goes on from its start, and a
+            // deadline that passed while the resume waited ends the play now.
+            resumeSuspended = false
+            if (expireIfDue()) {
+                return
+            }
+            scheduleDeadline((PAUSED_LIMIT_MS - (clock.elapsedMs() - pausedSinceMs)).coerceAtLeast(0))
+        }
         publish()
     }
 
@@ -1064,7 +1087,8 @@ class RecordingPlayer(
 
     /** PLAYLIST held (nothing wanted, or interrupted) for [PAUSED_LIMIT_MS] ends; true when it did. */
     private fun expireIfDue(): Boolean {
-        if (!active || pausedSinceMs < 0 || clock.elapsedMs() - pausedSinceMs < PAUSED_LIMIT_MS) {
+        val due = pausedSinceMs >= 0 && clock.elapsedMs() - pausedSinceMs >= PAUSED_LIMIT_MS
+        if (!active || resumeSuspended || !due) {
             return false
         }
         end(STOPPED, "", ENDED_TIMEOUT)
@@ -1112,6 +1136,7 @@ class RecordingPlayer(
         wanted = false
         pausedReason = ""
         pausedSinceMs = -1
+        resumeSuspended = false
         dropFocus()
         ended = Ended(state, error, reason)
         publish()
@@ -1147,6 +1172,7 @@ class RecordingPlayer(
         skipNoticeCount = 0
         refusals = 0
         startRequest = true
+        resumeSuspended = false
         ended = null
         dropFocus()
     }

@@ -19933,13 +19933,15 @@ Qt Quick frontend (`src/ui/qt`):
       B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
       every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
       (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume ends it
-      only once the focus is granted, so one refused as the next part prepares keeps the pause's start), checked against
+      only once the focus is granted, so one refused as the next part prepares keeps the pause's start; a resume pressed
+      before the deadline holds it off until its focus answer, so a part still preparing at 10 minutes does not end
+      "timeout", and a refusal or another pause then ends it at once if the 10 minutes have passed), checked against
       `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's awake time), when
       the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered on the looper
-      while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.
-      Identities: every prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap,
-      skip search, deadline, promotion timeout) has its own id and is cancelled when superseded; focus callbacks carry
-      an epoch; a callback, task or command whose identity is not current is dropped. The last generation's terminal
+      while a playlist is open) and at every event, so it ends at the first of these after 10 minutes. Identities: every
+      prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap, skip search,
+      deadline, promotion timeout) has its own id and is cancelled when superseded; focus callbacks carry an epoch; a
+      callback, task or command whose identity is not current is dropped. The last generation's terminal
       reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced; the item it ended on) stays as
       the status until the next play, so the host reads a notification Stop on its next poll.
     - State/action table (one table drives Qt and the session, and every command is checked against it again on

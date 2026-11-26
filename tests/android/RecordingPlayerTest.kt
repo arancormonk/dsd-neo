@@ -798,6 +798,42 @@ private fun aResumeWaitingForTheFocusKeepsTheDeadline() {
     check(granted.state == PLAYING) { "the focus granted, it plays" }
     granted.elapse(600_000)
     check(granted.state == PLAYING && granted.scheduler.live().isEmpty()) { "playing again ended the paused stretch" }
+
+    // Pressed 0.2 s before the deadline, the part preparing past it: the resume waits for its focus answer.
+    for (grants in listOf(true, false)) {
+        val late = Rig()
+        val g = late.queue(1, 1)
+        late.prepared()
+        late.machine.pause()
+        late.elapse(599_800)
+        late.machine.next()
+        late.machine.resume()
+        late.elapse(300)
+        check(late.state == PREPARING && late.status.endedReason.isEmpty()) { "grants=$grants: not ended while it prepares" }
+        late.focus.grants = grants
+        late.prepared()
+        if (grants) {
+            check(late.state == PLAYING && late.scheduler.live().isEmpty()) { "granted at 600.1 s: it plays" }
+        } else {
+            check(late.state == STOPPED && late.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+                "refused at 600.1 s: it ends at the refusal, the deadline from the pause"
+            }
+            check(late.service.ends == listOf(g to RecordingPlayer.ENDED_TIMEOUT)) { "once" }
+        }
+    }
+    // A pause while the resume waits puts the deadline back, from the first pause.
+    val again = Rig()
+    again.queue(1, 1)
+    again.prepared()
+    again.machine.pause()
+    again.elapse(500_000)
+    again.machine.next()
+    again.machine.resume()
+    again.machine.pause()
+    again.elapse(99_999)
+    check(again.state == PREPARING && again.status.endedReason.isEmpty()) { "not yet ten minutes from the pause" }
+    again.elapse(1)
+    check(again.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "ten minutes from the first pause" }
 }
 
 // ---- identities

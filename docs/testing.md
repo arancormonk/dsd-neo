@@ -195,7 +195,8 @@ scheduler: a pause or the background while preparing, focus denied or lost, comp
 ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
-pause), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
+pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
+then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
 good, B all failed, C good), all failed, a player-wide error, the skip notice on the call a part played on after the
 skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the gap after the call the skip happened
 on), the refusal count moving on each refused focus request, the recheck list across Stop and replacement, the
