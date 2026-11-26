@@ -10171,7 +10171,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the channel rate (`complex_rate`), or behind a running live rate step the step model's plan
   (`dsd_demod_squelch_plan_key::step` keys it), or behind a replay or network reader's resampler the reader model's
   (`dsd_demod_squelch_plan_key::reader`); `demod_state::squelch_plan_designs` counts its designs (a block whose
-  key is the same designs none), and nothing
+  key is the same designs none, nor one whose key a kept plan in `demod_state::floor_plan_cache` was designed for),
+  and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
@@ -10323,9 +10324,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   pass: 2); the mean over them and the largest distance from it; and the response of each of the
   Q = M 2^passes / gcd(L, 2^passes) input phases through the reader and the stages. It runs when the rate plan commits
   (`dsd_demod_squelch_reader_model_sync()`, `demod_state::squelch_reader_model`; released with the reader off and by
-  `rtl_demod_cleanup()`) and does nothing for the plan it holds, so a width change reuses it.
+  `rtl_demod_cleanup()`) and does nothing for the plan it holds, so a width change reuses it. Responses and
+  every-phase tables past the size limit (a reader decimating by a large M ahead of many passes: 4095/4096 and seven
+  passes has 524,288 input phases) leave the model ready for the averaged plan only (`exact_ready` 0), which such a
+  reader's small spread takes; a plan the bound sends to every phase is then not valid.
   `dsd_squelch_reader_model_floor_plan()` takes the mean through the channel taps (exact: the taps are time-invariant)
-  while the step model's bound (the largest distance times (sum |c|)^2, over the output power) stays under 1e-2, else
+  while the step model's bound (`dsd_squelch_cascade_mean_suffices()`, the one rule both models apply: the largest
+  distance times (sum |c|)^2, over the output power) stays under 1e-2, else
   every output phase's covariance from the responses through the taps (`dsd_squelch_reader_model_floor_plan_exact()`,
   row by row, about Q x span^2 / 2 multiply-adds), both through `dsd_squelch_floor_plan_design_periodic_mean()`. An
   upsampling reader's phases stray by about 2 % (8 to 16 kHz: 2.03 %), so it takes the periodic design: beta 0.54180,
@@ -10334,7 +10339,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   in the exact and the neighbour comparisons), so an 8 kHz source read into 16 kHz and a native 16 kHz source share no
   plan and seed no floor of each other's. `dsd_demod_squelch_prime_reader_plan()` designs the floor plan for the channel
   in force at the commit, before samples arrive (a reader of thousands of phases takes tens of milliseconds from every
-  phase), so the first block designs nothing; a later width change designs on the demod thread. NOISE behind the
+  phase), so the first block designs nothing, under any squelch setting (the demod thread takes the setting at every
+  block, so a later switch to AUTO finds the plan ready). The last `DSD_DEMOD_FLOOR_PLAN_CACHE` (4) valid floor plans
+  are kept by plan key (`demod_state::floor_plan_cache`, the one taken longest ago giving way, taken only while the
+  key's step or reader model is the one built), as the noise squelch's are, so a channel alternating widths designs
+  each width once; another reader identity or pass count is another key. NOISE behind the
   reader (`dsd_squelch_reader_model_noise_plan()`, `dsd_noise_squelch_plan_design_reader()`): the band's upper edge is
   held to the reader's passband edge and a plan needs its 1200 Hz under it (an 8 kHz source read into 48 kHz, edge
   3.6 kHz, has none and the tracker runs it as auto; calibrated without the reader every idle window opened), and where
@@ -10344,15 +10353,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`dsd-neo_bench_dsp` `squelch_reader_*` and `squelch_floor_block_reader_*`, x86 -O2): the model's build 6 us at 8 to
   16 kHz, 0.9 ms at 250 to 192 kHz with two passes and 28 ms at 8,046 Hz into 72 kHz (4000 output phases, 447 input
   phases); a floor plan from it 4 us at 8 to 16 kHz (every phase, P = 2), 33 us at 250 to 192 kHz NFM 12.5k
-  (averaged) and 41 ms at 8,046 Hz into 72 kHz NFM 16k (201 taps, every phase: the commit designs the first, a width
-  change designs on the demod thread); a block of the same key 0.4 us. Tests:
+  (averaged) and 41 ms at 8,046 Hz into 72 kHz NFM 16k (201 taps, every phase: the commit designs the first, a width's
+  first visit designs on the demod thread, a return takes the kept plan); a block of the same key 0.4 us, a block
+  alternating two kept widths about 5 us (its channel taps designed again, its plan taken). Tests:
   `DSP_SQUELCH_READER` (the installed plan against the production reader's impulses through `full_demod()` at every
   output phase, 8 to 16 kHz with and without NFM 12.5k, 8 to 48 kHz NFM 16k, 40 to 32 kHz and a pass, 250 to 192 kHz
   and two passes NFM 12.5k, 48,001 to 48,000 Hz NFM 16k, and no reader at 64 kHz; the model's phases, mean and
   distance against the same impulses; AUTO from cold start at 8 to 16 kHz and 8 to 48 kHz; NOISE native and behind the
-  reader; one demod reopening the same replay as 8 to 16 kHz, native 16 kHz and 8 to 16 kHz again; the plan designed at
-  the commit), `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled open, and
-  never with the step) and `IO_RTL_SQUELCH_PLUMBING` (the context's reader identity).
+  reader, and a band the reader's edge clips but leaves (12 kHz into 48 kHz, which fails with the magnitude fold left
+  out); one demod reopening the same replay as 8 to 16 kHz, native 16 kHz and 8 to 16 kHz again; the kept floor plans
+  by key and their bound; a model past the table limit; no plan with the reader and the step both on; the plan designed
+  at the commit), `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled open,
+  and never with the step), `IO_NET_IQ_STREAM` (the same for a resampled `iqudp:` stream) and `IO_RTL_SQUELCH_PLUMBING`
+  (the context's reader identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
