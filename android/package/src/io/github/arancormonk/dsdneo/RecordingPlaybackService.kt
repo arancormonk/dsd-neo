@@ -117,6 +117,7 @@ class RecordingPlaybackService : Service() {
         RecordingPlayback.serviceDestroyed(this, serial)
         // Released with the playlist: a later media key no longer restarts it.
         session.release()
+        RecordingPlayback.sessionReleased()
         // After the release, which removes the callback, so no tap can be counted after the drop.
         taps.drop()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
@@ -144,6 +145,7 @@ class RecordingPlaybackService : Service() {
      */
     internal fun ended(generation: Int) {
         taps.ended(generation)
+        RecordingPlayback.sessionEnded(generation)
         if (generation != 0 && generation == published.generation && session.isActive) {
             session.isActive = false
         }
@@ -177,10 +179,13 @@ class RecordingPlaybackService : Service() {
             )
         }
         session.setPlaybackState(playbackState(status))
-        if (!session.isActive && status.allows(RecordingPlayer.ACTION_STOP)) {
+        val open = status.allows(RecordingPlayer.ACTION_STOP)
+        if (!session.isActive && open) {
             // A playlist open takes the instance (again): media keys and transport controls reach it.
             session.isActive = true
         }
+        // The Activity hands media keys past Qt only from here on, for this playlist (RecordingPlayback).
+        RecordingPlayback.sessionRendered(status.generation, open && session.isActive)
         getSystemService(NotificationManager::class.java).notify(NOTIFICATION_ID, notification(status))
     }
 

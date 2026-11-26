@@ -226,8 +226,10 @@ another key settling it, another playlist, the end and the teardown dropping it 
 keys (`SessionKeys`: paused, a tap, then a dedicated Pause within the wait: the tap plays, then the Pause pauses; ups
 and repeats ignored; each key its command on the player's state). A third build runs
 `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media session while a
-playlist's session is open, the same keys left with Qt while none is, and every other key (Back, volume, typing, the
-microphone mute) left with Qt either way. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
+playlist's session is open, the same keys left with Qt while none is, every other key (Back, volume, typing, the
+microphone mute) left with Qt either way, and `ActiveSession` (not before the owner's session is rendered active, nor
+for another playlist, nor after its end, an inactive render or the release).
+`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
 `RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
 against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
 export after it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;

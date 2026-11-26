@@ -20061,12 +20061,15 @@ Qt Quick frontend (`src/ui/qt`):
       `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A partial wake lock
       (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the `AUDIO_BECOMING_NOISY`
       receiver (a protected broadcast, registered with no export flag) while any play is open, and the `SCREEN_ON` one
-      (the same way) while a playlist is open. While a playlist owns the service
-      (`RecordingPlayback.playlistSessionOpen()`, the phases' owner, under their lock),
-      `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause, play/pause,
-      stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity consumes
-      every key, so with the app in front Android routes them to the playlist's session; with no playlist open they stay
-      with Qt, as before #909, so a headset's Play never resumes another app over the live audio or a sheet play.
+      (the same way) while a playlist is open. While the media session is active for the playlist that owns the service
+      (`RecordingPlayback.playlistSessionOpen()`: `ActiveSession` in `MediaKeys.kt`, published by the service's
+      `render()` once it has made the owner's session active, cleared at that playlist's end, at a render with the
+      session inactive and when the session is released, and not the owner's until its own render after a replacement;
+      the owner alone is set at promotion, before the looper starts the play), `DsdNeoActivity.dispatchKeyEvent()` hands
+      the media keys (`MediaKeys.kt`: headset hook, play, pause, play/pause, stop, next, previous, rewind, fast-forward,
+      record; not the microphone mute) past Qt, whose activity consumes every key, so with the app in front Android
+      routes them to the playlist's session; with no playlist open they stay with Qt, as before #909, so a headset's
+      Play never resumes another app over the live audio or a sheet play.
     - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
       Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,

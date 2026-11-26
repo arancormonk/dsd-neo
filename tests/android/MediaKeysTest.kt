@@ -66,9 +66,38 @@ private fun otherKeysStayWithQt() {
     }
 }
 
+// #909: the playlist owns the service before its session is active; a key handed past Qt then would reach no session
+// of this app. The handoff waits for the owner's session rendered active, and stops at its end and its replacement.
+private fun keysWaitForTheOwnersActiveSession() {
+    val session = ActiveSession()
+    val play = MediaKeys.MEDIA_PLAY
+    check(!MediaKeys.routedToSession(play, session.activeFor(1))) { "owner 1 promoted, not rendered: Qt keeps the key" }
+    session.rendered(1, active = false)
+    check(!session.activeFor(1)) { "rendered with the session inactive: still Qt's" }
+    session.rendered(1, active = true)
+    check(MediaKeys.routedToSession(play, session.activeFor(1))) { "the owner's session active: the session's" }
+    check(!session.activeFor(0)) { "no owner, no handoff" }
+    check(!session.activeFor(2)) { "playlist 2 takes the service: not before its own render" }
+    session.rendered(2, active = true)
+    check(session.activeFor(2) && !session.activeFor(1)) { "rendered for 2: 2's, never 1's again" }
+    session.ended(1)
+    check(session.activeFor(2)) { "an earlier playlist's end leaves 2's" }
+    session.ended(2)
+    check(!session.activeFor(2)) { "its own end clears it" }
+    session.rendered(3, active = true)
+    session.rendered(3, active = false)
+    check(!session.activeFor(3)) { "a render with the session inactive clears it" }
+    session.rendered(4, active = true)
+    session.rendered(3, active = false)
+    check(session.activeFor(4)) { "another playlist's inactive render leaves it" }
+    session.released()
+    check(!session.activeFor(4)) { "the session released with its service" }
+}
+
 fun main() {
     mediaKeysGoToAnOpenPlaylistsSession()
     mediaKeysStayWithQtWithNoPlaylist()
     otherKeysStayWithQt()
+    keysWaitForTheOwnersActiveSession()
     println("MediaKeysTest: OK")
 }

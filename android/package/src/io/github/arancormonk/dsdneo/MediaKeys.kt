@@ -43,3 +43,40 @@ object MediaKeys {
     fun routedToSession(keyCode: Int, playlistSessionOpen: Boolean): Boolean =
         playlistSessionOpen && isSessionKey(keyCode)
 }
+
+/**
+ * Which playlist the media session is active for, as the playback service last rendered it (#909). The service owns a
+ * playlist (it is promoted) before the looper has started it and before the service has rendered its session active;
+ * a key handed past Qt in between would reach no session of this app, and Android could give Play to the media app
+ * whose session was active before. So the handoff waits for [rendered] with the session active for the owner, and
+ * stops at the playlist's end, at a render with the session inactive, and when the session is released; another
+ * playlist taking the service is not the one rendered until its own render. Any thread.
+ */
+class ActiveSession {
+    private val lock = Any()
+    private var generation = 0
+
+    /** The service rendered playlist [generation], its session active or not ([active]). */
+    fun rendered(generation: Int, active: Boolean) = synchronized(lock) {
+        if (active) {
+            this.generation = generation
+        } else if (this.generation == generation) {
+            this.generation = 0
+        }
+    }
+
+    /** Playlist [generation] ended: its session no longer takes keys. */
+    fun ended(generation: Int) = synchronized(lock) {
+        if (this.generation == generation) {
+            this.generation = 0
+        }
+    }
+
+    /** The session was released with its service. */
+    fun released() = synchronized(lock) {
+        generation = 0
+    }
+
+    /** Whether the session is active for [owner], the playlist that owns the service now (0: none). */
+    fun activeFor(owner: Int): Boolean = synchronized(lock) { owner != 0 && generation == owner }
+}

@@ -77,6 +77,9 @@ object RecordingPlayback {
     /** The playback service instance alive; on the main thread only. */
     private var service: RecordingPlaybackService? = null
 
+    /** The playlist whose media session the service last rendered active (#909): the Activity's media key handoff. */
+    private val activeSession = ActiveSession()
+
     /**
      * The setup thread, beside the looper and as long-lived: each part's blocking open, data source and prepare start
      * ([RecordingPlayer.Opener.setup]), one after another.
@@ -204,10 +207,11 @@ object RecordingPlayback {
     fun takeRecheck(): Array<String> = recheck.take()
 
     /**
-     * Whether a History playlist owns the promoted playback service, and so its media session: the media keys the
-     * Activity then hands past Qt reach it. Any thread (the phases' lock).
+     * Whether the media session is active for the History playlist that owns the promoted playback service: the media
+     * keys the Activity then hands past Qt reach it. Not before the service has rendered the owner's session active,
+     * so a key in between stays with Qt rather than going to whichever app's session Android finds. Any thread.
      */
-    fun playlistSessionOpen(): Boolean = phases.currentOwner != 0
+    fun playlistSessionOpen(): Boolean = activeSession.activeFor(phases.currentOwner)
 
     /** The Activity started or stopped (not for a configuration change). */
     fun setForeground(foreground: Boolean) {
@@ -243,6 +247,13 @@ object RecordingPlayback {
 
     /** Tasks on the playback looper (the session's tap timeout), cancelled by taking their message back. */
     internal fun playbackScheduler(): RecordingPlayer.Scheduler = LooperScheduler(playbackHandler())
+
+    /** The service rendered playlist [generation] with its session [active] or not, or the session went ([ended]). */
+    internal fun sessionRendered(generation: Int, active: Boolean) = activeSession.rendered(generation, active)
+
+    internal fun sessionEnded(generation: Int) = activeSession.ended(generation)
+
+    internal fun sessionReleased() = activeSession.released()
 
     internal fun serviceCreated(instance: RecordingPlaybackService): Int {
         service = instance
