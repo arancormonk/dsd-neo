@@ -90,6 +90,24 @@ class DecoderHost : public QObject {
     Q_PROPERTY(qint64 playbackPositionMs READ playbackPositionMs NOTIFY playbackPositionChanged)
     Q_PROPERTY(qint64 playbackDurationMs READ playbackDurationMs NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackError READ playbackError NOTIFY playbackChanged)
+    /* The play's queue (issue #909): every reading from one platform record, published together on playbackChanged. */
+    Q_PROPERTY(int playbackGeneration READ playbackGeneration NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackMode READ playbackMode NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackOrigin READ playbackOrigin NOTIFY playbackChanged)
+    Q_PROPERTY(qint64 playbackToken READ playbackToken NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackKey READ playbackKey NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackTitle READ playbackTitle NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackCallIndex READ playbackCallIndex NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackCallCount READ playbackCallCount NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackPartOrdinal READ playbackPartOrdinal NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackPartCount READ playbackPartCount NOTIFY playbackChanged)
+    Q_PROPERTY(bool playbackGap READ playbackGap NOTIFY playbackChanged)
+    Q_PROPERTY(bool playbackInterrupted READ playbackInterrupted NOTIFY playbackChanged)
+    Q_PROPERTY(bool playbackCanSeek READ playbackCanSeek NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackPausedReason READ playbackPausedReason NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackEndedReason READ playbackEndedReason NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackSkipped READ playbackSkipped NOTIFY playbackChanged)
+    Q_PROPERTY(QString playbackHoldPath READ playbackHoldPath NOTIFY playbackChanged)
     Q_PROPERTY(bool recordingExportSupported READ recordingExportSupported CONSTANT)
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
     Q_PROPERTY(qint64 recordingTransferBytes READ recordingTransferBytes NOTIFY recordingTransferChanged)
@@ -153,6 +171,34 @@ class DecoderHost : public QObject {
      */
     enum PlaybackMode { PlaybackSingle = 0, PlaybackParts = 1, PlaybackPlaylist = 2 };
     Q_ENUM(PlaybackMode)
+
+    /**
+     * @brief Every playback reading at once (issue #909), as one platform status record gives them. publishPlayback()
+     * takes a whole one, so QML never sees one record's state beside another's item. See the readings' getters.
+     */
+    struct PlaybackReading {
+        int generation = 0;
+        int state = PlaybackStopped;
+        qint64 positionMs = 0;
+        qint64 durationMs = 0;
+        QString error;
+        int mode = PlaybackSingle;
+        QString origin;
+        QString path;
+        QString title;
+        QString key;
+        qint64 token = 0;
+        int callIndex = -1;
+        int callCount = 0;
+        int partOrdinal = 0;
+        int partCount = 0;
+        bool gap = false;
+        bool interrupted = false;
+        bool canSeek = false;
+        QString pausedReason;
+        QString endedReason;
+        int skipped = 0;
+    };
 
     /**
      * @brief How a recording export or save ended (recordingTransferFinished()). Missing: every file it named was
@@ -349,13 +395,32 @@ class DecoderHost : public QObject {
     virtual QStringList recordingRoots() const;
 
     /*
-     * Call recording playback (issue #708, D6/D7/D10). One recording plays at a time, beside the live audio. The
-     * platform's player runs it and publishes what it does through publishPlayback(); a host without one answers
+     * Call recording playback (issue #708, D6/D7/D10; queues #909). One play at a time, beside the live audio: one
+     * recording (PlaybackSingle), a sheet's parts of one call (PlaybackParts) or History's playlist (PlaybackPlaylist).
+     * The platform's player runs it and publishes what it does through publishPlayback(); a host without one answers
      * playbackSupported() false and every play fails with "unsupported".
      *
      * playbackError is empty, or why the play failed, for the UI to word: "missing" (the file is gone; the recording
      * store is told), "unavailable" (the platform would not give the app audio now, e.g. during a phone call),
-     * "unsupported", or "failed" (it could not be read).
+     * "unsupported", or "failed" (it could not be read, or a playlist could not start or play anything).
+     *
+     * The other readings come from the same platform record and change together on playbackChanged; only the position
+     * moves alone (playbackPositionChanged). playbackGeneration names the play they describe (0: none): it stays on an
+     * ended play's last reading (playbackEndedReason says how it ended) until the next play or a stop. playbackToken
+     * names the recording open now (0: none); a new one is opened under a new token, even the same file again, so a
+     * command carrying the token of a gesture begun on another recording is dropped (seekPlaybackFor() and its kin).
+     * playbackPath, playbackTitle and playbackKey are the open item's path, call name and History row uid, as the play
+     * listed them. playbackCallIndex and playbackCallCount place its call in the play (-1 and 0: none);
+     * playbackPartOrdinal and playbackPartCount place the part among all its call's recordings (0: none).
+     * playbackGap: the one-second pause after a call's last part. playbackInterrupted: halted for another app's audio
+     * (a phone call, a navigation prompt), carrying on by itself after. playbackCanSeek: a seek would move it now.
+     * playbackPausedReason: "", or why nothing is wanted ("user", "noisy" for headphones unplugged, "background",
+     * "focus", or "unavailable": a resume the platform refused the audio, in any mode, which stays paused with no
+     * error). playbackEndedReason: "" while open, else "finished", "stopped" (from the notification or
+     * another surface), "focus" (another app started playing), "timeout" (ten minutes paused), "unplayable" (no
+     * recording could be played), "start" (the playlist could not start) or "failed". playbackSkipped: the recordings
+     * this play found unplayable and skipped. playbackHoldPath: the file the recording store holds from deletes while it
+     * plays; only a single recording's play holds one (empty for parts and playlists, which hold no files).
      */
     virtual bool
     playbackSupported() const {
@@ -364,27 +429,116 @@ class DecoderHost : public QObject {
 
     QString
     playbackPath() const {
-        return m_playbackPath;
+        return m_playback.path;
     }
 
     int
     playbackState() const {
-        return m_playbackState;
+        return m_playback.state;
     }
 
     qint64
     playbackPositionMs() const {
-        return m_playbackPositionMs;
+        return m_playback.positionMs;
     }
 
     qint64
     playbackDurationMs() const {
-        return m_playbackDurationMs;
+        return m_playback.durationMs;
     }
 
     QString
     playbackError() const {
-        return m_playbackError;
+        return m_playback.error;
+    }
+
+    int
+    playbackGeneration() const {
+        return m_playback.generation;
+    }
+
+    int
+    playbackMode() const {
+        return m_playback.mode;
+    }
+
+    QString
+    playbackOrigin() const {
+        return m_playback.origin;
+    }
+
+    qint64
+    playbackToken() const {
+        return m_playback.token;
+    }
+
+    QString
+    playbackKey() const {
+        return m_playback.key;
+    }
+
+    QString
+    playbackTitle() const {
+        return m_playback.title;
+    }
+
+    int
+    playbackCallIndex() const {
+        return m_playback.callIndex;
+    }
+
+    int
+    playbackCallCount() const {
+        return m_playback.callCount;
+    }
+
+    int
+    playbackPartOrdinal() const {
+        return m_playback.partOrdinal;
+    }
+
+    int
+    playbackPartCount() const {
+        return m_playback.partCount;
+    }
+
+    bool
+    playbackGap() const {
+        return m_playback.gap;
+    }
+
+    bool
+    playbackInterrupted() const {
+        return m_playback.interrupted;
+    }
+
+    bool
+    playbackCanSeek() const {
+        return m_playback.canSeek;
+    }
+
+    QString
+    playbackPausedReason() const {
+        return m_playback.pausedReason;
+    }
+
+    QString
+    playbackEndedReason() const {
+        return m_playback.endedReason;
+    }
+
+    int
+    playbackSkipped() const {
+        return m_playback.skipped;
+    }
+
+    /** @brief The path of a single recording's play while it is open (Preparing, Playing or Paused), else empty. */
+    QString playbackHoldPath() const;
+
+    /** @brief The whole reading published last. */
+    const PlaybackReading&
+    playback() const {
+        return m_playback;
     }
 
     /**
@@ -397,6 +551,12 @@ class DecoderHost : public QObject {
     Q_INVOKABLE void playRecording(const QString& path);
 
     /**
+     * @brief playRecording() for a sheet that owns the play it starts (issue #909): the same play, and its generation,
+     *        above 0, once the platform took it; 0 when it failed at once (gone, unsupported, refused).
+     */
+    Q_INVOKABLE int playRecordingOwned(const QString& path);
+
+    /**
      * @brief Play @p items in order as @p mode (a PlaybackMode), started from @p origin ("history" for History's
      *        playlist), replacing what plays.
      *
@@ -406,23 +566,68 @@ class DecoderHost : public QObject {
      * (the call's name, and its start in local time, "yyyy-MM-dd hh:mm", empty when not known) and `key` (its History
      * row uid).
      *
+     * Refused, changing nothing (what plays plays on), unless @p items is not empty, every item names a path, the
+     * calls run from 0 up without a hole (each item's call the one before's or the next), @p mode is a PlaybackMode, a
+     * Parts play is one call and a Single play one item (playbackItemsValid()). The play is accepted once the
+     * platform takes it: from then on it has replaced what played, and every later failure, even one at its start, is
+     * its own (published under its generation).
+     *
      * @return The play's generation, above 0, once accepted; 0 when refused, with what played left playing. The base
      *         host has no player: it publishes the first item's path Failed "unsupported" and returns 0.
      */
     Q_INVOKABLE virtual int playRecordings(const QVariantList& items, int mode, const QString& origin);
 
+    /** @brief Whether playRecordings() would take @p items as @p mode (see there). */
+    static bool playbackItemsValid(const QVariantList& items, int mode);
+
+    /* Queue-wide: whatever plays now, from the bar or a sheet that owns the play. */
     Q_INVOKABLE virtual void
     pausePlayback() {}
 
     Q_INVOKABLE virtual void
     resumePlayback() {}
 
+    /** @brief The next call's first part, at once (also from the gap); parts and playlists only. */
+    Q_INVOKABLE virtual void
+    nextPlayback() {}
+
+    /** @brief Restart the call, or go to the one before (the player's Previous rule); parts and playlists only. */
+    Q_INVOKABLE virtual void
+    previousPlayback() {}
+
+    /** @brief Seek the recording open now; seekPlaybackFor() with the token of the reading published last. */
     Q_INVOKABLE virtual void
     seekPlayback(qint64 positionMs) {
         (void)positionMs;
     }
 
-    /** @brief Close the recording playing. A host with a player stops it and calls this base, which publishes it. */
+    /*
+     * Item commands (issue #909): each carries the playbackToken read when its gesture began, and is dropped, with no
+     * change shown, when another recording is open by the time it arrives.
+     */
+    Q_INVOKABLE virtual void
+    seekPlaybackFor(qint64 token, qint64 positionMs) {
+        (void)token;
+        (void)positionMs;
+    }
+
+    Q_INVOKABLE virtual void
+    pausePlaybackFor(qint64 token) {
+        (void)token;
+    }
+
+    Q_INVOKABLE virtual void
+    resumePlaybackFor(qint64 token) {
+        (void)token;
+    }
+
+    /**
+     * @brief Stop play @p generation, and only it: one already ended, or replaced by a newer play, is left alone. The
+     * base host stops what plays when @p generation is the one its readings name.
+     */
+    Q_INVOKABLE virtual void stopPlaybackGeneration(int generation);
+
+    /** @brief Close what plays. A host with a player stops it and calls this base, which publishes it. */
     Q_INVOKABLE virtual void stopPlayback();
 
     /*
@@ -1357,7 +1562,15 @@ class DecoderHost : public QObject {
         return false;
     }
 
-    /** @brief What the player is doing now; emits the change signals for what changed. */
+    /**
+     * @brief What the player is doing now (issue #909): every reading of @p reading at once. playbackChanged when any
+     * but the position changed, playbackPositionChanged when the position moved; each once.
+     */
+    void publishPlayback(const PlaybackReading& reading);
+    /**
+     * @brief A single recording's reading (#708): @p path in @p state, with no generation, token or queue, seekable
+     * while Playing or Paused with a length.
+     */
     void publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error);
     void publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes);
     /** @brief The running transfer ended with @p result (a RecordingTransferResult); @p missing of its files were
@@ -1435,11 +1648,7 @@ class DecoderHost : public QObject {
     mutable std::mutex m_transportsLock;
     mutable std::vector<std::weak_ptr<DocumentImportTransport>> m_importTransports; // guarded by the lock
     mutable std::vector<std::weak_ptr<DocumentSaveTransport>> m_saveTransports;     // guarded by the lock
-    QString m_playbackPath;
-    int m_playbackState = PlaybackStopped;
-    qint64 m_playbackPositionMs = 0;
-    qint64 m_playbackDurationMs = 0;
-    QString m_playbackError;
+    PlaybackReading m_playback;
     /* The running transfer's selection, -1 with none. */
     int m_transferSelection = -1;
     qint64 m_transferBytes = 0;

@@ -137,10 +137,10 @@ class RecordingStore;
 void recording_store_follow_host(RecordingStore* store, DecoderHost* host);
 
 /**
- * @brief Let @p host play, export and share the recordings @p store manages: the file playing is held
- * (RecordingStore::setPlayingPath()), an export's or save's selection is released when it ends, files the host found
- * gone are looked at again (RecordingStore::recheckPaths()), only indexed recordings are shared, and a share is held
- * until its copy is made (DecoderHost::setRecordingHold()).
+ * @brief Let @p host play, export and share the recordings @p store manages: a single recording's file is held while
+ * it plays (DecoderHost::playbackHoldPath(), RecordingStore::setPlayingPath()), an export's or save's selection is
+ * released when it ends, files the host found gone are looked at again (RecordingStore::recheckPaths()), only indexed
+ * recordings are shared, and a share is held until its copy is made (DecoderHost::setRecordingHold()).
  */
 void recording_store_serve_host(RecordingStore* store, DecoderHost* host);
 

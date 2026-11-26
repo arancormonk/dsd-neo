@@ -8,6 +8,7 @@
 #include <QMap>
 #include <QVariant>
 #include <QVariantList>
+#include <tuple>
 #include <utility>
 #include "decoder_host.h"
 
@@ -275,11 +276,66 @@ DecoderHost::playRecording(const QString& path) {
 }
 
 int
+DecoderHost::playRecordingOwned(const QString& path) {
+    playRecording(path);
+    // A play the platform took is published Preparing under its generation; one that failed at once is not.
+    const bool taken = m_playback.state == PlaybackPreparing && m_playback.path == path && !path.isEmpty();
+    return taken ? m_playback.generation : 0;
+}
+
+namespace {
+
+/* The call of playlist item @p item (0 when it names none), into @p call; false when it names one that is no number. */
+bool
+playback_item_call(const QVariantMap& item, int* call) {
+    const QVariant value = item.value(QStringLiteral("call"));
+    if (!value.isValid()) {
+        *call = 0;
+        return true;
+    }
+    bool ok = false;
+    *call = value.toInt(&ok);
+    return ok;
+}
+
+/* The readings a change of which is news on playbackChanged: all but the position. */
+auto
+playback_shown(const DecoderHost::PlaybackReading& r) {
+    return std::tie(r.generation, r.state, r.durationMs, r.error, r.mode, r.origin, r.path, r.title, r.key, r.token,
+                    r.callIndex, r.callCount, r.partOrdinal, r.partCount, r.gap, r.interrupted, r.canSeek,
+                    r.pausedReason, r.endedReason, r.skipped);
+}
+
+} // namespace
+
+bool
+DecoderHost::playbackItemsValid(const QVariantList& items, int mode) {
+    if (items.isEmpty() || mode < PlaybackSingle || mode > PlaybackPlaylist
+        || (mode == PlaybackSingle && items.size() != 1)) {
+        return false;
+    }
+    // Calls from 0 up, with no hole: each item's call is the one before's, or the next. Parts are all of one call.
+    int previous = 0;
+    for (qsizetype i = 0; i < items.size(); ++i) {
+        const QVariantMap item = items.at(i).toMap();
+        int call = 0;
+        if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, &call)
+            || (call != previous && (i == 0 || call != previous + 1)) || (mode == PlaybackParts && call != 0)) {
+            return false;
+        }
+        previous = call;
+    }
+    return true;
+}
+
+int
 DecoderHost::playRecordings(const QVariantList& items, int mode, const QString& origin) {
-    (void)mode;
     (void)origin;
-    const QString path = items.isEmpty() ? QString() : items.first().toMap().value(QStringLiteral("path")).toString();
-    publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
+    if (!playbackItemsValid(items, mode)) {
+        return 0;
+    }
+    publishPlayback(items.first().toMap().value(QStringLiteral("path")).toString(), PlaybackFailed, 0, 0,
+                    QStringLiteral("unsupported"));
     return 0;
 }
 
@@ -289,27 +345,48 @@ DecoderHost::beginPlayback(const QString& path) {
 }
 
 void
-DecoderHost::stopPlayback() {
-    publishPlayback(QString(), PlaybackStopped, 0, 0, QString());
+DecoderHost::stopPlaybackGeneration(int generation) {
+    if (generation > 0 && generation == m_playback.generation) {
+        stopPlayback();
+    }
 }
 
 void
-DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs,
-                             const QString& error) {
-    const bool changed = path != m_playbackPath || state != m_playbackState || durationMs != m_playbackDurationMs
-                         || error != m_playbackError;
-    const bool moved = positionMs != m_playbackPositionMs;
-    m_playbackPath = path;
-    m_playbackState = state;
-    m_playbackPositionMs = positionMs;
-    m_playbackDurationMs = durationMs;
-    m_playbackError = error;
+DecoderHost::stopPlayback() {
+    publishPlayback(PlaybackReading());
+}
+
+QString
+DecoderHost::playbackHoldPath() const {
+    const int state = m_playback.state;
+    const bool open = state == PlaybackPreparing || state == PlaybackPlaying || state == PlaybackPaused;
+    return open && m_playback.mode == PlaybackSingle ? m_playback.path : QString();
+}
+
+void
+DecoderHost::publishPlayback(const PlaybackReading& reading) {
+    const bool changed = playback_shown(reading) != playback_shown(m_playback);
+    const bool moved = reading.positionMs != m_playback.positionMs;
+    m_playback = reading;
     if (changed) {
         Q_EMIT playbackChanged();
     }
     if (moved) {
         Q_EMIT playbackPositionChanged();
     }
+}
+
+void
+DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs,
+                             const QString& error) {
+    PlaybackReading reading;
+    reading.path = path;
+    reading.state = state;
+    reading.positionMs = positionMs;
+    reading.durationMs = durationMs;
+    reading.error = error;
+    reading.canSeek = (state == PlaybackPlaying || state == PlaybackPaused) && durationMs > 0;
+    publishPlayback(reading);
 }
 
 bool

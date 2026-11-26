@@ -498,13 +498,9 @@ recording_store_serve_host(RecordingStore* store, DecoderHost* host) {
                          (void)missing;
                          store->releaseSelection(selection);
                      });
-    // Held from Preparing until the player lets it go: a delete waits rather than pulling the file from under it.
-    const auto follow = [store, host]() {
-        const int state = host->playbackState();
-        const bool open = state == DecoderHost::PlaybackPreparing || state == DecoderHost::PlaybackPlaying
-                          || state == DecoderHost::PlaybackPaused;
-        store->setPlayingPath(open ? host->playbackPath() : QString());
-    };
+    // Held from Preparing until the player lets it go: a delete waits rather than pulling the file from under it. Only
+    // a single recording's play holds its file (#909): parts and playlists hold none, and one starting lets it go.
+    const auto follow = [store, host]() { store->setPlayingPath(host->playbackHoldPath()); };
     follow();
     QObject::connect(host, &DecoderHost::playbackChanged, store, follow);
 }

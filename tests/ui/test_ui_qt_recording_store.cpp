@@ -2696,6 +2696,22 @@ class ServedHost : public dsd_qt::DecoderHost {
         publishPlayback(path, PlaybackPlaying, 1000, 4000, QString());
     }
 
+    /* Issue #909: @p path playing as an item of a @p mode play (a sheet's parts or History's playlist). */
+    void
+    playingItem(const QString& path, int mode) {
+        PlaybackReading reading;
+        reading.generation = 3;
+        reading.mode = mode;
+        reading.path = path;
+        reading.state = PlaybackPlaying;
+        reading.positionMs = 1000;
+        reading.durationMs = 4000;
+        reading.token = 7;
+        reading.callIndex = 0;
+        reading.callCount = 1;
+        publishPlayback(reading);
+    }
+
     void
     finish(int result, const QStringList& missing = {}) {
         finishRecordingTransfer(result, missing);
@@ -2743,6 +2759,47 @@ class ServedHost : public dsd_qt::DecoderHost {
         return true;
     }
 };
+
+/* Issue #909: only a single recording's play holds its file. A sheet's parts and History's playlist hold none: a
+ * delete goes ahead under them, and one starting lets go of the single recording held before. */
+void
+test_single_play_hold_only(void) {
+    Roots roots;
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    for (int i = 1; i <= 3; i++) {
+        record(folder, QStringLiteral("0000000000000098-%1").arg(i), QStringLiteral("p%1.wav").arg(i), 1754715000 + i,
+               900 + i);
+    }
+    s.pass();
+    const auto path = [&folder](int i) { return folder + QStringLiteral("/p%1.wav").arg(i); };
+    const auto id = [](int i) { return QStringLiteral("0000000000000098-%1").arg(i); };
+    const auto waitGone = [&s](const QString& file) {
+        const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+        while (QFileInfo::exists(file) && dsd_realtime_mono_ms() < deadline) {
+            s.pass();
+        }
+        return !QFileInfo::exists(file);
+    };
+
+    host.playRecording(path(1));
+    host.playing(path(1));
+    expect("a single recording's play holds its file", host.playbackHoldPath() == path(1));
+    s.store.deleteRecording(id(1));
+    s.pass();
+    expect("so its delete waits", QFileInfo::exists(path(1)) && s.store.deletesWaiting() == 1);
+    host.playingItem(path(2), dsd_qt::DecoderHost::PlaybackParts);
+    expect("parts starting hold nothing", host.playbackHoldPath().isEmpty());
+    expect("and let go of the single file held before", waitGone(path(1)));
+    s.store.deleteRecording(id(2));
+    expect("a part playing is deleted under it", waitGone(path(2)));
+    host.playingItem(path(3), dsd_qt::DecoderHost::PlaybackPlaylist);
+    s.store.deleteRecording(id(3));
+    expect("so is a playlist item", waitGone(path(3)) && host.playbackHoldPath().isEmpty());
+    s.store.endSession();
+}
 
 /* Issue #708: the host's playback, export, save and share through the store: the file playing and the files a
  * transfer selected are held until the player and the transfer let them go, every transfer releases its selection,
@@ -6090,6 +6147,7 @@ main(int argc, char** argv) {
     test_player_release_wakes_a_waiting_delete();
     test_held_recordings_over_the_limit_go_once_released();
     test_host_surface();
+    test_single_play_hold_only();
     test_transfer_reads_only_the_files_selected();
     test_limit_follows_the_preference();
     test_search_key_parse_and_compaction();
