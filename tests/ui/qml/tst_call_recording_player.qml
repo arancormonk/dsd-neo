@@ -1714,6 +1714,40 @@ Item {
             compare(lastHostCall().path, pathA);
         }
 
+        // While a seek waits for its landing, the bar shows where it goes (the Android host shows nothing until the
+        // player's record); the record that lands it, a seek the host can no longer take, or another recording falls
+        // back on the host's position.
+        function test_seek_target_shown_until_it_lands() {
+            openWith([rec("t-1", pathA, 10000), rec("t-2", pathB, 10000)]);
+            tap("recordingPlayAll");
+            testContext.publishPlaybackReading({item: 0, playbackState: 3, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 10000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            var bar = item("recordingSeekBar");
+            testContext.setSeekApplied(false);
+            bar.seekTo(6000, 5);
+            compare(decoderHost.playbackPositionMs, 1000, "the host shows nothing");
+            compare(player.positionMs, 6000, "the target shows");
+            compare(item("recordingTime").text, "0:06 / 0:10");
+            testContext.publishPlaybackReading({playbackPositionMs: 1000});
+            compare(player.positionMs, 6000, "a record from before the seek leaves it");
+            testContext.publishPlaybackReading({playbackPositionMs: 6000});
+            compare(player.seekTargetMs, -1, "landed");
+            compare(player.positionMs, 6000);
+            bar.seekTo(9000, 5);
+            compare(player.positionMs, 9000);
+            testContext.publishPlaybackReading({playbackCanSeek: false});
+            compare(player.positionMs, 6000, "no seek any more: the host's position");
+            testContext.publishPlaybackReading({playbackCanSeek: true});
+            bar.seekTo(2000, 5);
+            testContext.publishPlaybackReading({item: 1, playbackToken: 6, playbackPositionMs: 0});
+            compare(player.positionMs, 0, "another recording: the host's position");
+            bar.seekTo(3000, 6);
+            compare(player.positionMs, 3000);
+            tryCompare(player, "seekTargetMs", -1, 3000, "a landing that never comes is forgotten");
+            compare(player.positionMs, 0);
+            testContext.setSeekApplied(true);
+        }
+
         // Asked again and refused again with the same reading, the refusal is said again.
         function test_repeated_refusal_said_again() {
             var b = rec("t-2", pathB, 8000);

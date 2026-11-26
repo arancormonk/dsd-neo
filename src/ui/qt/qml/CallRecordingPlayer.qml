@@ -122,7 +122,9 @@ Column {
     // offered until it has one.
     readonly property bool awaitingToken: loaded && playState >= 1 && playState <= 3 && !ownsPlay && Number(decoderHost.playbackToken) <= 0
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
-    readonly property real positionMs: seekBar.dragging ? seekBar.dragMs : loaded ? Math.min(decoderHost.playbackPositionMs, durationMs) : 0
+    // Issue #909: a seek waiting for its landing shows where it goes (the host shows nothing until the player's
+    // record), so the thumb does not jump back to the old position for a poll.
+    readonly property real positionMs: seekBar.dragging ? seekBar.dragMs : !loaded ? 0 : seekTargetMs >= 0 ? Math.min(seekTargetMs, durationMs) : Math.min(decoderHost.playbackPositionMs, durationMs)
     readonly property bool storageAway: part !== null && part.available === false
     // Issue #909 (B6): a host with no player offers no play; the parts only
     // select, for Share, Save and Delete.
@@ -169,8 +171,22 @@ Column {
     // A seek the host never applied (it clamped or dropped it) is forgotten
     // when playback stops or fails, or moves to another part: a later
     // position passing near it is not a landing.
-    readonly property string seekScope: [loaded, part ? part.path : "", playState === 0 || playState === 4].join("|")
+    // Also another recording open (its token), the host no longer able to
+    // seek it (it would drop the seek), and a landing that never came within
+    // a few polls: the position falls back on the host's record.
+    readonly property string seekScope: [loaded, part ? part.path : "", playState === 0 || playState === 4, Number(decoderHost.playbackToken), decoderHost.playbackCanSeek === true].join("|")
     onSeekScopeChanged: seekTargetMs = -1
+    onSeekTargetMsChanged: {
+        if (seekTargetMs >= 0)
+            seekWait.restart();
+        else
+            seekWait.stop();
+    }
+    Timer {
+        id: seekWait
+        interval: 2000
+        onTriggered: player.seekTargetMs = -1
+    }
     SpeechPacer {
         id: positionSpeech
         shown: Navigation.allows(player) && player.visible
