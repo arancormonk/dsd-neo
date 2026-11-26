@@ -216,8 +216,9 @@ replaced at its timeout, or at once when Stop or Next leaves it (the next item a
 one, never failing; a hung prepare keeps its thread), at most two setups given up still running at once (a third open
 waits with no player made: it goes on when one returns, and times out and is skipped one at a time when both are stuck;
 Stop drops the wait; five quick moves whose setups are done but not delivered skip nothing; five Next then five Previous
-with every setup in flight fail nothing), a setup's gone file rechecked when
-its result comes after Stop or Next, Previous while a part opens opening it again (deleted meanwhile: skipped),
+with every setup in flight fail nothing), a prepare timeout past a paused deadline ending "timeout" at once,
+a setup's gone file rechecked when its result comes after Stop or Next, Previous while a part opens opening it
+again (deleted meanwhile: skipped),
 no player ever reused (a completion around a Previous, in either order, never reaching the new pass; Previous in the gap
 opening the call again, and staying paused in a paused gap; an error from a part completed or left reaching nothing; the
 next part handed off before the completed one is released; Previous on a recording deleted while it played skipping it),

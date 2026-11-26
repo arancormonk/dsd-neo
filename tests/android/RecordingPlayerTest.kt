@@ -2398,6 +2398,26 @@ private fun rapidNextThenPreviousNeverFailsAnItem() {
 }
 
 /**
+ * A paused playlist whose deadline passed while the device slept: the prepare timeout of a part opened paused fires
+ * first (the Handler counts uptime), and the play ends "timeout" at once, with no skip counted and no further open.
+ */
+private fun aPrepareTimeoutPastTheDeadlineEndsTimeout() {
+    val rig = Rig()
+    rig.queue(1, 1, 1)
+    rig.prepared()
+    rig.machine.pause()
+    rig.nowMs += 599_000
+    rig.machine.next()
+    val built = rig.players.size
+    rig.nowMs += RecordingPlayer.PREPARE_TIMEOUT_MS
+    rig.scheduler.live().first { it.delayMs == RecordingPlayer.PREPARE_TIMEOUT_MS }.force()
+    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "it ends timeout (${rig.status.endedReason})"
+    }
+    check(rig.status.skipped == 0 && rig.players.size == built) { "no skip counted, no further open" }
+}
+
+/**
  * Quick moves on healthy storage never meet the bound: a setup given up whose work is done, its result only waiting
  * for the looper, counts for nothing, so five moves in a row leave every open working and nothing skipped.
  */
@@ -2666,6 +2686,7 @@ fun main() {
     quickMovesNeverMeetTheLimit()
     anOpenAtTheLimitWaitsForASetup()
     rapidNextThenPreviousNeverFailsAnItem()
+    aPrepareTimeoutPastTheDeadlineEndsTimeout()
     previousWhileOpeningOpensAgain()
     aSupersededSetupStillRechecksItsFile()
     println("PASS: the call recording player queues calls and parts, skips, follows the focus, the service and the table")
