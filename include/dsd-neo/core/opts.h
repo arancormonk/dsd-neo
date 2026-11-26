@@ -164,6 +164,10 @@ struct dsd_opts {
     // Per-call slot files whose last open failed (a full disk): bit 0 wav_out_f, bit 1 wav_out_fR. The slot's next call
     // end opens it again, rather than leaving the slot unrecorded for the rest of the run (issue #708).
     int wav_out_reopen;
+    /* 1: a call whose frequency is known (at least 1 kHz) is exported to the rdio-scanner system numbered by that
+       frequency in kHz, rounded down, unless an analog call takes rdio_analog_system_id (issue #931); 0 (default): every
+       call keeps rdio_system_id / rdio_analog_system_id. Kept beside wav_out_reopen, where it fills an alignment hole. */
+    int rdio_system_by_frequency;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
     dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */
@@ -255,10 +259,6 @@ struct dsd_opts {
     /* The rdio-scanner talkgroup of a digital call with no talkgroup and no known frequency (audio input),
        0..2147483647 (issue #888); 0 leaves such calls unexported. */
     int rdio_unknown_talkgroup;
-    /* 1: a call whose frequency is known (at least 1 kHz) is exported to the rdio-scanner system numbered by that
-       frequency in kHz, rounded down, unless an analog call takes rdio_analog_system_id (issue #931); 0 (default): every
-       call keeps rdio_system_id / rdio_analog_system_id. */
-    int rdio_system_by_frequency;
     int record_unknown_only; // record only calls with no talkgroup row: a listed row records nothing (issue #708)
     /* The longest pause, in ms, one conventional analog call (its history row and per-call WAV) survives (issue #756);
        the pause is written as silence. At most DSD_ANALOG_CARRIER_HANGOVER_MS (200, the default) turns it off: the
