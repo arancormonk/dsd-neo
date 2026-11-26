@@ -33,10 +33,11 @@ Item {
     }
     // The list's place and rows as the next frame shows them, for a row to be
     // brought into view against: the list hangs under the header, whose
-    // Column (and the filters' Flow in it) lays out on its next polish. A
-    // header that changed since the last frame (the log's first calls offer
-    // Export… and Clear on a line of their own) would otherwise leave a row
-    // contained against the old height, and cut off once the list moves.
+    // Column and the positioners in it (the filters' Flow, each pill's Row)
+    // lay out on their next polish. A header that changed since the last
+    // frame (the log's first calls offer Export… and Clear on a line of their
+    // own) would otherwise leave a row contained against the old height, and
+    // cut off once the list moves.
     function settleListLayout() {
         Theme.settlePositioners(chrome);
         logList.forceLayout();

@@ -771,14 +771,18 @@ Item {
         // Clear are offered on a second line, which the Column makes room for only on its next polish, after
         // whatever the case does before it renders. The rows' list hangs under that Column.
         function logCallsUnderAPendingHeader(screen, count) {
-            var search = findChild(screen, "historySearch");
-            verify(waitForPolish(search.parent));
+            verify(waitForPolish(findChild(screen, "historySearch").parent));
             var calls = logCalls(count);
+            verifyHeaderPending(screen);
+            return calls;
+        }
+        // Checked again right before the press it guards: a frame in between would have laid the Column out.
+        function verifyHeaderPending(screen) {
+            var search = findChild(screen, "historySearch");
             var clear = findChild(screen, "clearHistoryButton");
             verify(clear.visible);
             var second = rectIn(clear, search.parent);
             verify(second.y + second.height > search.y + 0.5, "the Column has not made room for the second line yet: " + describe(second));
-            return calls;
         }
 
         // Show in list: the playing call's row in view and its sheet open; a row the list does not show now says so.
@@ -794,6 +798,7 @@ Item {
             list.positionViewAtBeginning();
             var show = part(screen, "nowPlayingShowInList");
             compare(show.Accessible.name, "Show in list");
+            verifyHeaderPending(screen);
             show.activate();
             var sheet = findChild(screen, "historyDetailSheet");
             verify(sheet.visible, "the row's sheet opens");
@@ -830,6 +835,7 @@ Item {
             var calls = logCallsUnderAPendingHeader(screen, 30);
             var list = findChild(screen, "callLogList");
             list.positionViewAtBeginning();
+            verifyHeaderPending(screen);
             var node = screen.rowFocusFor(calls[0].uid);
             verify(node !== null, "the oldest row is built");
             waitForRendering(list);
