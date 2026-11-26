@@ -19924,8 +19924,9 @@ Qt Quick frontend (`src/ui/qt`):
       interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the carry-on,
       B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in
       every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes
-      (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch, checked by a task
-      and at every event against `SystemClock.elapsedRealtime()`, so it ends at the first chance after 10 minutes.
+      (`PAUSED_LIMIT_MS`, D11) counted from the start of the continuous paused or interrupted stretch (a resume ends it
+      only once the focus is granted, so one refused as the next part prepares keeps the pause's start), checked by a
+      task and at every event against `SystemClock.elapsedRealtime()`, so it ends at the first chance after 10 minutes.
       Identities: every prepare gets a fresh play token (unique in the process, never reused); each scheduled task (gap,
       skip search, deadline, promotion timeout) has its own id and is cancelled when superseded; focus callbacks carry
       an epoch; a callback, task or command whose identity is not current is dropped. The last generation's terminal

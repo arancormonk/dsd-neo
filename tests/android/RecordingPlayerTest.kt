@@ -763,6 +763,43 @@ private fun movesWhilePausedStayPausedAndKeepTheDeadline() {
     check(rig.service.ends == listOf(generation to RecordingPlayer.ENDED_TIMEOUT)) { "the service is told" }
 }
 
+/** A resume pressed while the next part opens carries on only once the focus is granted: a refusal keeps the clock. */
+private fun aResumeWaitingForTheFocusKeepsTheDeadline() {
+    val refused = Rig()
+    val generation = refused.queue(1, 1)
+    refused.prepared()
+    refused.machine.pause()
+    refused.elapse(599_000)
+    refused.machine.next()
+    refused.machine.resume()
+    check(refused.state == PREPARING && refused.status.call == 1) { "Resume while the next call opens" }
+    refused.focus.grants = false
+    refused.prepared()
+    check(refused.state == PAUSED && refused.status.pausedReason == RecordingPlayer.PAUSED_UNAVAILABLE) {
+        "the focus refused once it prepared: paused"
+    }
+    refused.elapse(999)
+    check(refused.state == PAUSED) { "not yet ten minutes from the pause" }
+    refused.elapse(1)
+    check(refused.state == STOPPED && refused.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "ten minutes from the pause it ends: the refused resume started no fresh ten minutes"
+    }
+    check(refused.service.ends == listOf(generation to RecordingPlayer.ENDED_TIMEOUT)) { "the service is told" }
+
+    // Granted, the stretch ends there.
+    val granted = Rig()
+    granted.queue(1, 1)
+    granted.prepared()
+    granted.machine.pause()
+    granted.elapse(599_000)
+    granted.machine.next()
+    granted.machine.resume()
+    granted.prepared()
+    check(granted.state == PLAYING) { "the focus granted, it plays" }
+    granted.elapse(600_000)
+    check(granted.state == PLAYING && granted.scheduler.live().isEmpty()) { "playing again ended the paused stretch" }
+}
+
 // ---- identities
 
 private fun lateCallbacksTasksAndFocusAreDropped() {
@@ -1578,6 +1615,7 @@ fun main() {
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
     movesWhilePausedStayPausedAndKeepTheDeadline()
+    aResumeWaitingForTheFocusKeepsTheDeadline()
     lateCallbacksTasksAndFocusAreDropped()
     theServiceIsPromotedOnceInEitherOrder()
     itemCommandsCarryTheirToken()

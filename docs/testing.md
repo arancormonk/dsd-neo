@@ -194,7 +194,8 @@ Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (
 scheduler: a pause or the background while preparing, focus denied or lost, completion, seeks before the player is
 ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
-with the deadline unchanged), skips of gone, changed and damaged recordings first, middle and last, per recording and in
+with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
+pause), skips of gone, changed and damaged recordings first, middle and last, per recording and in
 both directions (A good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and
 replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
 and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump and a late task, play tokens,

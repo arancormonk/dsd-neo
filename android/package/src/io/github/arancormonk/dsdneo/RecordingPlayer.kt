@@ -66,11 +66,12 @@ class RecordingRecheck {
  * A PLAYLIST paused or interrupted ends after [PAUSED_LIMIT_MS], counted from the start of the continuous stretch in
  * which nothing was wanted or the focus was away, checked by a task and at every event against the elapsed clock.
  * Neither navigating while paused, the app's Pause during an interruption nor a refused resume restarts or extends
- * it; only audio carrying on (or wanted again) ends the stretch. A focus request refused for the play's own start ends
- * it as unavailable; one refused for a resume leaves it paused (any mode). A transient focus loss interrupts (the request
- * stays outstanding, Play is a no-op, the app's Pause cancels the carry-on); a lasting one ends a PLAYLIST and pauses
- * SINGLE and PARTS. Headphones unplugged ([onNoisy]) pause every mode. An ended play keeps its terminal reading
- * (generation, reason, the item it ended on) until the next play, so the host reads a Stop it did not ask for.
+ * it; only audio carrying on ends the stretch (a resume ends it once the focus is granted, not when it is pressed). A
+ * focus request refused for the play's own start ends it as unavailable; one refused for a resume leaves it paused (any
+ * mode). A transient focus loss interrupts (the request stays outstanding, Play is a no-op, the app's Pause cancels the
+ * carry-on); a lasting one ends a PLAYLIST and pauses SINGLE and PARTS. Headphones unplugged ([onNoisy]) pause every
+ * mode. An ended play keeps its terminal reading (generation, reason, the item it ended on) until the next play, so
+ * the host reads a Stop it did not ask for.
  *
  * Plain Kotlin, so the JVM tests drive it with fakes; RecordingPlayback runs it on one looper thread with MediaPlayer,
  * the AudioManager and a Handler. Not thread-safe: every call comes from that one thread. [status] may be read on any
@@ -983,9 +984,14 @@ class RecordingPlayer(
         return true
     }
 
-    /** Start the paused deadline when a PLAYLIST stops wanting audio or is interrupted; clear it when it carries on. */
+    /**
+     * Start the paused deadline when a PLAYLIST stops wanting audio or is interrupted; clear it when it carries on. A
+     * resume still waiting for the focus (asked for once the part has prepared, or refused) has not carried on yet, so
+     * the stretch, and its start, last until the focus is granted.
+     */
     private fun syncDeadline() {
-        val holding = active && mode == MODE_PLAYLIST && (!wanted || interrupted)
+        val resuming = wanted && !focusHeld && !startRequest
+        val holding = active && mode == MODE_PLAYLIST && (!wanted || interrupted || resuming)
         if (holding && pausedSinceMs < 0) {
             pausedSinceMs = clock.elapsedMs()
             scheduleDeadline(PAUSED_LIMIT_MS)
