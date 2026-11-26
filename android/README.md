@@ -760,14 +760,110 @@ time, system, talkgroup and radio, and an analog FM call's with the date, time, 
 A call row (in History, the Monitor's Recent calls or Home's Recent activity) whose call has a recording shows a small
 play mark before its time (TalkBack adds "has a recording"). Open the row: the **Call recording** block above Hold
 plays, pauses and seeks. A call heard in several parts (the signal faded and came back) lists each part, with **Play all
-parts**. **Share** opens Android's share sheet with read-only access to a copy of that one file, so the app you pick
-can still open it if the storage limit or a delete removes the recording meanwhile; DSD-neo removes the copy a day
-later, when it next shares or starts. **Save to file** copies it to a place you pick, and **Delete recording** deletes
-the file; the call stays in History. A recording whose write failed part-way says the end may be missing.
+parts**, which plays the parts that can be played now one after another and stops at a part that fails. A part on
+storage that isn't connected can still be picked, to see its line, but does not play. When a recording can't be played,
+the sheet says why under the block, and TalkBack reads it out once. **Share** opens Android's share sheet with read-only
+access to a copy of that one file, so the app you pick can still open it if the storage limit or a delete removes the
+recording meanwhile; DSD-neo removes the copy a day later, when it next shares or starts. **Save to file** copies it to
+a place you pick, and **Delete recording** deletes the file; the call stays in History. A recording whose write failed
+part-way says the end may be missing.
 
-Live audio keeps playing while a recording plays, and decoding and recording go on. Playback pauses when DSD-neo leaves
-the screen, and closing the call's sheet stops it. While another app holds the audio (a phone call), it reads **Can't
-play right now**.
+Live audio keeps playing while a recording plays, and decoding and recording go on. A recording played from its sheet
+(one part, or **Play all parts**) pauses when DSD-neo leaves the screen, and closing the call's sheet stops it; only a
+History playlist (below) plays on in the background. While another app holds the audio (a phone call), it reads
+**Can't play right now. Another app has the audio, such as a phone call.** A short interruption (a navigation prompt,
+a notification sound) reads **Paused for another app's audio**, and playback carries on by itself when it ends; press
+**Pause** to keep it paused. Unplugging headphones pauses it (**Paused: headphones unplugged**). On a device whose
+Android has no media player, the block says **Recordings can't be played on this device.**, and Share, Save to file
+and Delete still work.
+
+### Playing History as a playlist
+
+History can play its recorded calls one after another, like a scanner's call player (issue #909):
+
+- **Play all**, the play glyph beside **Map** at the top of History, plays the recorded calls History shows (the search
+  and the System and Activity pills apply), oldest first. TalkBack names it "Play all" ("Plays the recorded calls
+  shown, oldest first").
+- **Play from here**, in a History row's sheet under its recording, plays that call, then each newer call History
+  shows. The sheet closes and the bar below takes over. It is on History's sheets only, not on the Monitor's or Home's.
+
+The playlist is taken when you press: calls recorded after the press are not added, and changing the search or the
+filters afterwards does not change it. It ends after the newest call it took; press again for calls heard since (with
+a session running, the live audio plays each new call anyway). A call heard in several parts plays each part, oldest
+first, with no pause between parts, then one second of silence before the next call. Calls with no recording that can
+be played now (not recorded, on storage that isn't connected, still being written, or waiting to be deleted) are left
+out. When none of the shown calls has one, the line under the buttons says **None of the shown calls has a recording
+that can be played now.**; from a sheet whose row the search has just hidden, **This call isn't in the list now.**
+
+While a playlist is open, a bar sits at the bottom of both History screens (History, and History in the session tools):
+the call's name over **Call 3 of 41 · 0:12 / 0:31** (a call of several parts adds **· part 2 of 3**), a thin progress
+line along its top edge, and **Previous call**, **Pause**/**Resume**, **Next call** and **Stop playing** (✕). The name
+and line are one button, **Show in list**: it scrolls the call's row into view and opens its sheet, which then follows
+what plays (pause, resume and seek there drive the playlist; playing another part there, or Play all parts, plays on its
+own from the sheet instead and ends the playlist). If the row is no longer listed, the bar says **This call isn't in the
+list now.** The row playing shows two magenta bars in place of its play mark (TalkBack: "playing" or "paused"), in
+History, the Monitor's Recent calls and Home's Recent activity.
+
+- **Next call** goes to the next call at once, also during the second between calls. It is not offered on the last
+  call.
+- **Previous call** goes back to the start of the call playing when more than 3 seconds of it have played or a later
+  part plays; otherwise it goes to the previous call (on the first call, it starts it again). During the second after
+  a call, it plays that call again.
+- Next and Previous while paused move and stay paused.
+- The bar says what it is doing in place of the time: **Opening…**, **Paused**, **Paused: headphones unplugged**,
+  **Paused for another app's audio**, and, on the call after one, **Skipped 1 recording that couldn't be played** (or
+  **Skipped 2 recordings…**).
+- When it ends, the bar stays with how it ended until you press ✕ (**Close**) or start another playlist: **Finished · 41
+  calls** (with **· 2 skipped** when any were), **Stopped** (stopped from the media controls), **Stopped: another app
+  started playing**, **Stopped after 10 minutes paused**, **Couldn't play these recordings.** (none of them played), or
+  **Couldn't start playing. Try again.** Stop playing in the app closes the bar at once.
+- TalkBack reads **Playing 41 calls** once audio starts, and how the playlist ended, once, when you next see History; it
+  does not talk over the calls as they change. While the on-screen keyboard is up, the bar hides (the media controls
+  keep theirs).
+
+A playlist holds on to no files: deleting a recording (from its sheet or Call recordings) and the storage limit go
+ahead as if nothing played. A recording that is gone or was replaced by its turn is skipped, and DSD-neo reads its
+folder again; the recording playing when it is deleted plays to its end. **Clear history** ends a playlist.
+
+### Playlists in the background and on the lock screen
+
+A History playlist keeps playing when DSD-neo leaves the screen or the screen locks, beside the live audio and a
+running session. Android shows it in its media controls, in the quick settings and on the lock screen: the call's
+name, its date and time and **Call 3 of 41**, with **Previous**, **Play**/**Pause**, **Next** and **Stop** (up to
+Android 12L, Stop is in the expanded quick settings player), and a tap opens DSD-neo. Its notification channel is
+**Call recordings**. On a secure lock screen the notification itself hides the call's name, like the decoder's; the
+media controls show it. Android shows these controls even when DSD-neo is not allowed to post notifications. Media
+buttons work too, with DSD-neo on screen or not: a headset's button pauses and resumes, and Bluetooth headsets and car
+systems can pause, resume and skip calls.
+
+- **Pause** anywhere (the bar, the sheet, the notification, the lock screen, a media button or a headset tap) keeps the
+  position and the notification, with Play to go on. A playlist left paused ends after 10 minutes (**Stopped after 10
+  minutes paused**); moving with Next or Previous while paused does not add time.
+- Unplugging headphones pauses it (**Paused: headphones unplugged**).
+- A phone call, a navigation prompt or another app's short sound pauses it, and it carries on by itself when that ends
+  (**Paused for another app's audio**). Meanwhile the lock screen shows Play, which changes nothing; to keep it from
+  carrying on, press **Pause** in DSD-neo or **Stop**. That pause counts towards the 10 minutes too. Resume pressed
+  during a phone call stays paused (**Paused: another app has the audio.**).
+- Another app starting to play music or video ends it (**Stopped: another app started playing**).
+- **Stop** in the media controls ends it; History then shows **Stopped** on the bar until ✕. Hiding the media player
+  (long-press it in the quick settings, where Android 13 and later offer **Hide**) stops it too.
+- Swiping DSD-neo away from Recents ends the playlist and its notification. Back out of DSD-neo only leaves the
+  screen, and the playlist plays on.
+
+While DSD-neo is in the background its screens do not update; the bar and History catch up when you come back, and
+the media controls are current all along. After a playlist ends, a media button no longer starts it again.
+
+### Playlist limits
+
+- A playlist holds no files, so the storage limit can delete calls that have not played yet: with Record calls on near
+  the limit while an old backlog plays, the limit (oldest first) can take the next calls, which are then skipped.
+- A recording found gone after you stopped the playlist from DSD-neo is checked again when you next play or come back
+  to DSD-neo; until then its row may still show a recording, and playing it from its sheet finds it missing.
+- If Android closed DSD-neo while a playlist was still starting, it may show the **Call recordings** notification for a
+  moment the next time it starts the playback service; nothing plays.
+- The 10-minute end happens at the first chance after 10 minutes: a phone in deep sleep can make it later.
+- Which headset and Bluetooth buttons reach DSD-neo, and whether the media player can be hidden, depends on the
+  phone and its Android version.
 
 ### Exporting and deleting
 
@@ -789,17 +885,19 @@ one was replaced by another file meanwhile, or the storage was disconnected and 
 while the export runs), nothing is saved and the screen says **Those recordings changed. Export again.** (for Save to
 file, **This recording changed. Save it again.**); DSD-neo reads that recording's folder again, so the next export
 takes what is there now. While DSD-neo is still reading the recordings (just after the storage comes back), Export and
-Save to file say **Recordings are still loading. Try again in a moment.** A recording that is playing, being exported or still waiting for an
-rdio-scanner upload is deleted once it is free.
+Save to file say **Recordings are still loading. Try again in a moment.** A recording that is playing on its own from
+its sheet, being exported or still waiting for an rdio-scanner upload is deleted once it is free; one that Play all
+parts or a History playlist plays is deleted at once, and plays on to its end.
 
 ### Storage limit
 
 **Storage limit** is 1 GB unless you choose 250 MB, 500 MB, 2 GB, 5 GB or **No limit** (1 GB holds about 17 hours of
 digital voice, or about 3 hours of analog FM). Over the limit, DSD-neo deletes the oldest recordings until they take 95%
-of it, and Settings says how many it removed. A recording that is playing, being saved or exported, or being uploaded
-is skipped, and deleted once it is let go if the recordings are still over the limit. While Record calls is on and the
-phone has less than 200 MB free, Settings warns. A full phone stops the call being recorded where it was, keeps what was
-written, and is reported; recording starts again with the next call once there is room.
+of it, and Settings says how many it removed. A recording that is playing on its own from its sheet, being saved or
+exported, or being uploaded is skipped (Play all parts and History playlists hold no files), and deleted once it is let
+go if the recordings are still over the limit. While Record calls is on and the phone has less than 200 MB free,
+Settings warns. A full phone stops the call being recorded where it was, keeps what was written, and is reported;
+recording starts again with the next call once there is room.
 
 ### Unfinished recordings
 

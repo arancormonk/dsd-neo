@@ -190,11 +190,26 @@ cancel before the start, in a held lookup or open and between chunks (`CANCELLED
 refusing its later copies until it is forgotten while another request runs on, progress, a full disk (`ENOSPC` as an
 errno or a message) reported apart, and the abort answering `FAILED`.
 Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (`recording_player`) runs
-`RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player: a pause or the background while
-preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's late callbacks;
-`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs `RecordingExport.kt` with `DocumentCopies.kt` against the
-provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the export after
-it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
+`RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player, opener, focus, clock and
+scheduler: a pause or the background while preparing, focus denied or lost, completion, seeks before the player is
+ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
+the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
+with the deadline unchanged), skips of gone, changed and damaged recordings first, middle and last, per recording and
+in both directions (A good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and
+replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
+and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump and a late task, play tokens,
+task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after
+the play, refused, timed out and late, PARTS's failure rule and duration 0, and a throwing player factory. A second
+build of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
+`PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
+outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
+the retire check after every delivery, `onDestroy` fenced to its generation, and `release()` with a promoted service
+and with a start issued but not delivered. A third build runs `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys
+the Activity hands past Qt to the media session, and every other key (Back, volume, typing, the microphone mute) left
+with Qt. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs `RecordingExport.kt` with `RecordingDescriptor.kt`
+(the checked open the playlist shares) and `DocumentCopies.kt` against the provider stubs: a ZIP into a regular file
+and into a pipe, a short write, a failed close, a cancel and the export after it, recordings gone, a single save, more
+than 65,535 entries (ZIP64), the teardown abort;
 `ANDROID_RECORDING_SHARE_JVM` (`recording_share`) runs
 `RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
 outlives its original, the copies' clean and the share intent.
@@ -202,6 +217,23 @@ Each first checks what crosses JNI or the manifest (the playback states and tran
 enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
 grant). They skip the FIFO and
 symbolic-link cases where the host cannot make them.
+The History playlist's C++ and QML (issue #909) run in `UI_QT_CALL_HISTORY_PLAYLIST`, the builder over the real
+`historyView` filter (two proxies with different filters, order, the start uid, a uid gone after a search flush, parts
+and withdrawn fragments, notices, interleaved timestamps, 1,000 rows with multi-part rows in one store read, and every
+result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row order in one reader lock, the map's
+identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
+identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
+(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 18-field status record and malformed ones ignored, the
+terminal record after a platform stop, the recheck paths on a serial change, on a foreground return and with the next
+play, token commands with no optimistic position for a stale seek, the replacement point, the legacy
+`playRecording()` missing-file reading, and no status reads while idle or on position-only ticks); and
+`UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
+the playlist cases in `tst_call_recording_player.qml`, against the fake host's queue model in `qml_test_context.h`,
+with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
+names and gating). What only Android decides (the service's promotion, the media session and notification, the media
+keys, the noisy broadcast, the lock screen, the 10-minute pause with the real clock and the release APK's R8 keeps) is
+checked on emulators; `ANDROID_R8` checks the keep rules against the native upcalls, and
+`tools/check_android_r8.py` the release APK.
 `ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
 activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,
 then the GET_CONTENT fallback straight to the one app that takes documents or through a chooser without the media-only
