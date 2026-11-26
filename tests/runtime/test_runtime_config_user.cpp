@@ -5662,8 +5662,10 @@ rdio_system_id_key_roundtrip(const char* key) {
         DSD_FPRINTF(stderr, "FAIL: %s = 154437 did not load (%d)\n", key, *rdio_system_field(&cfg, key));
         return 1;
     }
-    static dsd_opts opts;
-    static dsd_state state;
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
     reset_opts_and_state(opts, state);
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
     const int applied = strcmp(key, "rdio_system_id") == 0 ? opts.rdio_system_id : opts.rdio_analog_system_id;
