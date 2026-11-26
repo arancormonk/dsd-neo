@@ -19724,9 +19724,9 @@ Qt Quick frontend (`src/ui/qt`):
     ones at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`.
     `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file a single play plays (`setPlayingPath()` from
     Preparing to the end, SINGLE only: a PARTS or PLAYLIST play holds nothing and clears that hold when it starts,
-    issue #909 D9), releases each transfer's selection when it finishes, rechecks the missing files (`recheckPaths()`) and
-    gives the host the share check (`setRecordingIndex()`) and a hold for work outside a selection
-    (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`).
+    issue #909 D9), releases each transfer's selection when it finishes, rechecks the missing files
+    (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`) and a hold for work outside a
+    selection (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
@@ -19987,9 +19987,12 @@ Qt Quick frontend (`src/ui/qt`):
       code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A
       partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the
       `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any play is open.
-      `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause, play/pause,
-      stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity consumes
-      every key, so with the app in front Android still routes them to the media button session.
+      While a playlist owns the service (`RecordingPlayback.playlistSessionOpen()`, the phases' owner, under their
+      lock), `DsdNeoActivity.dispatchKeyEvent()` hands the media keys (`MediaKeys.kt`: headset hook, play, pause,
+      play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) past Qt, whose activity
+      consumes every key, so with the app in front Android routes them to the playlist's session; with no playlist open
+      they stay with Qt, as before #909, so a headset's Play never resumes another app over the live audio or a sheet
+      play.
     - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
       Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,

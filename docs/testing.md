@@ -194,22 +194,22 @@ Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (
 scheduler: a pause or the background while preparing, focus denied or lost, completion, seeks before the player is
 ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
-with the deadline unchanged), skips of gone, changed and damaged recordings first, middle and last, per recording and
-in both directions (A good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and
+with the deadline unchanged), skips of gone, changed and damaged recordings first, middle and last, per recording and in
+both directions (A good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and
 replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
 and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump and a late task, play tokens,
-task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after
-the play, refused, timed out and late, PARTS's failure rule and duration 0, and a throwing player factory. A second
-build of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
-`PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
-outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
-the retire check after every delivery, `onDestroy` fenced to its generation, and `release()` with a promoted service
-and with a start issued but not delivered. A third build runs `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys
-the Activity hands past Qt to the media session, and every other key (Back, volume, typing, the microphone mute) left
-with Qt. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs `RecordingExport.kt` with `RecordingDescriptor.kt`
-(the checked open the playlist shares) and `DocumentCopies.kt` against the provider stubs: a ZIP into a regular file
-and into a pipe, a short write, a failed close, a cancel and the export after it, recordings gone, a single save, more
-than 65,535 entries (ZIP64), the teardown abort;
+task ids and focus epochs against late callbacks after Next, Previous, Stop and replace, promotion before and after the
+play, refused, timed out and late, PARTS's failure rule and duration 0, and a throwing player factory. A second build of
+the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with `PlaybackServicePhasesTest.kt`: a
+PROMOTE for a current, a settled and a foreign-token request, at most one start outstanding (join, hand-over), a stale
+PROMOTE while another playlist owns, stale transport before and after the end, the retire check after every delivery,
+`onDestroy` fenced to its generation, and `release()` with a promoted service and with a start issued but not delivered.
+A third build runs `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the media
+session while a playlist's session is open, the same keys left with Qt while none is, and every other key (Back, volume,
+typing, the microphone mute) left with Qt either way. `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
+`RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
+against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
+export after it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
 `ANDROID_RECORDING_SHARE_JVM` (`recording_share`) runs
 `RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
 outlives its original, the copies' clean and the share intent.

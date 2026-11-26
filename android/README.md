@@ -831,10 +831,10 @@ A History playlist keeps playing when DSD-neo leaves the screen or the screen lo
 running session. Android shows it in its media controls, in the quick settings and on the lock screen: the call's
 name, its date and time and **Call 3 of 41**, with **Previous**, **Play**/**Pause**, **Next** and **Stop** (up to
 Android 12L, Stop is in the expanded quick settings player), and a tap opens DSD-neo. Its notification channel is
-**Call recordings**. On a secure lock screen the notification itself hides the call's name, like the decoder's; the
-media controls show it. Android shows these controls even when DSD-neo is not allowed to post notifications. Media
-buttons work too, with DSD-neo on screen or not: a headset's button pauses and resumes, and Bluetooth headsets and car
-systems can pause, resume and skip calls.
+**Call recordings**. The lock screen's media controls show the call's name and time, also on a secure lock screen.
+Android shows these controls even when DSD-neo is not allowed to post notifications. Media buttons work too while a
+playlist is open, with DSD-neo on screen or not: a headset's button pauses and resumes, and Bluetooth headsets and car
+systems can pause, resume and skip calls. With no playlist open, DSD-neo leaves the media buttons alone, as before.
 
 - **Pause** anywhere (the bar, the sheet, the notification, the lock screen, a media button or a headset tap) keeps the
   position and the notification, with Play to go on. A playlist left paused ends after 10 minutes (**Stopped after 10
