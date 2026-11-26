@@ -542,17 +542,22 @@ class RecordingPlayer(
     private class Left(val index: Int, val token: Long, val durationMs: Long, val positionMs: Long)
 
     /**
-     * A search for the next playable recording: [candidates] in order, each visited once. Exhausted, a forward move
-     * finishes, a backward one goes on forward after [resumeAfter], and one with [gapAfter] (the rest of a call after
-     * its part completed) enters the gap before the next call, on the part that completed.
+     * A search for the next playable recording: [candidates] in order, each visited once and made only as the search
+     * reaches it (ranges walked by a cursor, never a copy of the queue's tail), so a move costs only the candidates it
+     * tries. Exhausted, a forward move finishes, a backward one goes on forward after [resumeAfter], and one with
+     * [gapAfter] (the rest of a call after its part completed) enters the gap before the next call, on the part that
+     * completed.
      */
     private class Move(
-        val candidates: IntArray,
+        candidates: Sequence<Int>,
         val forward: Boolean,
         val resumeAfter: Int = -1,
         val gapAfter: Boolean = false,
     ) {
-        var next = 0
+        private val cursor = candidates.iterator()
+
+        /** The next candidate, or -1 once every one was visited. */
+        fun next(): Int = if (cursor.hasNext()) cursor.next() else -1
     }
 
     private class Ended(val state: Int, val error: String, val reason: String)
@@ -632,6 +637,10 @@ class RecordingPlayer(
     private var endNotified = true
     private var taskIds = 0
     private val pending = HashMap<Slot, Pending>()
+
+    /** The search candidates made so far, for the tests: each move makes only the ones it tries. */
+    internal var candidatesMade = 0L
+        private set
 
     /** Published on the looper after every change; read on any thread. */
     @Volatile
@@ -950,14 +959,15 @@ class RecordingPlayer(
     /** Open the move's next candidate not failed: always a new player, never the one left. */
     private fun tryNext() {
         val search = move ?: return
-        while (search.next < search.candidates.size && failed[search.candidates[search.next]]) {
-            search.next++
+        var candidate = search.next()
+        while (candidate >= 0 && failed[candidate]) {
+            candidate = search.next()
         }
-        if (search.next >= search.candidates.size) {
+        if (candidate < 0) {
             exhausted(search)
             return
         }
-        open(search.candidates[search.next++])
+        open(candidate)
     }
 
     private fun exhausted(search: Move) {
@@ -993,8 +1003,13 @@ class RecordingPlayer(
         // failed and wait for its skip): restart the call.
         val playableBefore = (callStarts[call] until index).any { !failed[it] }
         val restart = gap || playableBefore || currentPositionMs() > RESTART_MS
-        val earlier = if (restart) emptyList() else (call - 1 downTo 0).flatMap { callStarts[it]..callEnd(it) }
-        val candidates = (earlier + span(callStarts[call], callEnd(call)).asList()).toIntArray()
+        // The calls before, nearest first, each from its first part, then this call: made as the search reaches them.
+        val earlier = if (restart) {
+            emptySequence()
+        } else {
+            (call - 1 downTo 0).asSequence().flatMap { span(callStarts[it], callEnd(it)) }
+        }
+        val candidates = earlier + span(callStarts[call], callEnd(call))
         // Always a new open, also of the part opening now: its file is checked again under a fresh token, and the
         // pass before can deliver nothing to it.
         beginMove(Move(candidates, forward = false, resumeAfter = callEnd(call)))
@@ -1497,9 +1512,13 @@ class RecordingPlayer(
     private fun callEnd(call: Int): Int = callStarts[call + 1] - 1
 
     /** The items after [index], in order. */
-    private fun after(index: Int): IntArray = span(index + 1, items.size - 1)
+    private fun after(index: Int): Sequence<Int> = span(index + 1, items.size - 1)
 
-    private fun span(first: Int, last: Int): IntArray = IntArray((last - first + 1).coerceAtLeast(0)) { first + it }
+    /** The items [first] to [last] in order (none when [last] is before [first]), each made as a search reaches it. */
+    private fun span(first: Int, last: Int): Sequence<Int> = (first..last).asSequence().map {
+        candidatesMade++
+        it
+    }
 
     private fun hasCallAfter(call: Int): Boolean = (callEnd(call) + 1 until items.size).any { !failed[it] }
 

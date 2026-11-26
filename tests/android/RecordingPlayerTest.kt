@@ -876,6 +876,49 @@ private fun aSkipOpensThePartWithItsOwnReadings() {
     check(gap.position == 4_000L && gap.status.durationMs == 60_000L) { "at its own readings" }
 }
 
+/**
+ * Each move makes only the candidates it tries (#909), never a copy of the queue's tail: playing N healthy calls, or N
+ * parts of one call, makes N candidates, not N²/2; Previous from far along makes one; a skip makes each one it tries.
+ */
+private fun eachMoveMakesOnlyTheCandidatesItTries() {
+    val count = 300
+    val calls = Rig()
+    calls.queue(*IntArray(count) { 1 })
+    repeat(count) { i ->
+        calls.playOut()
+        if (i < count - 1) {
+            calls.elapse(RecordingPlayer.GAP_MS)
+        }
+    }
+    check(calls.status.endedReason == RecordingPlayer.ENDED_FINISHED && calls.players.size == count) { "all played" }
+    check(calls.machine.candidatesMade == count.toLong()) { "$count calls: ${calls.machine.candidatesMade} candidates" }
+
+    val parts = Rig()
+    parts.queue(count, mode = MODE_PARTS)
+    repeat(count) { parts.playOut() }
+    check(parts.status.endedReason == RecordingPlayer.ENDED_FINISHED && parts.players.size == count) { "all parts" }
+    check(parts.machine.candidatesMade == count.toLong()) { "$count parts: ${parts.machine.candidatesMade} candidates" }
+
+    val back = Rig()
+    back.queue(*IntArray(count) { 1 }, start = count - 1)
+    val made = back.machine.candidatesMade
+    back.machine.previous()
+    check(back.status.call == count - 2 && back.machine.candidatesMade == made + 1) {
+        "Previous from the last call makes one candidate (${back.machine.candidatesMade - made})"
+    }
+
+    val skip = Rig()
+    for (call in 1..3) skip.fail(path(call, 1), RecordingPlayer.REASON_GONE)
+    skip.queue(*IntArray(count) { 1 })
+    skip.prepared()
+    val before = skip.machine.candidatesMade
+    skip.machine.next()
+    repeat(3) { skip.turn() }
+    check(skip.status.call == 4 && skip.machine.candidatesMade == before + 4) {
+        "Next past three gone calls makes the four it tries (${skip.machine.candidatesMade - before})"
+    }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -2838,6 +2881,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    eachMoveMakesOnlyTheCandidatesItTries()
     aSkipOpensThePartWithItsOwnReadings()
     movesWhilePausedStayPausedAndKeepTheDeadline()
     aResumeWaitingForTheFocusKeepsTheDeadline()
