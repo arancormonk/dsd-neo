@@ -237,9 +237,9 @@ class RecordingPlayer(
 
         /**
          * Run [work] on the setup thread, one setup after another, then hand what it returned to [deliver] on the
-         * machine's thread. [work] does the blocking part of an open (the file, the player's data source and the start
-         * of its prepare) and touches nothing of the machine's; one stuck in a read holds the setups behind it, which
-         * time out with it.
+         * machine's thread. [work] does the blocking part of an open (the file, the player's data source and the
+         * start of its prepare) and touches nothing of the machine's; one stuck in a read holds the setups behind it,
+         * which time out with it. [work] never throws: whatever it meets is a result, so every setup posts one.
          */
         fun setup(work: () -> SetupResult, deliver: (SetupResult) -> Unit)
 
@@ -1025,10 +1025,14 @@ class RecordingPlayer(
         opening = setup
         publish()
         val item = items[candidate]
-        // The work returning, on the setup thread, takes it off the count before its result is posted.
+        // The work returning, on the setup thread, takes it off the count before its result is posted. It never
+        // throws: anything thrown (an Error such as running out of memory in the data source) is a failed setup, so
+        // a result is posted on every path, its player is released and an open waiting for a setup thread is woken.
         opener.setup({
             try {
                 setUp(opener, item, made)
+            } catch (_: Throwable) {
+                SetupResult(REASON_PLAYER, item.path)
             } finally {
                 abandoned.returned(setup.work)
             }

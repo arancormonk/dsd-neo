@@ -554,7 +554,10 @@ object RecordingPlayback {
             }
         }
 
-        /** [work] on the setup thread, its result posted to the looper; a refused hand-off fails as the player. */
+        /**
+         * [work] on the setup thread, its result posted to the looper; [work] never throws (the machine turns anything
+         * thrown into a failed setup), so the thread always posts. A refused hand-off fails as the player.
+         */
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
             deliver: (RecordingPlayer.SetupResult) -> Unit,

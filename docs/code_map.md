@@ -19926,24 +19926,25 @@ Qt Quick frontend (`src/ui/qt`):
       setup thread (`RecordingPlayer.Opener.setup()`; in `RecordingPlayback.kt` a single-thread executor, a daemon
       thread `dsd-neo-playback-setup` beside the looper and as long-lived), which opens the file
       (`RecordingDescriptor.open()`, or a plain open for SINGLE), calls `setDataSource(fd)` and `prepareAsync()`, closes
-      what it opened and posts its result (done, or failed with the reason) with the part's token. Until then the looper
-      never touches that player (a prepare answering first is noted and applied at adoption; an error drops the setup),
-      and a result for a part no longer current (timed out, Stop, a move, the end, a replacement) only releases its
-      player; one that found its file gone or changed still puts the path it tried (carried in the result) on the
-      recheck list, leaving the play now open alone. A setup dropped with its result still out (its prepare timeout, a
-      move, Stop, the end, a replacement, an error while it runs) gives its thread up at once (`Opener.abandonSetup()`:
-      that executor is shut down, so it takes no new work, and finishes on its own, its late result released as any),
-      and the next setup starts a fresh thread, so nothing ever queues behind a read that does not return; healthy
-      setups finish in milliseconds, so the cost is at most a short-lived thread per quick move. Setups given up are
-      counted for the process while their work still runs (`AbandonedSetups`, a limit of 2, `LIMIT`): while two are
-      running, each holding a thread and a `MediaPlayer` in a read that may never return, an open makes no player and
-      starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the wait. One leaves the
-      count when its work returns on its setup thread, before its result is posted, so a setup that is done and waits
-      only for delivery counts for nothing; the looper hears it when that result is delivered, which releases its player
-      and lets the waiting open go on under its own token. Only the current part waits, and Stop, a move or the end drop
-      the wait as they drop an opening, so stalled storage costs one ten-second timeout per recording, one at a time,
-      never a burst of failures, and quick moves never fail a recording. Stop never waits for a setup. The JVM tests
-      drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
+      what it opened and posts its result (done, or failed with the reason) with the part's token; the work never throws
+      (anything thrown, an Error included, is a failed setup, `player`), so a result is posted on every path. Until then
+      the looper never touches that player (a prepare answering first is noted and applied at adoption; an error drops
+      the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement) only
+      releases its player; one that found its file gone or changed still puts the path it tried (carried in the result)
+      on the recheck list, leaving the play now open alone. A setup dropped with its result still out (its prepare
+      timeout, a move, Stop, the end, a replacement, an error while it runs) gives its thread up at once
+      (`Opener.abandonSetup()`: that executor is shut down, so it takes no new work, and finishes on its own, its late
+      result released as any), and the next setup starts a fresh thread, so nothing ever queues behind a read that does
+      not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
+      Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
+      `LIMIT`): while two are running, each holding a thread and a `MediaPlayer` in a read that may never return, an
+      open makes no player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the
+      wait. One leaves the count when its work returns on its setup thread, before its result is posted, so a setup that
+      is done and waits only for delivery counts for nothing; the looper hears it when that result is delivered, which
+      releases its player and lets the waiting open go on under its own token. Only the current part waits, and Stop, a
+      move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
+      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
+      a setup. The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed

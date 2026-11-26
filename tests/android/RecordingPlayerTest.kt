@@ -105,8 +105,18 @@ private class HeldSetup(
     /** The setup thread does the work (it opens the file and prepares), its result not back yet. */
     fun run(): HeldSetup = also { result = work() }
 
-    /** The result reaches the machine's thread (the work first, if it has not run). */
-    fun land() = deliver(result ?: work())
+    /**
+     * The result reaches the machine's thread (the work first, if it has not run). Work that throws an Error posts
+     * nothing, as an executor's thread that it ends would not.
+     */
+    fun land() {
+        val landed = result ?: try {
+            work()
+        } catch (_: Error) {
+            return
+        }
+        deliver(landed)
+    }
 }
 
 /**
@@ -117,6 +127,9 @@ private class HeldSetup(
 private class FakeOpener : RecordingPlayer.Opener {
     val refusals = HashMap<String, String>()
     val throwing = HashSet<String>()
+
+    /** Paths whose open throws an Error (out of memory), not an Exception. */
+    val erroring = HashSet<String>()
     val opened = mutableListOf<String>()
     val sources = mutableListOf<FakeSource>()
     val stuck = mutableSetOf<Int>()
@@ -146,6 +159,9 @@ private class FakeOpener : RecordingPlayer.Opener {
         opened += item.path
         if (item.path in throwing) {
             throw SecurityException("no access")
+        }
+        if (item.path in erroring) {
+            throw OutOfMemoryError("no room for the data source")
         }
         refusals[item.path]?.let { return OpenResult.Refused(it) }
         return OpenResult.Opened(FakeSource(item.path).also { sources += it })
@@ -2368,6 +2384,32 @@ private fun anOpenAtTheLimitWaitsForASetup() {
 }
 
 /**
+ * A setup given up whose work throws an Error still posts a result: its player is released, the count drops, and the
+ * open waiting for a setup thread goes on at once, never waiting out its timeout.
+ */
+private fun aSetupThatThrowsAnErrorStillWakesTheWait() {
+    val rig = Rig()
+    rig.opener.stuck += setOf(1, 2)
+    rig.opener.erroring += path(0, 1)
+    rig.queue(1, 1, 1, 1)
+    rig.machine.next()
+    rig.machine.next()
+    check(rig.status.call == 2 && rig.players.size == 2) { "two running; call 2 waits" }
+    rig.opener.setups[0].land()
+    check(rig.players[0].released && rig.abandoned.outstanding == 1) { "the Error is a failed setup: released" }
+    check(rig.players.size == 3 && rig.last.asked && rig.status.call == 2) { "the waiting open goes on at once" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.skipped == 0) { "and plays, nothing skipped" }
+
+    val current = Rig()
+    current.opener.erroring += path(0, 1)
+    current.queue(1, 1)
+    check(current.state == FAILED && current.status.error == RecordingPlayer.ERROR_FAILED && current.last.released) {
+        "an Error in the current part's setup is the player's failure: the play ends, its player released"
+    }
+}
+
+/**
  * The emulator's sequence on healthy storage, every setup still in flight: five Next at once, then five Previous at
  * once. Nothing fails and the play goes on, landing on the first call; a setup whose work has returned when its part
  * is dropped counts for nothing.
@@ -2686,6 +2728,7 @@ fun main() {
     quickMovesNeverMeetTheLimit()
     anOpenAtTheLimitWaitsForASetup()
     rapidNextThenPreviousNeverFailsAnItem()
+    aSetupThatThrowsAnErrorStillWakesTheWait()
     aPrepareTimeoutPastTheDeadlineEndsTimeout()
     previousWhileOpeningOpensAgain()
     aSupersededSetupStillRechecksItsFile()
