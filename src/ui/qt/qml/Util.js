@@ -1167,7 +1167,6 @@ function fileNameText(name) {
     return String(name || "").replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "")
 }
 
-// A player position in milliseconds as "m:ss", whole seconds played.
 // Issue #909: where @p host's History playlist stands on the call row logged
 // under @p uid, for its marker (CallRow.playback): 1 playing that call (or
 // opening it, or in the pause after it), 2 paused on it, 0 neither (no History
@@ -1182,6 +1181,7 @@ function playlistMark(host, uid) {
     return state === 3 ? 2 : 1
 }
 
+// A player position in milliseconds as "m:ss", whole seconds played.
 function playbackTimeText(ms) {
     return fmtDuration(Math.max(0, Math.floor((Number(ms) || 0) / 1000)))
 }
