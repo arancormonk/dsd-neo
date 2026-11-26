@@ -322,43 +322,35 @@ Item {
             compare(bar(screen).announcements, 1, "no start was said: audio never started");
         }
 
-        // A skip is said on the call after it, singular and plural, as one sentence for any reason.
+        // A skip is said on the call after it, singular and plural, as one sentence for any reason: the player's
+        // notice names that call and the count, and the bar says it while that call is the one playing.
         function test_skip_said_on_the_next_call() {
             var calls = logCalls(4);
             playAll(idle(), calls);
             playing({item: 0});
-            playing({item: 1, playbackSkipped: 1});
+            playing({item: 1, playbackSkipped: 1, playbackSkipNoticeCall: 1, playbackSkipNoticeCount: 1});
             compare(line(idle()), "Skipped 1 recording that couldn't be played");
-            playing({item: 2});
+            playing({item: 1, playbackPositionMs: 20000});
+            compare(line(idle()), "Skipped 1 recording that couldn't be played", "while that call plays");
+            playing({item: 2, playbackSkipNoticeCall: -1, playbackSkipNoticeCount: 0});
             compare(line(idle()), "Call 3 of 4 · 0:12 / 0:31", "only on the call after the skip");
-            playing({item: 3, playbackSkipped: 3});
+            playing({item: 3, playbackSkipped: 3, playbackSkipNoticeCall: 3, playbackSkipNoticeCount: 2});
             compare(line(idle()), "Skipped 2 recordings that couldn't be played");
+            playing({item: 2, playbackSkipNoticeCall: 3});
+            compare(line(idle()), "Call 3 of 4 · 0:12 / 0:31", "a notice that names another call says nothing here");
         }
 
-        // A skip seen on a call's last part or in the gap after it is said on the next call that plays, not on the
-        // call it happened on; the records passed on the way (the next call opening, or failing in its turn) keep it.
-        function test_skip_in_the_gap_said_on_the_call_after() {
-            var calls = logCalls(5);
-            playAll(idle(), calls, [2, 1, 1, 1, 1]);
-            playing({item: 0, playbackToken: 7});
-            // Call 1's last part failed while it played: the gap after it.
-            testContext.publishPlaybackReading({item: 1, playbackState: 1, playbackToken: 8, playbackSkipped: 1});
-            playing({item: 1, playbackToken: 8, playbackGap: true, playbackPositionMs: 31000});
-            compare(line(idle()), "Call 1 of 5 · part 2 of 2 · 0:31 / 0:31", "not said on the call it happened on");
-            testContext.publishPlaybackReading({item: 2, playbackState: 1, playbackToken: 9, playbackGap: false});
-            compare(line(idle()), "Opening…");
-            playing({item: 2, playbackToken: 9});
-            compare(line(idle()), "Skipped 1 recording that couldn't be played", "said on the call after");
-            playing({item: 2, playbackToken: 9, playbackPositionMs: 20000});
-            compare(line(idle()), "Skipped 1 recording that couldn't be played", "while that call plays");
-            // In call 2's gap call 3 fails in its turn (a record on call 3), and call 4 plays.
-            playing({item: 2, playbackToken: 9, playbackGap: true});
-            testContext.publishPlaybackReading({item: 3, playbackState: 1, playbackToken: 10, playbackGap: false, playbackSkipped: 2});
-            compare(line(idle()), "Opening…");
-            testContext.publishPlaybackReading({item: 4, playbackState: 1, playbackToken: 11});
-            playing({item: 4, playbackToken: 11});
-            compare(line(idle()), "Skipped 1 recording that couldn't be played", "the record passed on the way kept it");
-            compare(status.skipCall, 3, "on call 4, the call after");
+        // A skip observed late is no skip on the call observed: A skipped, B played while the app was away (no reading
+        // reached Qt), and the first reading is C's, with the cumulative count moved but no notice on C.
+        function test_skip_not_said_on_a_later_call_seen_first() {
+            var calls = logCalls(3);
+            playAll(idle(), calls);
+            playing({item: 2, playbackToken: 9, playbackSkipped: 1});
+            compare(line(idle()), "Call 3 of 3 · 0:12 / 0:31", "C plays with no notice of A's skip");
+            playing({item: 2, playbackToken: 9, playbackPositionMs: 20000, playbackSkipped: 1});
+            compare(line(idle()), "Call 3 of 3 · 0:20 / 0:31", "nor later on C");
+            testContext.publishPlaybackReading({playbackState: 0, playbackEndedReason: "finished", playbackSkipped: 1});
+            compare(part(idle(), "nowPlayingResult").text, "Finished · 3 calls · 1 skipped", "the total is the summary's");
         }
 
         // A Resume refused, then refused again with the same reading but for the host's refusal count: each refusal
@@ -904,7 +896,7 @@ Item {
                              {reading: {playbackState: 3, playbackPausedReason: "unavailable"}, text: "Paused: another app has the audio.", said: full},
                              {reading: {playbackState: 3, playbackPausedReason: "noisy"}, text: "Paused: headphones unplugged"},
                              {reading: {playbackState: 3, playbackInterrupted: true}, text: "Paused for another app's audio"},
-                             {reading: {item: 2, playbackState: 2, playbackInterrupted: false, playbackPausedReason: "", playbackSkipped: 12}, text: "Skipped 12 recordings that couldn't be played"}];
+                             {reading: {item: 2, playbackState: 2, playbackInterrupted: false, playbackPausedReason: "", playbackSkipped: 12, playbackSkipNoticeCall: 1, playbackSkipNoticeCount: 12}, text: "Skipped 12 recordings that couldn't be played"}];
                 for (var l of lines) {
                     testContext.publishPlaybackReading(l.reading);
                     verify(waitForPolish(lineItem));

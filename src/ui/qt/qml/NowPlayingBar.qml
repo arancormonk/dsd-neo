@@ -96,8 +96,12 @@ Rectangle {
                 return spoken === true ? status.unavailableText : qsTr("Paused: another app has the audio.");
             return reason === "noisy" ? qsTr("Paused: headphones unplugged") : qsTr("Paused");
         }
-        if (status.skipCount > 0 && status.skipCall === callIndex)
-            return status.skippedText(status.skipCount);
+        // The player's skip notice: the recordings skipped before this call
+        // played, while it is the call playing (the player knows which call
+        // followed them, whenever the app looked).
+        var skips = Number(decoderHost.playbackSkipNoticeCount) || 0;
+        if (skips > 0 && Number(decoderHost.playbackSkipNoticeCall) === callIndex)
+            return status.skippedText(skips);
         return "";
     }
     // Parts joined so a wrap falls only between them, after a dot (as the

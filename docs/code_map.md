@@ -20023,14 +20023,14 @@ Qt Quick frontend (`src/ui/qt`):
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,
       its saved end, its events with an event id and a heard flag (a refused resume is an event each time: its reason
       turning "unavailable", or `playbackRefusals` moving on the same reading, which the sheet's notice line says again
-      too), and its skips (said on the call after them: a skip waits until a part plays after it, never in the gap after
-      the call it happened on, and is said on that part's call until the call changes); `NowPlayingBar` (both History
-      screens, one height from its fonts and width, hidden while the keyboard is up) shows it and announces an unheard
-      event once, only
-      while its screen is visible, reachable and the application active, after the host has read the platform on a
-      foreground return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose uid
-      is `playbackKey` (History, Monitor, Home). Clear history ends a History playlist. History closes its detail sheet
-      when its screen hides (B5).
+      too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up)
+      shows it, says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call
+      playing: the player names the call that followed the skips, so a call Qt sees first after a stretch away never
+      takes an earlier skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event
+      once, only while its screen is visible, reachable and the application active, after the host has read the platform
+      on a foreground return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose
+      uid is `playbackKey` (History, Monitor, Home). Clear history ends a History playlist. History closes its detail
+      sheet when its screen hides (B5).
     - Documented limits: calls recorded after the press are not added; the limit or a delete can take a queued
       recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
       play or foreground return; a start redelivered after the process died may flash the notification; while the app is
