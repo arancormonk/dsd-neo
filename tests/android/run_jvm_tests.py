@@ -271,6 +271,44 @@ def playback_codes_match():
     return None
 
 
+def top_level_items(text):
+    """The comma-separated items of @p text outside any parentheses, empty ones (a trailing comma's) left out."""
+    items, depth, item = [], 0, []
+    for char in text:
+        if char == "," and depth == 0:
+            items.append("".join(item).strip())
+            item = []
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        item.append(char)
+    items.append("".join(item).strip())
+    return [entry for entry in items if entry]
+
+
+def playback_record_fields_match():
+    """#909: the status record's fields are read by position, so Status.record() and the idle record in
+    RecordingPlayback.kt must list as many as playback_status_record.h's kPlaybackStatusFields."""
+    header = REPO / "android/playback_status_record.h"
+    player = REPO / APP_SOURCES / "RecordingPlayer.kt"
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        count = re.search(r"constexpr int kPlaybackStatusFields = (\d+);", header.read_text(encoding="utf-8"))
+        record = re.search(r"fun record\(nowMs: Long\): String = listOf\((.*?)\)\.joinToString",
+                           player.read_text(encoding="utf-8"), re.S)
+        idle = re.search(r"fun idleRecord\(\): String =\s*listOf\((.*?)\)\.joinToString",
+                         playback.read_text(encoding="utf-8"), re.S)
+    except OSError as error:
+        return f"cannot read the playback status record: {error}"
+    if not count or not record or not idle:
+        return "kPlaybackStatusFields, Status.record() and RecordingPlayback's idleRecord() must all be found"
+    for source, found in ((player, record), (playback, idle)):
+        fields = len(top_level_items(found.group(1)))
+        if fields != int(count.group(1)):
+            return (f"{source.relative_to(REPO)} writes {fields} status record fields, and "
+                    f"{header.relative_to(REPO)} reads {count.group(1)}")
+    return None
+
+
 def recordings_provider_contract():
     """#708: the recordings provider serves the two "Call recordings" folders and the share copies' cache folder that
     RecordingShare names, and no more."""
@@ -1611,7 +1649,7 @@ SUITES = {
     # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
     # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
-        checks=(playback_states_match, playback_modes_match, playback_codes_match),
+        checks=(playback_states_match, playback_modes_match, playback_codes_match, playback_record_fields_match),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
             Build(sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt"), tests=("PlaybackServicePhasesTest.kt",)),

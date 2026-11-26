@@ -19950,8 +19950,12 @@ Qt Quick frontend (`src/ui/qt`):
       fields and fixed reason codes, each reason checked against its own field's codes, which `run_jvm_tests.py` checks
       are `RecordingPlayer.kt`'s, a malformed record ignored with no change published): generation, state, position,
       duration, error, item index, play token, call, calls, part, parts, gap, interrupted, can seek, paused reason,
-      ended reason, skipped count, recheck serial. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and
-      the identity from the item index of the same record, and publishes everything together; the position alone goes on
+      ended reason, skipped count, recheck serial, refusals (the focus requests this play was refused, so a refusal
+      read again with the same reading still moves it), skip notice call and count (the call a part played on after
+      recordings were skipped, and how many, kept by the player while that call is current: `noteSkips()` when a part
+      starts, cleared when another call opens; -1 and 0 with none). `run_jvm_tests.py` checks the writers and the parser
+      count the same fields. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the
+      item index of the same record, and publishes everything together; the position alone goes on
       `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once.
     - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
       the old generation ends (its service is told it was replaced), the new one publishes Preparing and the call

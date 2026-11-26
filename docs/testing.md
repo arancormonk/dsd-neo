@@ -196,7 +196,9 @@ ready, a replaced player's late callbacks, and for the History playlist (issue #
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
 pause), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
-good, B all failed, C good), all failed, a player-wide error, the recheck list across Stop and replacement, the
+good, B all failed, C good), all failed, a player-wide error, the skip notice on the call a part played on after the
+skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the gap after the call the skip happened
+on), the refusal count moving on each refused focus request, the recheck list across Stop and replacement, the
 state/action table row by row (a command a state forbids is dropped), interruption with a system Play and with the app's
 Pause, noisy in each state, the 10-minute deadline with a clock jump, a late task and deep sleep (the screen turning on
 ends it, `onAwake()`), play tokens (Pause and Resume for the item in a gap with no player after its last part failed, no
@@ -220,16 +222,16 @@ export after it, recordings gone, a single save, more than 65,535 entries (ZIP64
 `RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
 outlives its original, the copies' clean and the share intent.
 Each first checks what crosses JNI or the manifest (the playback states and transfer results against `DecoderHost`'s
-enums, the status record's reason codes against `playback_status_record.h`'s, the provider serving only the two "Call
-recordings" folders and the share copies' cache folder, with a read grant). They skip the FIFO and symbolic-link cases
-where the host cannot make them.
+enums, the status record's reason codes and field count against `playback_status_record.h`'s, the provider serving only
+the two "Call recordings" folders and the share copies' cache folder, with a read grant). They skip the FIFO and
+symbolic-link cases where the host cannot make them.
 The History playlist's C++ and QML (issue #909) run in `UI_QT_CALL_HISTORY_PLAYLIST`, the builder over the real
 `historyView` filter (two proxies with different filters, order, the start uid, a uid gone after a search flush, parts
 and withdrawn fragments, notices, interleaved timestamps, 1,000 rows with multi-part rows in one store read, and every
 result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row order in one reader lock, the map's
 identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
 identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
-(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 18-field status record and malformed ones ignored (a
+(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 21-field status record and malformed ones ignored (a
 reason not among its own field's codes included), the terminal record after a platform stop, the recheck paths on a
 serial change, on a foreground return and with the next play, token commands (a stale token's dropped, and no position
 shown for any seek: only the player's record moves it), the replacement point, the legacy `playRecording()` missing-file

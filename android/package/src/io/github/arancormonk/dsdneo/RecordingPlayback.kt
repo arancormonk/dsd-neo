@@ -179,7 +179,7 @@ object RecordingPlayback {
     fun resumeFor(token: Long) = post { it.resumeFor(it.status.generation, token) }
 
     /**
-     * The player's status record ([RecordingPlayer.Status.record], 18 fields), which DecoderHostAndroid parses; the
+     * The player's status record ([RecordingPlayer.Status.record], 21 fields), which DecoderHostAndroid parses; the
      * idle record before the first play.
      */
     @JvmStatic
@@ -435,7 +435,7 @@ object RecordingPlayback {
 
     /** The record [status] gives before the first play, as after a host stop. */
     private fun idleRecord(): String =
-        listOf(0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial).joinToString("\t")
+        listOf(0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial, 0, -1, 0).joinToString("\t")
 
     /** Once per state change, coalesced: the service shows the player's current status on the main thread. */
     private fun requestRender() {

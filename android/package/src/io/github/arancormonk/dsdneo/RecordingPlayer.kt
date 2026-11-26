@@ -243,6 +243,14 @@ class RecordingPlayer(
         val endedReason: String,
         val skipped: Int,
         val recheckSerial: Int,
+        /** The focus requests this play was refused: it moves on each, so a refusal read again is news. */
+        val refusals: Int,
+        /**
+         * The skip notice: the call that played after recordings were skipped ([skipNoticeCount] of them since the
+         * last notice), while that call is current; -1 and 0 with none.
+         */
+        val skipNoticeCall: Int,
+        val skipNoticeCount: Int,
         /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED or SESSION_STOPPED (the playlist table). */
         val sessionState: Int,
         /** The ACTION_* bits the session offers. */
@@ -259,19 +267,22 @@ class RecordingPlayer(
         }
 
         /**
-         * The status record DecoderHostAndroid parses: 18 fields, tab-separated, in this order:
+         * The status record DecoderHostAndroid parses: 21 fields, tab-separated, in this order:
          * generation, state, position ms, duration ms, error, item index, play token, call, calls, part ordinal,
-         * part count, gap, interrupted, can seek, paused reason, ended reason, skipped count, recheck serial.
+         * part count, gap, interrupted, can seek, paused reason, ended reason, skipped count, recheck serial,
+         * refusals, skip notice call, skip notice count.
          *
          * Numbers are decimal (the play token is a 64-bit count from 1; 0 = none). The flags are 0 or 1. With no item
          * (before the first play, after a host stop): item index -1, call -1, calls 0, part ordinal and count 0. Error
          * is empty or ERROR_*, set only while the state is FAILED. Paused reason is empty or PAUSED_*, set only while
          * nothing is wanted (or SINGLE/PARTS wait for the foreground). Ended reason is empty or ENDED_* (never
-         * ENDED_REPLACED), set only once the play has ended; the state is then STOPPED or FAILED.
+         * ENDED_REPLACED), set only once the play has ended; the state is then STOPPED or FAILED. Refusals count from 0
+         * for each play. The skip notice's call is -1 (its count 0) with none.
          */
         fun record(nowMs: Long): String = listOf(
             generation, state, positionMs(nowMs), durationMs, error, itemIndex, playToken, call, calls, partOrdinal,
             partCount, flag(gap), flag(interrupted), flag(canSeek), pausedReason, endedReason, skipped, recheckSerial,
+            refusals, skipNoticeCall, skipNoticeCount,
         ).joinToString("\t")
 
         private fun flag(value: Boolean) = if (value) 1 else 0
@@ -400,6 +411,12 @@ class RecordingPlayer(
     private var callStarts = IntArray(1)
     private var failed = BooleanArray(0)
     private var skipped = 0
+
+    /** Skips no part has played after yet, and the notice of the ones a part played after (its call, their count). */
+    private var skipsPending = 0
+    private var skipNoticeCall = -1
+    private var skipNoticeCount = 0
+    private var refusals = 0
     private var index = -1
     private var token = 0L
     private var player: Player? = null
@@ -851,6 +868,7 @@ class RecordingPlayer(
         if (!failed[index]) {
             failed[index] = true
             skipped++
+            skipsPending++
         }
         if (move == null) {
             // Outside a move it failed while it played (or held the gap): go on as if it had completed.
@@ -893,8 +911,31 @@ class RecordingPlayer(
             current.start()
             playing = true
             playingSinceMs = clock.elapsedMs()
+            noteSkips()
         }
         publish()
+    }
+
+    /**
+     * A part plays: the skips before it are said on its call (added to a notice already on that call, a part of it
+     * skipped), never on the gap after the call they happened on.
+     */
+    private fun noteSkips() {
+        if (skipsPending == 0) {
+            return
+        }
+        val call = currentCall()
+        skipNoticeCount = if (call == skipNoticeCall) skipNoticeCount + skipsPending else skipsPending
+        skipNoticeCall = call
+        skipsPending = 0
+    }
+
+    /** The notice lasts while its call is current: another call (or none) ends it. */
+    private fun followSkipNotice() {
+        if (skipNoticeCall >= 0 && items.getOrNull(index)?.call != skipNoticeCall) {
+            skipNoticeCall = -1
+            skipNoticeCount = 0
+        }
     }
 
     private fun ensureFocus(): Boolean {
@@ -908,6 +949,7 @@ class RecordingPlayer(
             interrupted = false
             return true
         }
+        refusals++
         if (startRequest) {
             end(FAILED, ERROR_UNAVAILABLE, ENDED_FAILED)
         } else {
@@ -1100,6 +1142,10 @@ class RecordingPlayer(
         pausedSinceMs = -1
         promoted = true
         skipped = 0
+        skipsPending = 0
+        skipNoticeCall = -1
+        skipNoticeCount = 0
+        refusals = 0
         startRequest = true
         ended = null
         dropFocus()
@@ -1229,6 +1275,9 @@ class RecordingPlayer(
             endedReason = ended?.reason ?: "",
             skipped = skipped,
             recheckSerial = recheck.serial,
+            refusals = refusals,
+            skipNoticeCall = skipNoticeCall,
+            skipNoticeCount = skipNoticeCount,
             sessionState = sessionState(),
             actions = actions(),
         )
@@ -1236,6 +1285,7 @@ class RecordingPlayer(
 
     private fun publish() {
         syncDeadline()
+        followSkipNotice()
         status = snapshot()
         if (mode == MODE_PLAYLIST && generation != 0) {
             service.changed(status)

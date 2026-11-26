@@ -2613,6 +2613,9 @@ struct StatusFields {
     QString ended;
     int skipped = 0;
     int serial = 0;
+    int refusals = 0;
+    int skipCall = -1;
+    int skipCount = 0;
 
     QString
     text() const {
@@ -2630,6 +2633,9 @@ struct StatusFields {
         f.append(ended);
         f.append(QString::number(skipped));
         f.append(QString::number(serial));
+        for (const int n : {refusals, skipCall, skipCount}) {
+            f.append(QString::number(n));
+        }
         return f.join(QLatin1Char('\t'));
     }
 };
@@ -2952,6 +2958,22 @@ check_playlist_record() {
     host.refresh();
     check(host.playbackPausedReason() == QStringLiteral("unavailable") && host.playbackError().isEmpty(),
           "a resume refused the audio reads paused, unavailable, with no error");
+    // Refused again: the same reading but for the refusal count, which is news on its own.
+    const int refusedChanges = seen.changed;
+    f.refusals = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackRefusals() == 1 && seen.changed == refusedChanges + 1,
+          "a refusal read again moves the count, published as a change");
+    f.skipCall = 1;
+    f.skipCount = 2;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackSkipNoticeCall() == 1 && host.playbackSkipNoticeCount() == 2
+              && host.property("playbackSkipNoticeCall").toInt() == 1 && seen.changed == refusedChanges + 2,
+          "the skip notice's call and count are published");
+    f.skipCall = -1;
+    f.skipCount = 0;
 
     f.item = 3;
     f.paused.clear();

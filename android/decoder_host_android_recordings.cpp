@@ -322,6 +322,9 @@ DecoderHostAndroid::applyPlaybackRecord(const PlaybackStatusRecord& record) {
     reading.pausedReason = record.pausedReason;
     reading.endedReason = record.endedReason;
     reading.skipped = record.skipped;
+    reading.refusals = record.refusals;
+    reading.skipNoticeCall = record.skipNoticeCall;
+    reading.skipNoticeCount = record.skipNoticeCount;
     const bool failed = record.state == PlaybackFailed;
     if (failed) {
         reading.positionMs = 0;

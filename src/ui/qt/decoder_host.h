@@ -111,6 +111,9 @@ class DecoderHost : public QObject {
     Q_PROPERTY(QString playbackPausedReason READ playbackPausedReason NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackEndedReason READ playbackEndedReason NOTIFY playbackChanged)
     Q_PROPERTY(int playbackSkipped READ playbackSkipped NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackRefusals READ playbackRefusals NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackSkipNoticeCall READ playbackSkipNoticeCall NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackSkipNoticeCount READ playbackSkipNoticeCount NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackHoldPath READ playbackHoldPath NOTIFY playbackChanged)
     Q_PROPERTY(bool recordingExportSupported READ recordingExportSupported CONSTANT)
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
@@ -205,6 +208,9 @@ class DecoderHost : public QObject {
         QString pausedReason;
         QString endedReason;
         int skipped = 0;
+        int refusals = 0;
+        int skipNoticeCall = -1;
+        int skipNoticeCount = 0;
     };
 
     /**
@@ -430,7 +436,11 @@ class DecoderHost : public QObject {
      * error). playbackEndedReason: "" while open, else "finished", "stopped" (from the notification or
      * another surface), "focus" (another app started playing), "timeout" (ten minutes paused), "unplayable" (no
      * recording could be played), "start" (the playlist could not start) or "failed". playbackSkipped: the recordings
-     * this play found unplayable and skipped. playbackHoldPath: the file the recording store holds from deletes while it
+     * this play found unplayable and skipped. playbackRefusals: the audio requests the platform refused this play, so
+     * a refusal read again (the same paused reading) is still news. playbackSkipNoticeCall and
+     * playbackSkipNoticeCount: the call (an index as playbackCallIndex) that played after recordings were skipped and
+     * how many, while that call is the one playing (-1 and 0: none); the player keeps it, so it names the right call
+     * whatever was seen in between. playbackHoldPath: the file the recording store holds from deletes while it
      * plays; only a single recording's play holds one (empty for parts and playlists, which hold no files).
      */
     virtual bool
@@ -556,6 +566,21 @@ class DecoderHost : public QObject {
     int
     playbackSkipped() const {
         return m_playback.skipped;
+    }
+
+    int
+    playbackRefusals() const {
+        return m_playback.refusals;
+    }
+
+    int
+    playbackSkipNoticeCall() const {
+        return m_playback.skipNoticeCall;
+    }
+
+    int
+    playbackSkipNoticeCount() const {
+        return m_playback.skipNoticeCount;
     }
 
     /** @brief The path of a single recording's play while it is open (Preparing, Playing or Paused), else empty. */

@@ -47,10 +47,13 @@ struct PlaybackStatusRecord {
     QString endedReason;
     int skipped = 0;
     qint64 recheckSerial = 0; // RecordingRecheck.serial: moves when a path waits for takeRecheck()
+    int refusals = 0;         // focus requests this play was refused: a refusal read again moves it
+    int skipNoticeCall = -1;  // the call that played after skips, while it is current; -1: none
+    int skipNoticeCount = 0;  // the skips said on it
 };
 
 /** @brief How many tab-separated fields a status record has. */
-constexpr int kPlaybackStatusFields = 18;
+constexpr int kPlaybackStatusFields = 21;
 
 namespace detail {
 
@@ -104,9 +107,10 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
 
     constexpr qint64 kInt = std::numeric_limits<int>::max();
     constexpr qint64 kLong = std::numeric_limits<qint64>::max();
-    static constexpr Range kNumbers[] = {{0, 0, kInt},  {1, 0, 4},     {2, 0, kLong}, {3, 0, kLong}, {5, -1, kInt},
-                                         {6, 0, kLong}, {7, -1, kInt}, {8, 0, kInt},  {9, 0, kInt},  {10, 0, kInt},
-                                         {11, 0, 1},    {12, 0, 1},    {13, 0, 1},    {16, 0, kInt}, {17, 0, kLong}};
+    static constexpr Range kNumbers[] = {{0, 0, kInt},  {1, 0, 4},      {2, 0, kLong}, {3, 0, kLong}, {5, -1, kInt},
+                                         {6, 0, kLong}, {7, -1, kInt},  {8, 0, kInt},  {9, 0, kInt},  {10, 0, kInt},
+                                         {11, 0, 1},    {12, 0, 1},     {13, 0, 1},    {16, 0, kInt}, {17, 0, kLong},
+                                         {18, 0, kInt}, {19, -1, kInt}, {20, 0, kInt}};
     qint64 n[kPlaybackStatusFields] = {};
     const bool numbers = std::all_of(std::begin(kNumbers), std::end(kNumbers), [&fields, &n](const Range& range) {
         return detail::playback_status_number(fields.at(range.index), range.low, range.high, &n[range.index]);
@@ -136,6 +140,9 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
     record.endedReason = fields.at(15);
     record.skipped = static_cast<int>(n[16]);
     record.recheckSerial = n[17];
+    record.refusals = static_cast<int>(n[18]);
+    record.skipNoticeCall = static_cast<int>(n[19]);
+    record.skipNoticeCount = static_cast<int>(n[20]);
     *out = std::move(record);
     return true;
 }

@@ -265,9 +265,9 @@ private fun aPlayStartsOncePreparedAndHoldsTheFocus() {
     rig.nowMs += 1_500
     check(rig.position == 1_500L) { "the position runs while it plays: ${rig.position}" }
     val token = rig.status.playToken
-    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0"
+    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0\t0\t-1\t0"
     check(rig.status.record(rig.nowMs) == record) { "the record is what the host parses: ${rig.status.record(rig.nowMs)}" }
-    check(rig.status.record(rig.nowMs).split('\t').size == 18) { "the record has its 18 fields" }
+    check(rig.status.record(rig.nowMs).split('\t').size == 21) { "the record has its 21 fields" }
 
     rig.machine.pause()
     check(rig.state == PAUSED && !rig.last.started && !rig.focus.held) { "a pause pauses and gives the focus back" }
@@ -1294,6 +1294,13 @@ private fun aRefusedResumeStaysPausedInEveryMode() {
     check(opening.state == PAUSED && opening.status.pausedReason == RecordingPlayer.PAUSED_UNAVAILABLE) {
         "a resume refused the focus stays paused, though no request had been granted yet"
     }
+    check(opening.status.refusals == 1 && opening.status.record(opening.nowMs).split('\t')[18] == "1") {
+        "the refusal is counted in the record"
+    }
+    opening.machine.resume()
+    check(opening.status.refusals == 2 && opening.status.pausedReason == RecordingPlayer.PAUSED_UNAVAILABLE) {
+        "asked again and refused again, the reading is the same but for the count, which moved"
+    }
     check(opening.status.endedReason.isEmpty() && !opening.current.released) { "it has not ended" }
     opening.focus.grants = true
     opening.machine.resume()
@@ -1326,6 +1333,62 @@ private fun aRefusedResumeStaysPausedInEveryMode() {
     parts.queue(2, mode = MODE_PARTS)
     parts.prepared()
     check(parts.state == FAILED && parts.status.error == RecordingPlayer.ERROR_UNAVAILABLE) { "refused at its start it fails" }
+}
+
+/**
+ * The skip notice names the call that played after the skips and their count, while that call is current: A skipped,
+ * B plays (the notice on B), C opens (none).
+ */
+private fun theSkipNoticeIsOnTheCallThatPlayedAfterIt() {
+    val rig = Rig()
+    rig.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+    rig.queue(1, 1, 1)
+    check(rig.status.skipped == 1 && rig.status.skipNoticeCall == -1) { "A skipped: nothing has played after it yet" }
+    rig.turn()
+    check(rig.status.call == 1 && rig.status.skipNoticeCall == -1) { "B opening: still none" }
+    rig.prepared()
+    check(rig.status.skipNoticeCall == 1 && rig.status.skipNoticeCount == 1) { "B plays: the notice is B's" }
+    val record = rig.status.record(rig.nowMs).split('\t')
+    check(record[19] == "1" && record[20] == "1") { "in the record: $record" }
+    rig.complete()
+    check(rig.status.gap && rig.status.skipNoticeCall == 1) { "through B's gap" }
+    rig.elapse(1_000)
+    check(rig.status.call == 2 && rig.status.skipNoticeCall == -1 && rig.status.skipNoticeCount == 0) {
+        "C opens: the notice is over, whoever looked when"
+    }
+    rig.prepared()
+    check(rig.status.skipNoticeCall == -1 && rig.status.skipped == 1) { "C plays with none; the total stays" }
+
+    // A part of a call skipped: the notice is on that call, once a later part of it plays, and adds up there.
+    val part = Rig()
+    part.fail(path(0, 2), RecordingPlayer.REASON_GONE)
+    part.fail(path(0, 4), RecordingPlayer.REASON_CHANGED)
+    part.queue(5, 1)
+    part.prepared()
+    part.complete()
+    part.turn()
+    check(part.last.path == path(0, 3) && part.status.skipNoticeCall == -1) { "part 3 opening after part 2's skip" }
+    part.prepared()
+    check(part.status.skipNoticeCall == 0 && part.status.skipNoticeCount == 1) { "part 3 plays: call 0, one" }
+    part.complete()
+    part.turn()
+    part.prepared()
+    check(part.status.skipNoticeCall == 0 && part.status.skipNoticeCount == 2) { "part 5 plays after part 4's: two" }
+
+    // The last part skipped while it played: never said in the gap after its call, but on the next call.
+    val last = Rig()
+    last.queue(1, 1)
+    last.prepared()
+    last.machine.onFailed(last.current.token, RecordingPlayer.REASON_DAMAGED)
+    last.turn()
+    check(last.status.gap && last.status.skipNoticeCall == -1) { "the gap after the call it happened on: none" }
+    last.elapse(1_000)
+    last.prepared()
+    check(last.status.skipNoticeCall == 1 && last.status.skipNoticeCount == 1) { "the next call plays: its notice" }
+    last.queue(1)
+    check(last.status.skipNoticeCall == -1 && last.status.refusals == 0 && last.status.skipped == 0) {
+        "the next play starts with none"
+    }
 }
 
 private fun aPauseHoldsWhileItSearches() {
@@ -1698,6 +1761,7 @@ fun main() {
     previousDuringASkipDoesNotWaitForTheTurn()
     anErrorFromThePartThatPlayedOutIsIgnoredInTheGap()
     aRefusedResumeStaysPausedInEveryMode()
+    theSkipNoticeIsOnTheCallThatPlayedAfterIt()
     aPauseHoldsWhileItSearches()
     theRecheckListOutlivesThePlayAndHandsEachPathOnce()
     theTableDrivesStateSpeedAndActions()
