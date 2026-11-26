@@ -245,9 +245,10 @@ press acting only on the target it began on, a sheet's own play kept its own aft
 parts playing on when its row's last listed part is deleted, against the fake host's queue model in `qml_test_context.h`
 (which, as the real host does, publishes no change for a reading published again as it stands), with `playbackSupported`
 set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach, names and gating). What only
-Android decides (the service's promotion, the media session and notification, the media keys, the noisy broadcast, the
-lock screen, the 10-minute pause with the real clock and the release APK's R8 keeps) is
-checked on emulators; `ANDROID_R8` checks the keep rules against the native upcalls, and
+Android decides (the service's promotion, the media session and notification, the media keys and the session's own
+handling of a headset's taps (`onMediaButtonEvent`), the noisy and screen-on receivers, the lock screen, the 10-minute
+pause with the real clock and the release APK's R8 keeps) is checked on emulators; `ANDROID_R8` checks the keep rules
+against the native upcalls, and
 `tools/check_android_r8.py` the release APK.
 `ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
 activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,

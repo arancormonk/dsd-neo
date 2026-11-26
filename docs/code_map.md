@@ -19953,9 +19953,10 @@ Qt Quick frontend (`src/ui/qt`):
       0, Play a no-op; paused PAUSED 0, Play, seek when the duration is above 0. Next/Previous and Stop in every row;
       SKIP_TO_NEXT/PREVIOUS only while a move exists. Opening reads PLAYING (not BUFFERING), so a headset tap, which the
       framework toggles on STATE_PLAYING, pauses it. `playbackCanSeek` comes from the same value and the sheet's seek
-      bar reads it. The host's state reads Preparing for both opening rows; Qt tells them apart by the paused reason
-      the record carries only while nothing is wanted: Preparing with a reason reads Paused, with Resume, on the sheet,
-      the bar and the row marker.
+      bar reads it. The host's state reads Preparing for both opening rows; Qt tells them apart by the paused reason the
+      record carries only while nothing is wanted, or (`background`) while a sheet's SINGLE or PARTS play waits for the
+      foreground, which a visible app never shows: Preparing with a reason reads Paused, with Resume, on the sheet, the
+      bar and the row marker.
     - Status record (`RecordingPlayback.status()`, parsed by `playback_status_record.h`, tab-separated, bounded, numeric
       fields and fixed reason codes, each reason checked against its own field's codes, which `run_jvm_tests.py` checks
       are `RecordingPlayer.kt`'s, a malformed record ignored with no change published): generation, state, position,
