@@ -183,10 +183,13 @@ Item {
             Ui.Theme.resetFontScale();
             testContext.resetHostPlayback();
             status.forget();
-            // Both lists shown again build their rows before the next case clears the log under them.
+            // Both lists shown again build their rows before the next case clears the log under them. A frame is
+            // asked for, so the wait for it ends at that frame: with nothing changed since the last one, no frame
+            // would come, and the wait would run out its 5 s.
             for (screen of screens())
                 verify(waitForPolish(findChild(screen, "callLogList")));
-            waitForRendering(root);
+            root.Window.window.update();
+            verify(waitForRendering(root), "the frame after the cleanup is drawn");
         }
 
         // Play all sits beside Map, unframed as Map is, on Export's rule and only where the host has a player; held
