@@ -19791,11 +19791,11 @@ Qt Quick frontend (`src/ui/qt`):
     paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
     (the one shown kept on its recording by path; a chip only selects, and an away part is selectable with its away
     line but never plays, issue #909 B1) with a Play all parts action (a PARTS queue in the Kotlin player through
-    `playRecordings(items, PlaybackParts, "")`, the available parts only, one transient focus kept across them,
-    ending on the first part that fails, skipping one that never prepares, which the block's notice line says once
-    on the part that played after it, from the player's skip notice and in the bar's words, `Util.skippedText()`; skips
-    no part played after are said when the play finishes (the end's skip count), a play whose every part was skipped
-    says them as its failure, and one that ends on a part that failed says only that failure, B2/B7), Share
+    `playRecordings(items, PlaybackParts, "")`, the available parts only, one transient focus kept across them, ending
+    on the first part that fails, skipping one that never prepares, which the block's notice line says once on the part
+    that played after it, from the player's skip notice and in the bar's words, `Util.skippedText()`; skips no part
+    played after are said when the play finishes (the end's skip count), a play whose every part was skipped says them
+    as its failure, and one that ends on a part that failed says only that failure, B2/B7), Share
     (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
     `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
     says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
@@ -19823,15 +19823,14 @@ Qt Quick frontend (`src/ui/qt`):
     `IconButton` and `OutlineButton`): the sheet's Play, Pause/Resume, seek bar, Share, Save to file and Delete, and
     the bar's Pause/Resume, Previous, Next, ✕ and Show in list. The others (the part chips, Play all parts, Play from
     here and History's Play all) act on a fixed target. The press takes a key, the action the control would perform and
-    the identity of what it shows,
-    and the tap acts only if the same key is current at the release, else it is dropped; a release with no press taken
-    is dropped too. The sheet's Play keys on the part shown (its path and the indexed size and mtime, so a reread that
-    put another recording under the same id and path drops it, while a playlist moving elsewhere does not), its
-    Pause/Resume on the action, the generation and the token, Share, Save to file and Delete on the part shown (its id,
-    path and indexed size and mtime: a sheet that follows the play to the next part during the press drops the tap),
-    and the seek bar on its token (`GatedTapHandler.pressBegan`, a drag's start included; a drag's preview shows only
-    while its token is the one open, and a keyboard or screen reader step seeks from the open recording's own
-    position, never from a drag's preview). The bar's Pause/Resume keys on whether it would pause and
+    the identity of what it shows, and the tap acts only if the same key is current at the release, else it is dropped;
+    a release with no press taken is dropped too. The sheet's Play keys on the part shown (its path and the indexed size
+    and mtime, so a reread that put another recording under the same id and path drops it, while a playlist moving
+    elsewhere does not), its Pause/Resume on the action, the generation and the token, Share, Save to file and Delete on
+    the part shown (its id, path and indexed size and mtime: a sheet that follows the play to the next part during the
+    press drops the tap), and the seek bar on its token (`GatedTapHandler.pressBegan`, a drag's start included; a drag's
+    preview shows only while its token is the one open, and a keyboard or screen reader step seeks from the open
+    recording's own position, never from a drag's preview). The bar's Pause/Resume keys on whether it would pause and
     the playlist, and Previous, Next and ✕ on the playlist, the action and whether it has ended, so a press held on one
     playlist never moves or stops the next one, nor a press on an ended result stops a new one; Show in list keys on the
     playlist and the call it names (`playbackKey`, or the ended reading's key). A keyboard or screen reader activation
@@ -19926,63 +19925,59 @@ Qt Quick frontend (`src/ui/qt`):
       part's `MediaPlayer` (so its callbacks come to the looper), arms the prepare timeout and hands the player to the
       setup thread (`RecordingPlayer.Opener.setup()`; in `RecordingPlayback.kt` a single-thread executor, a daemon
       thread `dsd-neo-playback-setup` beside the looper and as long-lived), which opens the file
-      (`RecordingDescriptor.open()`, or a plain open for SINGLE), calls `setDataSource(fd)` and `prepareAsync()`,
-      closes what it opened and posts its result (done, or failed with the reason) with the part's token. Until then
-      the looper never touches that player (a prepare answering first is noted and applied at adoption; an error
-      drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a replacement)
-      only releases its player; one that found its file gone or changed still puts the path it tried (carried in the
-      result) on the recheck list, leaving the play now open alone. A setup dropped with its result still out (its
-      prepare timeout, a move, Stop, the end, a replacement, an error while it runs) gives its thread up at once
-      (`Opener.abandonSetup()`: that executor is shut down, so it takes no new work, and finishes on its own, its late
-      result released as any), and the next setup starts a fresh thread, so nothing ever queues behind a read that does
-      not return; healthy setups finish in milliseconds, so the cost is at most a short-lived thread per quick move.
-      Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
-      `LIMIT`): while two are running, each holding a thread and a `MediaPlayer` in a read that may never return, an
-      open makes no player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the
-      wait. One leaves the count when its work returns on its setup thread, before its result is posted, so a setup that
-      is done and waits only for delivery counts for nothing; the looper hears it when that result is delivered, which
-      releases its player and lets the waiting open go on under its own token. Only the current part waits, and Stop, a
-      move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
-      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
-      a setup. The JVM tests drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
+      (`RecordingDescriptor.open()`, or a plain open for SINGLE), calls `setDataSource(fd)` and `prepareAsync()`, closes
+      what it opened and posts its result (done, or failed with the reason) with the part's token. Until then the looper
+      never touches that player (a prepare answering first is noted and applied at adoption; an error drops the setup),
+      and a result for a part no longer current (timed out, Stop, a move, the end, a replacement) only releases its
+      player; one that found its file gone or changed still puts the path it tried (carried in the result) on the
+      recheck list, leaving the play now open alone. A setup dropped with its result still out (its prepare timeout, a
+      move, Stop, the end, a replacement, an error while it runs) gives its thread up at once (`Opener.abandonSetup()`:
+      that executor is shut down, so it takes no new work, and finishes on its own, its late result released as any),
+      and the next setup starts a fresh thread, so nothing ever queues behind a read that does not return; healthy
+      setups finish in milliseconds, so the cost is at most a short-lived thread per quick move. Setups given up are
+      counted for the process while their work still runs (`AbandonedSetups`, a limit of 2, `LIMIT`): while two are
+      running, each holding a thread and a `MediaPlayer` in a read that may never return, an open makes no player and
+      starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the wait. One leaves the
+      count when its work returns on its setup thread, before its result is posted, so a setup that is done and waits
+      only for delivery counts for nothing; the looper hears it when that result is delivered, which releases its player
+      and lets the waiting open go on under its own token. Only the current part waits, and Stop, a move or the end drop
+      the wait as they drop an opening, so stalled storage costs one ten-second timeout per recording, one at a time,
+      never a burst of failures, and quick moves never fail a recording. Stop never waits for a setup. The JVM tests
+      drive it with a fake setup that holds, runs late or fails, on numbered setup threads.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
-      before the hand-off to the setup thread and cancelled on prepare,
-      error, a move and the end: a SINGLE play then reads Failed, PARTS and PLAYLIST skip it, a resume waiting for it
-      still waiting for the next, and the hung part's late callbacks reach nothing); `player` (no player could be built,
-      or `MEDIA_ERROR_SERVER_DIED`) is not the file's fault and ends the play FAILED "failed". A PLAYLIST marks a failed
-      recording failed for this play (never its whole call), and the next not-failed one in the move's direction opens
-      on the next looper turn (a long run of failures stays stoppable; each search visits each recording once); PARTS
-      ends on its first failure as before (gone, changed, a media error), a prepare timeout aside, which it skips as a
-      playlist does (every part timed out: "unplayable"). A player is never reused: it is released as soon as its part
-      completes (just after the next part is
+      before the hand-off to the setup thread and cancelled on prepare, error, a move and the end: a SINGLE play then
+      reads Failed, PARTS and PLAYLIST skip it, a resume waiting for it still waiting for the next, and the hung part's
+      late callbacks reach nothing); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is not the file's
+      fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play (never its whole
+      call), and the next not-failed one in the move's direction opens on the next looper turn (a long run of failures
+      stays stoppable; each search visits each recording once); PARTS ends on its first failure as before (gone,
+      changed, a media error), a prepare timeout aside, which it skips as a playlist does (every part timed out:
+      "unplayable"). A player is never reused: it is released as soon as its part completes (just after the next part is
       handed off, so the release adds nothing to the joint), fails or is left, so an error or completion it reports
-      later reaches nothing (its token is never opened again); the gap after a call holds no player, only the
-      completed part's readings (item, token, duration, position). The paths of `gone` and
-      `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a replacement
-      never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a `String[]`, no
-      delimiter) when the serial moved, on every foreground return and with the next play, and hands the paths to
-      `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path is handed
-      over once.
+      later reaches nothing (its token is never opened again); the gap after a call holds no player, only the completed
+      part's readings (item, token, duration, position). The paths of `gone` and `changed` items go to the process-wide
+      `RecordingRecheck` (not tied to a generation, so a Stop or a replacement never drops one); its serial is in the
+      status record, and the host calls `takeRecheck()` (a `String[]`, no delimiter) when the serial moved, on every
+      foreground return and with the next play, and hands the paths to `recordingFilesMissing` (the store's root-aware
+      recheck, which keeps away storage's entries). Each path is handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
       sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part,
-      skips one whose prepare timed out) and
-      PLAYLIST (lasting `AUDIOFOCUS_GAIN` kept across parts, calls and gaps; ignores the foreground; starts audio only
-      once the service is promoted, in either order with the play, exactly once; refused or not promoted within 5 s,
-      `PROMOTION_MS`, ends "start"). Focus is `USAGE_MEDIA` + `CONTENT_TYPE_SPEECH`, `setWillPauseWhenDucked(true)`
-      (D8); only a granted request is kept, and a refused one is abandoned at once (`FocusRequests`: Android registers
-      its listener before it answers, so repeated refused resumes leave none behind). No gap between parts, a 1 s gap
-      (`GAP_MS`) after a call's last part (position frozen at the part's end, speed 0, no seek). Next: the next call's
-      first playable part at once (also from the gap); with calls after but none playable it ends the play as the
-      advance at the end does (finished, or "unplayable" when every recording failed), and at the last call it is
-      dropped. Previous (D7): restart
-      the call when a playable part of it comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or
-      it is in the gap, else the previous call's first playable part, and at the first call restart. A restart opens
-      the part again, as any move does (R31: a new `MediaPlayer` and play token, through the setup thread), also a part
-      still opening, so nothing of the pass before reaches it, and a part deleted while it played or opened is then a
-      failed open, skipped and counted (D9
+      skips one whose prepare timed out) and PLAYLIST (lasting `AUDIOFOCUS_GAIN` kept across parts, calls and gaps;
+      ignores the foreground; starts audio only once the service is promoted, in either order with the play, exactly
+      once; refused or not promoted within 5 s, `PROMOTION_MS`, ends "start"). Focus is `USAGE_MEDIA` +
+      `CONTENT_TYPE_SPEECH`, `setWillPauseWhenDucked(true)` (D8); only a granted request is kept, and a refused one is
+      abandoned at once (`FocusRequests`: Android registers its listener before it answers, so repeated refused resumes
+      leave none behind). No gap between parts, a 1 s gap (`GAP_MS`) after a call's last part (position frozen at the
+      part's end, speed 0, no seek). Next: the next call's first playable part at once (also from the gap); with calls
+      after but none playable it ends the play as the advance at the end does (finished, or "unplayable" when every
+      recording failed), and at the last call it is dropped. Previous (D7): restart the call when a playable part of it
+      comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or it is in the gap, else the previous
+      call's first playable part, and at the first call restart. A restart opens the part again, as any move does (R31:
+      a new `MediaPlayer` and play token, through the setup thread), also a part still opening, so nothing of the pass
+      before reaches it, and a part deleted while it played or opened is then a failed open, skipped and counted (D9
       still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
       backward move whose every candidate fails goes on forward. Next/Previous while paused stay paused. A transient
       focus loss interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the
@@ -19995,16 +19990,15 @@ Qt Quick frontend (`src/ui/qt`):
       way, until a part plays, the focus is refused or lost for a while, it is paused again (the deadline is back from
       the pause and ends it at once if the 10 minutes have passed) or the search ends (finished, unplayable), so a part
       still preparing at 10 minutes does not end "timeout"; the search bounds it, each recording visited once and each
-      open at most ten seconds),
-      checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's
-      awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered
-      on the looper while a playlist is open) and at every event, so it ends at the first of these after 10 minutes.
-      Identities: every open (a restart included) gets a fresh player and play token (unique in the process, never
-      reused); each scheduled task (gap,
-      skip search, deadline, promotion timeout, prepare timeout) has its own id and is cancelled when superseded; focus
-      callbacks carry an epoch; a callback, task or command whose identity is not current is dropped. The last
-      generation's terminal reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced; the item it
-      ended on) stays as the status until the next play, so the host reads a notification Stop on its next poll.
+      open at most ten seconds), checked against `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`,
+      which counts the device's awake time), when the screen turns on (`RecordingPlayer.onAwake()`, from an
+      `ACTION_SCREEN_ON` receiver registered on the looper while a playlist is open) and at every event, so it ends at
+      the first of these after 10 minutes. Identities: every open (a restart included) gets a fresh player and play
+      token (unique in the process, never reused); each scheduled task (gap, skip search, deadline, promotion timeout,
+      prepare timeout) has its own id and is cancelled when superseded; focus callbacks carry an epoch; a callback, task
+      or command whose identity is not current is dropped. The last generation's terminal reading (finished, stopped,
+      focus, timeout, unplayable, start, failed, replaced; the item it ended on) stays as the status until the next
+      play, so the host reads a notification Stop on its next poll.
     - State/action table (one table drives Qt and the session, and every command is checked against it again on
       delivery): opening (wanted) PLAYING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
       Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;
@@ -20036,17 +20030,17 @@ Qt Quick frontend (`src/ui/qt`):
       seek (the player may be on the next item since the poll the token came from, and drop it): the player's next
       record moves the position, and the sheet counts a seek as landed from that record (meanwhile it shows the target,
       so the thumb does not jump back for a poll, until the landing, another token, no seek or 2 s without one); the
-      player takes a Pause or Resume for the item also in the gap after its call (which holds no player), a seek only
-      on the item's open player; the bar's Next/Previous/Pause/Resume are
-      queue-wide, and its Stop names its generation (`stopPlaybackGeneration()`; a Stop for a generation no longer
-      current does nothing). A Delete never stops a queue: only a SINGLE play's own Delete stops it, as before; a
-      sheet's Play all parts plays on while its History row is there (`CallRecordingPlayer.rowPresent`), even once the
-      row lists none of its parts, and stops when the row is trimmed or cleared or the sheet closes. The playlist
-      belongs to the app (`historyPlaylist`, `playlistStatus` in `Main.qml`), never to a sheet: a sheet stops on close
-      only what it started (a positive generation equal to `playbackGeneration`), and a sheet that follows a playlist
-      item (by path and indexed identity, until the user picks a chip, never while a Save picker or a Delete
-      confirmation is out, never on position ticks) holds none. Part chips and Play all parts start a sheet play,
-      replacing the playlist. D10 (leaving pauses, closing the sheet stops) now applies only to sheet plays.
+      player takes a Pause or Resume for the item also in the gap after its call (which holds no player), a seek only on
+      the item's open player; the bar's Next/Previous/Pause/Resume are queue-wide, and its Stop names its generation
+      (`stopPlaybackGeneration()`; a Stop for a generation no longer current does nothing). A Delete never stops a
+      queue: only a SINGLE play's own Delete stops it, as before; a sheet's Play all parts plays on while its History
+      row is there (`CallRecordingPlayer.rowPresent`), even once the row lists none of its parts, and stops when the row
+      is trimmed or cleared or the sheet closes. The playlist belongs to the app (`historyPlaylist`, `playlistStatus` in
+      `Main.qml`), never to a sheet: a sheet stops on close only what it started (a positive generation equal to
+      `playbackGeneration`), and a sheet that follows a playlist item (by path and indexed identity, until the user
+      picks a chip, never while a Save picker or a Delete confirmation is out, never on position ticks) holds none. Part
+      chips and Play all parts start a sheet play, replacing the playlist. D10 (leaving pauses, closing the sheet stops)
+      now applies only to sheet plays.
     - Service (`RecordingPlaybackService.kt`, `foregroundServiceType="mediaPlayback"`, not exported, `START_NOT_STICKY`;
       the decoder's `DecoderService` may run beside it) and its order (`PlaybackServicePhases.kt`, plain Kotlin, one
       lock over admission, the phase NONE / ISSUED / PROMOTED / RETIRING, the reserved request and the owner).
@@ -20063,15 +20057,14 @@ Qt Quick frontend (`src/ui/qt`):
       generation still owns the service. After every delivery and every asynchronous end the instance retires
       (`stopSelfResult(lastStartId)`, removing only its own notification) when there is no owner, no request and no
       start outstanding, so a stale action that creates a fresh instance after the end leaves nothing running.
-      `onDestroy` settles only the generation it served, always releases its own session and taps, and clears the
-      media key handoff and cancels notification id 2 only while it is still the instance alive
+      `onDestroy` settles only the generation it served, always releases its own session and taps, and clears the media
+      key handoff and cancels notification id 2 only while it is still the instance alive
       (`PlaybackServicePhases.Destroyed`, the same fence), so a destroy reported after the next instance was created
-      leaves those to the new one; `onTaskRemoved` ends the playlist. Teardown:
-      `DsdNeoActivity.onDestroy` (not a configuration change) → `RecordingPlayback.release()` closes admission and
-      settles every request and owner; a promoted service is stopped with `stopService()`, a start issued but not
-      promoted is left to its delivery, which promotes and retires with no owner (stopping it first would raise
-      `ForegroundServiceDidNotStartInTimeException`). A start redelivered to a new process carries the old token,
-      promotes and retires.
+      leaves those to the new one; `onTaskRemoved` ends the playlist. Teardown: `DsdNeoActivity.onDestroy` (not a
+      configuration change) → `RecordingPlayback.release()` closes admission and settles every request and owner; a
+      promoted service is stopped with `stopService()`, a start issued but not promoted is left to its delivery, which
+      promotes and retires with no owner (stopping it first would raise `ForegroundServiceDidNotStartInTimeException`).
+      A start redelivered to a new process carries the old token, promotes and retires.
     - Session and notification: one framework `MediaSession` per service instance, made in `onCreate`, so the first
       `startForeground()` already carries its token (`Notification.MediaStyle().setMediaSession()`: the
       POST_NOTIFICATIONS exemption); callbacks on the playback looper, one callback object per playlist the session
@@ -20097,27 +20090,26 @@ Qt Quick frontend (`src/ui/qt`):
       released in `onDestroy`. Channel `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is
       1), default (private) lock-screen visibility, tap opens the launcher intent. The session follows every render at
       once; the notification is posted at most once per 500 ms (`NotificationPace`, plain Kotlin), the first of a burst
-      at once and the rest as one trailing post of the latest status, shown only if its playlist still owns the
-      service when it fires, dropped when a start's foreground notification shows the owner's current status, and
-      cancelled at the retire and in `onDestroy`:
-      Android sheds an app's updates over its enqueue rate (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per
-      package, shared with the decoder's notification, which posts at most once a second), and a shed last update left
-      a paused playlist's notification offering Pause on 29-32. On 29-32 the compact Previous /
-      Play-Pause / Next and Stop are immutable `getService` PendingIntents (a request code per generation and action;
-      `deleteIntent` → Stop); on 33+ SystemUI builds them from the PlaybackState. A partial wake lock
-      (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing, the gap); the `AUDIO_BECOMING_NOISY`
-      receiver (a protected broadcast, registered with no export flag) while any play is open, and the `SCREEN_ON` one
-      (the same way) while a playlist is open. While the media session is active for the playlist that owns the service
-      (`RecordingPlayback.playlistSession()`, the session's token: `ActiveSession` in `MediaKeys.kt`, published by the
-      service's `render()` once it has made the owner's session active, cleared at that playlist's end, at a render
-      with the session inactive and when the session is released, and not the owner's until its own render after a
-      replacement; the owner alone is set at promotion, before the looper starts the play),
-      `DsdNeoActivity.dispatchKeyEvent()` takes the media keys (`MediaKeys.sessionFor()`: headset hook, play, pause,
-      play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) from Qt, whose activity
-      consumes every key, and hands each to the playlist's own session (`MediaController(token)
-      .dispatchMediaButtonEvent()`), then consumes it: left to Android's routing, a key could reach another app's
-      session (a paused playlist's stays active while another app plays). With no playlist open they stay with Qt, as
-      before #909, so a headset's Play never resumes another app over the live audio or a sheet play.
+      at once and the rest as one trailing post of the latest status, shown only if its playlist still owns the service
+      when it fires, dropped when a start's foreground notification shows the owner's current status, and cancelled at
+      the retire and in `onDestroy`: Android sheds an app's updates over its enqueue rate
+      (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per package, shared with the decoder's notification, which
+      posts at most once a second), and a shed last update left a paused playlist's notification offering Pause on
+      29-32. On 29-32 the compact Previous / Play-Pause / Next and Stop are immutable `getService` PendingIntents (a
+      request code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the
+      PlaybackState. A partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing,
+      the gap); the `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any
+      play is open, and the `SCREEN_ON` one (the same way) while a playlist is open. While the media session is active
+      for the playlist that owns the service (`RecordingPlayback.playlistSession()`, the session's token:
+      `ActiveSession` in `MediaKeys.kt`, published by the service's `render()` once it has made the owner's session
+      active, cleared at that playlist's end, at a render with the session inactive and when the session is released,
+      and not the owner's until its own render after a replacement; the owner alone is set at promotion, before the
+      looper starts the play), `DsdNeoActivity.dispatchKeyEvent()` takes the media keys (`MediaKeys.sessionFor()`:
+      headset hook, play, pause, play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone
+      mute) from Qt, whose activity consumes every key, and hands each to the playlist's own session
+      (`MediaController(token) .dispatchMediaButtonEvent()`), then consumes it: left to Android's routing, a key could
+      reach another app's session (a paused playlist's stays active while another app plays). With no playlist open they
+      stay with Qt, as before #909, so a headset's Play never resumes another app over the live audio or a sheet play.
     - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
       Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,

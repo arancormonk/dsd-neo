@@ -823,12 +823,12 @@ History, the Monitor's Recent calls and Home's Recent activity.
 
 A playlist holds on to no files: deleting a recording (from its sheet or Call recordings) and the storage limit go ahead
 as if nothing played. A recording that is gone or was replaced by its turn is skipped, and DSD-neo reads its folder
-again; one that does not open within 10 seconds is skipped too (also by **Play all parts**, which otherwise stops at
-a part it can't play, and says **Skipped 1 recording that couldn't be played** under the part that plays next); the
-recording playing when it is deleted plays to its
-end (Previous then finds it gone and skips it, as Previous always opens the recording again). **Clear history** ends a
-playlist. Each recording is opened in the background, apart from the controls, so storage that stalls never holds them
-up: Stop works at once, and a recording stuck opening is skipped after its 10 seconds.
+again; one that does not open within 10 seconds is skipped too (also by **Play all parts**, which otherwise stops at a
+part it can't play, and says **Skipped 1 recording that couldn't be played** under the part that plays next); the
+recording playing when it is deleted plays to its end (Previous then finds it gone and skips it, as Previous always
+opens the recording again). **Clear history** ends a playlist. Each recording is opened in the background, apart from
+the controls, so storage that stalls never holds them up: Stop works at once, and a recording stuck opening is skipped
+after its 10 seconds.
 
 ### Playlists in the background and on the lock screen
 
