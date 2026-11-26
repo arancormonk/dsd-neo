@@ -180,6 +180,12 @@ object RecordingPlayback {
     @JvmStatic
     fun takeRecheck(): Array<String> = recheck.take()
 
+    /**
+     * Whether a History playlist owns the promoted playback service, and so its media session: the media keys the
+     * Activity then hands past Qt reach it. Any thread (the phases' lock).
+     */
+    fun playlistSessionOpen(): Boolean = phases.currentOwner != 0
+
     /** The Activity started or stopped (not for a configuration change). */
     fun setForeground(foreground: Boolean) {
         synchronized(lock) {

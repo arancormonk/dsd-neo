@@ -29,27 +29,46 @@ private val qtKeys = mapOf(
     "KEYCODE_VOLUME_MUTE" to 164,
 )
 
-// #909: a headset tap or a Bluetooth Next with DSD-neo in front must reach the playlist's media session, never Qt.
-private fun mediaKeysGoToTheSession() {
+// #909: a headset tap or a Bluetooth Next with DSD-neo in front must reach an open playlist's media session, not Qt.
+private fun mediaKeysGoToAnOpenPlaylistsSession() {
     for ((name, code) in sessionKeys) {
-        check(MediaKeys.routedToSession(code)) { "$name ($code) must go to the media session, not Qt" }
+        check(MediaKeys.isSessionKey(code)) { "$name ($code) is a media session key" }
+        check(MediaKeys.routedToSession(code, playlistSessionOpen = true)) {
+            "$name ($code) must go to the playlist's media session, not Qt"
+        }
     }
 }
 
-// Typing, navigation, Back and the volume keys stay with Qt (the volume keys' own handling is Qt's and Android's).
-private fun otherKeysStayWithQt() {
-    for ((name, code) in qtKeys) {
-        check(!MediaKeys.routedToSession(code)) { "$name ($code) must stay with Qt" }
+// With no playlist open the media keys stay with Qt, as before #909: a headset's Play must not resume another app over
+// the live audio or take the focus from a sheet's play.
+private fun mediaKeysStayWithQtWithNoPlaylist() {
+    for ((name, code) in sessionKeys) {
+        check(!MediaKeys.routedToSession(code, playlistSessionOpen = false)) {
+            "$name ($code) must stay with Qt while no playlist is open"
+        }
     }
-    for (code in 0..300) {
-        if (code !in sessionKeys.values) {
-            check(!MediaKeys.routedToSession(code)) { "key $code is not a media session key" }
+}
+
+// Typing, navigation, Back and the volume keys stay with Qt either way (the volume keys' own handling is Qt's and
+// Android's).
+private fun otherKeysStayWithQt() {
+    for (open in listOf(true, false)) {
+        for ((name, code) in qtKeys) {
+            check(!MediaKeys.routedToSession(code, open)) { "$name ($code) must stay with Qt (playlist open: $open)" }
+        }
+        for (code in 0..300) {
+            if (code !in sessionKeys.values) {
+                check(!MediaKeys.isSessionKey(code) && !MediaKeys.routedToSession(code, open)) {
+                    "key $code is not a media session key"
+                }
+            }
         }
     }
 }
 
 fun main() {
-    mediaKeysGoToTheSession()
+    mediaKeysGoToAnOpenPlaylistsSession()
+    mediaKeysStayWithQtWithNoPlaylist()
     otherKeysStayWithQt()
     println("MediaKeysTest: OK")
 }

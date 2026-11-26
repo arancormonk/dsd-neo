@@ -223,16 +223,17 @@ class DsdNeoActivity : QtActivity() {
     // Qt also translates hardware Back into a key/close event. Consume that
     // path here so each physical press reaches the shell exactly once. Gesture
     // Back uses the dispatcher above; QML dismisses the IME before navigation.
-    // Media keys (a headset's button, Bluetooth or car controls) skip Qt, which
-    // would consume them: left unhandled, Android hands them to the media
-    // button session, the History playlist's while one plays (#909).
+    // While a History playlist's session is open, media keys (a headset's
+    // button, Bluetooth or car controls) skip Qt, which would consume them:
+    // left unhandled, Android hands them to that media session (#909). With
+    // no playlist open they stay with Qt, as before.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) ScreenSupport.userInteraction(this)
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) AppSupport.requestBack()
             return true
         }
-        if (MediaKeys.routedToSession(event.keyCode)) return false
+        if (MediaKeys.routedToSession(event.keyCode, RecordingPlayback.playlistSessionOpen())) return false
         return super.dispatchKeyEvent(event)
     }
 
