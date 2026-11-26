@@ -2385,7 +2385,8 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   IEEE) and a trunk tune's completion stamp, compared with it (`trunk_tuning_hooks.c` is IEEE), the fallback decimator's
   block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the auto and noise squelches' window
   sums, which must not depend on where a block starts (`squelch_floor.c`, `nfm_noise_squelch.c`, `noise_squelch_bank.c`
-  and `pcm_noise_squelch.c` are IEEE).
+  and `pcm_noise_squelch.c` are IEEE, as are the plans' noise models, `squelch_step_model.c` and
+  `squelch_cascade_noise.c`).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
@@ -10104,11 +10105,24 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   acquisition stage end to end), and the `DECODE_IQ_SPEECH_LEVEL_*` and `DECODE_IQ_ANALOG_PARITY_*` cases pin the
   off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
-  and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
-  (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
-  classifier's constants: the coherence lag L from the taps' autocorrelation, and the noise's N_eff and coherence bias
-  beta from the noise autocorrelation through both stages, the model `tools/squelch_model.py` fixed the thresholds with
-  (`docs/testing.md` "Auto squelch classifier"). Behind the live I/Q rate step the noise is periodic, and
+  and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan turns the channel taps and
+  the noise that reaches them into the classifier's constants: the coherence lag L from the taps' autocorrelation, and
+  the noise's N_eff and coherence bias beta from its autocorrelation behind the taps (`docs/testing.md` "Auto squelch
+  classifier"). `dsd_squelch_floor_plan_design()` models unit white noise through one half-band stage and the taps,
+  which is the chain's noise with no pass or one. With more passes (every RTL-SDR and rtl_tcp chain runs 4 to 8, and
+  a SoapySDR device on its exact rate, replay and network I/Q log2 of their base decimation) the pipeline models the
+  whole cascade (issue #899): `src/dsp/squelch_cascade_noise.{h,c}` (module-private, caller-owned buffers) carries
+  white noise of variance 2^(passes - 1) at the capture rate through hb31 and then every hb15 stage with the half-band
+  recursion R'[k] = sum_j g[j] R[2k - j] (the step model's R_hb comes from the same function), and through the channel
+  taps' autocorrelation once, and `dsd_squelch_cascade_noise_floor_plan()` designs it at a period of one with the
+  tracker's mean 40 ms window (`dsd_squelch_floor_plan_design_periodic_mean()`: rate / 25.0 samples, 1,562.48 at a
+  kept 39,062 Hz replay rate, as the stationary design takes it). The one-stage model read idle noise as a carrier on
+  every unfiltered channel at 4 to 16 kHz (lag-1 beta 0.084 against the cascade's 0.268 at 16 kHz), so the tracker
+  never left learning and played the hiss. The helper also takes periodic covariance in (each stage's output phase q
+  is its sum at input 2q, a period P becoming P / gcd(P, 2)) and through the channel taps. `noise_gain` is on the step
+  model's scale (input variance 2^(passes - 1)), so plans with and without a step agree; the cache's density is that
+  gain's, and a pass-count change, which also changes the context's chain, takes the new plan (rescaling the floor)
+  before it stores the old context's density, so the gain cancels. Behind the live I/Q rate step the noise is periodic, and
   `dsd_squelch_floor_plan_design_periodic()` takes the same constants from its covariance at every output phase: N_eff,
   beta and rho at every 40 ms window start phase (partial periods included), averaged over the phases (the step model
   below supplies the covariance). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor
@@ -10145,9 +10159,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - the FSK discriminator at 9600 bit/s, two levels, that EDACS analog voice reads (`dsd_demod_fsk9600_active()`,
     keyed on the symbol profile, so a channel LPF that is off and leaves the WIDE label still counts).
 
-  It runs with a plan for the channel filter in force, the half-band stage
-  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`complex_rate`), or behind a running live
-  rate step the step model's plan (`dsd_demod_squelch_plan_key::step` keys it), and nothing
+  It runs with a plan for the channel filter in force, the half-band cascade
+  ahead of it (`hb31` alone for one pass, the whole cascade for more; `dsd_demod_squelch_plan_key::passes` keys it) and
+  the channel rate (`complex_rate`), or behind a running live rate step the step model's plan
+  (`dsd_demod_squelch_plan_key::step` keys it); `demod_state::squelch_plan_designs` counts its designs (a block whose
+  key is the same designs none), and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
@@ -10248,8 +10264,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   step's input rate by the step model's spectral factor and run through the step itself (no cascade FIR).
 - The squelches through the live I/Q rate step (issue #806) are `src/dsp/squelch_step_model.c`
   (`<dsd-neo/dsp/squelch_step_model.h>`). Both squelch models are calibrated on the noise that reaches the channel
-  filter; without a step their own designs model it (white noise through the cascade at twice the channel rate), which a
-  step between the cascade and the channel filter breaks. `dsd_squelch_step_model_build()` makes, for one step plan:
+  filter; without a step their own designs model it (white noise at the capture rate through the whole cascade: the
+  floor plan from the shared half-band recursion, issue #899, the noise squelch from its composite FIR and last stage),
+  which a step between the cascade and the channel filter breaks. `dsd_squelch_step_model_build()` makes, for one step plan:
   R_hb, the cascade's output autocorrelation at hb_out, exactly from the half-band recursion (input variance 2^(passes -
   1), the scale the designs without a step use); its zero-phase spectral factor (sqrt of R_hb's 4096-point spectrum,
   Kaiser-windowed, at most 255 taps, 1e-6 of its energy left out); a step design of its own from the plan's key (the
@@ -10268,15 +10285,21 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   stepping chain whose model is not built has no valid plan (the gate open). Measured (`dsd-neo_bench_dsp` `squelch_*`
   cases, run only when named, x86 -O2): the build 3.1 ms at L = 576 (2.5 MS/s to 72 kHz) and 20 ms for a SoapySDR
   3000/4093; the floor plan 0.07 ms at 72 kHz NFM 25k (15 ms every phase in full), the noise plan 49 ms (today's 59 ms;
-  an Airspy ring holds about 420 ms). Tests: `DSP_SQUELCH_STEP_MODEL` (R_hb and the factor against the real cascade at
+  an Airspy ring holds about 420 ms). Without a step the cascade's floor plan takes 0.05 ms at 72 kHz NFM 25k (4
+  passes, 201 taps; the one-stage design it replaced 0.19 ms) and 3 us at 4 kHz with 8 passes, and a block whose key
+  is the same designs none (`squelch_floor_plan_cascade_*`, `squelch_floor_block_*`). Tests: `DSP_SQUELCH_STEP_MODEL` (R_hb and the factor against the real cascade at
   2.5 and 3 MS/s, the covariance against the real step within 2 % of R[0] at 12 to 72 kHz, the periodic design at a
   period of one against today's within 1e-12, the averaged floor plan against every phase in full on every Airspy grid
   point and the SoapySDR ratio, measured window power and coherence against N_eff and beta on the stepped stream,
-  no-step plans bit for bit and pinned to b08406ebc, the plan key and the model's cache),
+  no-step plans with up to one pass bit for bit and pinned to b08406ebc, with more the real cascade's impulses at every
+  DSP bandwidth and 2 to 10 passes, the shared cascade covariance on periodic noise and the mean-window design, the
+  plan key and the model's cache),
   `DSP_SQUELCH_STEP_MODEL_MATRIX` (every DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s, widest NFM and no
   channel filter, three window phases: the floor and noise squelch bounds of `DSP_SQUELCH_FLOOR` and
   `DSP_NFM_NOISE_SQUELCH` and the measured window statistics, the RTL-SDR chain held to the same),
-  `DSP_SQUELCH_AUTO_DEMOD` (AUTO and NOISE through `full_demod()` at 2.5 and 3 MS/s to 48 kHz) and
+  `DSP_SQUELCH_AUTO_DEMOD` (AUTO and NOISE through `full_demod()` at 2.5 and 3 MS/s to 48 kHz; without a step, white
+  noise through 5 to 7 passes stays shut from cold start, and a pass-count or width change moves the floor on the
+  cascade's gain) and
   `IO_RTL_SQUELCH_PLUMBING` (the context's step identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the

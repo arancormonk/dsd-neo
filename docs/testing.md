@@ -3350,8 +3350,10 @@ fixed thresholds) met every target on 162 of the 196 filters: narrow plans (unde
 window) missed 1-5% of 6 dB carriers, among them the fading real capture and AM with full-depth tones, and the
 unfiltered NFM default at the 4 kHz RTL rate read noise as carrier 3.4-3.9 times in 10,000. The scheme the auto
 squelch uses passes 195: 40 ms windows; coherence measured against its expected value on noise, beta = (pi/4)
-rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), with rho_n the noise autocorrelation through the channel taps and the last
-half-band stage; and both features normalised by the window's effective sample count N_eff = N / sum rho_n(m)^2,
+rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), with rho_n the autocorrelation of the noise that reaches the classifier (the
+model took white noise through the last half-band stage and the channel taps; the decoder's plan carries it through
+the whole cascade, issue #899, which matters from two passes on); and both features normalised by the window's
+effective sample count N_eff = N / sum rho_n(m)^2,
 X = (CV^2 - 1) sqrt(N_eff) and Y = |mean(u_k conj(u_{k-L})) - beta| sqrt(N_eff). A window is a carrier when X <= -7.0
 or Y >= 3.3, and noise when X >= -3.8 and Y <= 2.1. Worst cases over the 195: noise read as carrier 1.0e-4 per window
 (about 10 events, so about +/-32%), a 6 dB carrier missed 1.1%, no carrier of 6 dB or more read as noise (0.4% at
