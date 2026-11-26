@@ -20021,10 +20021,12 @@ Qt Quick frontend (`src/ui/qt`):
     - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
       Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
       stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,
-      its saved end, its events with an event id and a heard flag, and its skips (said on the call after them: a skip
-      waits until a part plays after it, never in the gap after the call it happened on, and is said on that part's call
-      until the call changes); `NowPlayingBar` (both History screens, one height
-      from its fonts and width, hidden while the keyboard is up) shows it and announces an unheard event once, only
+      its saved end, its events with an event id and a heard flag (a refused resume is an event each time: its reason
+      turning "unavailable", or `playbackRefusals` moving on the same reading, which the sheet's notice line says again
+      too), and its skips (said on the call after them: a skip waits until a part plays after it, never in the gap after
+      the call it happened on, and is said on that part's call until the call changes); `NowPlayingBar` (both History
+      screens, one height from its fonts and width, hidden while the keyboard is up) shows it and announces an unheard
+      event once, only
       while its screen is visible, reachable and the application active, after the host has read the platform on a
       foreground return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose uid
       is `playbackKey` (History, Monitor, Home). Clear history ends a History playlist. History closes its detail sheet

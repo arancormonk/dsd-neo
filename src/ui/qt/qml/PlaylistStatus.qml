@@ -39,6 +39,9 @@ QtObject {
     property int skipCall: -1
     property int skipCount: 0
     property string pausedReason: ""
+    // The host's refusal count last read: a resume refused again reads the
+    // same but for it, and is said again.
+    property int refusalsSeen: 0
     // The latest event: its id, its words, whether it was read out.
     property int eventId: 0
     property string eventText: ""
@@ -103,6 +106,7 @@ QtObject {
         skipCall = -1;
         skipCount = 0;
         pausedReason = "";
+        refusalsSeen = 0;
         drop();
     }
     // ✕ on an ended bar: its saved result goes, and nothing is sent, so a
@@ -179,12 +183,14 @@ QtObject {
                 note(playingText(Number(host.playbackCallCount) || 0));
         }
         var reason = state === 3 ? String(host.playbackPausedReason || "") : "";
-        if (reason !== pausedReason) {
-            pausedReason = reason;
-            // A resume the platform refused the audio (a phone call).
-            if (reason === "unavailable" && !quiet)
-                note(unavailableText);
-        }
+        var refusals = Number(host.playbackRefusals) || 0;
+        // A resume the platform refused the audio (a phone call), the first
+        // time or again (the refusal count moved on the same reading).
+        var refused = reason === "unavailable" && (reason !== pausedReason || refusals !== refusalsSeen);
+        pausedReason = reason;
+        refusalsSeen = refusals;
+        if (refused && !quiet)
+            note(unavailableText);
     }
 
     readonly property Connections hostWatch: Connections {

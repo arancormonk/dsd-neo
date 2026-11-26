@@ -3780,6 +3780,9 @@ class ReadingMap : public QQmlPropertyMap {
                 {QStringLiteral("playbackPausedReason"), QString()},
                 {QStringLiteral("playbackEndedReason"), QString()},
                 {QStringLiteral("playbackSkipped"), 0},
+                {QStringLiteral("playbackRefusals"), 0},
+                {QStringLiteral("playbackSkipNoticeCall"), -1},
+                {QStringLiteral("playbackSkipNoticeCount"), 0},
                 {QStringLiteral("playbackHoldPath"), QString()}};
     }
 
@@ -3796,13 +3799,15 @@ class ReadingMap : public QQmlPropertyMap {
 
     /**
      * @brief Set the playback readings @p readings names (full property names, e.g. playbackToken) at once, as one
-     * platform record does: playbackChanged once when any but the position is named, playbackPositionChanged when
-     * the position is. "item" names an index into the open play's items instead, setting playbackPath, Title, Key,
-     * Size, MtimeSec, MtimeNanos, CallIndex, PartOrdinal and PartCount from it. playbackHoldPath follows (a single recording's path while open)
-     * unless @p readings names it.
+     * platform record does: as DecoderHost::publishPlayback(), playbackChanged once when any but the position changed
+     * and playbackPositionChanged when the position moved (a reading published again as it stands says nothing).
+     * "item" names an index into the open play's items instead, setting playbackPath, Title, Key, Size, MtimeSec,
+     * MtimeNanos, CallIndex, PartOrdinal and PartCount from it. playbackHoldPath follows (a single recording's path
+     * while open) unless @p readings names it.
      */
     void
     publishPlaybackReading(const QVariantMap& readings) {
+        const QVariantMap before = playbackReadings();
         for (auto it = readings.cbegin(); it != readings.cend(); ++it) {
             if (it.key() == QLatin1String("item")) {
                 showItem(it.value().toInt());
@@ -3813,13 +3818,29 @@ class ReadingMap : public QQmlPropertyMap {
         if (!readings.contains(QStringLiteral("playbackHoldPath"))) {
             followHold();
         }
-        const bool moved = readings.contains(QStringLiteral("playbackPositionMs"));
-        if (readings.size() > (moved ? 1 : 0)) {
+        QVariantMap after = playbackReadings();
+        const QString position = QStringLiteral("playbackPositionMs");
+        const bool moved = after.take(position) != before.value(position);
+        QVariantMap shown = before;
+        shown.remove(position);
+        if (after != shown) {
             Q_EMIT playbackChanged();
         }
         if (moved) {
             Q_EMIT playbackPositionChanged();
         }
+    }
+
+    /** @brief Every playback reading now, by property name. */
+    QVariantMap
+    playbackReadings() const {
+        QVariantMap readings;
+        for (const QString& key : keys()) {
+            if (key.startsWith(QStringLiteral("playback")) && key != QLatin1String("playbackSupported")) {
+                readings.insert(key, value(key));
+            }
+        }
+        return readings;
     }
 
     Q_INVOKABLE bool
@@ -4083,11 +4104,14 @@ class ReadingMap : public QQmlPropertyMap {
         return true;
     }
 
-    /* A resume the platform refused the audio: it stays paused, the same reading published again. */
+    /* A resume the platform refused the audio: it stays paused, the same reading published again but for the refusal
+     * count, which moves on each refusal as the player's does. */
     void
     refuseResume() {
-        publishPlaybackReading({{QStringLiteral("playbackState"), 3},
-                                {QStringLiteral("playbackPausedReason"), QStringLiteral("unavailable")}});
+        publishPlaybackReading(
+            {{QStringLiteral("playbackState"), 3},
+             {QStringLiteral("playbackPausedReason"), QStringLiteral("unavailable")},
+             {QStringLiteral("playbackRefusals"), value(QStringLiteral("playbackRefusals")).toInt() + 1}});
     }
 
     bool

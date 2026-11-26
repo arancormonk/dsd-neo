@@ -217,10 +217,12 @@ Column {
             : qsTr("Can't play this recording. The file may be damaged.");
     }
     // Each failure is said once, and read out; the line clears once the reading
-    // that said it has moved on (a resume the platform took after all).
+    // that said it has moved on (a resume the platform took after all). A
+    // resume refused again reads the same but for the host's refusal count,
+    // which makes it a failure of its own, said again.
     function noteFailure() {
         var text = failureText();
-        var key = text.length === 0 ? "" : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath].join("|");
+        var key = text.length === 0 ? "" : [decoderHost.playbackGeneration, decoderHost.playbackToken, decoderHost.playbackState, decoderHost.playbackError, decoderHost.playbackPausedReason, decoderHost.playbackPath, decoderHost.playbackRefusals].join("|");
         // The same failure again is news only after a press asked once more
         // (failureKey cleared, its sentence still up).
         if (key === failureKey && (key.length > 0 || failureNotice.length === 0))
@@ -254,10 +256,9 @@ Column {
         }
         if (playState === 3) {
             // A resume refused before is asked again; its sentence stays while
-            // it stands, and a refusal read again is said again.
+            // it stands, and a refusal read again (its count moved) is said again.
             if (decoderHost.playbackPausedReason !== "unavailable")
                 say("", false);
-            failureKey = "";
             if (token > 0)
                 decoderHost.resumePlaybackFor(token);
             else if (ownsPlay)

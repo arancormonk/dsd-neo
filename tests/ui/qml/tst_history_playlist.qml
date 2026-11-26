@@ -361,6 +361,32 @@ Item {
             compare(status.skipCall, 3, "on call 4, the call after");
         }
 
+        // A Resume refused, then refused again with the same reading but for the host's refusal count: each refusal
+        // is said on the bar (the fake host, like the real one, publishes nothing for a reading that did not change).
+        function test_repeated_refusal_said_again() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            playAll(screen, calls);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "user"});
+            testContext.setResumeRefused(true);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            part(screen, "nowPlayingPlay").activate();
+            compare(decoderHost.playbackRefusals, 1);
+            tryCompare(barItem, "announced", full);
+            compare(barItem.announcements, 1, "refused: said");
+            playing({item: 0, playbackState: 3, playbackPositionMs: 12500});
+            wait(30);
+            compare(barItem.announcements, 1, "a tick says nothing");
+            part(screen, "nowPlayingPlay").activate();
+            compare(hostCallsNamed("resumePlayback").length, 2);
+            compare(decoderHost.playbackRefusals, 2);
+            tryCompare(barItem, "announcements", 2);
+            compare(barItem.announced, full, "refused again: said again");
+            testContext.setResumeRefused(false);
+        }
+
         // Previous, Pause/Resume and Next drive the whole playlist; Next is not offered at the last call.
         function test_bar_controls() {
             var calls = logCalls(2);
