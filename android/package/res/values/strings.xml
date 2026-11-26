@@ -35,6 +35,18 @@
     <string name="error_usb_permission">The USB receiver needs permission again</string>
     <string name="error_usb_open_failed">The USB receiver could not be reopened</string>
     <string name="decoder_emergency_prefix">EMERGENCY ·&#32;</string>
+    <!-- #909: a History playlist's media notification, its channel and buttons. The line under the call's name reads
+         "2026-11-25 12:04 · Call 3 of 41 · part 2 of 3" (notif_separator between the pieces). -->
+    <string name="playback_channel_name">Call recordings</string>
+    <string name="playback_title">Call recording</string>
+    <string name="playback_opening">Opening…</string>
+    <string name="playback_call_of">Call %1$d of %2$d</string>
+    <string name="playback_part_of">part %1$d of %2$d</string>
+    <string name="playback_play">Play</string>
+    <string name="playback_pause">Pause</string>
+    <string name="playback_previous">Previous</string>
+    <string name="playback_next">Next</string>
+    <string name="playback_stop">Stop</string>
     <!-- #782: TalkBack turned on while the app runs. The app's screens can be read only when TalkBack was on as the
          app opened, and the app never closes itself, so this says how to reopen it and what closing costs. It names
          the place, not a gesture: under TalkBack a Recents card closes with TalkBack's own gestures or actions. -->
