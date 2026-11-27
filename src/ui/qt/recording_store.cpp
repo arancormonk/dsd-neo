@@ -2708,7 +2708,20 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
 QString
 RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread) {
     // The owner's folder in the first available root that has one: a rename keeps it, and a clash of the short
-    // uid in the name never merges two owners.
+    // uid in the name never merges two owners. Chosen only among the roots still usable once its checks are done
+    // (r16t): a check that finds a root gone clears it, and the choice is made again without it.
+    for (;;) {
+        const QList<bool> before = *usable;
+        const QString path = ownerFolderCandidateLocked(uid, usable, gone, unread);
+        if (*usable == before) {
+            return path;
+        }
+    }
+}
+
+QString
+RecordingStore::ownerFolderCandidateLocked(const QString& uid, QList<bool>* usable, QStringList* gone,
+                                           QStringList* unread) {
     const Folder* best = nullptr;
     for (const Folder& folder : std::as_const(m_folders)) {
         if (folder.uid != uid || !usable->value(folder.root)
@@ -2744,13 +2757,15 @@ RecordingStore::ownerFolderOnDiskLocked(const Folder& folder, const QString& uid
     if (marker == FolderMarker::Unreadable) {
         // Its owner not known now: what the index holds for it is kept, but no request is taken against it until a
         // read can tell again (read whole at the next pass; marked once the table is no longer walked).
-        unread->append(folder.path);
+        if (!unread->contains(folder.path)) {
+            unread->append(folder.path);
+        }
         return false;
     }
     if (!rootAvailableNow(m_roots.at(folder.root))) {
         (*usable)[folder.root] = false; // gone since the check above: its folders stay, as storage away
         noteRootSeenAwayLocked(folder.root);
-    } else if (!folder.loaded && !folder.rereading) {
+    } else if (!folder.loaded && !folder.rereading && !gone->contains(folder.path)) {
         gone->append(folder.path);
     }
     return false;

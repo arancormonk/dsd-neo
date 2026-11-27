@@ -5624,6 +5624,48 @@ test_start_with_no_folder_asks_for_the_listing(void) {
            s.store.passCountForTest() > before && listed_as(s.store, 1, true));
 }
 
+/* r16t: the owner-folder choice is made only among roots still usable once its checks are done. The card holds two
+ * folders for one owner; the start's check of one finds the card gone (its directory no longer readable, the other's
+ * folder.json still read), which clears the card: the start records on the fallback, never in the other folder. The
+ * index visits folders in no set order, so eight owners each take a turn. */
+void
+test_owner_choice_drops_a_root_its_checks_found_gone(void) {
+    const Roots roots;
+    Store s(roots.list());
+    QStringList uids;
+    for (int k = 0; k < 8; k++) {
+        const QString uid = QStringLiteral("%1-0000-4000-8000-00000000000%2")
+                                .arg(QStringLiteral("c0ffee0") + QString::number(k))
+                                .arg(k);
+        uids.append(uid);
+        const QString tag = uid.left(8);
+        expect(
+            "owner choice: two folders for one owner",
+            write_owner_json(roots.external + QStringLiteral("/A (") + tag + QLatin1Char(')'), uid, QStringLiteral("A"))
+                && write_owner_json(roots.external + QStringLiteral("/B (") + tag + QLatin1Char(')'), uid,
+                                    QStringLiteral("A")));
+    }
+    s.pass();
+    s.pass();
+    const QFileDevice::Permissions open = QFile::permissions(roots.external);
+    const QFileDevice::Permissions shut = QFileDevice::ExeOwner | QFileDevice::WriteOwner;
+    int elsewhere = 0;
+    for (const QString& uid : std::as_const(uids)) {
+        const QString tag = uid.left(8);
+        // The earlier folder's folder.json gone: its check looks at the card, which reads as gone.
+        expect("owner choice: the earlier folder's folder.json removed",
+               QFile::remove(roots.external + QStringLiteral("/A (") + tag + QStringLiteral(")/folder.json")));
+        s.store.setSessionRootsHookForTest([&]() { (void)QFile::setPermissions(roots.external, shut); });
+        const QString path = s.store.beginSession(QStringLiteral("saved"), uid, QStringLiteral("A"));
+        s.store.endSession();
+        s.store.setSessionRootsHookForTest({});
+        (void)QFile::setPermissions(roots.external, open);
+        elsewhere += path.startsWith(roots.internal + QLatin1Char('/')) ? 1 : 0;
+        s.pass();
+    }
+    expect("owner choice: every start found the card gone and recorded on the fallback", elsewhere == 8);
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -7073,6 +7115,7 @@ main(int argc, char** argv) {
     test_session_never_records_onto_a_root_back_unlisted();
     test_first_read_of_a_vanished_directory_is_not_committed();
     test_start_with_no_folder_asks_for_the_listing();
+    test_owner_choice_drops_a_root_its_checks_found_gone();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

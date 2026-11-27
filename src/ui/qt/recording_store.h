@@ -844,6 +844,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * make anew (I2 reads them again after) but never use as they stand (r15t). */
     QList<bool> usableRootsLocked(QList<bool>* makeOnly);
     QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
+    /* One scan of ownerFolderPathLocked(): the best folder among the roots usable as it goes, its checks clearing any
+     * root they find gone. */
+    QString ownerFolderCandidateLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
     /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
      * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
      * folder is read again before any request). Under the store's lock. */

@@ -20487,9 +20487,11 @@ Qt Quick frontend (`src/ui/qt`):
     its looks see now: a card back unread may hold the owner's folder under another name, so the start records on the
     fallback and the pass it asks for lists the card (r15t, `test_session_never_records_onto_a_root_back_unlisted`; a
     root passed over so has its listing asked for whether or not the start finds a folder elsewhere, r16t,
-    `test_start_with_no_folder_asks_for_the_listing`; the one exception, a start that finds the directory absent and
-    makes it anew, is read again in full after, I2). A root listed while it is not away (its directory there again, I1)
-    keeps a folder a session start made or took on it during the listing, or relabelled (`m_listing`,
+    `test_start_with_no_folder_asks_for_the_listing`; its owner-folder choice is made only among roots still usable once
+    its checks are done, a check that finds a root gone making it choose again without that root, r16t,
+    `test_owner_choice_drops_a_root_its_checks_found_gone`; the one exception, a start that finds the directory absent
+    and makes it anew, is read again in full after, I2). A root listed while it is not away (its directory there again,
+    I1) keeps a folder a session start made or took on it during the listing, or relabelled (`m_listing`,
     `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one the listing has keeps the start's owner and label; one
     it has not was made new, and what the index held at that path before, a folder removed while the storage was away,
     goes with its recordings; `test_rescan_keeps_a_session_folder_made_meanwhile`,
