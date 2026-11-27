@@ -153,8 +153,13 @@ Rectangle {
     function showInList() {
         var key = live ? decoderHost.playbackKey : end ? end.key : "";
         var uid = Number(key);
-        if (uid > 0 && typeof showRow === "function" && showRow(uid))
+        if (uid > 0 && typeof showRow === "function" && showRow(uid)) {
+            // Found: a notice that it was missing (an earlier press, under a
+            // filter since restored) is over, as nothing else ends it while
+            // the playlist stays where it is.
+            notice = "";
             return;
+        }
         notice = qsTr("This call isn't in the list now.");
         Navigation.announce(bar, showButton, notice);
     }

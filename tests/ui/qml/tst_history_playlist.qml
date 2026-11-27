@@ -1070,6 +1070,29 @@ Item {
             compare(line(screen), "Call 2 of 30 · 0:12 / 0:31", "the next call ends the notice");
         }
 
+        // R65: a Show in list that finds the row clears the missing-row notice. Paused, the playlist does not move on
+        // to end it: the row filtered out says so, the filter restored, Show in list opens the sheet, and once the
+        // sheet closes the bar shows where the playlist is again, not the notice.
+        function test_show_in_list_found_clears_the_notice() {
+            var screen = idle();
+            only(screen);
+            var calls = logCalls(3);
+            playAll(screen, calls);
+            playing({item: 0, playbackState: 3, playbackPausedReason: "user"});
+            var show = part(screen, "nowPlayingShowInList");
+            var search = findChild(screen, "historySearch");
+            search.text = "no call matches this";
+            show.activate();
+            compare(line(screen), "This call isn't in the list now.");
+            search.text = "";
+            show.activate();
+            var sheet = findChild(screen, "historyDetailSheet");
+            verify(sheet.visible, "the row's sheet opens");
+            sheet.visible = false;
+            verify(waitForPolish(part(screen, "nowPlayingLine")));
+            compare(line(screen), "Paused", "the notice went with the row found");
+        }
+
         // The row placed by Show in list, or by Back from the map, against a search still in its debounce: the
         // press flushes it, and the filter change queues the list's return to its top, which would run after the row
         // was placed and take it off screen again. Once the row is found the return is cancelled, so with 40 matching

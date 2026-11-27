@@ -801,8 +801,9 @@ line along its top edge, and **Previous call**, **Pause**/**Resume**, **Next cal
 and line are one button, **Show in list**: it scrolls the call's row into view and opens its sheet, which then follows
 what plays (pause, resume and seek there drive the playlist; playing another part there, or Play all parts, plays on its
 own from the sheet instead and ends the playlist). If the row is no longer listed, the bar says **This call isn't in the
-list now.** The row playing shows two magenta bars in place of its play mark (TalkBack: "playing" or "paused"), in
-History, the Monitor's Recent calls and Home's Recent activity.
+list now.** until the playlist moves on or a later Show in list finds the row. The row playing shows two magenta bars
+in place of its play mark (TalkBack: "playing" or "paused"), in History, the Monitor's Recent calls and Home's Recent
+activity.
 
 - **Next call** goes to the next call at once, also during the second between calls. It is not offered on the last
   call.
