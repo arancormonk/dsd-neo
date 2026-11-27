@@ -1756,6 +1756,37 @@ Item {
             compare(lastHostCall().path, pathA);
         }
 
+        // Issue #909 (R42): a part chip's tap acts only on the recording, and the action, it was pressed on. A reread
+        // that puts another recording at the pressed place (the count unchanged), or storage coming back that would
+        // turn a select into a play, drops the release; an unchanged press acts as before.
+        function test_part_chip_press_keeps_its_recording() {
+            var uid = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]);
+            var chip = item("recordingPart1");
+            mousePress(chip, chip.width / 2, chip.height / 2);
+            verify(callHistory.setRowRecordings(uid, [rec("t-1", pathA, 12000), rec("t-3", pathC, 4000)]));
+            compare(item("historyRecording").parts[1].path, pathC, "another recording at the pressed place");
+            mouseRelease(chip, chip.width / 2, chip.height / 2);
+            compare(hostCallsNamed("playRecordingOwned").length, 0, "the recording pressed on is gone: nothing plays");
+            compare(checkedParts(2), [0], "nor is it shown");
+            tap("recordingPart1");
+            compare(hostCallsNamed("playRecordingOwned").length, 1, "a press begun on the one shown plays it");
+            compare(lastHostCall().path, pathC);
+
+            // Select-only at the press (its storage away), playable at the release: dropped.
+            var away = openWith([rec("t-1", pathA, 12000), rec("t-2", pathB, 8000, {available: false})]);
+            var plays = hostCallsNamed("playRecordingOwned").length;
+            chip = item("recordingPart1");
+            mousePress(chip, chip.width / 2, chip.height / 2);
+            verify(callHistory.setRowRecordings(away, [rec("t-1", pathA, 12000), rec("t-2", pathB, 8000)]));
+            mouseRelease(chip, chip.width / 2, chip.height / 2);
+            compare(hostCallsNamed("playRecordingOwned").length, plays, "a select would have become a play: dropped");
+            compare(checkedParts(2), [0]);
+            mouseClick(chip, chip.width / 2, chip.height / 2);
+            compare(hostCallsNamed("playRecordingOwned").length, plays + 1, "an unchanged press acts as before");
+            compare(lastHostCall().path, pathB);
+            compare(checkedParts(2), [1]);
+        }
+
         // A keyboard or screen reader activation while a pointer holds the button acts on the state then, and
         // leaves the held press alone: Pause held, Pause activated, the paused reading in, then the release: it is
         // dropped (it began on Pause), never taken for a Resume.

@@ -19827,26 +19827,28 @@ Qt Quick frontend (`src/ui/qt`):
     play token captured when the gesture began (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`). One press
     rule holds for the pointer controls whose target moves with the play (`GatedTapHandler.pressKey`, passed through by
     `PlayCircle`, `MapControlButton`, `IconButton` and `OutlineButton`): the sheet's Play, Pause/Resume, seek bar,
-    Share, Save to file and Delete, and the bar's Pause/Resume, Previous, Next, ✕ and Show in list. The others (the part
-    chips, Play all parts, Play from here and History's Play all) act on a fixed target. The press takes a key, the
+    the part chips, Share, Save to file and Delete, and the bar's Pause/Resume, Previous, Next, ✕ and Show in list. The
+    others (Play all parts, Play from here and History's Play all) act on a fixed target. The press takes a key, the
     action the control would perform and the identity of what it shows, and the tap acts only if the same key is current
     at the release, else it is dropped; a release with no press taken is dropped too. The sheet's Play keys on the part
     shown (its path and the indexed size and mtime, so a reread that put another recording under the same id and path
     drops it, while a playlist moving elsewhere does not), its Pause/Resume on the action, the generation and the token,
     Share, Save to file and Delete on the part shown (its id, path and indexed size and mtime: a sheet that follows the
-    play to the next part during the press drops the tap), and the seek bar on its token (`GatedTapHandler.pressBegan`,
-    a drag's start included; a drag's preview shows only while its token is the one open, and a keyboard or screen
-    reader step seeks from the open recording's own position, never from a drag's preview). The bar's Pause/Resume keys
-    on whether it would pause and the playlist, and Previous, Next and ✕ on the playlist, the action and whether it has
-    ended, so a press held on one playlist never moves or stops the next one, nor a press on an ended result stops a new
-    one; Show in list keys on the playlist and the call it names (`playbackKey`, or the ended reading's key). A keyboard
-    or screen reader activation acts on the state at its moment and never takes, clears or replaces a held pointer
-    press. A sheet-owned Play all parts offers Pause/Resume and seek only once the host has published a positive token
-    (before the first poll a pause would be the queue's, and could reach the next part); the seek bar reads
-    `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted.
-    History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say
-    the same of their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal
-    search detection, so "the call stays in History" would not hold (issue #809 B3).
+    play to the next part during the press drops the tap), each part chip on its own recording (path and indexed size
+    and mtime) and whether it would play or only select it (`partKey()`, R42: a reread that put another recording at
+    its place with the count unchanged, or storage coming back, drops the tap), and the seek bar on its token
+    (`GatedTapHandler.pressBegan`, a drag's start included; a drag's preview shows only while its token is the one open,
+    and a keyboard or screen reader step seeks from the open recording's own position, never from a drag's preview). The
+    bar's Pause/Resume keys on whether it would pause and the playlist, and Previous, Next and ✕ on the playlist, the
+    action and whether it has ended, so a press held on one playlist never moves or stops the next one, nor a press on
+    an ended result stops a new one; Show in list keys on the playlist and the call it names (`playbackKey`, or the
+    ended reading's key). A keyboard or screen reader activation acts on the state at its moment and never takes, clears
+    or replaces a held pointer press. A sheet-owned Play all parts offers Pause/Resume and seek only once the host has
+    published a positive token (before the first poll a pause would be the queue's, and could reach the next part); the
+    seek bar reads `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
+    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
+    deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
+    to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
     `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
     editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
     with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added

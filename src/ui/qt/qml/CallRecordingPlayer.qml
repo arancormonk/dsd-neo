@@ -412,6 +412,18 @@ Column {
         current = Math.max(0, Math.min(index, parts.length - 1));
         currentPath = parts.length > 0 ? parts[current].path : "";
     }
+    // Issue #909: what a tap on part chip @p index acts on (its pressKey): its
+    // recording, by path and the identity the store indexed, and whether the
+    // tap would play it or only select it. A reread that put another
+    // recording at that place, or storage coming back that would turn a
+    // select into a play, drops a tap held across it.
+    function partKey(index) {
+        var recording = parts[index];
+        if (!recording)
+            return "";
+        var action = supported && recording.available !== false ? "play" : "select";
+        return [action, recording.path, String(recording.identitySize), String(recording.mtimeSec), String(recording.mtimeNanos)].join("|");
+    }
     // A chip: the part it names is shown, and played. B1: a part whose storage
     // is away is shown, with its away line, and not played; with no player
     // (B6) a chip only selects.
@@ -993,6 +1005,9 @@ Column {
                 text: player.partLabel(index)
                 checkable: true
                 checked: index === player.current
+                pressKey: function () {
+                    return player.partKey(index);
+                }
                 onClicked: player.pickPart(index)
             }
         }
