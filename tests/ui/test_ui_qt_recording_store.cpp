@@ -5144,8 +5144,16 @@ test_folder_missing_at_a_cold_start(void) {
                write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
         record(owner, QStringLiteral("0000000000000961-1"), QStringLiteral("a.wav"), 1754000000, 1);
         expect("cold start: the folder put in place", QDir().rename(staged, roots.external));
+        // An export pressed before any pass finds it there: refused as loading, its read asked for at once (I1).
+        const QVariantMap early = s.store.selectForExport(QString(), QStringLiteral("all"));
+        s.store.releaseSelection(early.value(QStringLiteral("selection")).toInt());
+        expect("cold start: an export before the pass is refused as loading",
+               early.value(QStringLiteral("loading")).toBool() && early.value(QStringLiteral("count")).toInt() == 0);
         s.pass();
         expect("cold start: its recording is indexed and available", listed_as(s.store, 1, true));
+        const QVariantMap after = s.store.selectForExport(QString(), QStringLiteral("all"));
+        s.store.releaseSelection(after.value(QStringLiteral("selection")).toInt());
+        expect("cold start: after the pass, the export has it", after.value(QStringLiteral("count")).toInt() == 1);
     }
     {
         const Roots roots;
@@ -5154,7 +5162,16 @@ test_folder_missing_at_a_cold_start(void) {
         expect("fresh install: the session made its folder", made.startsWith(roots.external + QLatin1Char('/')));
         record(made, QStringLiteral("0000000000000961-2"), QStringLiteral("b.wav"), 1754000100, 2);
         s.store.endSession();
+        // The folder the session made is the store's own: the pass after it lists nothing (its flag cleared, I1).
+        std::atomic<int> listings{0};
+        s.store.setRootReadHookForTest([&](const QString& root) {
+            if (root.startsWith(roots.external)) {
+                listings++;
+            }
+        });
         s.pass();
+        s.store.setRootReadHookForTest({});
+        expect("fresh install: the pass after the session lists nothing", listings.load() == 0);
         expect("fresh install: its recording is indexed and available", listed_as(s.store, 2, true));
     }
 }
