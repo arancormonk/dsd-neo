@@ -912,10 +912,17 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     started = time.time()
     mode = "quick" if args.quick else "full"
+    plans = sm.rate_plans()
+    if args.chains and not any(args.chains in p.name and modelled_here(p) for p in plans):
+        # A mistyped name, or stepped chains only: stop before the harness, nothing would be measured.
+        matched = sorted(p.name for p in plans if args.chains in p.name)
+        raise SystemExit(
+            f"--chains {args.chains!r} selects no chain this model runs (chains matched: {', '.join(matched) or 'none'}; "
+            "stepped chains are not modelled here)"
+        )
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     exe = sm.build_harness(args.build_dir.resolve(), out_dir)
-    plans = sm.rate_plans()
     requests = set(sm.harness_requests(plans))
     requests |= {
         (p.complex_rate, w, sm.FM_KIND) for p in plans for w in CUSTOM_WIDTHS_HZ if p.complex_rate >= CUSTOM_MIN_RATE_HZ
@@ -940,6 +947,13 @@ def main(argv: list[str] | None = None) -> int:
     if args.chains:
         # Every member names its chain last.
         jobs = [j for j in jobs if any(args.chains in m.rsplit(" ", 1)[-1] for m in members[j["key"]])]
+    if not jobs:
+        picks = ", ".join(
+            flag if value is True else f"{flag} {value!r}"
+            for flag, value in (("--only", args.only), ("--encoder-only", args.encoder_only), ("--chains", args.chains))
+            if value
+        )
+        raise SystemExit(f"{picks} selects no plan: nothing would be measured")
     print(f"{len(combos)} NFM combinations and the custom widths: {len(jobs)} distinct plans", flush=True)
     sm.real_sources()  # loaded once, before the workers fork
     results = []
