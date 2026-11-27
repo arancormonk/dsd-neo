@@ -1223,6 +1223,53 @@ private fun aMoveKeepsItsWayUntilItsCandidatePlays() {
     check(played.status.gap && played.status.call == 0) { "played, then failed: the gap after its call" }
 }
 
+/**
+ * A pending start has a watchdog (R44): a start not acknowledged within START_TIMEOUT_MS fails as the player's, ending
+ * the play with the focus given back and its player let go; an acknowledgement in time plays, a late one changes
+ * nothing, and a Pause before the expiry takes it back with its watchdog.
+ */
+private fun aPendingStartHasAWatchdog() {
+    val limit = RecordingPlayer.START_TIMEOUT_MS
+    val stuck = Rig()
+    stuck.holdStarts = true
+    val g = stuck.queue(1, 1)
+    stuck.prepared()
+    val asked = stuck.current
+    val (_, serial) = stuck.heldStarts.single()
+    stuck.elapse(limit - 100)
+    check(stuck.state == PREPARING && stuck.focus.held) { "still waiting at 9.9 s" }
+    stuck.elapse(100)
+    check(stuck.state == FAILED && stuck.status.endedReason == RecordingPlayer.ENDED_FAILED) {
+        "at 10 s the start has failed: the play ends (${stuck.status.endedReason})"
+    }
+    check(!stuck.focus.held && asked.released && stuck.service.ends == listOf(g to RecordingPlayer.ENDED_FAILED)) {
+        "the focus is given back, the player let go, the service told"
+    }
+    val reading = stuck.status.record(stuck.nowMs)
+    stuck.machine.onStarted(asked.token, serial)
+    check(stuck.status.record(stuck.nowMs) == reading) { "a late acknowledgement changes nothing" }
+
+    val inTime = Rig()
+    inTime.holdStarts = true
+    inTime.queue(1, 1)
+    inTime.prepared()
+    inTime.elapse(limit - 100)
+    check(inTime.ackStart() && inTime.state == PLAYING) { "acknowledged at 9.9 s: it plays" }
+    inTime.elapse(1_000)
+    check(inTime.state == PLAYING) { "and the watchdog is gone" }
+
+    val paused = Rig()
+    paused.holdStarts = true
+    paused.queue(1, 1)
+    paused.prepared()
+    paused.elapse(5_000)
+    paused.machine.pause()
+    paused.elapse(limit)
+    check(paused.state == PAUSED && paused.status.endedReason.isEmpty() && paused.current.made.isEmpty()) {
+        "a Pause before the expiry takes the start back, its watchdog with it (${paused.state})"
+    }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -3284,6 +3331,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    aPendingStartHasAWatchdog()
     aMoveKeepsItsWayUntilItsCandidatePlays()
     theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()

@@ -19957,7 +19957,10 @@ Qt Quick frontend (`src/ui/qt`):
       machine playing (`playingSinceMs`, the hold-off and paused stretch ended, the skip notice). Until then the
       reading stays what it was at the request (`startReadsOpening`: opening, with no seek, for a part just prepared;
       paused, its seek allowed, for a resume, a part opened paused included), the position does not run, the deadline
-      counts the old stretch, and no second start is asked for. Anything a start, pause or seek throws on the
+      counts the old stretch, and no second start is asked for. Each request arms a watchdog scoped to its token and
+      serial (`START_TIMEOUT_MS`, 10 s, R44), which the acknowledgement or any withdrawal cancels; on expiry the part
+      fails as the player's, as a start that throws: the play ends, the focus and the service go, the player is let go
+      and counted, and a late acknowledgement changes nothing. Anything a start, pause or seek throws on the
       owner is `onFailed(token, REASON_PLAYER)`; a release that throws is logged and the thread still ends (main ran
       `start()` on the looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner
       in order; the posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since

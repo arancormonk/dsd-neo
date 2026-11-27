@@ -499,6 +499,13 @@ class RecordingPlayer(
          */
         const val PREPARE_TIMEOUT_MS = 10_000L
 
+        /**
+         * A start asked of a part's player and not acknowledged in this time has failed, as a start that throws: the
+         * player's failure, which ends the play (R44). An owner stuck in MediaPlayer.start(), or queued behind a stalled
+         * call, would otherwise hold the focus, the service and the wake lock with nothing playing.
+         */
+        const val START_TIMEOUT_MS = 10_000L
+
         /** Play tokens, unique in the process. */
         private val tokens = AtomicLong()
 
@@ -547,7 +554,7 @@ class RecordingPlayer(
         }
     }
 
-    private enum class Slot { GAP, SEARCH, DEADLINE, PROMOTION, PREPARE }
+    private enum class Slot { GAP, SEARCH, DEADLINE, PROMOTION, PREPARE, START }
 
     private class Pending(val id: Int, val handle: Cancellable)
 
@@ -908,7 +915,7 @@ class RecordingPlayer(
         if (player == null || token != this.token || serial == 0L || serial != startPending || !prepared) {
             return
         }
-        startPending = 0L
+        withdrawStart()
         if (expireIfDue()) {
             return
         }
@@ -929,7 +936,7 @@ class RecordingPlayer(
             return
         }
         playing = false
-        startPending = 0L
+        withdrawStart()
         playingSinceMs = -1
         positionMs = durationMs
         // Done with: never touched again (a later callback from it carries a token no open has again), and released
@@ -1235,7 +1242,7 @@ class RecordingPlayer(
         dropOpening()
         prepared = false
         playing = false
-        startPending = 0L
+        withdrawStart()
         playingSinceMs = -1
         gap = false
         gapSinceMs = -1
@@ -1291,15 +1298,36 @@ class RecordingPlayer(
             return
         }
         if (!interrupted) {
-            // Asked for, not made: the part plays from its acknowledgement (onStarted), never from here.
             startReadsOpening = status.state == PREPARING
-            startPending = ++startSerial
-            current.start(startPending)
+            requestStart(current)
             if (startPending == 0L || playing) {
                 return // acknowledged (or failed) at once, and published there
             }
         }
         publish()
+    }
+
+    /**
+     * Ask [current] to start, as a new request: the part plays from its acknowledgement ([onStarted]), never from
+     * here, and a watchdog scoped to the part's token and the request's serial fails it as the player's if none comes
+     * within [START_TIMEOUT_MS] (R44).
+     */
+    private fun requestStart(current: Player) {
+        val serial = ++startSerial
+        val asked = token
+        startPending = serial
+        schedule(Slot.START, START_TIMEOUT_MS) {
+            if (startPending == serial && token == asked && player != null) {
+                failItem(REASON_PLAYER)
+            }
+        }
+        current.start(serial)
+    }
+
+    /** The pending start is taken back (a pause, a seek, a move, the end): no acknowledgement of it counts. */
+    private fun withdrawStart() {
+        startPending = 0L
+        cancel(Slot.START)
     }
 
     /**
@@ -1395,7 +1423,7 @@ class RecordingPlayer(
         val current = player ?: return
         if (startPending != 0L) {
             // Asked for and not acknowledged: taken back at once (a start the thread made already is paused).
-            startPending = 0L
+            withdrawStart()
             current.pause()
             return
         }
@@ -1535,7 +1563,7 @@ class RecordingPlayer(
         move = null
         prepared = false
         playing = false
-        startPending = 0L
+        withdrawStart()
         playingSinceMs = -1
         gap = false
         wanted = false
@@ -1565,7 +1593,7 @@ class RecordingPlayer(
         move = null
         prepared = false
         playing = false
-        startPending = 0L
+        withdrawStart()
         playingSinceMs = -1
         positionMs = 0
         durationMs = 0
