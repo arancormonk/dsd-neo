@@ -686,6 +686,47 @@ test_ring_full_drops_whole_blocks(void) {
     tcp_close(t);
 }
 
+/* ring_full_restarts_the_reader: behind a resampler (a 24 kHz stream read into 48 kHz), each block the full ring drops
+ * starts the resampler over (issue #899), as the demod starts its filters over at the drop's gap mark, so the
+ * decimators keep the reader phases the squelch's reader model describes; the rest of that slice's output is let go
+ * with the block. No boundary, no discontinuity, no output generation move, and the blocks after are whole. */
+void
+test_ring_full_restarts_the_reader(void) {
+    tcp_rig t;
+    tcp_open(t, 24000U, 0U, 1);
+    blocks_reset();
+    g_blocks.paused.store(1);
+    tcp_send_pairs(t, kBlock);
+    assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
+    const uint64_t seq = rtl_stream_discontinuity_seq();
+    const uint32_t gen = rtl_stream_output_generation();
+    tcp_send_pairs(t, (size_t)24000U * 3U);
+    assert(wait_until([&] { return ingest(t.s).blocks_dropped > 0U; }, kWaitMs));
+    tcp_send_pairs(t, 4096U);
+    rtl_net_iq_state st = ingest(t.s);
+    assert(wait_until(
+        [&] {
+            st = ingest(t.s);
+            return st.reader.samples >= (uint64_t)kBlock + 24000U * 3U + 4096U;
+        },
+        kWaitMs));
+    if (st.drop_clears == 0U || st.drop_clears != st.blocks_dropped) {
+        DSD_FPRINTF(stderr, "resampled stream, ring full: %llu blocks dropped, the resampler started over %llu times\n",
+                    (unsigned long long)st.blocks_dropped, (unsigned long long)st.drop_clears);
+        assert(0);
+    }
+    assert(st.boundaries == 0U && st.input_restarts == 0U && st.resampler_clears == 0U);
+    assert(rtl_stream_discontinuity_seq() == seq);
+    assert(rtl_stream_output_generation() == gen);
+    g_blocks.paused.store(0);
+    assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
+    const size_t taken = blocks_taken();
+    tcp_send_pairs(t, 24000U / 2U);
+    assert(wait_until([&] { return blocks_taken() >= taken + (size_t)(kRate / 2U / kBlock) - 2U; }, kWaitMs));
+    expect_blocks_exactly(kBlockFloats);
+    tcp_close(t);
+}
+
 /* What a boundary must have moved since @p seq / @p gen. */
 void
 expect_boundary(const stream_rig& s, uint64_t seq, uint32_t gen, uint64_t boundaries) {
@@ -1134,6 +1175,7 @@ const named_test kTests[] = {
     {"level_waits_for_a_block", test_level_waits_for_a_block},
     {"blocks_after_upsampling_and_gaps", test_blocks_after_upsampling_and_gaps},
     {"ring_full_drops_whole_blocks", test_ring_full_drops_whole_blocks},
+    {"ring_full_restarts_the_reader", test_ring_full_restarts_the_reader},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
     {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},

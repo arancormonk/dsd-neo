@@ -10,7 +10,10 @@
  * Everything here but create, start, stop and destroy runs on the socket reader's thread (its callbacks), so the
  * block being filled, the resampler and the level scratch need no lock. The reader never waits on the ring: a block
  * the ring cannot take whole is dropped whole and leaves a gap mark, as a SoapySDR or Airspy device drops what a full
- * ring cannot take, so the queued samples, the resampler and the decoder's generation stay as they are.
+ * ring cannot take, so the queued samples and the decoder's generation stay as they are. The demod starts its filters
+ * over at the gap mark, so a resampler starts over there too, with the rest of its output for that slice let go: its
+ * first output after the gap is the cascade's first input after its reset, the alignment the squelch's reader model
+ * describes (issue #899).
  */
 
 #include "rtl_net_iq.h"
@@ -64,6 +67,7 @@ struct rtl_net_iq {
     std::atomic<uint64_t> known_losses{0U};
     std::atomic<uint64_t> input_restarts{0U};
     std::atomic<uint64_t> resampler_clears{0U};
+    std::atomic<uint64_t> drop_clears{0U};
     std::atomic<uint64_t> resampler_errors{0U};
 };
 
@@ -132,8 +136,8 @@ net_iq_publish_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     }
 }
 
-/* Write the full block to the input ring, or drop it whole when the ring cannot take it. */
-static void
+/* Write the full block to the input ring, or drop it whole when the ring cannot take it: 1 when it was dropped. */
+static int
 net_iq_write_block(struct rtl_net_iq* n) {
     struct input_ring_state* ring = n->ring;
     const size_t need = (size_t)n->chunk_pairs * 2U;
@@ -148,7 +152,7 @@ net_iq_write_block(struct rtl_net_iq* n) {
         input_ring_note_gap(ring);
         n->blocks_dropped.fetch_add(1U, std::memory_order_relaxed);
         dsd_iq_net_reader_note_drop(n->reader);
-        return;
+        return 1;
     }
     DSD_MEMCPY(p1, n->chunk, n1 * sizeof(float));
     if (n2 > 0U) {
@@ -157,15 +161,18 @@ net_iq_write_block(struct rtl_net_iq* n) {
     if (!input_ring_discard_generation_matches(ring, discard_generation)) {
         /* A purge came between the reservation and now: it discarded what this block follows. */
         ring->producer_drops.fetch_add((uint64_t)need);
-        return;
+        return 0;
     }
     input_ring_commit(ring, need);
     n->blocks_written.fetch_add(1U, std::memory_order_relaxed);
     dsd_iq_net_reader_note_written(n->reader);
+    return 0;
 }
 
-/* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. */
-static void
+/* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. Returns 1 when a block was
+ * dropped behind a resampler, which then starts over: the rest of @p iq, made before the gap, is let go (counted as
+ * dropped), so the resampler's next output is the first after the gap mark. */
+static int
 net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     while (pairs > 0U) {
         const size_t room = (size_t)n->chunk_pairs - n->fill;
@@ -175,10 +182,17 @@ net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
         iq += take * 2U;
         pairs -= take;
         if (n->fill == (size_t)n->chunk_pairs) {
-            net_iq_write_block(n);
+            const int dropped = net_iq_write_block(n);
             n->fill = 0U;
+            if (dropped && n->resampler) {
+                n->ring->producer_drops.fetch_add((uint64_t)pairs * 2U);
+                dsd_iq_resampler_clear(n->resampler);
+                n->drop_clears.fetch_add(1U, std::memory_order_relaxed);
+                return 1;
+            }
         }
     }
+    return 0;
 }
 
 static void
@@ -189,14 +203,14 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
     }
     net_iq_publish_level(n, iq, pairs);
     if (!n->resampler) {
-        net_iq_append(n, iq, pairs);
+        (void)net_iq_append(n, iq, pairs);
         return;
     }
     while (pairs > 0U) {
         const size_t slice = pairs < kNetIqResampleSliceSamples ? pairs : kNetIqResampleSliceSamples;
         const int made = dsd_iq_resampler_process(n->resampler, iq, slice, n->resampled, n->resampled_cap);
         if (made > 0) {
-            net_iq_append(n, n->resampled, (size_t)made);
+            (void)net_iq_append(n, n->resampled, (size_t)made);
         } else if (made < 0) {
             /* Cannot happen with slices within the design's max_in; counted, so a misconfiguration shows. */
             n->resampler_errors.fetch_add(1U, std::memory_order_relaxed);
@@ -420,6 +434,7 @@ rtl_net_iq_get_state(const struct rtl_net_iq* n, rtl_net_iq_state* out) {
     out->known_losses = n->known_losses.load(std::memory_order_relaxed);
     out->input_restarts = n->input_restarts.load(std::memory_order_relaxed);
     out->resampler_clears = n->resampler_clears.load(std::memory_order_relaxed);
+    out->drop_clears = n->drop_clears.load(std::memory_order_relaxed);
     out->resampler_errors = n->resampler_errors.load(std::memory_order_relaxed);
     out->local_port = dsd_iq_net_reader_local_port(n->reader);
     dsd_iq_net_reader_get_counters(n->reader, &out->reader);

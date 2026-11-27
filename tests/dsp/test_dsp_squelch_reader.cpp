@@ -552,7 +552,7 @@ rows_distance(const double* got, int got_lags, const Oracle& want) {
    1e-6 of the power: the float chain's rounding. That bound checks the reader-to-cascade alignment only to about 1e-6
    of the power: on these chains the cosets of the reader's phases the decimators keep differ that little (a
    one-sample shift moves the 250 to 192 kHz mean by 1.2e-6, the 40 to 32 kHz rows not at all, their cosets mirroring
-   each other), and
+   each other; elsewhere a coset moves a plan more, 5e-5 at 112 kHz into 64 kHz, which the IO layer keeps aligned), and
    the rows are compared up to a rotation of the period (a constant shift of the output count moves nothing a plan
    uses). */
 void
