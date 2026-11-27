@@ -1377,7 +1377,9 @@ brackets below), and the log says how to fix it; see
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
 - `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off (`tuner`).
 - A native Airspy (`-i airspy`) at a rate its firmware lists other than 2.5, 3, 6 and 10 MS/s (`rate`): set
-  `--airspy-sample-rate` to one of those, or to 0 for its highest, which is one of them. At those four rates it is
+  `--airspy-sample-rate` to one of those four that the Airspy lists (in samples per second, for example 2500000 or
+  10000000 on an R2, 3000000 or 6000000 on a Mini). Leaving the rate to the device does not choose among those four:
+  it takes the highest rate the firmware lists on the desktop and the lowest on Android. At those four rates it is
   checked at 3.2 dB.
 - A sample rate the calibration did not cover (`rate`). Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536,
   1.6, 1.8, 1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream
@@ -1437,8 +1439,8 @@ setting off and on logs them again. `<channel>` is a target's label (or its id w
 - `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
   checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. A native Airspy at a
   rate its firmware lists beyond those logs `... channels on this native Airspy at 5 Msps, a sample rate it was not
-  calibrated for; it checks 2.5, 3, 6 and 10 Msps: set --airspy-sample-rate to one the Airspy runs, or to 0 for its
-  highest, to have them checked.` An Airspy through
+  calibrated for; it checks 2.5, 3, 6 and 10 Msps: set --airspy-sample-rate to 2500000, 3000000, 6000000 or
+  10000000, one the Airspy lists, to have them checked.` An Airspy through
   SoapySDR logs `... channels on an Airspy through SoapySDR; use the native Airspy input (-i airspy) to have them
   checked.`, and a SoapySDR device that may be an Airspy `... channels on this SoapySDR device: it is reached through a
   proxy, or its driver did not say which device it is, so an Airspy, which it cannot check through SoapySDR, cannot be

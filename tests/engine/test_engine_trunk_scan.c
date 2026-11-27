@@ -30776,6 +30776,13 @@ test_scan_quiet_receiver_lines_name_the_native_airspy(void) {
                     strstr(line, "native Airspy") != NULL && strstr(line, "at 5 Msps") != NULL
                         && strstr(line, "2.5, 3, 6 and 10 Msps") != NULL);
     rc |= qt_expect("it names the option that sets the Airspy's rate", strstr(line, "--airspy-sample-rate") != NULL);
+    /* Left to the device, the rate is the firmware's highest (the lowest on Android), not one of the four: the line
+       names the four rates to set, in the option's units, and does not offer 0. */
+    rc |= qt_expect("it names each calibrated rate to set",
+                    strstr(line, "--airspy-sample-rate to 2500000, 3000000, 6000000 or 10000000, one the Airspy lists")
+                        != NULL);
+    rc |= qt_expect("it does not offer the device's own choice",
+                    strstr(line, "or to 0") == NULL && strstr(line, "highest") == NULL);
     rc |= qt_expect("it gives no SoapySDR advice", strstr(line, "SoapySDR") == NULL && strstr(line, "soapy") == NULL);
     char generic[512];
     (void)scan_quiet_format_warn(generic, sizeof generic, DSD_SCAN_QUIET_REASON_RATE, SCAN_QUIET_WARN_RATE, 5000000U,

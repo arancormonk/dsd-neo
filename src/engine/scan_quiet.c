@@ -362,7 +362,7 @@ quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail
             out, out_size,
             "WARNING: scan: silent channel skip cannot check channels on this native Airspy at %s Msps, "
             "a sample rate it was not calibrated for; it checks 2.5, 3, 6 and 10 Msps: set "
-            "--airspy-sample-rate to one the Airspy runs, or to 0 for its highest, to have them "
+            "--airspy-sample-rate to 2500000, 3000000, 6000000 or 10000000, one the Airspy lists, to have them "
             "checked. Normal scan timing applies.\n",
             rate);
     }
