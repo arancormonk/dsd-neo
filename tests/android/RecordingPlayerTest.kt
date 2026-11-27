@@ -1568,6 +1568,20 @@ private fun aCompletionWhilePausedIsHeld() {
         check(back.status.call == expected) { "$length ms: Previous on call ${back.status.call}, not $expected" }
     }
 
+    // R71: a part of unknown length (0) keeps how far it played: paused 4 s into the second call's first part, its
+    // completion held, Previous restarts the second call (the 3,000 ms rule), not the first.
+    val unknown = Rig(length = 0)
+    unknown.queue(1, 1)
+    unknown.prepared()
+    unknown.machine.next()
+    unknown.prepared()
+    unknown.elapse(4_000)
+    unknown.machine.pause()
+    unknown.complete()
+    check(unknown.position == 4_000L) { "unknown length: held at how far it played, ${unknown.position}" }
+    unknown.machine.previous()
+    check(unknown.status.call == 1) { "Previous restarts the second call, on call ${unknown.status.call}" }
+
     // A seek landing after the completion is held moves nothing: the part stays at its end.
     val seeking = Rig()
     seeking.queue(1, 1)

@@ -1066,10 +1066,13 @@ class RecordingPlayer(
         if (player == null || token != this.token || !prepared || expireIfDue()) {
             return
         }
+        // Its end: the length when known, else how far it played (R71: 0 is an unknown length, not no audio), read
+        // before the clock stops.
+        val reached = currentPositionMs()
         playing = false
         withdrawStart()
         playingSinceMs = -1
-        positionMs = durationMs
+        positionMs = if (durationMs > 0) durationMs else reached
         if (!wanted || interrupted) {
             // Paused (the platform drained what it had buffered at the Pause): the part stays current, paused at its
             // end, and moves on when it is resumed, as if it had just completed. The paused deadline counts on.

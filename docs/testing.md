@@ -278,9 +278,9 @@ the held seek matched to the next completion, and a lone slow seek landing on it
 behind a held seek reaching the platform after it, and a pause dropping it (M2); a completed player never started again
 by a queued or held start, a seek after it dropped, its silence at once, one waiting for the release answered at
 completion (R66); a completion while paused held, the part current at its end until Resume moves on to the next part
-or the gap, Previous reading the end (a 5 s part restarts, a 2 s part moves back), a late seek landing moving nothing,
-an interrupted part held until the focus returns at a part and a call joint, a sheet's SINGLE and PARTS held too, the
-deadline counting on; silence at once with nothing started or
+or the gap, Previous reading the end (a 5 s part restarts, a 2 s part moves back, a part of unknown length how far it
+played), a late seek landing moving nothing, an interrupted part held until the focus returns at a part and a call
+joint, a sheet's SINGLE and PARTS held too, the deadline counting on; silence at once with nothing started or
 after a pause that returned, after a pause that threw only once the release has returned, never for a release that threw
 (its ended thread counts as silent instead, M3), and none unasked (R62).
 `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
