@@ -333,6 +333,24 @@ def playback_scoped_commands_check_first():
     return None
 
 
+def playback_looper_reads_no_main_service():
+    """#909 r14t: RecordingPlayback's `service` field is the main thread's. The noisy receiver, delivered on the
+    playback looper, reads the instance's taps through the volatile `serviceTaps`, as the looper commands do; every
+    other read of `service` sits inside a `main.post` block."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    noisy = re.search(r"private object Noisy : BroadcastReceiver\(\) \{.*?\n    \}\n", source, re.S)
+    if not noisy:
+        return f"{playback.relative_to(REPO)}: the Noisy receiver not found"
+    code = re.sub(r"//[^\n]*", "", noisy.group(0))
+    if re.search(r"\bservice\b", code) or "serviceTaps" not in code:
+        return f"{playback.relative_to(REPO)}: the Noisy receiver must read serviceTaps, not the main-thread service"
+    return None
+
+
 def playback_record_fields_match():
     """#909: the status record's fields are read by position, so Status.record() and the idle record in
     RecordingPlayback.kt must list as many as playback_status_record.h's kPlaybackStatusFields."""
@@ -1704,6 +1722,7 @@ SUITES = {
             playback_record_fields_match,
             playback_requests_checked_before_begin,
             playback_scoped_commands_check_first,
+            playback_looper_reads_no_main_service,
         ),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),

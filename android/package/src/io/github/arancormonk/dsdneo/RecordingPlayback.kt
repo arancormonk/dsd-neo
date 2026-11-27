@@ -544,9 +544,10 @@ object RecordingPlayback {
     private object Noisy : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                // The instance's taps, read here on the main thread; its waiting tap goes before the pause (R54).
-                val taps = service?.taps
-                onLooper { PlayPauseTaps.disconnected(taps, it) }
+                // Delivered on the playback looper (Listening registers it with the looper's handler): the instance's
+                // taps are read through the volatile serviceTaps, as every looper command reads them, never the
+                // main-thread service field (r14t); its waiting tap goes before the pause (R54).
+                onLooper { PlayPauseTaps.disconnected(serviceTaps, it) }
             }
         }
     }
