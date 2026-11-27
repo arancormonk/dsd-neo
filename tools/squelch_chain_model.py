@@ -634,8 +634,9 @@ def impulse_cov(plan: RatePlan, hb_taps: dict, taps: np.ndarray) -> np.ndarray:
     rate: unit impulses at each of the N source phases the chain repeats over, far enough apart that no two responses
     meet (impulse_spacing()), through the ported chain; R(q, m) is the sum of y_n y_{n+m} over outputs n = q mod P,
     n counted from the stream's start (a shift of N inputs shifts the responses by P outputs). The impulses stream in
-    pushes of IMPULSE_CHUNK source samples, the products accumulating as they come with the last lags - 1 outputs
-    carried, so the workspace stays bounded whatever N. Rows are phases, columns lags."""
+    pushes of at most IMPULSE_CHUNK source samples (the last one only as long as the stream, a whole number of the
+    chain's units), the products accumulating as they come with the last lags - 1 outputs carried, so the workspace
+    stays bounded whatever N and a short chain streams only what it needs. Rows are phases, columns lags."""
     L = plan.reader.L if plan.reader else 1
     M = plan.reader.M if plan.reader else 1
     period_in = 1 << plan.passes
@@ -652,13 +653,14 @@ def impulse_cov(plan: RatePlan, hb_taps: dict, taps: np.ndarray) -> np.ndarray:
     chain = ChainStream(plan, hb_taps)
     fir = FirStream(taps)
     chunk = max(chain.unit, IMPULSE_CHUNK // chain.unit * chain.unit)
-    total = -(-total // chunk) * chunk
+    total = -(-total // chain.unit) * chain.unit
     cov = np.zeros((n_out, lags))
     carry = np.zeros(0)
     first = 0  # the absolute output index of carry[0]
     for pos in range(0, total, chunk):
-        x = np.zeros(chunk, dtype=np.complex128)
-        j = np.arange(max(0, -(-(pos - lead) // gap)), min(n_in, -(-(pos + chunk - lead) // gap)))
+        push = min(chunk, total - pos)
+        x = np.zeros(push, dtype=np.complex128)
+        j = np.arange(max(0, -(-(pos - lead) // gap)), min(n_in, -(-(pos + push - lead) // gap)))
         x[lead + j * gap - pos] = 1.0
         buf = np.concatenate((carry, fir.push(chain.push(x)).real))
         count = len(buf) - (lags - 1)
