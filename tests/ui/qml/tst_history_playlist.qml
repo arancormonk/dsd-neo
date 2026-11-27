@@ -700,6 +700,46 @@ Item {
             compare(barItem.announcements, 1, "and says nothing of it");
         }
 
+        // The line reachable for a moment, then covered again before the sheet's turn to read comes (the confirmation
+        // cancelled and opened again at once): nothing is read and the refusal stays pending; reachable again, it is
+        // read once, and the bar is silent after the sheet closes.
+        function test_refusal_unread_stays_pending_while_the_line_is_covered_again() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            testContext.setHistoryPlaylistAnswer("accepted", calls.map(function (call, i) {
+                return {path: "/rec/call-" + i + ".wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: i, partOrdinal: 1,
+                    partCount: 1, title: call.name, line: "", key: String(call.uid)};
+            }));
+            findChild(screen, "historyPlayAll").activate();
+            playing({item: 0});
+            tryCompare(barItem, "announcements", 1);
+            var sheet = detailSheet(screen);
+            var block = findChild(sheet, "historyRecording");
+            part(screen, "nowPlayingShowInList").activate();
+            block.askDelete();
+            var confirm = findChild(block, "recordingDeleteConfirm");
+            var said = block.announcements;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            compare(block.announcements, said, "not read under the confirmation");
+            findChild(confirm, "confirmCancelButton").activate();
+            verify(block.lineReachable, "the line is reachable for a moment");
+            block.askDelete();
+            verify(confirm.visible && !block.lineReachable, "and covered again before the sheet's turn");
+            wait(0);
+            wait(0);
+            compare(block.announcements, said, "nothing is read while it is covered");
+            verify(block.refusalUnsaid.length > 0, "the refusal is still pending");
+            findChild(confirm, "confirmCancelButton").activate();
+            tryCompare(block, "announcements", said + 1, 2000, "reachable again: read now");
+            compare(block.announced, full);
+            sheet.visible = false;
+            tryCompare(status, "eventHeard", true, 2000, "the bar takes it as heard");
+            compare(barItem.announcements, 1, "and says nothing of it");
+        }
+
         // The reverse: a refused resume the bar read out is heard by a sheet opened after it. Show in list opens the
         // playing call's sheet, and a move that keeps the refusal standing (the part opened again under a new token)
         // shows it on the sheet's notice line without reading it again; the next refusal is read.

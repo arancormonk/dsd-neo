@@ -547,9 +547,13 @@ Column {
         onTriggered: player.sayUnsaidRefusal()
     }
     function sayUnsaidRefusal() {
+        // Unreachable again by now (another dialog opened): still pending, for
+        // the next time the line can be read.
+        if (!lineReachable)
+            return;
         var pending = refusalUnsaid;
         refusalUnsaid = "";
-        if (pending.length === 0 || pending !== failureKey || !lineReachable)
+        if (pending.length === 0 || pending !== failureKey)
             return;
         failureKey = "";
         noteFailure();
