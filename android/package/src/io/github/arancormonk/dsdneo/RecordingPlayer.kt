@@ -1460,8 +1460,8 @@ class RecordingPlayer(
         }
         if (restart) {
             requestStart(current)
-            if (playing) {
-                return // acknowledged at once, and published there
+            if (startPending == 0L || playing) {
+                return // acknowledged (or failed) at once, and published there: nothing after an end
             }
         }
         publish()

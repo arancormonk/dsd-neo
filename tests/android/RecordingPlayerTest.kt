@@ -51,6 +51,9 @@ private class FakePlayer(
 
     /** Every start asked for, by serial, made or not; [made] the ones its own thread made. */
     val startRequests = mutableListOf<Long>()
+
+    /** The calls passed to its own thread, in order: "ask <serial>", "pause", "seek <ms>" (R45's order). */
+    val ops = mutableListOf<String>()
     val made = mutableListOf<Long>()
 
     /** Its platform player was made, on its own thread. */
@@ -102,6 +105,7 @@ private class FakePlayer(
         check(wantedStart == 0L) { "a start asked for while start $wantedStart waits" }
         wantedStart = serial
         startRequests += serial
+        ops += "ask $serial"
         onStart(this, serial)
     }
 
@@ -118,6 +122,7 @@ private class FakePlayer(
 
     override fun pause() {
         wantedStart = 0L
+        ops += "pause"
         if (started) {
             valid("pause", true)
             started = false
@@ -125,6 +130,7 @@ private class FakePlayer(
     }
 
     override fun seekTo(positionMs: Long) {
+        ops += "seek $positionMs"
         valid("seek", prepared)
         seeks += positionMs
     }
@@ -275,12 +281,17 @@ private class FakeService : RecordingPlayer.ServiceLink {
     val changes = mutableListOf<RecordingPlayer.Status>()
     val ends = mutableListOf<Pair<Int, String>>()
 
+    /** "changed" and "ended" in the order the service heard them. */
+    val heard = mutableListOf<String>()
+
     override fun changed(status: RecordingPlayer.Status) {
         changes += status
+        heard += "changed"
     }
 
     override fun ended(generation: Int, reason: String) {
         ends += generation to reason
+        heard += "ended"
     }
 }
 
@@ -1304,12 +1315,32 @@ private fun aSeekTakesAPendingStartBack() {
         "the old start is taken back, a new one asked for behind the seek (${player.startRequests})"
     }
     check(player.seeks == listOf(20_000L)) { "the seek is posted" }
+    // On the owner, in order: the old start taken back, then the seek, then the new start (m3).
+    check(player.ops.takeLast(3) == listOf("pause", "seek 20000", "ask ${player.startRequests.last()}")) {
+        "taken back, then the seek, then the new start: ${player.ops}"
+    }
     rig.machine.onStarted(player.token, old)
     check(rig.state != PLAYING) { "the old start's acknowledgement is stale" }
     rig.heldStarts.removeAt(0)
     check(rig.ackStart() && rig.state == PLAYING) { "the new start's plays" }
     rig.elapse(1_000)
     check(rig.position == 21_000L) { "from the seek's target: ${rig.position}" }
+
+    // The new start failing at once ends the play, and nothing is published after the end (m4).
+    val fails = Rig()
+    fails.queue(1, 1)
+    fails.prepared()
+    fails.machine.pause()
+    fails.holdStarts = true
+    fails.machine.resume()
+    fails.holdStarts = false
+    fails.failStarts = true
+    val before = fails.service.changes.size
+    fails.machine.seekFor(fails.status.generation, fails.status.playToken, 5_000)
+    check(fails.state == FAILED && fails.service.ends.size == 1) { "the re-asked start failed: the play ended" }
+    check(fails.service.changes.size > before && fails.service.heard.last() == "ended") {
+        "the service hears no change after the end (${fails.service.heard.takeLast(3)})"
+    }
 }
 
 private fun previousFollowsTheThreeSecondRule() {
