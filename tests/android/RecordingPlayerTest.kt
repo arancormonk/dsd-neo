@@ -844,10 +844,6 @@ private fun partsPlayThroughHoldingOneTransientFocus() {
 }
 
 /**
- * A restart that fails keeps searching backward (R55): with A, B and C, B deleted while it plays and Previous after
- * 3 s, B's reopen fails and A plays, not C; with B the last call, A plays and the playlist does not finish.
- */
-/**
  * The last played part survives a gap after skipped parts (R81): A's part 1 plays, A's part 2 is gone, B's only part is
  * gone. The gap names A; then the search finds nothing more and the play ends finished, still naming A, at its played
  * position, not B at 0.
@@ -872,6 +868,10 @@ private fun theLastPlayedPartSurvivesAGap() {
     }
 }
 
+/**
+ * A restart that fails keeps searching backward (R55): with A, B and C, B deleted while it plays and Previous after
+ * 3 s, B's reopen fails and A plays, not C; with B the last call, A plays and the playlist does not finish.
+ */
 private fun aFailedRestartKeepsSearchingBackward() {
     for (last in listOf(false, true)) {
         val rig = Rig()
