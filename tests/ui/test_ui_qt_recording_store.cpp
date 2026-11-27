@@ -287,6 +287,13 @@ fragment(qint64 row, int slot = 0) {
     return dsd_qt::call_history_fragment_key(kRing, slot, static_cast<qulonglong>(row));
 }
 
+/* One recording of row @p row listed, available or not as @p available says. */
+bool
+listed_as(const RecordingStore& store, qint64 row, bool available) {
+    const QVariantList list = store.recordingsForFragments({fragment(row)});
+    return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
+}
+
 /* A recording published into @p folder with its file's modification time set to @p mtime first: the file is whole,
  * time included, before its journal line can be read. */
 void
@@ -4514,6 +4521,48 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     s.pass();
     expect("recreated: only the new recording counts", s.store.recordingCount() == 1 && s.store.usedBytes() == 3000
                                                            && !s.store.isIndexedPath(a + QStringLiteral("/old.wav")));
+
+    // r16t: the same path made again, through the one exception (a start that finds the directory absent may make it
+    // anew). The listing omits the removed folder; in its read hook the recordings directory is moved aside and the
+    // start makes it, and the same owner path, again. At that pass's end, before the read again it asks for, the old
+    // row is gone (installRootTableLocked() drops what the index held at a path a start made during the listing).
+    const Roots again;
+    const QString ext2 = again.dir.path() + QStringLiteral("/ext");
+    const QString away2 = again.dir.path() + QStringLiteral("/ext-away");
+    const QString aside = again.dir.path() + QStringLiteral("/aside");
+    Store t(again.list());
+    const QString b = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    t.store.endSession();
+    record(b, QStringLiteral("0000000000000936-3"), QStringLiteral("old.wav"), 1754000200, 3, 5000);
+    t.pass();
+    expect("recreated, same path: indexed", listed_as(t.store, 3, true));
+    std::atomic<int> ends{0};
+    std::atomic<bool> seen{false};
+    std::atomic<bool> oldGone{false};
+    QString remade;
+    t.store.setPassEndHookForTest([&]() {
+        const int end = ends++;
+        if (end == 0 && QDir().rename(ext2, away2)) {
+            seen = !t.store.deleteFolder(QString(kUidA));
+            (void)QDir(away2 + QStringLiteral("/Call recordings/") + QFileInfo(b).fileName()).removeRecursively();
+            (void)QDir().rename(away2, ext2);
+        } else if (end == 1) {
+            oldGone = t.store.recordingsForFragments({fragment(3)}).isEmpty();
+        }
+    });
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == again.external && remade.isEmpty() && QDir().rename(again.external, aside)) {
+            remade = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        }
+    });
+    t.pass();
+    t.pass();
+    t.store.setRootReadHookForTest({});
+    t.store.setPassEndHookForTest({});
+    expect("recreated, same path: seen away and back", seen.load());
+    expect("recreated, same path: the start made the same path again", remade == b);
+    expect("recreated, same path: at that pass's end the old row is gone", oldGone.load());
+    t.store.endSession();
 }
 
 /* Issue #902, r15t: a start while the returning root is listed (the listing read the old folder.json already) leaves
@@ -4545,6 +4594,38 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
     expect("relabel: the folder on the returning root keeps its label",
            onDisk.contains(QStringLiteral("County")) && !onDisk.contains(QStringLiteral("Metro"))
                && s.store.folderPathsForTest().contains(a));
+
+    // r16t: a relabel during a listing that is permitted, of an available root whose directory is there again (I1).
+    // In the listing's read hook one start adopts the listed folder and a second relabels it; the table installed
+    // keeps the start's label (keepSessionFoldersLocked()), seen before the folder's own read could repair it.
+    const Roots fresh;
+    Store t(fresh.list());
+    const QString staged = fresh.dir.path() + QStringLiteral("/staged");
+    const QString listed = fresh.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("relabel, listed: a folder made elsewhere",
+           write_owner_json(staged + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA), QStringLiteral("County")));
+    QString adopted;
+    QString relabel;
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == fresh.external && adopted.isEmpty()) {
+            adopted = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+            t.store.endSession();
+            relabel = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Metro"));
+            t.store.endSession();
+        }
+    });
+    QString indexedLabel;
+    t.store.setFolderLoadHookForTest([&](const QString& path) {
+        if (path == listed && indexedLabel.isEmpty()) {
+            indexedLabel = t.store.folderNameForTest(path); // the table's, before this read installs its own
+        }
+    });
+    expect("relabel, listed: the directory there again", QDir().rename(staged, fresh.external));
+    t.pass();
+    t.store.setRootReadHookForTest({});
+    t.store.setFolderLoadHookForTest({});
+    expect("relabel, listed: adopted and relabelled during the listing", adopted == listed && relabel == listed);
+    expect("relabel, listed: the installed table keeps the new label", indexedLabel == QStringLiteral("Metro"));
 }
 
 /* Issue #902: storage plugged in again after a pass marked it away wakes no pass on its own; an export (or a save)
@@ -5149,13 +5230,6 @@ test_session_start_remembers_storage_away(void) {
     expect("seen at start: the session went to the other storage", elsewhere.startsWith(roots.internal));
     expect("seen at start: Export all has the folder put on it while away",
            all.value(QStringLiteral("count")).toInt() == 2);
-}
-
-/* One recording of row @p row listed, available or not as @p available says. */
-bool
-listed_as(const RecordingStore& store, qint64 row, bool available) {
-    const QVariantList list = store.recordingsForFragments({fragment(row)});
-    return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
 }
 
 /* I1: a root whose recordings folder is missing at a cold start (its parent there) holds nothing, and is looked at
