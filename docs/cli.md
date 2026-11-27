@@ -1932,8 +1932,8 @@ changed; nothing when it is Off) with every radio session it starts, so its anal
 digital decoding is left exactly as it was. It is no INI key, and a save (the exit autosave, Config > Save,
 `--print-config`) never writes it: while it stands (no squelch set this session, on whatever channel) the save writes no
 squelch key (`rtl_sql`, `rtl_sql_mode`, `rtl_sql_margin_db`) for any input, as a config that never set one, so the next
-start with the option runs it again, with the level beneath it as it ran (a config without the keys leaves the
-session's squelch, on a radio input too). Once a squelch was set explicitly, an Off included, the save writes the session's
+start with the option runs it again; the level beneath the default comes back as Off (a radio `[input]` without
+`rtl_sql` applies 0), which is no squelch, as the -110 dB a start without a `sql` field runs is. Once a squelch was set explicitly, an Off included, the save writes the session's
 squelch, which ends the default on the next start as any config's squelch keys do; an `--iq-replay` session instead
 saves the `[input]` it keeps for a save (the one it loaded, or the input it left for the replay;
 [config-system.md](config-system.md#default-path)) with that section's own squelch keys, not the session's: `rtl_sql`

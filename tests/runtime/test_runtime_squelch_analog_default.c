@@ -460,22 +460,23 @@ test_save_keeps_default(void) {
         session_free(o, s);
         next_run(reloaded, &o, &s);
         assert(dsd_squelch_analog_default_pending(o));
-        /* The spec the reload builds from rtl_freq leaves the omitted rtl_sql's field empty, which ends nothing and
-           leaves the level beneath the default as the start has it. */
+        /* The spec the reload builds from rtl_freq carries the omitted rtl_sql as 0, which ends nothing. */
         const int builds_spec = input == SAVE_ON_RTL || input == SAVE_ON_DIGITAL;
-        assert(!builds_spec || rtl_spec_sql_is(o->audio_in_dev, ""));
+        assert(!builds_spec || rtl_spec_sql_is(o->audio_in_dev, "0"));
         assert(dsd_squelch_analog_default_sync(o, s) == 1 && runs_default(o));
         session_free(o, s);
     }
     free(reloaded);
 }
 
-/* The level beneath a standing default survives the save: a session started with no squelch field (the startup level)
-   saves no squelch key, and the next run, given the option again, still has the startup level beneath the default, so
-   leaving the analog monitor (here for a digital decoder) runs it again, never Off. On an RTL-SDR, whose load builds
-   a spec, and on a SoapySDR, whose load sets the tuning fields itself. */
+/* The level beneath a standing default across a save: a session started with no squelch field (the startup level)
+   saves no squelch key; the next run, given the option again, starts at the startup level, applies what the reload
+   builds as the start does (the RTL-SDR spec's sql field 0; on a SoapySDR rtl_sql's 0, which the load writes itself)
+   and still runs the default. Beneath it the level comes back Off, which is no squelch as the startup level is (at or
+   below -110 dB no analog call is allowed, dsd_squelch_analog_calls_allowed(), and such a power gate never closes),
+   so leaving the analog monitor (here for a digital decoder) runs Off, and the default still stands. */
 static void
-test_save_keeps_base_level(void) {
+test_save_base_comes_back_off(void) {
     char text[16384];
     dsdneoUserConfig* reloaded = (dsdneoUserConfig*)calloc(1, sizeof(*reloaded));
     assert(reloaded);
@@ -496,11 +497,12 @@ test_save_keeps_base_level(void) {
         o->analog_only = 0;
         o->frame_dmr = 1;
         assert(dsd_squelch_analog_default_sync(o, s) == 1);
-        if (!runs_level(o, DSD_SQUELCH_STARTUP_DB)) {
+        if (!runs_level(o, 0) || !dsd_squelch_analog_default_pending(o)) {
             DSD_FPRINTF(stderr,
-                        "%s: the level beneath the default after a save and reload is %.3g (mode %d), not the "
-                        "startup %d dB:\n%s\n",
-                        devs[i], o->rtl_squelch_level, o->rtl_squelch_mode, (int)DSD_SQUELCH_STARTUP_DB, text);
+                        "%s: after a save and reload the level beneath the default is %.3g (mode %d), not Off, or the "
+                        "default no longer stands (%d):\n%s\n",
+                        devs[i], o->rtl_squelch_level, o->rtl_squelch_mode, dsd_squelch_analog_default_pending(o),
+                        text);
             assert(0);
         }
         session_free(o, s);
@@ -663,7 +665,7 @@ main(void) {
     test_scan_rows();
     test_effective_decoder();
     test_save_keeps_default();
-    test_save_keeps_base_level();
+    test_save_base_comes_back_off();
     test_save_after_explicit_squelch();
     test_save_without_default();
     test_am_notice();

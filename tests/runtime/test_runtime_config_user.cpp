@@ -3361,16 +3361,7 @@ test_snapshot_disabled_squelch_roundtrips_as_off(void) {
     cfg.has_input = 1;
     cfg.input_source = DSDCFG_INPUT_SOAPY;
     DSD_SNPRINTF(cfg.soapy_args, sizeof cfg.soapy_args, "%s", "driver=test");
-    /* No squelch key leaves the session's level (issue #899: a save while --squelch-analog-default stands writes
-       none), never Off. */
-    opts.rtl_squelch_level = 12.0;
-    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
-    if (fabs(opts.rtl_squelch_level - 12.0) > 1e-12) {
-        DSD_FPRINTF(stderr, "soapy apply without rtl_sql expected the session's 12, got %g\n", opts.rtl_squelch_level);
-        rc |= 1;
-    }
     cfg.rtl_sql = 0;
-    cfg.rtl_sql_is_set = 1;        /* the config names rtl_sql */
     opts.rtl_squelch_level = 12.0; /* clobber, so the apply has to write it */
     dsd_apply_user_config_to_opts(&cfg, &opts, &state);
     if (opts.rtl_squelch_level != 0.0) {
@@ -5872,7 +5863,6 @@ test_radio_input_spec(void) {
     cfg.rtl_ppm = -3;
     cfg.rtl_bw_khz = 16;
     cfg.rtl_sql = -50;
-    cfg.rtl_sql_is_set = 1;
     cfg.rtl_volume = 2;
     rc |= expect_radio_input_spec("no [input]", &cfg, &opts, NULL);
     cfg.has_input = 1;
@@ -5883,18 +5873,6 @@ test_radio_input_spec(void) {
     cfg.rtl_bw_khz = 0;
     cfg.rtl_volume = 0;
     rc |= expect_radio_input_spec("rtl from the session's tuning", &cfg, &opts, "rtl:1:146.52M:30:4:24:-50:1");
-    /* No squelch key (a save while --squelch-analog-default stands writes none, issue #899): the sql field of the
-       spec running now, else empty, which leaves the session's squelch, never a 0 that would switch it off. */
-    cfg.rtl_sql_is_set = 0;
-    rc |= expect_radio_input_spec("rtl without a squelch key", &cfg, &opts, "rtl:1:146.52M:30:4:24::1");
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtl:0:851M:30:4:24:auto+8:1");
-    rc |= expect_radio_input_spec("rtl without a squelch key, over a running spec", &cfg, &opts,
-                                  "rtl:1:146.52M:30:4:24:auto+8:1");
-    DSD_SNPRINTF(opts.audio_in_dev, sizeof opts.audio_in_dev, "%s", "rtltcp:127.0.0.1:1234:851M:30:4:24:-60");
-    rc |= expect_radio_input_spec("rtl without a squelch key, over a running rtl_tcp spec", &cfg, &opts,
-                                  "rtl:1:146.52M:30:4:24:-60:1");
-    opts.audio_in_dev[0] = '\0';
-    cfg.rtl_sql_is_set = 1;
     /* No rtl_freq: the apply leaves the input as it is. */
     cfg.rtl_freq[0] = '\0';
     rc |= expect_radio_input_spec("rtl without rtl_freq", &cfg, &opts, NULL);

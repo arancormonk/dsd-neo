@@ -380,7 +380,6 @@ test_config_apply(int failure) {
     } else {
         DSD_SNPRINTF(cfg->rtl_freq, sizeof cfg->rtl_freq, "852M");
         cfg->rtl_sql = -55;
-        cfg->rtl_sql_is_set = 1; /* the config names rtl_sql */
         seed_carrier_codes(state);
         DSD_MEMCPY(cmd->data, cfg, sizeof(*cfg));
         assert(apply_config_cmd(opts, state, cmd) == UI_CMD_APPLY_COMPLETED);
