@@ -890,6 +890,11 @@ the media controls are current all along. After a playlist ends, a media button 
 - If the phone's player takes more than 2 seconds to confirm a seek, the bar and sheet go on showing where the call
   was; the seek still shows once the player confirms it, unless you seek again before then, when the newer seek can
   show as done a moment before it is.
+- A button pressed on a car's screen or the lock screen in the instant you start another playlist can act on the new
+  playlist instead.
+- While a call is still starting, Android 13 and later show a loading spinner in the media controls where Play and
+  Pause would be, so there is no Pause there until it plays; **Stop** stays available, and a call that does not start
+  within 10 seconds stops with an error.
 - A call starts only once the one before it has gone quiet, also when you start another playlist or play a recording
   from its sheet over one, or play again after a playlist stopped or finished. If the phone's player for the call before
   stops answering, the new call stops with an error after 10 seconds, and the next one you play does not wait for that

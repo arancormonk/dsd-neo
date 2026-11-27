@@ -20294,7 +20294,12 @@ Qt Quick frontend (`src/ui/qt`):
       not wait for the stuck player again and may start over it if it ever sounds, while its thread stays counted until
       it ends (R40); a seek given up at its 2 s bound (M1) still lands when its late completion comes if no newer seek
       was issued since (m1), but one that arrives after a newer seek has been issued is matched to the newer one, which
-      can land that seek early.
+      can land that seek early; a transport command already in transit from a controller (a car, the lock screen) when a
+      playlist is replaced can act on the new playlist, the session being reused with its callback replaced per
+      generation (R36), within the binder transit of one command (r13); and while a start is pending, Android 13 and
+      later's media controls show a loading spinner in place of Play and Pause for `STATE_BUFFERING`, as for any Media3
+      app (R49's mapping), so there is no Pause there until the start sounds, Stop staying available and the 10 s start
+      watchdog bounding the wait (R44, r13).
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
