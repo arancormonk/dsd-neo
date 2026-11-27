@@ -20657,10 +20657,12 @@ Qt Quick frontend (`src/ui/qt`):
     away roots (`awayRootsBackLocked()`; a single recording's delete goes through `checkRootsLocked()`, which does not
     look at the flag), and listed in full once it is a readable directory (I1, `test_folder_missing_at_a_cold_start`); a
     directory that goes during the root's listing, before its final check, is remembered as missing the same way
-    (`rebuildRoot()`, `test_directory_gone_during_its_listing_is_remembered_missing`). A pass reads the flag at the
-    root's turn and writes it, under the lock, only from a look no session start overtook (a per-root count of
-    directories a start made), and its listing of a root takes any seen-away note made since the pass's top, so neither
-    a session start nor an export during the pass costs a second listing (m1, `listRootNow()`,
+    (`rebuildRoot()`, `test_directory_gone_during_its_listing_is_remembered_missing`), and so is one a folder read in
+    the pass sees gone after the pass's look at its root (`rootStillAvailable()`, r13,
+    `test_directory_gone_during_a_folder_read_is_remembered_missing`). A pass reads the flag at the root's turn and
+    writes it, under the lock, only from a look no session start overtook (a per-root count of directories a start
+    made), and its listing of a root takes any seen-away note made since the pass's top, so neither a session start nor
+    an export during the pass costs a second listing (m1, `listRootNow()`,
     `test_session_made_root_during_a_pass_is_not_listed`, `test_export_note_during_a_pass_is_taken_by_its_listing`). A
     session start that makes a root's directory over rows the index holds on it (renamed away before any pass marked the
     root away) notes the root seen away, so its old rows are unavailable at once and the pass the start asks for lists

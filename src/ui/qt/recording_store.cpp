@@ -829,6 +829,7 @@ RecordingStore::markRootAwayLocked(int root, Pass* pass) {
 bool
 RecordingStore::rootStillAvailable(int root, Pass* pass) {
     QString rootPath;
+    quint64 made = 0U;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         if (root < 0 || root >= m_roots.size()) {
@@ -838,11 +839,21 @@ RecordingStore::rootStillAvailable(int root, Pass* pass) {
             return false; // away since earlier in this pass: nothing more is decided about it until it is read again
         }
         rootPath = m_roots.at(root);
+        made = m_rootMade.value(root);
     }
-    if (rootThereForIndex(root, rootPath)) {
+    if (rootPlayableNow(rootPath)) {
         return true;
     }
+    const bool there = rootMissingTakenAsThere(root, rootPath);
     const std::lock_guard<std::mutex> lock(m_mutex);
+    if (there) {
+        // There and empty only because its directory is missing (no rows on it), seen after the pass's look at it
+        // (r13): remembered as missing, under m1's fence, so the next pass lists it once it is back.
+        if (m_rootMade.value(root) == made) {
+            m_rootDirMissing[root] = true;
+        }
+        return true;
+    }
     if (m_rootAvailable.value(root)) {
         markRootAwayLocked(root, pass);
     }
