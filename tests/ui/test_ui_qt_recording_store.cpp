@@ -4610,21 +4610,30 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
            onDisk.contains(QStringLiteral("County")) && !onDisk.contains(QStringLiteral("Metro"))
                && s.store.folderPathsForTest().contains(a));
 
-    // r16t: a relabel during a listing that is permitted, of an available root whose directory is there again (I1).
-    // In the listing's read hook one start adopts the listed folder and a second relabels it; the table installed
-    // keeps the start's label (keepSessionFoldersLocked()), seen before the folder's own read could repair it.
+    // r16t, r17f: a relabel during a listing that is permitted, of an available root whose directory is there again
+    // (I1), the listing's only folder change. The folder is known first; its directory, missing at one pass's look and
+    // back right after it, is listed by the next pass; in that listing's read hook a start relabels it. The installed
+    // table keeps the start's label (noteFolderAddedLocked(), keepSessionFoldersLocked()), seen before the folder's
+    // own read could repair it.
     const Roots fresh;
-    Store t(fresh.list());
-    const QString staged = fresh.dir.path() + QStringLiteral("/staged");
     const QString listed = fresh.external + QStringLiteral("/County (1a2b3c4d)");
-    expect("relabel, listed: a folder made elsewhere",
-           write_owner_json(staged + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA), QStringLiteral("County")));
-    QString adopted;
+    const QString moved = fresh.dir.path() + QStringLiteral("/ext/moved");
+    expect("relabel, listed: a folder on the root", write_owner_json(listed, QString(kUidA), QStringLiteral("County")));
+    Store t(fresh.list());
+    expect("relabel, listed: the folder known", t.store.folderPathsForTest().contains(listed));
+    std::atomic<bool> lookedAway{false};
+    t.store.setRootLookHookForTest([&](const QString& root) {
+        if (root == fresh.external && !lookedAway.exchange(true)) {
+            (void)QDir().rename(moved, fresh.external); // missing at this look, back right after it
+        }
+    });
+    expect("relabel, listed: the directory moved before a pass", QDir().rename(fresh.external, moved));
+    t.pass();
+    t.store.setRootLookHookForTest({});
+    expect("relabel, listed: missing at the look, back after it", lookedAway.load() && QFileInfo(listed).isDir());
     QString relabel;
     t.store.setRootReadHookForTest([&](const QString& root) {
-        if (root == fresh.external && adopted.isEmpty()) {
-            adopted = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
-            t.store.endSession();
+        if (root == fresh.external && relabel.isEmpty()) {
             relabel = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Metro"));
             t.store.endSession();
         }
@@ -4635,11 +4644,10 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
             indexedLabel = t.store.folderNameForTest(path); // the table's, before this read installs its own
         }
     });
-    expect("relabel, listed: the directory there again", QDir().rename(staged, fresh.external));
     t.pass();
     t.store.setRootReadHookForTest({});
     t.store.setFolderLoadHookForTest({});
-    expect("relabel, listed: adopted and relabelled during the listing", adopted == listed && relabel == listed);
+    expect("relabel, listed: relabelled during the listing", relabel == listed);
     expect("relabel, listed: the installed table keeps the new label", indexedLabel == QStringLiteral("Metro"));
 }
 
