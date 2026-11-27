@@ -64,7 +64,7 @@ class RecordingPlaybackService : Service() {
     private var published = SessionTarget.NONE
 
     /** The headset's play/pause taps, waiting for a double tap on the playback looper; for the instance's playlists. */
-    private val taps = PlayPauseTaps(
+    internal val taps = PlayPauseTaps(
         RecordingPlayback.playbackScheduler(),
         ViewConfiguration.getDoubleTapTimeout().toLong(),
         { generation -> RecordingPlayback.sessionCommand(generation) { player, g -> PlayPauseTaps.toggle(player, g) } },

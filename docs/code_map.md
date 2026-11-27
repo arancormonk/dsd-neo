@@ -20167,7 +20167,9 @@ Qt Quick frontend (`src/ui/qt`):
       request code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI builds them from the
       PlaybackState. A partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio (opening, playing,
       the gap); the `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export flag) while any
-      play is open, and the `SCREEN_ON` one (the same way) while a playlist is open. While the media session is active
+      play is open, which drops the service's waiting headset tap on the looper before the noisy pause (R54:
+      `PlayPauseTaps.disconnected()`, so the tap's timeout cannot resume through the speaker), and the `SCREEN_ON`
+      one (the same way) while a playlist is open. While the media session is active
       for the playlist that owns the service (`RecordingPlayback.playlistSession()`, the session's token:
       `ActiveSession` in `MediaKeys.kt`, published by the service's `render()` once it has made the owner's session
       active, cleared at that playlist's end, at a render with the session inactive and when the session is released,

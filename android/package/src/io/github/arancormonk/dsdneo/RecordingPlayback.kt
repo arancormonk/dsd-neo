@@ -499,7 +499,9 @@ object RecordingPlayback {
     private object Noisy : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
-                onLooper { it.onNoisy() }
+                // The instance's taps, read here on the main thread; its waiting tap goes before the pause (R54).
+                val taps = service?.taps
+                onLooper { PlayPauseTaps.disconnected(taps, it) }
             }
         }
     }

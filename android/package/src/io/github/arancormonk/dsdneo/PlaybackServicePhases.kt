@@ -478,6 +478,16 @@ class PlayPauseTaps(
             }
         }
 
+        /**
+         * The headphones were disconnected (AUDIO_BECOMING_NOISY), on the looper: the instance's waiting tap ([taps],
+         * null with no service) is dropped first, then the player pauses for the noise (R54). Left armed, the tap's
+         * timeout would find the play paused and resume it through the speaker.
+         */
+        fun disconnected(taps: PlayPauseTaps?, player: RecordingPlayer) {
+            taps?.drop()
+            player.onNoisy()
+        }
+
         /** A double tap: Next when the session offers it. */
         fun next(player: RecordingPlayer, generation: Int) {
             val status = player.status

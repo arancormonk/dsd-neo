@@ -775,6 +775,27 @@ fun aTapPausesAStartStillPending() {
 }
 
 /**
+ * A disconnect drops a waiting tap before its noisy pause (R54): the play stays paused, and the tap's timeout, had it
+ * run, would have found it paused and resumed it through the speaker.
+ */
+fun aDisconnectDropsAWaitingTap() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val t = Taps(playing)
+    val g = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays" }
+    t.taps.keyDown(g, 0)
+    PlayPauseTaps.disconnected(t.taps, machine)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the disconnect pauses it" }
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.isEmpty() && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+        "the tap's timeout changes nothing: ${t.toggles}"
+    }
+}
+
+/**
  * A headset tap waits for a double tap on the playlist, not on its part: a part change keeps it and its timeout toggles
  * play and pause; a second tap is Next; another playlist, the end or the service going drops it.
  */
@@ -932,6 +953,7 @@ fun main() {
     keysQueuedBehindAMoveAllAct()
     aTapPausesAStartStillPending()
     headsetTapsBelongToThePlaylistNotThePart()
+    aDisconnectDropsAWaitingTap()
     transportKeysFollowAWaitingTapOnThePlayersState()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }
