@@ -43,6 +43,7 @@
 #include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
+#include <limits.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -124,8 +125,12 @@ run_chain_plan(demod_state* s, int rate_hz, int kind, int width_hz, int path, in
     s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
     s->squelch_margin_db = 10;
     if (reader_source_hz > 0) {
-        const uint32_t dsp_in = (uint32_t)rate_hz << passes;
-        if (dsd_iq_reader_plan_for(&s->iq_reader, (uint32_t)reader_source_hz, dsp_in, (uint64_t)rate_hz) != 0
+        /* The cascade's input rate, 2^passes x the rate, in 64 bits: past the reader's INT_MAX limit it is refused
+           here, never narrowed to a wrapped rate the reader would take as another chain. */
+        const uint64_t dsp_in = (uint64_t)rate_hz << passes;
+        if (dsp_in > (uint64_t)INT_MAX
+            || dsd_iq_reader_plan_for(&s->iq_reader, (uint32_t)reader_source_hz, (uint32_t)dsp_in, (uint64_t)rate_hz)
+                   != 0
             || dsd_demod_squelch_reader_model_sync(s) != 0) {
             return -1;
         }
