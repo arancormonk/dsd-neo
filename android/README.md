@@ -868,10 +868,13 @@ the media controls are current all along. After a playlist ends, a media button 
 ### Playlist limits
 
 - If an SD card or USB drive, or the recordings folder itself, is removed, renamed or put back at the very moment
-  DSD-neo checks its storage or starts recording a call, DSD-neo can get it wrong for a short while: a call can be
-  recorded into a second folder for the same system, that call's recording may not be saved at all if its folder
-  was renamed away in that moment, a card swapped out and back can show its recordings as they were, and a card put
-  back can take about a minute to show its recordings. DSD-neo's next check of its storage puts the list right.
+  DSD-neo checks its storage or starts listening (the recordings folder is chosen when a session starts, and every
+  call in that session goes there), DSD-neo can get it wrong: that session's calls can be recorded into a second
+  folder for the same system, or, if its folder was renamed away in that moment, may not be saved at all; a card
+  swapped out and back can show its recordings as they were; and a card put back can take about a minute to show its
+  recordings. A change DSD-neo noticed is normally put right at its next check of its storage, within about a
+  minute; a swap it did not notice can leave the list out of date until it reads the storage in full again, for
+  example after DSD-neo restarts.
 - **Play all** and **Play from here** go by what DSD-neo knows of its storage. Pressed in the moment after the storage
   goes away (an SD card removed, the recordings folder renamed), before DSD-neo has noticed, a playlist can replace
   what plays and then end with "Couldn't play these recordings", as when files vanish just after a press. Storage that
