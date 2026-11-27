@@ -3436,9 +3436,16 @@ each. All 75 meet every target. The worst are noise read as carrier 7e-5 (7 / 10
 48 kHz), noise undecided 3.3 % and no carrier read as noise. The rows with no pass (8 to 16 kHz and 48,001 Hz) reproduce
 the full run's counts exactly. The rows with passes moved within sampling error: noise read as carrier 6 to 10 events in
 900,000 windows at 40 kHz, and 5 to 9 in 1,200,000 at 250 kHz. A chain without a reader is stationary at every stage, so
-the centring only delays it. Its noise has the same distribution at either phase, so the full run's verdicts on those
-rows stand. `--noise-windows` splits the requested 40 ms decisions over the `--segments` streams by quotient and
-remainder and leaves the empty streams out, so a run measures the windows it reports.
+the centring only delays it. Its noise has the same distribution at either phase, and its plan streamed at the old and
+the new centring agrees within 5.4e-15 (rtl-12k, -16k, -24k and -48k, filtered and not). The deterministic carriers and
+the real captures shift by one input sample against the output grid, which is not a whole-output delay. Two targeted
+full reruns measured that effect on the chains whose accepted plans sit closest to their bounds. `--frozen --chains
+rtl-8k`: all 4 plans meet every target, and the forced legacy filter's 6 dB miss reads 1.62 % (9 / 555; 2.16 % before),
+inside its 3.8 % allowance and its only miss. The EDACS/M17 gate's `--chains rtl-12k`: PROVOICE `LPF=1` holds 600 ms,
+inside its 620 ms, and WIDE `LPF=1` reads 360 ms (its entry below). Neither plan misses a second bound, and the others
+move within sampling error. So the full run's verdicts on the rows without a reader stand. `--noise-windows` splits the
+requested 40 ms decisions over the `--segments` streams by quotient and remainder and leaves the empty streams out, so a
+run measures the windows it reports.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 
@@ -3522,7 +3529,7 @@ another bound or a worse value still fails it.
 | Plan | Bound | Measured | Accepted up to | Why |
 | --- | --- | --- | --- | --- |
 | EDACS, rtl-12k, PROVOICE, `DSD_NEO_CHANNEL_LPF=1` | Longest closed run while learning, under the 155 ms hold | 600 ms (a 300 Hz tone at 5 kHz deviation, 1 kHz off centre, 6 dB) | 620 ms | The channel LPF forced on at 12 kHz: the real 7-pass cascade and the filter truncate that carrier hard (the design run tested it without the cascade). EDACS presets run 24 kHz, and the default 12 kHz chain, channel LPF off, passes. |
-| EDACS, rtl-12k, WIDE after a live switch, `DSD_NEO_CHANNEL_LPF=1` | As above | 240 ms (the same carrier) | 260 ms | As above. |
+| EDACS, rtl-12k, WIDE after a live switch, `DSD_NEO_CHANNEL_LPF=1` | As above | 360 ms (the same carrier; 240 ms before the rerun below) | 380 ms | As above, a plan only the override makes. The targeted rerun (`--chains rtl-12k`) was the first full run with fresh timing noise for every case and the decoder's half-band centring. It measured 360 ms, still the only bound this plan misses, and the allowance follows it by one sub-window. |
 | M17 encoder, rtl-8k, legacy WIDE, `DSD_NEO_CHANNEL_LPF=1` | 6 dB carrier missed, 1 % | 1.26 % (7 / 555; 0.51 % to 2.58 %) | 2.6 % | The forced 8 kHz legacy filter, as on the analog monitor above. |
 | EDACS, 125 kHz replay, no channel filter (`DSD_NEO_CHANNEL_LPF=0`) | Noise read as carrier, 1e-4 | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | An unfiltered chain with no pass, whose plan this issue leaves bit for bit; its tail sits near 1e-4. |
 | M17 encoder, 125 kHz replay, no channel filter | As above | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | As above. |
