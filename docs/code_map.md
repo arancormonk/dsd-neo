@@ -10320,7 +10320,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   rate (variance 2^(passes - 1), the scale of the plans without a reader) shows at each of the reader's L output
   phases, from its taps, lined up on the samples the decimators keep (stage output n is centred on input 2n, counted
   from the stream's start, which the reader and the cascade start over at together: the reader is cleared at the
-  RETUNE, RESET, MUTE and rewind where the demodulator's filters are reset) and carried through the cascade phase by
+  RETUNE, RESET, MUTE and rewind where the demodulator's filters are reset, and an I/Q stream's resampler at each
+  block its full ring drops; a documented limit where the cascade starts over without the reader: an FM <-> AM switch
+  on the analog monitor, and on an I/Q stream the blocks a boundary's purge takes after the reader's restart and an
+  external rigctl landing's purge, after which the decimators can keep another of the gcd(L, 2^passes) cosets of the
+  reader's phases until the next common start; the worst plan error that costs, over 9,530 readers the rate plans make
+  with every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel filters, is
+  1.2e-4, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
   phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
   pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
   when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,

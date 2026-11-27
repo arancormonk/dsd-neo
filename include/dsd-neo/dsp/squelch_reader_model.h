@@ -22,6 +22,13 @@
  *   reader's output phases lined up on the samples the real decimators keep: each stage's output n is centred on its
  *   input 2n, counted from the stream's start, which the reader and the cascade start over at together. The period
  *   left at the channel filter is P = L / gcd(L, 2^passes) (40 kHz to 32 kHz by 4/5, then one pass: 2 phases).
+ *   A limit: where the cascade starts over without the reader (an FM <-> AM switch on the analog monitor; on an I/Q
+ *   stream, the blocks a boundary's purge takes after the reader's restart, and an external rigctl landing's purge),
+ *   the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the next common
+ *   start, which the plan does not follow. The worst plan error that costs, over 9,530 readers the rate plans make
+ *   (every pass count, sources at every 1 % of the octave), unfiltered and through the analog channel filters, is
+ *   1.2e-4 (60 kHz read into 48 kHz ahead of two passes, unfiltered; 5.4e-5 at 112 kHz into 64 kHz). A block an I/Q
+ *   stream's full ring drops restarts the reader with the cascade (rtl_net_iq.cpp), so it keeps the alignment.
  * - The covariance at every one of those phases (phase_cov), averaged over the period, and the largest distance of any
  *   phase's from the average.
  * - For every output phase in full, two exact routes through the channel taps (dsd_squelch_reader_route): the
