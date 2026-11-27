@@ -13,6 +13,7 @@ import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.MODE_PLAYLIST
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.PAUSED
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.PLAYING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.PREPARING
+import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_BUFFERING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_NONE
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_PAUSED
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_PLAYING
@@ -2221,7 +2222,7 @@ private fun theTableDrivesStateSpeedAndActions() {
     val moves = ACTION_STOP or ACTION_NEXT or ACTION_PREVIOUS
     val rig = Rig()
     rig.queue(1, 1)
-    expect(rig, "opening (wanted)", PREPARING, SESSION_PLAYING, moves or ACTION_PAUSE)
+    expect(rig, "opening (wanted)", PREPARING, SESSION_BUFFERING, moves or ACTION_PAUSE)
     check(rig.status.speed == 0f) { "opening plays at speed 0" }
     rig.machine.pause()
     expect(rig, "opening (paused)", PREPARING, SESSION_PAUSED, moves or ACTION_PLAY)
@@ -2241,6 +2242,7 @@ private fun theTableDrivesStateSpeedAndActions() {
     expect(rig, "paused gap", PAUSED, SESSION_PAUSED, moves or ACTION_PLAY)
     rig.machine.resume()
     rig.elapse(1_000)
+    expect(rig, "opening the next call", PREPARING, SESSION_BUFFERING, ACTION_STOP or ACTION_PREVIOUS or ACTION_PAUSE)
     rig.prepared()
     expect(rig, "last call", PLAYING, SESSION_PLAYING, ACTION_STOP or ACTION_PREVIOUS or ACTION_PAUSE or ACTION_SEEK)
     rig.machine.stop(rig.generation)

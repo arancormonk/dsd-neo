@@ -481,7 +481,10 @@ class RecordingPlayer(
         const val SESSION_PAUSED = 2
         const val SESSION_STOPPED = 3
 
-        /** A start pending: Android's STATE_BUFFERING, the frozen position at speed 0, Pause offered. */
+        /**
+         * Wanted with no audio yet, a part opening or its start pending (not the gap): Android's STATE_BUFFERING, the
+         * frozen position at speed 0, Pause offered.
+         */
         const val SESSION_BUFFERING = 4
 
         const val ACTION_PLAY = 1
@@ -1728,7 +1731,9 @@ class RecordingPlayer(
         ended != null -> SESSION_STOPPED
         !promoted -> SESSION_NONE
         interrupted || !wanted -> SESSION_PAUSED
-        startPending != 0L -> SESSION_BUFFERING
+        // Opening a wanted part or waiting for its start: the wish is to play, no audio yet (R49). The headset's taps
+        // are counted by PlayPauseTaps, which reads BUFFERING as playing, so a tap still pauses. The gap keeps PLAYING.
+        !gap && (player == null || !prepared || startPending != 0L) -> SESSION_BUFFERING
         else -> SESSION_PLAYING
     }
 

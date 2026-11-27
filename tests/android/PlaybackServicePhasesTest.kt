@@ -602,11 +602,11 @@ fun thePlayersEndsDriveTheServiceOrder() {
     check(rig.phases.currentRequest == b && rig.inFlight.size == 1) { "A's end leaves B the request of A's start" }
     playing.deliver()
     check(rig.phases.currentOwner == b && playing.machine.status.generation == b) { "the start promotes B" }
-    check(playing.machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "and B's audio may start" }
+    check(playing.machine.status.sessionState == RecordingPlayer.SESSION_BUFFERING) { "and B opens, wanted" }
     val c = playing.playlist()
     check(rig.starts.last() == Start.HAND_OVER && rig.phases.currentOwner == c) { "C is handed the running service" }
     check(playing.ends.last() == b to RecordingPlayer.ENDED_REPLACED && !rig.retired) { "B's end keeps it for C" }
-    check(playing.machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "C is promoted at once" }
+    check(playing.machine.status.sessionState == RecordingPlayer.SESSION_BUFFERING) { "C is promoted at once" }
     playing.machine.stop(c)
     check(playing.ends.last() == c to RecordingPlayer.ENDED_STOPPED && rig.retired) { "C's Stop retires the service" }
     check(rig.destroy() == 0)
@@ -727,14 +727,22 @@ private class Taps(val playing: Playing) {
 }
 
 /**
- * A start still pending reads as playing to the session (R49): STATE_BUFFERING with Pause offered, so a single tap
- * takes the start back and pauses, and its late acknowledgement plays nothing.
+ * A part opening or a start still pending reads as playing to the session (R49): STATE_BUFFERING with Pause offered,
+ * so a single tap cancels the wish or takes the start back and pauses, and a late acknowledgement plays nothing.
  */
 fun aTapPausesAStartStillPending() {
     val playing = Playing(ServiceRig())
     val machine = playing.machine
-    val g = playing.playlist()
+    val opening = playing.playlist()
     playing.deliver()
+    check(machine.status.sessionState == RecordingPlayer.SESSION_BUFFERING) { "buffering while its part opens" }
+    check(machine.status.allows(RecordingPlayer.ACTION_PAUSE) && !machine.status.canSeek) { "Pause offered, no seek" }
+    PlayPauseTaps.toggle(machine, opening)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "a tap cancels the wish: paused" }
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "and the part opens paused" }
+
+    val g = playing.playlist() // handed the running service: no delivery
     playing.holdStarts = true
     machine.onPrepared(playing.tokens.last())
     check(machine.status.sessionState == RecordingPlayer.SESSION_BUFFERING) { "buffering while its start waits" }

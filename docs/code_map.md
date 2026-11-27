@@ -20061,13 +20061,14 @@ Qt Quick frontend (`src/ui/qt`):
       terminal poll, a stop, a single play the platform refuses, which replaces it, or the host's teardown; every path
       that zeroes the generation goes through it), the published reading keeping what its item named.
     - State/action table (one table drives Qt and the session, and every command is checked against it again on
-      delivery): opening (wanted) PLAYING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
+      delivery): opening (wanted) BUFFERING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
       Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;
       paused in the gap PAUSED 0, Play opens the next call at once (never replays the finished part); interrupted PAUSED
       0, Play a no-op; paused PAUSED 0, Play, seek when the duration is above 0. Next/Previous and Stop in every row;
       SKIP_TO_NEXT/PREVIOUS only while a move exists. Starting (a start asked for, not acknowledged) STARTING, the
-      session BUFFERING 0, position frozen, Pause takes the start back, seek re-asks behind the seek. Opening reads
-      PLAYING (not BUFFERING), so a headset tap, which the framework toggles on STATE_PLAYING, pauses it.
+      session BUFFERING 0, position frozen, Pause takes the start back, seek re-asks behind the seek. Both rows wish to
+      play with no audio yet, so both read BUFFERING; a headset tap still pauses them, since `PlayPauseTaps.toggle()`
+      counts the taps (not the framework) and treats BUFFERING as playing. The notification stays ongoing for both.
       `playbackCanSeek` comes from the same value and the sheet's seek bar reads it. The host's state reads Preparing
       for both opening rows; Qt tells them apart by the paused reason the record carries only while nothing is wanted,
       or (`background`) while a sheet's SINGLE or PARTS play waits for the foreground, which a visible app never shows:
