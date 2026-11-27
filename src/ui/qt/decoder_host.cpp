@@ -410,11 +410,20 @@ DecoderHost::beginPlayback(const QString& path) {
     publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
 }
 
+namespace {
+
+/* A play still open: opening, starting, playing or paused (issue #909), not stopped or failed. */
+bool
+playback_open(int state) {
+    return state == DecoderHost::PlaybackPreparing || state == DecoderHost::PlaybackStarting
+           || state == DecoderHost::PlaybackPlaying || state == DecoderHost::PlaybackPaused;
+}
+
+} // namespace
+
 void
 DecoderHost::stopPlaybackGeneration(int generation) {
-    const int state = m_playback.state;
-    const bool open = state == PlaybackPreparing || state == PlaybackPlaying || state == PlaybackPaused;
-    if (generation > 0 && generation == m_playback.generation && open) {
+    if (generation > 0 && generation == m_playback.generation && playback_open(m_playback.state)) {
         stopPlayback();
     }
 }
@@ -426,9 +435,7 @@ DecoderHost::stopPlayback() {
 
 QString
 DecoderHost::playbackHoldPath() const {
-    const int state = m_playback.state;
-    const bool open = state == PlaybackPreparing || state == PlaybackPlaying || state == PlaybackPaused;
-    return open && m_playback.mode == PlaybackSingle ? m_playback.path : QString();
+    return playback_open(m_playback.state) && m_playback.mode == PlaybackSingle ? m_playback.path : QString();
 }
 
 void
@@ -453,7 +460,8 @@ DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, 
     reading.positionMs = positionMs;
     reading.durationMs = durationMs;
     reading.error = error;
-    reading.canSeek = (state == PlaybackPlaying || state == PlaybackPaused) && durationMs > 0;
+    reading.canSeek =
+        (state == PlaybackPlaying || state == PlaybackPaused || state == PlaybackStarting) && durationMs > 0;
     publishPlayback(reading);
 }
 

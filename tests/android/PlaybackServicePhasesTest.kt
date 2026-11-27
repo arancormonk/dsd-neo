@@ -112,6 +112,10 @@ private class Playing(val rig: ServiceRig) {
     val tokens = mutableListOf<Long>()
     val seeks = mutableListOf<Pair<Long, Long>>()
     val ends = mutableListOf<Pair<Int, String>>()
+
+    /** Starts the players' threads have not made yet (holdStarts), by token and serial; else made at once. */
+    var holdStarts = false
+    val heldStarts = mutableListOf<Pair<Long, Long>>()
     val machine: RecordingPlayer = RecordingPlayer(
         { token ->
             tokens += token
@@ -123,7 +127,9 @@ private class Playing(val rig: ServiceRig) {
 
                 override fun create() = Unit
                 override fun prepare(source: RecordingPlayer.Source) = Unit
-                override fun start(serial: Long) = machine.onStarted(token, serial)
+                override fun start(serial: Long) {
+                    if (holdStarts) heldStarts += token to serial else machine.onStarted(token, serial)
+                }
                 override fun pause() = Unit
                 override fun seekTo(positionMs: Long) {
                     seeks += token to positionMs
@@ -721,6 +727,26 @@ private class Taps(val playing: Playing) {
 }
 
 /**
+ * A start still pending reads as playing to the session (R49): STATE_BUFFERING with Pause offered, so a single tap
+ * takes the start back and pauses, and its late acknowledgement plays nothing.
+ */
+fun aTapPausesAStartStillPending() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val g = playing.playlist()
+    playing.deliver()
+    playing.holdStarts = true
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.sessionState == RecordingPlayer.SESSION_BUFFERING) { "buffering while its start waits" }
+    check(machine.status.allows(RecordingPlayer.ACTION_PAUSE) && machine.status.speed == 0f) { "Pause offered, speed 0" }
+    PlayPauseTaps.toggle(machine, g)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "a tap takes the start back: paused" }
+    val (token, serial) = playing.heldStarts.single()
+    machine.onStarted(token, serial)
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "its late acknowledgement plays nothing" }
+}
+
+/**
  * A headset tap waits for a double tap on the playlist, not on its part: a part change keeps it and its timeout toggles
  * play and pause; a second tap is Next; another playlist, the end or the service going drops it.
  */
@@ -875,6 +901,7 @@ fun main() {
     thePlayersEndsDriveTheServiceOrder()
     aSessionCommandActsOnTheTargetItWasQueuedFor()
     keysQueuedBehindAMoveAllAct()
+    aTapPausesAStartStillPending()
     headsetTapsBelongToThePlaylistNotThePart()
     transportKeysFollowAWaitingTapOnThePlayersState()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")

@@ -245,6 +245,8 @@ class RecordingPlaybackService : Service() {
             RecordingPlayer.SESSION_PLAYING -> PlaybackState.STATE_PLAYING
             RecordingPlayer.SESSION_PAUSED -> PlaybackState.STATE_PAUSED
             RecordingPlayer.SESSION_STOPPED -> PlaybackState.STATE_STOPPED
+            // A start asked for and not acknowledged: Android 13+ shows a loading spinner, with Pause (R49).
+            RecordingPlayer.SESSION_BUFFERING -> PlaybackState.STATE_BUFFERING
             else -> PlaybackState.STATE_NONE
         }
         val builder = PlaybackState.Builder()
@@ -337,7 +339,10 @@ class RecordingPlaybackService : Service() {
         }
         style.setShowActionsInCompactView(*compact.toIntArray())
         return builder.setStyle(style)
-            .setOngoing(status.sessionState == RecordingPlayer.SESSION_PLAYING)
+            .setOngoing(
+                status.sessionState == RecordingPlayer.SESSION_PLAYING ||
+                    status.sessionState == RecordingPlayer.SESSION_BUFFERING,
+            )
             .setContentTitle(title(status))
             .setContentText(subtitle(status))
             .build()

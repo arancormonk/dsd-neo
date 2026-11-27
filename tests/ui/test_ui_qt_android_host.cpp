@@ -3054,11 +3054,24 @@ check_playlist_record() {
     code.state = DecoderHost::PlaybackFailed;
     code.error = QStringLiteral("unsupported");
     unread(code.text(), "nor an error the player never writes");
+    // #909 (R49): 5 is a start asked for and not yet made; a state past it is still no record.
+    code = bad;
+    code.state = DecoderHost::PlaybackStarting + 1;
+    unread(code.text(), "nor a state the player never writes");
     StatusFields good = bad;
     good.paused = QStringLiteral("noisy");
     r.status = good.text();
     host.refresh();
     check(host.playbackPausedReason() == QStringLiteral("noisy") && host.playbackGap(), "a known reason is read");
+    StatusFields starting = good;
+    starting.state = DecoderHost::PlaybackStarting;
+    starting.gap = 0;
+    starting.paused.clear();
+    r.status = starting.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.property("playbackState").toInt() == 5
+              && host.playbackGeneration() == f.generation,
+          "a starting record is read as starting, its play still open");
 }
 
 /* #909: a play that ended from the platform (a notification Stop, its end, a failure) keeps its last reading under

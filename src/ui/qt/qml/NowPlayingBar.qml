@@ -51,8 +51,9 @@ Rectangle {
     // paused): the player names why it pauses; it reads paused, with Resume.
     readonly property bool pausedOpening: playState === 1 && String(decoderHost.playbackPausedReason || "").length > 0
     // Wanted: its button pauses (B4: an interruption carries on by itself, so
-    // it reads Pause too).
-    readonly property bool wanted: (playState === 1 && !pausedOpening) || playState === 2 || (playState === 3 && interrupted)
+    // it reads Pause too; R49: so does a start asked for and not yet made, 5,
+    // while its position holds).
+    readonly property bool wanted: (playState === 1 && !pausedOpening) || playState === 2 || playState === 5 || (playState === 3 && interrupted)
     readonly property real durationMs: live ? Math.max(0, Number(decoderHost.playbackDurationMs) || 0) : 0
     readonly property real positionMs: live ? Math.max(0, durationMs > 0 ? Math.min(decoderHost.playbackPositionMs, durationMs) : decoderHost.playbackPositionMs) : 0
     readonly property string title: live ? decoderHost.playbackTitle : end ? end.title : ""

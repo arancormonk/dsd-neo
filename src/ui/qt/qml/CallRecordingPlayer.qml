@@ -112,7 +112,9 @@ Column {
     }
     readonly property var part: parts.length > 0 ? parts[Math.min(current, parts.length - 1)] : null
     readonly property bool loaded: part !== null && playsFile(part) && part.path !== missingAway
-    // DecoderHost::PlaybackState: 0 stopped, 1 preparing, 2 playing, 3 paused, 4 failed.
+    // DecoderHost::PlaybackState: 0 stopped, 1 preparing, 2 playing, 3 paused,
+    // 4 failed, 5 starting (issue #909, R49: a start asked for and not yet
+    // made, so the button offers Pause while the position holds).
     readonly property int playState: loaded ? decoderHost.playbackState : 0
     // Issue #909 (B4): halted for another app's audio, carrying on by itself
     // after it: wanted still, so its button pauses it (that cancels the carry-on).
@@ -122,13 +124,13 @@ Column {
     // offers Play then; it reads paused, not opening.
     readonly property bool pausedOpening: playState === 1 && String(decoderHost.playbackPausedReason || "").length > 0
     readonly property bool paused: (playState === 3 && !interrupted) || pausedOpening
-    readonly property bool wantsPlay: (playState === 1 && !pausedOpening) || playState === 2 || (playState === 3 && interrupted)
+    readonly property bool wantsPlay: (playState === 1 && !pausedOpening) || playState === 2 || playState === 5 || (playState === 3 && interrupted)
     // A play with no recording token yet (before the host's first poll): a
     // pause or resume from here could reach nothing, or (a queue's) another
     // part than the one shown, so none is offered until it has one. Only this
     // block's single recording, one item whatever its token, is paused and
     // resumed as a whole meanwhile.
-    readonly property bool awaitingToken: loaded && playState >= 1 && playState <= 3 && Number(decoderHost.playbackToken) <= 0
+    readonly property bool awaitingToken: loaded && ((playState >= 1 && playState <= 3) || playState === 5) && Number(decoderHost.playbackToken) <= 0
                                           && !(ownsPlay && decoderHost.playbackMode === 0)
     // This block's own queue (Play all parts) before its first token: no seek either, which would be the queue's.
     readonly property bool ownQueueAwaitingToken: awaitingToken && ownsPlay
@@ -161,7 +163,7 @@ Column {
         var size = Number(decoderHost.playbackSize);
         return size < 0 || (Number(recording.identitySize) === size && Number(recording.mtimeSec) === Number(decoderHost.playbackMtimeSec) && Number(recording.mtimeNanos) === Number(decoderHost.playbackMtimeNanos));
     }
-    readonly property bool hostOpen: decoderHost.playbackState >= 1 && decoderHost.playbackState <= 3
+    readonly property bool hostOpen: (decoderHost.playbackState >= 1 && decoderHost.playbackState <= 3) || decoderHost.playbackState === 5
     // The sheet holding this block is open.
     readonly property bool sheetShown: dialogParent ? dialogParent.visible : visible
 

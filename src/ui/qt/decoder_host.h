@@ -162,14 +162,16 @@ class DecoderHost : public QObject {
 
     /**
      * @brief What the call recording player is doing (issue #708). Stopped: nothing open. Preparing: opening
-     * playbackPath. Failed: it could not play; playbackError says why.
+     * playbackPath. Failed: it could not play; playbackError says why. Starting (issue #909, R49): a start asked of the
+     * platform's player and not acknowledged yet, so its controls offer Pause, but the position holds until it plays.
      */
     enum PlaybackState {
         PlaybackStopped = 0,
         PlaybackPreparing = 1,
         PlaybackPlaying = 2,
         PlaybackPaused = 3,
-        PlaybackFailed = 4
+        PlaybackFailed = 4,
+        PlaybackStarting = 5
     };
     Q_ENUM(PlaybackState)
 

@@ -3741,8 +3741,8 @@ class ReadingMap : public QQmlPropertyMap {
     stopPlaybackGeneration(int generation) {
         noteCall(QStringLiteral("stopPlaybackGeneration"), {{QStringLiteral("generation"), generation}});
         const int state = value(QStringLiteral("playbackState")).toInt();
-        if (generation > 0 && generation == value(QStringLiteral("playbackGeneration")).toInt() && state >= 1
-            && state <= 3) {
+        if (generation > 0 && generation == value(QStringLiteral("playbackGeneration")).toInt()
+            && ((state >= 1 && state <= 3) || state == 5)) {
             publishIdlePlayback();
         }
     }
@@ -4084,8 +4084,9 @@ class ReadingMap : public QQmlPropertyMap {
     followHold() {
         const int state = value(QStringLiteral("playbackState")).toInt();
         const bool single = value(QStringLiteral("playbackMode")).toInt() == dsd_qt::DecoderHost::PlaybackSingle;
-        insert(QStringLiteral("playbackHoldPath"),
-               single && state >= 1 && state <= 3 ? value(QStringLiteral("playbackPath")).toString() : QString());
+        insert(QStringLiteral("playbackHoldPath"), single && ((state >= 1 && state <= 3) || state == 5)
+                                                       ? value(QStringLiteral("playbackPath")).toString()
+                                                       : QString());
     }
 
     /* A single play refused with a failed reading of its own (generation 0, @p path, refuseWith), as the base host's

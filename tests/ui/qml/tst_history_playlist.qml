@@ -838,6 +838,11 @@ Item {
             compare(part(screen, "nowPlayingPlay").Accessible.name, "Resume");
             part(screen, "nowPlayingPlay").activate();
             compare(hostCallsNamed("resumePlayback").length, 1);
+            // R49: the resume's start asked for and not yet made (5): Pause, and a tap pauses it.
+            playing({item: 0, playbackState: 5});
+            compare(part(screen, "nowPlayingPlay").Accessible.name, "Pause");
+            part(screen, "nowPlayingPlay").activate();
+            compare(hostCallsNamed("pausePlayback").length, 2, "a tap on a pending start pauses");
             playing({item: 1});
             verify(!next.enabled, "the last call: no Next");
             verify(previous.enabled);

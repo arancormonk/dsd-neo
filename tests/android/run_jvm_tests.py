@@ -234,7 +234,7 @@ def recording_transfer_codes_match():
 
 def playback_states_match():
     """#708: the call recording player's state crosses JNI as a plain int."""
-    names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED")
+    names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED", "STARTING")
     return native_enum_matches("PlaybackState", "Playback", "RecordingPlayer.kt", names)
 
 

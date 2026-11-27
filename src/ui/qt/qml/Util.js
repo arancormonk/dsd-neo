@@ -1186,7 +1186,8 @@ function playlistMark(host, uid) {
     if (!host || host.playbackOrigin !== "history" || host.playbackMode !== 2)
         return 0
     var state = host.playbackState
-    if (state < 1 || state > 3 || !host.playbackKey || host.playbackKey !== String(uid))
+    // 5: a start asked for and not yet made (issue #909, R49), marked playing.
+    if (state < 1 || state > 5 || state === 4 || !host.playbackKey || host.playbackKey !== String(uid))
         return 0
     var pausedOpening = state === 1 && String(host.playbackPausedReason || "").length > 0
     return state === 3 || pausedOpening || host.playbackInterrupted === true ? 2 : 1

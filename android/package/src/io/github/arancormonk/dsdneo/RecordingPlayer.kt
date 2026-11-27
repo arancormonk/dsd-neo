@@ -364,12 +364,12 @@ class RecordingPlayer(
          */
         val skipNoticeCall: Int,
         val skipNoticeCount: Int,
-        /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED or SESSION_STOPPED (the playlist table). */
+        /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED, SESSION_STOPPED or SESSION_BUFFERING (the playlist table). */
         val sessionState: Int,
         /** The ACTION_* bits the session offers. */
         val actions: Int,
     ) {
-        /** 1 while the player plays, else 0 (opening, the gap, paused, interrupted). */
+        /** 1 while the player plays, else 0 (opening, starting, the gap, paused, interrupted). */
         val speed: Float get() = if (playingSinceMs < 0) 0f else 1f
 
         fun allows(action: Int): Boolean = actions and action != 0
@@ -408,6 +408,13 @@ class RecordingPlayer(
         const val PLAYING = 2
         const val PAUSED = 3
         const val FAILED = 4
+
+        /**
+         * A start asked of the part's player and not acknowledged yet (R49): wanted, so every control offers Pause, and
+         * seek stays allowed, but nothing plays yet: the position holds, and the clock, the hold-off, the paused stretch
+         * and the 3,000 ms rule start only on the acknowledgement. Its session state is [SESSION_BUFFERING].
+         */
+        const val STARTING = 5
 
         /** Modes; must match DecoderHost::PlaybackMode. */
         const val MODE_SINGLE = 0
@@ -473,6 +480,9 @@ class RecordingPlayer(
         const val SESSION_PLAYING = 1
         const val SESSION_PAUSED = 2
         const val SESSION_STOPPED = 3
+
+        /** A start pending: Android's STATE_BUFFERING, the frozen position at speed 0, Pause offered. */
+        const val SESSION_BUFFERING = 4
 
         const val ACTION_PLAY = 1
         const val ACTION_PAUSE = 2
@@ -638,13 +648,6 @@ class RecordingPlayer(
      */
     private var startPending = 0L
     private var startSerial = 0L
-
-    /**
-     * The pending start was asked for while the play read opening (a part's first start, just prepared): until its
-     * acknowledgement it still reads opening, with no seek. A resume of a part that read paused (one opened paused,
-     * or after a pause) reads paused meanwhile, its seek allowed.
-     */
-    private var startReadsOpening = false
 
     /** The current part has played (a start of it was acknowledged) since it opened (R46). */
     private var partPlayed = false
@@ -1298,7 +1301,6 @@ class RecordingPlayer(
             return
         }
         if (!interrupted) {
-            startReadsOpening = status.state == PREPARING
             requestStart(current)
             if (startPending == 0L || playing) {
                 return // acknowledged (or failed) at once, and published there
@@ -1688,8 +1690,7 @@ class RecordingPlayer(
     private fun hasCallAfter(call: Int): Boolean = (callEnd(call) + 1 until items.size).any { !failed[it] }
 
     private fun canSeek(): Boolean =
-        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0 &&
-            !(startPending != 0L && startReadsOpening)
+        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0
 
     private fun actions(): Int {
         if (!active) {
@@ -1714,8 +1715,9 @@ class RecordingPlayer(
             over != null -> over.state
             generation == 0 -> STOPPED
             gap -> if (wanted && !interrupted) PLAYING else PAUSED
-            // A start asked for while the play read opening still reads opening; one from paused reads paused.
-            !promoted || player == null || !prepared || (startPending != 0L && startReadsOpening) -> PREPARING
+            !promoted || player == null || !prepared -> PREPARING
+            // Asked for, not acknowledged: the controls follow the wish (Pause), the clock waits for the audio (R49).
+            startPending != 0L -> STARTING
             playing -> PLAYING
             else -> PAUSED
         }
@@ -1726,6 +1728,7 @@ class RecordingPlayer(
         ended != null -> SESSION_STOPPED
         !promoted -> SESSION_NONE
         interrupted || !wanted -> SESSION_PAUSED
+        startPending != 0L -> SESSION_BUFFERING
         else -> SESSION_PLAYING
     }
 

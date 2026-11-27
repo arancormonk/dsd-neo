@@ -1004,27 +1004,42 @@ private fun aStartPlaysFromItsAcknowledgement() {
     held.machine.resume()
     check(held.heldStarts.size == 1 && held.current.made.size == 1) { "the start is asked for, not made yet" }
     held.elapse(5_000)
-    check(held.state == PAUSED && held.position == 2_000L && held.status.speed == 0f) {
-        "not playing before the acknowledgement (${held.state}, ${held.position})"
+    check(held.state == RecordingPlayer.STARTING && held.position == 2_000L && held.status.speed == 0f) {
+        "starting, not playing, before the acknowledgement (${held.state}, ${held.position})"
     }
+    // R49: the controls follow the wish, the clock the audio.
+    check(held.status.sessionState == RecordingPlayer.SESSION_BUFFERING && held.status.allows(ACTION_PAUSE)) {
+        "the session buffers, with Pause (${held.status.sessionState})"
+    }
+    check(held.status.allows(ACTION_SEEK) && !held.status.allows(ACTION_PLAY)) { "seek allowed, no Play" }
+    check(held.status.record(held.nowMs).split('\t')[1] == "5") { "the record carries the starting state" }
     held.machine.resume()
     check(held.heldStarts.size == 1) { "never asked for twice" }
     check(held.ackStart() && held.state == PLAYING) { "the acknowledgement plays it" }
     held.elapse(1_000)
     check(held.position == 3_000L) { "the position runs from the acknowledgement: ${held.position}" }
 
-    // A first start held reads opening, with no seek.
+    // A first start held reads starting too, its seek allowed (R45).
     val first = Rig()
     first.holdStarts = true
     first.queue(1, 1)
     first.prepared()
-    check(first.state == PREPARING && first.focus.held) { "prepared, its start waits: still opening (${first.state})" }
-    check(!first.status.canSeek && !first.status.allows(ACTION_SEEK)) { "an opening reading offers no seek" }
+    check(first.state == RecordingPlayer.STARTING && first.focus.held) { "prepared, its start waits (${first.state})" }
+    check(first.status.canSeek && first.status.allows(ACTION_PAUSE)) { "with seek and Pause" }
     first.ackStart()
     check(first.state == PLAYING && first.status.canSeek) { "then playing, with its seek" }
 
-    // A part opened paused (Next while paused), then Resume with its start held: the reading stays paused, its seek
-    // allowed, as it read before the request; the acknowledgement plays it.
+    // Pause while a start is pending takes it back: paused, no start made.
+    val undo = Rig()
+    undo.queue(1, 1)
+    undo.holdStarts = true
+    undo.prepared()
+    undo.machine.pause()
+    check(undo.state == PAUSED && undo.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "paused (${undo.state})" }
+    check(!undo.ackStart() && undo.current.made.isEmpty()) { "and the start is never made" }
+
+    // A part opened paused (Next while paused), then Resume with its start held: starting, with seek; the
+    // acknowledgement plays it.
     val opened = Rig()
     opened.queue(1, 1)
     opened.prepared()
@@ -1035,8 +1050,8 @@ private fun aStartPlaysFromItsAcknowledgement() {
     opened.holdStarts = true
     opened.machine.resume()
     check(opened.heldStarts.size == 1) { "its first start is asked for" }
-    check(opened.state == PAUSED && opened.status.canSeek && opened.status.allows(ACTION_SEEK)) {
-        "until its acknowledgement it reads paused, seek allowed (${opened.state}, ${opened.status.canSeek})"
+    check(opened.state == RecordingPlayer.STARTING && opened.status.canSeek && opened.status.allows(ACTION_SEEK)) {
+        "until its acknowledgement it reads starting, seek allowed (${opened.state}, ${opened.status.canSeek})"
     }
     check(opened.ackStart() && opened.state == PLAYING) { "the acknowledgement plays it" }
 
@@ -1237,7 +1252,7 @@ private fun aPendingStartHasAWatchdog() {
     val asked = stuck.current
     val (_, serial) = stuck.heldStarts.single()
     stuck.elapse(limit - 100)
-    check(stuck.state == PREPARING && stuck.focus.held) { "still waiting at 9.9 s" }
+    check(stuck.state == RecordingPlayer.STARTING && stuck.focus.held) { "still waiting at 9.9 s" }
     stuck.elapse(100)
     check(stuck.state == FAILED && stuck.status.endedReason == RecordingPlayer.ENDED_FAILED) {
         "at 10 s the start has failed: the play ends (${stuck.status.endedReason})"

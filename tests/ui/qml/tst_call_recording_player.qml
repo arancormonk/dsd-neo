@@ -1204,6 +1204,20 @@ Item {
             verify(!item("historyPlayFromHere").visible, "and no Play from here");
         }
 
+        // Issue #909 (R49): a start asked for and not yet made (5) reads as wanted: Pause, with no status line of its
+        // own and its position held; a tap pauses it.
+        function test_starting_reads_pause() {
+            openWith([rec("t-1", pathA, 12000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 5, playbackToken: 3, playbackDurationMs: 12000, playbackPositionMs: 2000, playbackCanSeek: true});
+            verify(item("recordingPlayButton").showPause, "Pause while the start is pending");
+            compare(item("recordingPlayButton").accessibleName, "Pause recording");
+            compare(item("recordingStatus").text, "", "no line of its own");
+            tap("recordingPlayButton");
+            compare(lastHostCall().name, "pausePlaybackFor");
+            compare(lastHostCall().token, 3);
+        }
+
         // B4: halted for another app's audio, it reads so, and its button is Pause, which cancels the carry-on;
         // headphones unplugged say so too.
         function test_interrupted_reads_pause() {

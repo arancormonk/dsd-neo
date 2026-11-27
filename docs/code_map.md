@@ -19955,9 +19955,13 @@ Qt Quick frontend (`src/ui/qt`):
       (`MediaItem.wantedStart`); the owner makes `MediaPlayer.start()` only while its serial is still the one wanted,
       then posts `onStarted(token, serial)`, and only that acknowledgement, current by token and serial, makes the
       machine playing (`playingSinceMs`, the hold-off and paused stretch ended, the skip notice). Until then the
-      reading stays what it was at the request (`startReadsOpening`: opening, with no seek, for a part just prepared;
-      paused, its seek allowed, for a resume, a part opened paused included), the position does not run, the deadline
-      counts the old stretch, and no second start is asked for. Each request arms a watchdog scoped to its token and
+      controls follow the wish and the clock follows the audio (R49, after Media3's play button and its legacy session
+      conversion): the Qt state is `STARTING` (`DecoderHost::PlaybackStarting`, 5, parsed strictly on both sides),
+      which the bar and the sheet show with Pause and the row marker as playing, with seek allowed (R45); the session
+      reads `STATE_BUFFERING` (`SESSION_BUFFERING`, Android 13+ shows a spinner) at the frozen position, speed 0, with
+      Pause, and a headset tap or PLAY_PAUSE takes the start back and pauses; Pause always withdraws it. The position
+      does not run, the deadline counts the old stretch, `PlaylistStatus` says no event for it (Playing is said on the
+      acknowledgement), and no second start is asked for. Each request arms a watchdog scoped to its token and
       serial (`START_TIMEOUT_MS`, 10 s, R44), which the acknowledgement or any withdrawal cancels; on expiry the part
       fails as the player's, as a start that throws: the play ends, the focus and the service go, the player is let go
       and counted, and a late acknowledgement changes nothing. A seek while a start is pending takes that start back on
@@ -20061,12 +20065,13 @@ Qt Quick frontend (`src/ui/qt`):
       Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;
       paused in the gap PAUSED 0, Play opens the next call at once (never replays the finished part); interrupted PAUSED
       0, Play a no-op; paused PAUSED 0, Play, seek when the duration is above 0. Next/Previous and Stop in every row;
-      SKIP_TO_NEXT/PREVIOUS only while a move exists. Opening reads PLAYING (not BUFFERING), so a headset tap, which the
-      framework toggles on STATE_PLAYING, pauses it. `playbackCanSeek` comes from the same value and the sheet's seek
-      bar reads it. The host's state reads Preparing for both opening rows; Qt tells them apart by the paused reason the
-      record carries only while nothing is wanted, or (`background`) while a sheet's SINGLE or PARTS play waits for the
-      foreground, which a visible app never shows: Preparing with a reason reads Paused, with Resume, on the sheet, the
-      bar and the row marker.
+      SKIP_TO_NEXT/PREVIOUS only while a move exists. Starting (a start asked for, not acknowledged) STARTING, the
+      session BUFFERING 0, position frozen, Pause takes the start back, seek re-asks behind the seek. Opening reads
+      PLAYING (not BUFFERING), so a headset tap, which the framework toggles on STATE_PLAYING, pauses it.
+      `playbackCanSeek` comes from the same value and the sheet's seek bar reads it. The host's state reads Preparing
+      for both opening rows; Qt tells them apart by the paused reason the record carries only while nothing is wanted,
+      or (`background`) while a sheet's SINGLE or PARTS play waits for the foreground, which a visible app never shows:
+      Preparing with a reason reads Paused, with Resume, on the sheet, the bar and the row marker.
     - Status record (`RecordingPlayback.status()`, parsed by `playback_status_record.h`, tab-separated, bounded, numeric
       fields and fixed reason codes, each reason checked against its own field's codes, which `run_jvm_tests.py` checks
       are `RecordingPlayer.kt`'s, a malformed record ignored with no change published): generation, state, position,

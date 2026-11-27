@@ -448,13 +448,19 @@ class PlayPauseTaps(
     }
 
     companion object {
-        /** A single tap, as the framework's: Pause while the session plays and offers it, else Play when offered. */
+        /**
+         * A single tap, as the framework's: Pause while the session plays (or buffers a start) and offers it, else Play
+         * when offered.
+         */
         fun toggle(player: RecordingPlayer, generation: Int) {
             val status = player.status
             if (status.generation != generation) {
                 return
             }
-            if (status.sessionState == RecordingPlayer.SESSION_PLAYING) {
+            // A start still pending counts as playing: the tap takes it back and pauses (R49).
+            val playing = status.sessionState == RecordingPlayer.SESSION_PLAYING ||
+                status.sessionState == RecordingPlayer.SESSION_BUFFERING
+            if (playing) {
                 if (status.allows(RecordingPlayer.ACTION_PAUSE)) {
                     player.pause(generation)
                 }

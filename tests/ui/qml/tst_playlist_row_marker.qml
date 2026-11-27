@@ -92,6 +92,11 @@ Item {
             compare(rowOf(list, uids[0]).playback, 0, "only the call it is on");
             compare(rowOf(list, uids[2]).playback, 0);
 
+            // Issue #909 (R49): a start asked for and not yet made reads as playing.
+            testContext.publishPlaybackReading({playbackState: 5});
+            compare(row.playback, 1, "starting: marked playing");
+            verify(glyph.bars);
+            testContext.publishPlaybackReading({playbackState: 2});
             testContext.publishPlaybackReading({playbackState: 3, playbackPausedReason: "user"});
             compare(row.playback, 2);
             compare(String(glyph.color), String(Ui.Theme.textSubdued), "dimmed while paused");
