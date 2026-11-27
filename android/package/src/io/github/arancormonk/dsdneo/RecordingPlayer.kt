@@ -928,6 +928,8 @@ class RecordingPlayer(
         val done = player
         val doneWork = playerWork
         leave(release = false)
+        // Counted now, before the next part's open checks the limit; its release is posted after the hand-off.
+        doneWork?.let(abandoned::letGo)
         val call = currentCall()
         when {
             mode == MODE_SINGLE -> end(STOPPED, "", ENDED_FINISHED)

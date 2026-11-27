@@ -2958,6 +2958,29 @@ private fun aBurstWhoseReleasesEndLateFailsNothing() {
 }
 
 /**
+ * A part that completes counts its thread as let go before the next part's open checks the limit (R48): with part 1's
+ * release still out, part 2 completing makes part 3 wait at the limit, and a Stop then leaves two threads counted,
+ * never three.
+ */
+private fun aCompletedPartCountsBeforeTheNextOpens() {
+    val rig = Rig()
+    rig.holdReleases = true
+    val g = rig.queue(3)
+    rig.playOut()
+    check(rig.status.partOrdinal == 2 && rig.abandoned.outstanding == 1) { "part 1's release is out" }
+    rig.playOut()
+    check(rig.abandoned.outstanding == 2 && rig.status.partOrdinal == 3 && rig.players.size == 2) {
+        "part 2 counted before part 3 opens: it waits at the limit (${rig.abandoned.outstanding}, ${rig.players.size})"
+    }
+    rig.machine.stop(g)
+    check(rig.abandoned.outstanding == 2) { "Stop leaves two counted, never three (${rig.abandoned.outstanding})" }
+    while (rig.heldReleases.isNotEmpty()) {
+        rig.finishRelease()
+    }
+    check(rig.abandoned.outstanding == 0) { "each counted once" }
+}
+
+/**
  * A player let go counts until its thread ends (R40), not only while its setup runs: a prepare that stalls after
  * its setup returned, dropped by its timeout, whose release then blocks in native code on the stalled read, keeps its
  * thread counted. Two such, and the next open waits, with no player made, until one release returns.
@@ -3250,6 +3273,7 @@ fun main() {
     stuckSetupsAreBounded()
     quickMovesNeverMeetTheLimit()
     aStalledReleaseCountsUntilItsThreadEnds()
+    aCompletedPartCountsBeforeTheNextOpens()
     aBurstWhoseReleasesEndLateFailsNothing()
     anOpenAtTheLimitWaitsForASetup()
     rapidNextThenPreviousNeverFailsAnItem()

@@ -225,10 +225,11 @@ it (the next item and a later sheet play set up at once, never failing; a hung p
 two threads let go still running at once, counted until they end (a third open waits with no player made: it goes on
 when one ends, and times out and is skipped one at a time when both are stuck; a stalled prepare dropped by its timeout
 whose release is held stays counted, two of them make the next open wait until one release returns, and a thread dropped
-during its setup then released counts once; a setup done but not delivered counts until it lands; Stop drops the wait;
-five Next then five Previous fail nothing, with every setup in flight, with releases ending at once, or with every
-release held until after the burst and returning one by one, the waiting open going on at the first), a prepare timeout
-past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next,
+during its setup then released counts once; a completed part counted before the next part opens, so a Stop with
+releases out leaves two, never three; a setup done but not delivered counts until it lands; Stop drops the wait; five
+Next then five Previous fail nothing, with every setup in flight, with releases ending at once, or with every release
+held until after the burst and returning one by one, the waiting open going on at the first), a prepare timeout past a
+paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next,
 Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion around a
 Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
 in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
