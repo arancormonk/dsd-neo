@@ -2188,25 +2188,45 @@ squelch_reader_model_for(struct demod_state* d, const dsd_demod_squelch_plan_key
                                                                                              : NULL;
 }
 
+/* A model is built for the reader and passes in force, or released: whichever, the plans taken under this key are
+   taken again at the next block. */
+static int
+squelch_reader_model_build_for(struct demod_state* d, int build) {
+    const int passes = d->downsample_passes > 0 ? d->downsample_passes : 0;
+    if (!d->iq_reader.enabled) {
+        dsd_squelch_reader_model_release(&d->squelch_reader_model);
+        return 0;
+    }
+    if (dsd_squelch_reader_model_matches(&d->squelch_reader_model, &d->iq_reader, passes)) {
+        return 0;
+    }
+    d->squelch_plan.set = 0;
+    d->noise_plan.set = 0;
+    if (!build) {
+        dsd_squelch_reader_model_release(&d->squelch_reader_model);
+        return 0;
+    }
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = squelch_cascade_stages(passes, stages);
+    return dsd_squelch_reader_model_build(&d->squelch_reader_model, &d->iq_reader, stages, count);
+}
+
 extern "C" int
 dsd_demod_squelch_reader_model_sync(struct demod_state* d) {
     if (!d) {
         return -1;
     }
-    if (!d->iq_reader.enabled) {
-        dsd_squelch_reader_model_release(&d->squelch_reader_model);
-        return 0;
+    /* A chain no dynamic squelch runs on (a digital decoder's) never reads the model: a model for another reader
+       goes, and none is built for this one until a switch onto such a chain prepares it. */
+    return squelch_reader_model_build_for(d, dsd_demod_dynamic_squelch_path(d));
+}
+
+extern "C" int
+dsd_demod_squelch_reader_model_prepare(struct demod_state* d) {
+    if (!d) {
+        return -1;
     }
-    const int passes = d->downsample_passes > 0 ? d->downsample_passes : 0;
-    if (dsd_squelch_reader_model_matches(&d->squelch_reader_model, &d->iq_reader, passes)) {
-        return 0;
-    }
-    /* A new model, or none after a failed build: the plans taken under this key are taken again at the next block. */
-    d->squelch_plan.set = 0;
-    d->noise_plan.set = 0;
-    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
-    const int count = squelch_cascade_stages(passes, stages);
-    return dsd_squelch_reader_model_build(&d->squelch_reader_model, &d->iq_reader, stages, count);
+    return squelch_reader_model_build_for(d, 1);
 }
 
 /* The floor plan for @p k (not valid when it cannot be designed). Behind the live rate step it comes from the noise

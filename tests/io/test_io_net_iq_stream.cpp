@@ -604,11 +604,11 @@ test_blocks_after_upsampling_and_gaps(void) {
     assert(rtl_net_iq_resample_info(rtl_device_net_iq(s.dev), &l, &m, nullptr) == 1);
     assert(l == 2 && m == 1);
     assert(rtl_device_rate_plan_backend(s.dev) == DSD_RATE_PLAN_BACKEND_REPLAY_RESAMPLED);
-    /* The demodulator's squelches model the stream reader's resampler (issue #899): published at the open, with its
-       model. */
+    /* The demodulator's squelches model the stream reader's resampler (issue #899): published at the open, with no
+       model on this DMR session's digital chain, which never runs a dynamic squelch. */
     rtl_stream_test_replay_state opened{};
     assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
-    assert(opened.reader_in_hz == 24000 && opened.reader_out_hz == 48000 && opened.reader_model == 1);
+    assert(opened.reader_in_hz == 24000 && opened.reader_out_hz == 48000 && opened.reader_model == 0);
     blocks_reset();
     udp_sender tx = udp_sender_open(port);
     uint64_t phase = 0U;
@@ -634,6 +634,12 @@ test_blocks_after_upsampling_and_gaps(void) {
     const rtl_net_iq_state st = ingest(s);
     assert(st.resampler_clears == 1U && st.boundaries == 0U);
     expect_blocks_exactly(kBlockFloats);
+    /* A switch to the NFM monitor prepares the model before it is queued, with the demod parked, so the monitor's
+       first blocks find it built. */
+    assert(rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500) == 0);
+    rtl_stream_test_replay_state switched{};
+    assert(dsd_rtl_stream_test_get_replay_state(&switched) == 0);
+    assert(switched.reader_in_hz == 24000 && switched.reader_model == 1);
     (void)stream_close(s);
     (void)dsd_socket_close(tx.sock);
 }

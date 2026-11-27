@@ -7980,6 +7980,8 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
         LOG_ERROR("IQ replay: the capture would be resampled ahead of the I/Q rate step.\n");
         return -1;
     }
+    /* Built only on a chain a dynamic squelch runs on; a switch onto one later prepares it
+       (rtl_stream_prepare_reader_model()). */
     if (dsd_demod_squelch_reader_model_sync(&demod) != 0) {
         LOG_WARN("Auto and noise squelch could not be set up for the %d Hz input resampled to %d Hz, so they will not "
                  "mute noise.\n",
@@ -13314,6 +13316,15 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
     return rtl_stream_demod_request_repeats_published(cqpsk, rate, levels, chan, ted, ovr);
 }
 
+static void rtl_stream_prepare_reader_model(void);
+
+/* Whether a queued demod profile can land the 9600 bit/s FSK path, which runs a dynamic squelch
+   (dsd_demod_fsk9600_active()): a CQPSK state left as it is (-1) may be off. */
+static int
+rtl_stream_profile_is_fsk9600(int cqpsk_enable, int symbol_rate_hz, int levels) {
+    return symbol_rate_hz == 9600 && levels == 2 && cqpsk_enable != 1;
+}
+
 static int
 rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                int ted_sps_is_override, int digital_decode) {
@@ -13339,6 +13350,9 @@ rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
         rtl_stream_follow_fsk_resample_decision(symbol_rate_before_hz);
         rtl_stream_settle_all_requests();
         return 0;
+    }
+    if (rtl_stream_profile_is_fsk9600(cqpsk_enable, symbol_rate_hz, levels)) {
+        rtl_stream_prepare_reader_model();
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
     g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
@@ -13579,6 +13593,36 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
 static void rtl_stream_queue_family_request_locked(int family, int kind, int width_hz, int digital_landing,
                                                    int cqpsk_explicit);
 
+/* Before a request that can put a dynamic squelch on the chain is queued (an analog family request, the 9600 bit/s FSK
+ * profile): behind a reader whose squelch model the rate commit left unbuilt (a digital chain's, issue #899), build it
+ * now, on this thread with the demod thread parked, so the switch's first blocks find it and allocate nothing. Nothing
+ * with no stream, no reader, or the model built (read from what the commit published, so no lock then). */
+static void
+rtl_stream_prepare_reader_model(void) {
+    if (!g_stream || g_pub_reader_in_hz.load(std::memory_order_relaxed) == 0
+        || g_pub_reader_model.load(std::memory_order_acquire) != 0) {
+        return;
+    }
+    const int gate = rtl_stream_take_demod_gate_unparked();
+    if (gate == RTL_DEMOD_GATE_NONE) {
+        return;
+    }
+    const int passes = demod.downsample_passes > 0 ? demod.downsample_passes : 0;
+    if (!demod.iq_reader.enabled
+        || dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, passes)) {
+        rtl_stream_leave_demod_family_switch_gate(gate);
+        return;
+    }
+    const int parked = rtl_stream_park_demod_under_gate(gate);
+    if (dsd_demod_squelch_reader_model_prepare(&demod) != 0) {
+        LOG_WARN("Auto and noise squelch could not be set up for the %d Hz input resampled to %d Hz, so they will not "
+                 "mute noise.\n",
+                 demod.iq_reader.in_hz, demod.iq_reader.out_hz);
+    }
+    rtl_stream_publish_reader_state();
+    rtl_stream_leave_demod_family_switch_gate(parked);
+}
+
 /* Body of rtl_stream_request_analog_profile(), and of rtl_stream_request_digital_family_landing() with
  * @p digital_landing set (the digital family only): that family request then lands the digital family's landing
  * whichever family the front end runs where it applies, with @p cqpsk_explicit saying whether the CQPSK state of the
@@ -13600,6 +13644,9 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
         /* No pipeline, nothing to switch: the next stream open configures the front end from the options. */
         rtl_stream_settle_all_requests();
         return 0;
+    }
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        rtl_stream_prepare_reader_model();
     }
     rtl_stream_queue_family_request_locked(family, kind, width_hz, digital_landing, cqpsk_explicit);
     return 0;

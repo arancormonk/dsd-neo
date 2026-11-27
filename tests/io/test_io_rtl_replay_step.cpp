@@ -345,7 +345,8 @@ test_filter_domain_input(void) {
 } // namespace
 
 /* Issue #899: a 48 kHz TETRA capture replays resampled to 72 kHz: the reader's plan (48 kHz to 72 kHz, protecting
-   0.45 x 72 kHz) is published with the squelches' noise model for it, and no step runs. An Airspy capture opened next
+   0.45 x 72 kHz) is published, with no squelch noise model for a digital chain that never runs a dynamic squelch (it
+   would hold memory for nothing), and no step runs. An Airspy capture opened next
    steps with the reader off and its model released. */
 int
 test_reader_and_step_never_together(void) {
@@ -359,7 +360,7 @@ test_reader_and_step_never_together(void) {
                     r.reader_enabled == 1 && r.reader_in_hz == 48000 && r.reader_out_hz == 72000
                         && r.reader_protect_hz == 32400,
                     1);
-    rc |= expect_eq("TETRA 48 kHz resampled: the squelches' noise model is the reader's", r.squelch_reader_model, 1);
+    rc |= expect_eq("TETRA 48 kHz resampled: no squelch noise model on a digital chain", r.squelch_reader_model, 0);
     rc |= expect_eq("TETRA 48 kHz resampled: no step", r.step_enabled, 0);
     rc |= expect_eq("TETRA 48 kHz resampled: no floor plan for a chain the auto squelch never runs on",
                     r.squelch_plan_designs, 0);

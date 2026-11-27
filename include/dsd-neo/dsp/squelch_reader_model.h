@@ -31,7 +31,8 @@
  *   takes the cheaper, so every reader the rate plans make has one, in bounded tables.
  *
  * dsd_squelch_reader_model_build() makes all of it on the controller thread while the demod thread is idle (the rate
- * plan's commit, dsd_demod_squelch_reader_model_sync()), and keeps it while the plan and passes stay: a build for the
+ * plan's commit on a chain a dynamic squelch runs on, dsd_demod_squelch_reader_model_sync(), or a switch onto one,
+ * dsd_demod_squelch_reader_model_prepare()), and keeps it while the plan and passes stay: a build for the
  * model it holds does nothing, and a channel width change reuses it. The plan designs then run on the demod thread
  * when a squelch plan key changes, allocating nothing:
  *

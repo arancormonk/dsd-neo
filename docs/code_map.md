@@ -10326,9 +10326,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   RETUNE, RESET, MUTE and rewind where the demodulator's filters are reset) and carried through the cascade phase by
   phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
   pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
-  when the rate plan commits (`dsd_demod_squelch_reader_model_sync()`, `demod_state::squelch_reader_model`; released
-  with the reader off and by `rtl_demod_cleanup()`) and does nothing for the plan it holds, so a width change reuses
-  it. `dsd_squelch_reader_model_floor_plan()` takes the mean through the channel taps (exact: the
+  when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,
+  `demod_state::squelch_reader_model`; released with the reader off, by `rtl_demod_cleanup()`, and for another reader
+  on a digital chain, which builds none: 74.6 MB for nothing at 450,063 Hz read into 384 kHz), and does nothing for the
+  plan it holds, so a width change reuses it. A switch onto such a chain (an analog family request, the 9600 bit/s FSK
+  profile) builds it before it is queued, on the requesting thread with the demod parked
+  (`dsd_demod_squelch_reader_model_prepare()`, `rtl_stream_prepare_reader_model()`), so the first block of the new
+  chain allocates nothing. `dsd_squelch_reader_model_floor_plan()` takes the mean through the channel taps (exact: the
   taps are time-invariant) while the step model's bound (`dsd_squelch_cascade_mean_suffices()`, the one rule both
   models apply: the largest distance times (sum |c|)^2, over the output power) stays under 1e-2, else every output
   phase's covariance (`dsd_squelch_reader_model_floor_plan_exact()`), by the cheaper of two exact routes for the taps
@@ -10374,8 +10378,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   out); one demod reopening the same replay as 8 to 16 kHz, native 16 kHz and 8 to 16 kHz again; the kept floor plans
   by key and their bound; both routes on 524,288 input phases, in batches; 864,058 Hz into 576 kHz with the 5 kHz
   filter, valid and shut on idle noise; no plan with the reader and the step both on; the plan designed at the commit),
-  `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled open,
-  and never with the step), `IO_NET_IQ_STREAM` (the same for a resampled `iqudp:` stream) and
+  `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled analog open, no model
+  on a digital one, and never with the step), `IO_NET_IQ_STREAM` (no model on a resampled DMR `iqudp:` stream, then
+  built by the switch to the NFM monitor before it is queued) and
   `IO_RTL_SQUELCH_PLUMBING` (the context's reader identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
@@ -12305,8 +12310,9 @@ Key public headers:
     complex over post), forced flag and step; a config no plan was applied to (test seams) runs its half-band output as
     forced with no step. It publishes the reader's resampler too (`controller_apply_replay_reader()`:
     `demod_state::iq_reader`, from the rule the device's and the stream's reader open by, a replay's and an `iqtcp:` /
-    `iqudp:` stream's alike), builds the squelches' reader model for it (published for other threads as
-    `g_pub_reader_*`, which the test replay state reads), and after the chain's finalize designs the
+    `iqudp:` stream's alike), builds the squelches' reader model for it on a chain a dynamic squelch runs on
+    (published for other threads as `g_pub_reader_*`, which the test replay state reads), and after the chain's
+    finalize designs the
     auto squelch's plan behind it, all before samples arrive (issue #899); a reader that resamples and the live step
     never run together (only KEEP steps, at the capture's own rate; both on refuses the open). A live chain clears the
     reader (`rate_chain_run_plan()`, and before a device's first settings). The replay device keeps the plan beside the
