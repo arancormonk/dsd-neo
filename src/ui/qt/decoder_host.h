@@ -598,7 +598,10 @@ class DecoderHost : public QObject {
         return m_playback.skipNoticeCount;
     }
 
-    /** @brief The path of a single recording's play while it is open (Preparing, Playing or Paused), else empty. */
+    /**
+     * @brief The path of a single recording's play while it is open (Preparing, Starting, Playing or Paused), else
+     * empty.
+     */
     QString playbackHoldPath() const;
 
     /** @brief The whole reading published last. */
@@ -1640,7 +1643,7 @@ class DecoderHost : public QObject {
     void publishPlayback(const PlaybackReading& reading);
     /**
      * @brief A single recording's reading (#708): @p path in @p state, with no generation, token or queue, seekable
-     * while Playing or Paused with a length.
+     * while Starting, Playing or Paused with a length.
      */
     void publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error);
     void publishRecordingTransferProgress(qint64 bytes, qint64 totalBytes);

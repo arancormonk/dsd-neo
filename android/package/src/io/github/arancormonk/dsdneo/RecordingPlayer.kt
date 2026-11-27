@@ -132,9 +132,9 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * is prepared, play is wanted, the foreground (SINGLE, PARTS) and the service (PLAYLIST) allow it and the focus is
  * granted. Every open gets a fresh play token and a fresh player: a player is never reused, and it is released as soon
  * as its part completes, fails or is left. The token is unique in the process and never reused, and the player's
- * callbacks and the host's item commands carry it; each scheduled task (gap, skip search,
- * paused deadline, promotion timeout, prepare timeout) has its own id; focus callbacks carry the epoch of the request
- * they answer. A callback, task or command whose identity is not current is dropped.
+ * callbacks and the host's item commands carry it; each scheduled task (gap, skip search, paused deadline, promotion
+ * timeout, prepare timeout, start watchdog) has its own id; focus callbacks carry the epoch of the request they
+ * answer. A callback, task or command whose identity is not current is dropped.
  *
  * Opening a part never blocks the machine's thread: each part's player has a thread of its own, which does everything
  * for it ([Player.setup]): it opens the file, makes the platform player, gives it the file and starts its prepare. The
@@ -646,8 +646,8 @@ class RecordingPlayer(
 
     /**
      * The start asked of the current player and not acknowledged yet ([onStarted]): its serial, 0 with none. Until the
-     * acknowledgement nothing plays as far as the play's readings go: the state, the position and the paused stretch
-     * stay as they were.
+     * acknowledgement nothing plays as far as the play's readings go: the state reads [STARTING], the position and the
+     * paused stretch stay as they were.
      */
     private var startPending = 0L
     private var startSerial = 0L

@@ -4024,8 +4024,8 @@ class ReadingMap : public QQmlPropertyMap {
         noteFileCall(QStringLiteral("cancelFileRequest"), {{QStringLiteral("id"), requestId}});
     }
 
-    /* The five #708 readings at once; the queue's are kept, but for playbackCanSeek (Playing or Paused with a length,
-     * as the base host's single reading) and playbackHoldPath. */
+    /* The five #708 readings at once; the queue's are kept, but for playbackCanSeek (Starting, Playing or Paused with a
+     * length, as the base host's single reading) and playbackHoldPath. */
     void
     publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs, const QString& error) {
         insert(QStringLiteral("playbackPath"), path);
@@ -4033,7 +4033,7 @@ class ReadingMap : public QQmlPropertyMap {
         insert(QStringLiteral("playbackPositionMs"), positionMs);
         insert(QStringLiteral("playbackDurationMs"), durationMs);
         insert(QStringLiteral("playbackError"), error);
-        insert(QStringLiteral("playbackCanSeek"), (state == 2 || state == 3) && durationMs > 0);
+        insert(QStringLiteral("playbackCanSeek"), (state == 2 || state == 3 || state == 5) && durationMs > 0);
         followHold();
         Q_EMIT playbackChanged();
         Q_EMIT playbackPositionChanged();

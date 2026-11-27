@@ -199,8 +199,8 @@ pause, and one pressed 0.2 s before the deadline whose part prepares after it: g
 then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
 good, B all failed, C good), all failed, a player-wide error, the queue let go at the end (finished, stopped, timed
 out, unplayable, the host's own stop) with the terminal record unchanged after a later publish, a start played only from
-its acknowledgement (held: not playing, the position still; a first start reading opening with no seek, and one for a
-part opened paused reading paused with its seek; a resume just before the deadline then a focus loss keeping the old
+its acknowledgement (held: not playing, the position still; a held start reading starting (5), with Pause and seek, for
+a first start and for a part opened paused; a resume just before the deadline then a focus loss keeping the old
 stretch; Stop, Next or a sheet play before it leaving the start unmade and its late acknowledgement ignored; a failed
 start a player failure; the 3,000 ms rule from the acknowledgement; during a held start the reading starting (5) with
 Pause and seek, the session buffering, a Pause taking it back unmade, and a headset tap in the phases suite pausing it;
