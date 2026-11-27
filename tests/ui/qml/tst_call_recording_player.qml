@@ -1636,6 +1636,14 @@ Item {
             compare(player.seekLanded, landed + 2, "its own landing is");
         }
 
+        // M3: a part of unknown length (0, the store's and the player's) shows how far it played, as the bar does.
+        function test_unknown_length_shows_the_position() {
+            openWith([rec("t-1", pathA, 0)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 3, playbackToken: 5, playbackPositionMs: 4000, playbackDurationMs: 0, playbackCanSeek: false});
+            compare(item("historyRecording").positionMs, 4000, "the position, not 0");
+        }
+
         // R76: a seek asked again at the same target restarts its 2 s wait: the thumb stays on the target past 2 s from
         // the first request, and falls back only 2 s after the second.
         function test_repeated_seek_target_restarts_its_wait() {

@@ -137,7 +137,12 @@ Column {
     readonly property real durationMs: loaded && decoderHost.playbackDurationMs > 0 ? decoderHost.playbackDurationMs : part ? part.durationMs : 0
     // Issue #909: a seek waiting for its landing shows where it goes (the host shows nothing until the player's
     // record), so the thumb does not jump back to the old position for a poll.
-    readonly property real openPositionMs: !loaded ? 0 : seekTargetMs >= 0 ? Math.min(seekTargetMs, durationMs) : Math.min(decoderHost.playbackPositionMs, durationMs)
+    // Clamped to the length only when it is known, as the bar's is: a part of
+    // unknown length (0) shows how far it played.
+    readonly property real openPositionMs: !loaded ? 0 : clampToLength(seekTargetMs >= 0 ? seekTargetMs : decoderHost.playbackPositionMs)
+    function clampToLength(ms) {
+        return durationMs > 0 ? Math.min(ms, durationMs) : ms;
+    }
     // A drag shows where it would seek, only on the recording it began on (its token): once another one is open, the
     // bar shows that one's own position.
     readonly property real positionMs: seekBar.previewing ? seekBar.dragMs : openPositionMs
