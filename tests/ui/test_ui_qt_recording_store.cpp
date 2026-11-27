@@ -21,7 +21,6 @@
 #include <QCoreApplication>
 #include <QDate>
 #include <QDir>
-#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -40,7 +39,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QThread>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
