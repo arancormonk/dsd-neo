@@ -752,6 +752,95 @@ test_hunt_over_a_replaced_cqpsk_request_prepares_the_model(void) {
     (void)dsd_socket_close(tx.sock);
 }
 
+/* What hunt_over_a_taken_cqpsk_off_request_prepares_the_model holds the demod on. */
+std::atomic<int> g_taken_held{0};
+std::atomic<int> g_idle_wait_begun{0};
+
+/* The demod took a symbol profile: it waits there, the request taken and not applied, until a thread waits for it to
+   go idle (a reader model build parking it), or 3 s. */
+void
+hold_taken_request(int has_demod, void* ctx) {
+    (void)ctx;
+    if (!has_demod || g_taken_held.exchange(1) != 0) {
+        return;
+    }
+    const uint64_t until = now_ms() + 3000U;
+    while (g_idle_wait_begun.load() == 0 && now_ms() < until) {
+        dsd_sleep_ms(1U);
+    }
+}
+
+void
+note_idle_wait(int event, void* ctx) {
+    (void)ctx;
+    if (event == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN) {
+        g_idle_wait_begun.store(1);
+    }
+}
+
+/* hunt_over_a_taken_cqpsk_off_request_prepares_the_model: a request taken and not yet applied counts (issue #899).
+ * On a resampled DMR stream opened on CQPSK (DSD_NEO_CQPSK=1: 4800/4, no reader model), a CQPSK-off request (0, 0, 0)
+ * is queued and the demod takes it, then holds it unapplied (rtl_stream_test_set_profile_taken_hook()). A hunt step
+ * (-1, 9600, 2) made then keeps the demod's CQPSK, which that request turns off, so it lands the 9600 bit/s FSK path:
+ * the published CQPSK still reads on, and the step must build the model all the same, before it returns. Its build
+ * parks the demod, whose wait releases the held request (the idle-wait probe). */
+void
+test_hunt_over_a_taken_cqpsk_off_request_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "1", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    int cqpsk = 0;
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(cqpsk == 1 && opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    g_taken_held.store(0);
+    g_idle_wait_begun.store(0);
+    rtl_stream_test_set_profile_taken_hook(hold_taken_request, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(note_idle_wait, nullptr);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            return g_taken_held.load() != 0;
+        },
+        kWaitMs));
+    assert(rtl_stream_request_demod_profile(-1, 9600, 2, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const int released = g_idle_wait_begun.load();
+    rtl_stream_test_set_profile_taken_hook(nullptr, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    int rate = 0;
+    int levels = 0;
+    const bool landed = wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return rate == 9600 && levels == 2 && cqpsk == 0;
+        },
+        kWaitMs);
+    if (!landed || prepared != 1 || released != 1) {
+        DSD_FPRINTF(stderr,
+                    "hunt step over a taken CQPSK-off request: landed %d/%d CQPSK %d, model %d, demod released by the "
+                    "build %d (want 9600/2, 0, 1, 1)\n",
+                    rate, levels, cqpsk, prepared, released);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
+}
+
 /* ring_full_drops_whole_blocks: a demod that stops taking input leaves the ring full; the reader drops whole blocks,
  * each a gap mark only: no boundary, no discontinuity, no output generation move, the resampler kept. Blocks taken after
  * are still whole. */
@@ -1388,6 +1477,8 @@ const named_test kTests[] = {
     {"cqpsk_off_onto_fsk9600_prepares_the_model", test_cqpsk_off_onto_fsk9600_prepares_the_model},
     {"hunt_over_a_replaced_cqpsk_request_prepares_the_model",
      test_hunt_over_a_replaced_cqpsk_request_prepares_the_model},
+    {"hunt_over_a_taken_cqpsk_off_request_prepares_the_model",
+     test_hunt_over_a_taken_cqpsk_off_request_prepares_the_model},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
     {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},

@@ -3756,6 +3756,15 @@ rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), v
     g_test_demod_idle_wait_probe.set(probe, ctx);
 }
 
+/* Called on the demod thread as it takes a queued request, before it applies it
+   (rtl_stream_test_set_profile_taken_hook()). */
+static RtlTestHook<int> g_test_profile_taken_hook;
+
+extern "C" void
+rtl_stream_test_set_profile_taken_hook(void (*hook)(int has_demod, void* ctx), void* ctx) {
+    g_test_profile_taken_hook.set(hook, ctx);
+}
+
 #define DEMOD_IDLE_WAIT_TEST_EVENT(event) g_test_demod_idle_wait_probe.invoke(event)
 #else
 #define DEMOD_IDLE_WAIT_TEST_EVENT(event) ((void)0)
@@ -12969,7 +12978,7 @@ static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear
 static int g_profile_req_ted_sps_is_override = 0;
 /* The demod profile the demod thread took and has not finished applying (rtl_stream_take_demod_profile_request() to
    the end of rtl_stream_consume_demod_profile_request()): what the stream will run before the published profile says
-   so, which a request queued meanwhile may leave in force (rtl_stream_profile_may_land_fsk9600()). */
+   so, which a request queued meanwhile may leave in force (rtl_stream_profile_may_land_fsk9600_locked()). */
 static int g_profile_taken_in_flight = 0;
 static int g_profile_taken_cqpsk = -1;
 static int g_profile_taken_sym_rate = 0;
@@ -13354,10 +13363,10 @@ static void rtl_stream_prepare_reader_model(void);
    a CQPSK state of -1) the demod keeps as it runs when it applies the request: the published profile, or one it took
    and has not finished applying (g_profile_taken_*). A request still queued is replaced whole, so its values never
    apply. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so does a hunt step (-1, 9600, 2) over a
-   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. */
+   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. Called under g_profile_req_m, in the
+   section that queues the request: the queued request it replaces cannot be taken in between. */
 static int
-rtl_stream_profile_may_land_fsk9600(int cqpsk_enable, int symbol_rate_hz, int levels) {
-    std::lock_guard<std::mutex> lock(g_profile_req_m);
+rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz, int levels) {
     const int taken = g_profile_taken_in_flight;
     int rate_9600 = symbol_rate_hz == 9600 && levels == 2;
     if (symbol_rate_hz <= 0) {
@@ -13370,6 +13379,41 @@ rtl_stream_profile_may_land_fsk9600(int cqpsk_enable, int symbol_rate_hz, int le
         cqpsk_off = g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0 || (taken && g_profile_taken_cqpsk == 0);
     }
     return rate_9600 && cqpsk_off;
+}
+
+/* A demod profile request into the queue, replacing a queued one whole (g_profile_req_m held). */
+static void
+rtl_stream_queue_demod_profile_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                      int ted_sps, int ted_sps_is_override, int digital_decode) {
+    g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
+    g_profile_req_family_after = rtl_stream_requested_family_locked();
+    g_profile_req_landing_after = rtl_stream_requested_landing_locked();
+    /* Numbered as every queued request (its ordering against a retune's family, its settlement), and applied as any
+       other; only one that may change the receive chain moves the change counter (issue #834). */
+    const int repeats = rtl_stream_demod_request_repeats_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                                ted_sps, ted_sps_is_override);
+    (void)rtl_stream_number_request_locked();
+    if (!repeats) {
+        rtl_stream_note_receive_change_locked();
+    }
+    g_profile_req_has_demod = 1;
+    g_profile_req_digital_decode = digital_decode ? 1 : 0;
+    g_profile_req_cqpsk = cqpsk_enable;
+    g_profile_req_sym_rate = symbol_rate_hz;
+    g_profile_req_levels = levels;
+    g_profile_req_chan = channel_profile;
+    g_profile_req_ted_sps = ted_sps;
+    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
+    g_profile_req_pending.store(1, std::memory_order_release);
+}
+
+/* Whether a request queued now needs the reader model built first (g_profile_req_m held): a reader runs with no model
+   built (as published), and the request can land the 9600 bit/s FSK path. */
+static int
+rtl_stream_reader_model_wanted_locked(int cqpsk_enable, int symbol_rate_hz, int levels) {
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    return published.in_hz != 0 && published.model == 0
+           && rtl_stream_profile_may_land_fsk9600_locked(cqpsk_enable, symbol_rate_hz, levels);
 }
 
 static int
@@ -13398,31 +13442,22 @@ rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
         rtl_stream_settle_all_requests();
         return 0;
     }
-    if (rtl_stream_profile_may_land_fsk9600(cqpsk_enable, symbol_rate_hz, levels)) {
-        rtl_stream_prepare_reader_model();
+    /* The decision and the queueing are one section of g_profile_req_m, so the request this one replaces is either
+       still queued (and never applies) or already taken (and counted): no other request can be taken between them.
+       The reader model's build parks the demod, which takes requests inside its blocks, so it runs outside the lock
+       before anything is queued; the request is then queued in a section of its own, after the one build (which
+       built the model, or could not). */
+    for (int prepared = 0;; prepared = 1) {
+        std::unique_lock<std::mutex> lock(g_profile_req_m);
+        if (!prepared && rtl_stream_reader_model_wanted_locked(cqpsk_enable, symbol_rate_hz, levels)) {
+            lock.unlock();
+            rtl_stream_prepare_reader_model();
+            continue;
+        }
+        rtl_stream_queue_demod_profile_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                              ted_sps_is_override, digital_decode);
+        return 0;
     }
-    std::lock_guard<std::mutex> lock(g_profile_req_m);
-    g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
-    g_profile_req_family_after = rtl_stream_requested_family_locked();
-    g_profile_req_landing_after = rtl_stream_requested_landing_locked();
-    /* Numbered as every queued request (its ordering against a retune's family, its settlement), and applied as any
-       other; only one that may change the receive chain moves the change counter (issue #834). */
-    const int repeats = rtl_stream_demod_request_repeats_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
-                                                                ted_sps, ted_sps_is_override);
-    (void)rtl_stream_number_request_locked();
-    if (!repeats) {
-        rtl_stream_note_receive_change_locked();
-    }
-    g_profile_req_has_demod = 1;
-    g_profile_req_digital_decode = digital_decode ? 1 : 0;
-    g_profile_req_cqpsk = cqpsk_enable;
-    g_profile_req_sym_rate = symbol_rate_hz;
-    g_profile_req_levels = levels;
-    g_profile_req_chan = channel_profile;
-    g_profile_req_ted_sps = ted_sps;
-    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
-    g_profile_req_pending.store(1, std::memory_order_release);
-    return 0;
 }
 
 extern "C" int
@@ -13949,6 +13984,9 @@ rtl_stream_consume_demod_profile_request(void) {
     if (!rtl_stream_take_demod_profile_request(&req)) {
         return;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_profile_taken_hook.invoke(req.has_demod);
+#endif
     const uint32_t refused_seq = rtl_stream_drop_refused_analog_request(&req.analog_family, req.analog_kind,
                                                                         req.analog_width_hz, req.analog_seq);
     const int symbol_rate_before_hz = demod.symbol_rate_hz;

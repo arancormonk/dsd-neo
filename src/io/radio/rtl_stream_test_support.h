@@ -922,6 +922,11 @@ enum {
 /* Call @p probe(event, @p ctx) on the waiting thread as each such wait starts and returns; NULL removes it. */
 void rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx);
 
+/* Call @p hook(has_demod, @p ctx) on the demod thread each time it takes a queued demod profile request, before it
+ * applies it (rtl_stream_consume_demod_profile_request()), with whether the request holds a symbol profile; NULL
+ * removes it. A hook that waits holds the request taken and not yet applied (issue #899). */
+void rtl_stream_test_set_profile_taken_hook(void (*hook)(int has_demod, void* ctx), void* ctx);
+
 /* A live block's output write into a full output ring once the stream stops, with no decoder reading
  * (rtl_stream_test_full_output_write_on_stop()). */
 typedef struct {
