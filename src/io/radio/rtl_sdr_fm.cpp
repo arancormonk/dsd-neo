@@ -13343,10 +13343,17 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
 static void rtl_stream_prepare_reader_model(void);
 
 /* Whether a queued demod profile can land the 9600 bit/s FSK path, which runs a dynamic squelch
-   (dsd_demod_fsk9600_active()): a CQPSK state left as it is (-1) may be off. */
+   (dsd_demod_fsk9600_active()), judged on the profile it leaves in force: a symbol rate of 0 keeps the rate and levels
+   the stream publishes (a newer request replaces a queued one whole), and a CQPSK state left as it is (-1) keeps the
+   requested one. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path. */
 static int
 rtl_stream_profile_is_fsk9600(int cqpsk_enable, int symbol_rate_hz, int levels) {
-    return symbol_rate_hz == 9600 && levels == 2 && cqpsk_enable != 1;
+    const int rate = symbol_rate_hz > 0 ? symbol_rate_hz : g_pub_symbol_rate.load(std::memory_order_relaxed);
+    const int lv = symbol_rate_hz > 0 ? levels : g_pub_symbol_levels.load(std::memory_order_relaxed);
+    if (rate != 9600 || lv != 2) {
+        return 0;
+    }
+    return (cqpsk_enable >= 0 ? cqpsk_enable : rtl_stream_requested_cqpsk()) != 1;
 }
 
 static int

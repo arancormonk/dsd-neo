@@ -55,6 +55,7 @@
 #include "dsd-neo/platform/platform.h"
 #include "rtl_net_iq.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
@@ -394,7 +395,7 @@ struct stream_rig {
 };
 
 void
-stream_open(stream_rig& r, const char* spec, int reader) {
+stream_open(stream_rig& r, const char* spec, int reader, void (*decoder)(dsd_opts*) = nullptr) {
     r.opts = std::make_unique<dsd_opts>();
     dsd_opts* opts = r.opts.get();
     DSD_MEMSET(opts, 0, sizeof *opts);
@@ -405,6 +406,9 @@ stream_open(stream_rig& r, const char* spec, int reader) {
     opts->rtl_dsp_bw_khz = 48;
     opts->rtl_gain_value = 24;
     opts->frame_dmr = 1;
+    if (decoder != nullptr) {
+        decoder(opts);
+    }
     dsd_input_failure_clear();
     dsd_exitflag_store(0);
     rtl_stream_test_set_live_block_hook(on_block, nullptr);
@@ -642,6 +646,47 @@ test_blocks_after_upsampling_and_gaps(void) {
     assert(switched.reader_in_hz == 24000 && switched.reader_model == 1);
     (void)stream_close(s);
     (void)dsd_socket_close(tx.sock);
+}
+
+/* A ProVoice-only session (9600 bit/s, two levels), opened with CQPSK on by DSD_NEO_CQPSK=1. */
+void
+provoice_cqpsk(dsd_opts* opts) {
+    opts->frame_dmr = 0;
+    opts->frame_provoice = 1;
+}
+
+/* cqpsk_off_onto_fsk9600_prepares_the_model: a resampled ProVoice stream opened on CQPSK (DSD_NEO_CQPSK=1) runs no
+ * dynamic squelch, so
+ * the commit builds no reader model (issue #899). A request that only turns CQPSK off ((0, 0, 0), as a CQPSK toggle
+ * queues it) keeps the 9600/2 profile and so puts the FSK path, which runs one, in force: the model is built before
+ * the request is queued, whatever the request leaves out. */
+void
+test_cqpsk_off_onto_fsk9600_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "1", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1, provoice_cqpsk);
+    int rate = 0;
+    int levels = 0;
+    assert(rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr) == 0);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    if (rate != 9600 || levels != 2 || opened.reader_in_hz != 24000 || opened.reader_model != 0) {
+        DSD_FPRINTF(stderr, "ProVoice on CQPSK: profile %d/%d, reader %d Hz, model %d (want 9600/2, 24000, 0)\n", rate,
+                    levels, opened.reader_in_hz, opened.reader_model);
+        assert(0);
+    }
+    assert(rtl_stream_request_decode_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state switched{};
+    assert(dsd_rtl_stream_test_get_replay_state(&switched) == 0);
+    if (switched.reader_model != 1) {
+        DSD_FPRINTF(stderr, "CQPSK off onto 9600/2: the reader model was not built before the request was queued\n");
+        assert(0);
+    }
+    (void)stream_close(s);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
 }
 
 /* ring_full_drops_whole_blocks: a demod that stops taking input leaves the ring full; the reader drops whole blocks,
@@ -1176,6 +1221,7 @@ const named_test kTests[] = {
     {"blocks_after_upsampling_and_gaps", test_blocks_after_upsampling_and_gaps},
     {"ring_full_drops_whole_blocks", test_ring_full_drops_whole_blocks},
     {"ring_full_restarts_the_reader", test_ring_full_restarts_the_reader},
+    {"cqpsk_off_onto_fsk9600_prepares_the_model", test_cqpsk_off_onto_fsk9600_prepares_the_model},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
     {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},
