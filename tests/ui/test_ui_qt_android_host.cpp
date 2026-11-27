@@ -2775,6 +2775,8 @@ check_recording_playback() {
 
     r.nextGeneration = 8;
     host.playRecording(a);
+    check(host.playbackPartOrdinal() == 1 && host.playbackPartCount() == 1,
+          "#909 M5: a legacy single play reads part 1 of 1, as the player's first record will");
     r.status = ended_record(8, DecoderHost::PlaybackFailed, QStringLiteral("failed"), QStringLiteral("missing")).text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("missing")
@@ -2952,6 +2954,16 @@ check_playlist_arrays() {
               && r.request.partCounts == QList<int>{1} && r.request.mtimeSecs == QList<qint64>{0}
               && r.request.mtimeNanos == QList<int>{0},
           "#909 R63: as part 1 of 1 of call 0, as the player's Item(path) is");
+    // M4: a key holding no value is missing to the check and the request alike: a part 1 of 1, of call 0.
+    r.nextGeneration = 24;
+    QVariantMap valueless = byPath;
+    for (const char* key : {"partOrdinal", "partCount", "call", "size", "mtimeSec", "mtimeNanos"}) {
+        valueless.insert(QString::fromLatin1(key), QVariant());
+    }
+    check(host.playRecordings({valueless}, DecoderHost::PlaybackSingle, QString()) == 24
+              && r.request.partOrdinals == QList<int>{1} && r.request.partCounts == QList<int>{1}
+              && r.request.calls == QList<int>{0} && r.request.sizes == QList<qint64>{-1},
+          "#909 M4: keys holding no value read as absent, as the check read them");
 }
 
 /* #909: one record publishes every reading at once, its item's path, title and key from the play's own items. */

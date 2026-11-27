@@ -19927,11 +19927,12 @@ Qt Quick frontend (`src/ui/qt`):
       (`size` must be a number from 0, `mtimeSec` and `mtimeNanos` numbers) as any invalid one, returning 0 with what
       plays left playing; `RecordingPlayback.play()` refuses a negative size again (`RecordingPlayer.identified()`), and
       every request is checked before it replaces what plays, on both sides (R63): the host refuses a part numbered
-      outside its count (`partOrdinal` and `partCount` default to 1 when absent, so a SINGLE named by path alone is part
-      1 of 1, as `RecordingPlayer.Item(path)` is, and is sent so), and `RecordingPlayback.play()` returns 0 for any
-      request `RecordingPlayer.validRequest()` refuses, which `play()` checks again before closing the play running; the
-      opener skips the identity check only for a SINGLE play, chosen by its mode, never by the size's sign. The sheet's
-      Play all parts passes each part's identity as listed, inventing none, and its Delete of a part listed without one
+      outside its count (`partOrdinal` and `partCount` default to 1 when absent or holding no value, the check and the
+      sent request reading every key alike, M4, so a SINGLE named by path alone is part 1 of 1, as
+      `RecordingPlayer.Item(path)` is, and is sent so), and `RecordingPlayback.play()` returns 0 for any request
+      `RecordingPlayer.validRequest()` refuses, which `play()` checks again before closing the play running; the opener
+      skips the identity check only for a SINGLE play, chosen by its mode, never by the size's sign. The sheet's Play
+      all parts passes each part's identity as listed, inventing none, and its Delete of a part listed without one
       deletes by id alone (`deleteRecording()`), as before #909. Results: `accepted` (generation above 0 and the call
       count), `none`, `gone` (`startUid` not in the view after `flushPendingSearch()`), `rowNone` (shown, nothing
       playable), `unsupported` and `refused`; every refusal leaves what plays playing. Calls recorded after the press,

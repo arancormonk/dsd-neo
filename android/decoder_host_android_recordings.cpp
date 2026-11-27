@@ -87,6 +87,14 @@ DecoderHostAndroid::recordingRoots() const {
 
 namespace {
 
+/* @p key of @p item, @p absent when the key is missing or holds no value: as playbackItemsValid() read it (M4), so the
+ * check and the request agree on every item. */
+QVariant
+playback_value(const QVariantMap& item, const QString& key, const QVariant& absent) {
+    const QVariant value = item.value(key);
+    return value.isValid() ? value : absent;
+}
+
 /* @p items (already checked: DecoderHost::playbackItemsValid()) as RecordingPlayback.play() takes them. */
 DecoderHostAndroid::PlaybackRequest
 playback_request(const QVariantList& items, int mode) {
@@ -96,14 +104,14 @@ playback_request(const QVariantList& items, int mode) {
         const QVariantMap item = value.toMap();
         request.paths.append(item.value(QStringLiteral("path")).toString());
         // A queued item's identity was checked present; a single play may name its file by path alone (-1).
-        request.sizes.append(item.value(QStringLiteral("size"), qint64{-1}).toLongLong());
-        request.mtimeSecs.append(item.value(QStringLiteral("mtimeSec")).toLongLong());
-        request.mtimeNanos.append(item.value(QStringLiteral("mtimeNanos")).toInt());
-        request.calls.append(item.value(QStringLiteral("call")).toInt());
+        request.sizes.append(playback_value(item, QStringLiteral("size"), qint64{-1}).toLongLong());
+        request.mtimeSecs.append(playback_value(item, QStringLiteral("mtimeSec"), qint64{0}).toLongLong());
+        request.mtimeNanos.append(playback_value(item, QStringLiteral("mtimeNanos"), 0).toInt());
+        request.calls.append(playback_value(item, QStringLiteral("call"), 0).toInt());
         // An item with no numbering (a single play named by path alone) is part 1 of 1, as RecordingPlayer.Item(path)
-        // is (R63); the validity check took the same defaults.
-        request.partOrdinals.append(item.value(QStringLiteral("partOrdinal"), 1).toInt());
-        request.partCounts.append(item.value(QStringLiteral("partCount"), 1).toInt());
+        // is (R63); the validity check took the same defaults, for a missing key and one holding no value alike.
+        request.partOrdinals.append(playback_value(item, QStringLiteral("partOrdinal"), 1).toInt());
+        request.partCounts.append(playback_value(item, QStringLiteral("partCount"), 1).toInt());
         request.titles.append(item.value(QStringLiteral("title")).toString());
         request.lines.append(item.value(QStringLiteral("line")).toString());
         request.keys.append(item.value(QStringLiteral("key")).toString());
@@ -128,8 +136,9 @@ DecoderHostAndroid::beginPlayback(const QString& path) {
     PlaybackRequest single;
     single.paths = QStringList{path};
     single.calls = QList<int>{0};
-    single.partOrdinals = QList<int>{0};
-    single.partCounts = QList<int>{0};
+    // Part 1 of 1, as the player's RecordingPlayer.Item(path) reads it (M5): its first record changes nothing here.
+    single.partOrdinals = QList<int>{1};
+    single.partCounts = QList<int>{1};
     single.titles = QStringList{QString()};
     single.keys = QStringList{QString()};
     openPlayback(generation, QString(), single);
