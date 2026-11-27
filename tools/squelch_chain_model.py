@@ -535,7 +535,7 @@ class FrozenStream:
             self.pending = None
         count = len(s["n"]) // 2 * 2
         if len(s["n"]) > count:
-            self.pending = {k: v[count:] for k, v in s.items()}
+            self.pending = {k: v[count:].copy() for k, v in s.items()}  # copies, as every kept history
         first = {k: v[0:count:2] for k, v in s.items()}
         second = {k: v[1:count:2] for k, v in s.items()}
         return classify_windows(first, second, self.plan)
