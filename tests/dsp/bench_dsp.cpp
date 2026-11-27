@@ -1754,12 +1754,16 @@ bench_reader_plans(const BenchOptions& opts) {
     ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8k_16k", 8000U, 16000U, 0);
     ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_250k_192k_2pass", 250000U, 192000U, 2);
     ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8046_72k", 8046U, 72000U, 0);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_864058_576k_3pass", 864058U, 576000U, 3);
     ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8k_16k", 8000U, 16000, 0, 0,
                                              0, BENCH_BLOCK_FIRST_BUILD);
     ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_250k_192k_nfm12k5", 250000U,
                                              48000, 2, 12500, 0, BENCH_BLOCK_FIRST_BUILD);
     ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8046_72k_nfm16k", 8046U,
                                              72000, 0, 16000, 0, BENCH_BLOCK_FIRST_BUILD);
+    /* Q = 32,752 input phases behind three passes, 201 taps: the covariance route (issue #899). */
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_864058_72k_5k", 864058U,
+                                             72000, 3, 5000, 0, BENCH_BLOCK_FIRST_BUILD);
     ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_alternating_8046_72k_nfm16k_25k", 8046U,
                                              72000, 0, 16000, 25000, BENCH_BLOCK_ALTERNATING);
     ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_same_key_8046_72k_nfm16k", 8046U, 72000,

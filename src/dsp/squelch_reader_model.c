@@ -17,10 +17,13 @@
 #include <stdint.h>
 #include "squelch_cascade_noise.h"
 
-/* The most doubles any one table may take (64 MB): the reader's output covariance, the cascade's workspace, the
-   responses, and the exact plan's covariance. 8,046 Hz read into a 72 kHz chain (L = 4000) takes at most about 2.9 Mi
-   (the cascade's workspace). */
+/* The most doubles any one table may take (64 MB): the reader's output covariance, the cascade's workspace, and the
+   exact plan's covariance. 8,046 Hz read into a 72 kHz chain (L = 4000) takes at most about 2.9 Mi (the cascade's
+   workspace). */
 static const size_t k_max_table_doubles = (size_t)8 << 20;
+
+/* The most doubles one batch of responses through the channel taps takes (1 MB), whatever Q is. */
+static const size_t k_batch_doubles = (size_t)1 << 17;
 
 void
 dsd_squelch_reader_model_init(dsd_squelch_reader_model* m) {
@@ -34,14 +37,20 @@ dsd_squelch_reader_model_init(dsd_squelch_reader_model* m) {
 /* The every-phase plan's tables: freed, and that plan not available. */
 static void
 srm_release_exact(dsd_squelch_reader_model* m) {
-    dsd_neo_aligned_free(m->resp_phase);
-    dsd_neo_aligned_free(m->resp);
     dsd_neo_aligned_free(m->cov);
+    dsd_neo_aligned_free(m->stage_taps);
+    dsd_neo_aligned_free(m->resp_a);
+    dsd_neo_aligned_free(m->resp_b);
+    dsd_neo_aligned_free(m->resp_phase);
     dsd_neo_aligned_free(m->chan);
-    m->resp_phase = NULL;
-    m->resp = NULL;
+    dsd_neo_aligned_free(m->ring);
     m->cov = NULL;
+    m->stage_taps = NULL;
+    m->resp_a = NULL;
+    m->resp_b = NULL;
+    m->resp_phase = NULL;
     m->chan = NULL;
+    m->ring = NULL;
     m->exact_ready = 0;
 }
 
@@ -53,6 +62,7 @@ dsd_squelch_reader_model_release(dsd_squelch_reader_model* m) {
     dsd_iq_resampler_free(&m->reader);
     dsd_neo_aligned_free(m->mean);
     dsd_neo_aligned_free(m->mean_chan);
+    dsd_neo_aligned_free(m->phase_cov);
     srm_release_exact(m);
     dsd_squelch_reader_model_init(m);
 }
@@ -161,17 +171,19 @@ srm_reader_cov_rows(const dsd_iq_resampler* r, int64_t shift, double var, int64_
     }
 }
 
-/* The covariance @p out averaged over its period, and the largest distance of any phase's from it, into @p m. */
+/* The covariance @p out kept, averaged over its period, and the largest distance of any phase's from it, into @p m. */
 static int
 srm_mean_and_distance(dsd_squelch_reader_model* m, const dsd_squelch_floor_periodic_noise* out) {
     m->period = out->period;
     m->lags = out->lags;
     m->mean = srm_doubles((size_t)out->lags);
     m->mean_chan = srm_doubles((size_t)out->lags + DSD_NOISE_SQUELCH_MAX_TAPS - 1U);
-    if (!m->mean || !m->mean_chan) {
+    m->phase_cov = srm_doubles((size_t)out->period * (size_t)out->lags);
+    if (!m->mean || !m->mean_chan || !m->phase_cov) {
         return -1;
     }
     const size_t lags = (size_t)out->lags;
+    DSD_MEMCPY(m->phase_cov, out->cov, (size_t)out->period * lags * sizeof(double));
     for (size_t lag = 0; lag < lags; lag++) {
         double sum = 0.0;
         for (int n = 0; n < out->period; n++) {
@@ -274,66 +286,83 @@ srm_response_bound(const dsd_iq_resampler* r, const dsd_noise_squelch_stage* sta
     return most < INT32_MAX ? (int)most : -1;
 }
 
-/* The responses' store and the exact plan's scratch for @p inputs input phases of responses @p bound long. Every size
-   is checked against the table limit before the first allocation. */
+/* The stages' taps copied into @p m, so the responses route runs them at every design. */
+static int
+srm_copy_stages(dsd_squelch_reader_model* m, const dsd_noise_squelch_stage* stages, int count) {
+    size_t total = 1U;
+    for (int s = 0; s < count; s++) {
+        total += (size_t)stages[s].len;
+    }
+    m->stage_taps = (float*)dsd_neo_aligned_malloc(total * sizeof(float));
+    if (!m->stage_taps) {
+        return -1;
+    }
+    size_t at = 0U;
+    for (int s = 0; s < count; s++) {
+        DSD_MEMCPY(m->stage_taps + at, stages[s].taps, (size_t)stages[s].len * sizeof(float));
+        m->stages[s].taps = m->stage_taps + at;
+        m->stages[s].len = stages[s].len;
+        at += (size_t)stages[s].len;
+    }
+    return 0;
+}
+
+/* The exact plan's tables for @p inputs input phases of responses @p bound long, every size checked against its limit
+   before the first allocation: the covariance it designs from (period rows of cov_lags), the responses route's batch
+   (as many responses through the taps as k_batch_doubles holds, at least one) and halves, and the covariance route's
+   rows. */
 static int
 srm_allocate(dsd_squelch_reader_model* m, int64_t inputs, int bound) {
     m->inputs = (int)inputs;
     m->resp_len = bound;
-    m->cov_lags = bound + DSD_NOISE_SQUELCH_MAX_TAPS - 1;
-    const size_t resp_n = srm_table(inputs, bound);
-    const size_t chan_n = srm_table(inputs, m->cov_lags);
+    m->cov_lags = (bound > m->lags ? bound : m->lags) + DSD_NOISE_SQUELCH_MAX_TAPS - 1;
+    m->ring_len = DSD_NOISE_SQUELCH_MAX_TAPS + (2 * m->lags) - 2;
+    const int64_t fit = (int64_t)(k_batch_doubles / (size_t)m->cov_lags);
+    m->batch = (int)(inputs < fit ? inputs : (fit > 0 ? fit : 1));
     const size_t cov_n = srm_table(m->period, m->cov_lags);
-    if (inputs > INT32_MAX || resp_n == 0U || chan_n == 0U || cov_n == 0U) {
+    const size_t chan_n = srm_table(m->batch, m->cov_lags);
+    const size_t ring_n = srm_table(DSD_NOISE_SQUELCH_MAX_TAPS, m->ring_len);
+    if (inputs > INT32_MAX || cov_n == 0U || chan_n == 0U || ring_n == 0U) {
         return -1;
     }
-    m->resp_phase = (int*)dsd_neo_aligned_malloc((size_t)inputs * sizeof(int));
-    m->resp = srm_doubles(resp_n);
-    m->chan = srm_doubles(chan_n);
     m->cov = srm_doubles(cov_n);
-    return (m->resp_phase && m->resp && m->chan && m->cov) ? 0 : -1;
+    m->resp_a = srm_doubles((size_t)bound);
+    m->resp_b = srm_doubles((size_t)bound);
+    m->resp_phase = (int*)dsd_neo_aligned_malloc((size_t)m->batch * sizeof(int));
+    m->chan = srm_doubles(chan_n);
+    m->ring = srm_doubles(ring_n);
+    return (m->cov && m->resp_a && m->resp_b && m->resp_phase && m->chan && m->ring) ? 0 : -1;
 }
 
-/* Input @p i's response through the reader and every stage, alternating between @p a and @p b (resp_len each), into its
-   row of resp and the phase of its first output into resp_phase. */
-static void
-srm_record_response(dsd_squelch_reader_model* m, const dsd_noise_squelch_stage* stages, int count, int64_t i, double* a,
-                    double* b) {
-    srm_span s = srm_reader_response(&m->reader, i, a);
-    double* cur = a;
-    double* next = b;
-    for (int st = 0; st < count; st++) {
-        s = srm_stage_response(&stages[st], s, cur, next);
+/* Input @p i's response through the reader and every stage, alternating between resp_a and resp_b: the buffer it
+   ends in, its first output's phase of the period in @p phase and its span in @p len. */
+static const double*
+srm_response(dsd_squelch_reader_model* m, int64_t i, int* phase, int* len) {
+    srm_span s = srm_reader_response(&m->reader, i, m->resp_a);
+    double* cur = m->resp_a;
+    double* next = m->resp_b;
+    for (int st = 0; st < m->passes; st++) {
+        s = srm_stage_response(&m->stages[st], s, cur, next);
         double* t = cur;
         cur = next;
         next = t;
     }
-    m->resp_phase[i] = (int)srm_mod(s.origin, m->period);
-    DSD_MEMCPY(m->resp + ((size_t)i * (size_t)m->resp_len), cur, (size_t)s.len * sizeof(double));
+    *phase = (int)srm_mod(s.origin, m->period);
+    *len = s.len;
+    return cur;
 }
 
-/* Every input phase's response through the reader and the cascade into resp (unscaled: a unit input), the scratch the
-   exact plan runs in with it. Q = M 2^passes / gcd(L, 2^passes) input phases: an input Q later is the same response P
-   outputs later. */
+/* The tables the every-phase plan runs in, for Q = M 2^passes / gcd(L, 2^passes) input phases (an input Q later is the
+   same response P outputs later), the stages' taps kept for the responses route. */
 static int
-srm_responses(dsd_squelch_reader_model* m, const dsd_noise_squelch_stage* stages, int count) {
+srm_exact_tables(dsd_squelch_reader_model* m, const dsd_noise_squelch_stage* stages, int count) {
     const dsd_iq_resampler* r = &m->reader;
     const int64_t inputs = ((int64_t)r->M << count) / srm_gcd(r->L, 1 << count);
     const int bound = srm_response_bound(r, stages, count);
     if (bound < 1 || srm_allocate(m, inputs, bound) != 0) {
         return -1;
     }
-    double* a = srm_doubles((size_t)bound);
-    double* b = srm_doubles((size_t)bound);
-    if (a && b) {
-        for (int64_t i = 0; i < inputs; i++) {
-            srm_record_response(m, stages, count, i, a, b);
-        }
-    }
-    const int rc = (a && b) ? 0 : -1;
-    dsd_neo_aligned_free(a);
-    dsd_neo_aligned_free(b);
-    return rc;
+    return srm_copy_stages(m, stages, count);
 }
 
 /* -------------------------------------------------------------------------------------------------------- build */
@@ -373,9 +402,9 @@ dsd_squelch_reader_model_build(dsd_squelch_reader_model* m, const dsd_iq_reader_
         dsd_squelch_reader_model_release(m);
         return -1;
     }
-    /* The every-phase tables past the size limit (a reader that decimates by a large M ahead of many passes: Q of
-       hundreds of thousands) leave the averaged plan, which such a reader's small spread takes anyway. */
-    if (srm_responses(m, stages, stage_count) == 0) {
+    /* The every-phase tables are bounded for every reader the rate plans make (the covariance route's do not grow
+       with Q); past the size limit, or with no memory for them, the averaged plan is left. */
+    if (srm_exact_tables(m, stages, stage_count) == 0) {
         m->exact_ready = 1;
     } else {
         srm_release_exact(m);
@@ -402,41 +431,45 @@ srm_floor_args(const dsd_squelch_reader_model* m, const float** taps, int* taps_
     return 1;
 }
 
-/* Each input phase's response through the @p len channel taps into its row of chan (@p lags of it). */
+/* ---------------------------------------------------------------------------------------- the responses route */
+
+/* Response @p y (@p y_len of it) through the @p len channel taps into @p z (@p lags of it). */
 static void
-srm_responses_through_taps(dsd_squelch_reader_model* m, const float* taps, int len, int lags) {
-    for (int k = 0; k < m->inputs; k++) {
-        const double* y = m->resp + ((size_t)k * (size_t)m->resp_len);
-        double* z = m->chan + ((size_t)k * (size_t)m->cov_lags);
-        for (int t = 0; t < lags; t++) {
-            double sum = 0.0;
-            const int lo = t - (m->resp_len - 1) > 0 ? t - (m->resp_len - 1) : 0;
-            const int hi = t < len - 1 ? t : len - 1;
-            for (int i = lo; i <= hi; i++) {
-                sum += (double)taps[i] * y[t - i];
-            }
-            z[t] = sum;
+srm_through_taps(const double* y, int y_len, const float* taps, int len, int lags, double* z) {
+    for (int t = 0; t < lags; t++) {
+        double sum = 0.0;
+        const int lo = t - (y_len - 1) > 0 ? t - (y_len - 1) : 0;
+        const int hi = t < len - 1 ? t : len - 1;
+        for (int i = lo; i <= hi; i++) {
+            sum += (double)taps[i] * y[t - i];
         }
+        z[t] = sum;
     }
 }
 
-/* Every output phase's covariance behind the @p len channel taps into cov (period rows of @p lags): each input phase's
-   response through the taps adds its products to the output phases it covers, so summed over the inputs of one input
-   period each row holds E{z_n z_{n+m}} for its output phase n, then scaled to the input variance 2^(passes - 1). Row
-   by row, every response's samples that fall on it in turn (input phase, then sample, ascending), so one row is
-   written at a time while the responses stay in cache: a period of thousands of phases (8,046 Hz read into 72 kHz:
-   4000) holds tens of megabytes of rows. */
+/* Input phases [@p first, @p first + @p count)'s responses through the @p len channel taps into the batch rows of chan
+   (@p lags each: past a response's span through the taps, zeros), each one's first output phase into resp_phase. */
 static void
-srm_accumulate_cov(dsd_squelch_reader_model* m, const float* taps, int len, int lags) {
+srm_batch_through_taps(dsd_squelch_reader_model* m, int first, int count, const float* taps, int len, int lags) {
+    for (int b = 0; b < count; b++) {
+        int phase = 0;
+        int span = 0;
+        const double* y = srm_response(m, first + b, &phase, &span);
+        m->resp_phase[b] = phase;
+        srm_through_taps(y, span, taps, len, lags, m->chan + ((size_t)b * (size_t)m->cov_lags));
+    }
+}
+
+/* The batch's products added to the output phases they cover: row by row, every response's samples that fall on it in
+   turn (input phase, then sample, ascending), so one row is written at a time while the batch stays in cache. */
+static void
+srm_batch_accumulate(dsd_squelch_reader_model* m, int count, int lags) {
     const int P = m->period;
-    srm_responses_through_taps(m, taps, len, lags);
-    const double scale = ldexp(1.0, m->passes > 0 ? m->passes - 1 : 0);
     for (int r = 0; r < P; r++) {
         double* row = m->cov + ((size_t)r * (size_t)lags);
-        DSD_MEMSET(row, 0, (size_t)lags * sizeof(double));
-        for (int k = 0; k < m->inputs; k++) {
-            const double* z = m->chan + ((size_t)k * (size_t)m->cov_lags);
-            const int first = r - m->resp_phase[k];
+        for (int b = 0; b < count; b++) {
+            const double* z = m->chan + ((size_t)b * (size_t)m->cov_lags);
+            const int first = r - m->resp_phase[b];
             for (int t = first < 0 ? first + P : first; t < lags; t += P) {
                 const double zt = z[t];
                 for (int lag = 0; lag + t < lags; lag++) {
@@ -444,31 +477,132 @@ srm_accumulate_cov(dsd_squelch_reader_model* m, const float* taps, int len, int 
                 }
             }
         }
-        for (int lag = 0; lag < lags; lag++) {
-            row[lag] *= scale;
+    }
+}
+
+/* Every output phase's covariance behind the @p len channel taps into cov (period rows of @p lags), from the responses:
+   each input phase's response through the taps adds its products to the output phases it covers, so summed over the
+   inputs of one input period each row holds E{z_n z_{n+m}} for its output phase n, then scaled to the input variance
+   2^(passes - 1). The responses are made again at each design, in batches of at most k_batch_doubles through the taps,
+   so the memory does not grow with Q. */
+static void
+srm_cov_from_responses(dsd_squelch_reader_model* m, const float* taps, int len, int lags) {
+    DSD_MEMSET(m->cov, 0, (size_t)m->period * (size_t)lags * sizeof(double));
+    for (int first = 0; first < m->inputs; first += m->batch) {
+        const int count = m->inputs - first < m->batch ? m->inputs - first : m->batch;
+        srm_batch_through_taps(m, first, count, taps, len, lags);
+        srm_batch_accumulate(m, count, lags);
+    }
+    const double scale = ldexp(1.0, m->passes > 0 ? m->passes - 1 : 0);
+    const size_t n = (size_t)m->period * (size_t)lags;
+    for (size_t k = 0; k < n; k++) {
+        m->cov[k] *= scale;
+    }
+}
+
+/* --------------------------------------------------------------------------------------- the covariance route */
+
+/* R(@p k, @p k + @p l) ahead of the channel filter, any |l| < lags: a negative lag is the earlier sample's row. */
+static double
+srm_phase_cov_at(const dsd_squelch_reader_model* m, int64_t k, int l) {
+    if (l < 0) {
+        k += l;
+        l = -l;
+    }
+    return m->phase_cov[((size_t)srm_mod(k, m->period) * (size_t)m->lags) + (size_t)l];
+}
+
+/* Row H_k of the ring: H_k(s) = sum_j c_j R(k, k + s - j) for s from -(lags - 1) to len + lags - 2, at s + lags - 1. */
+static void
+srm_ring_row(const dsd_squelch_reader_model* m, int64_t k, const float* taps, int len, double* h) {
+    const int Ly = m->lags;
+    const int width = len + (2 * Ly) - 2;
+    DSD_MEMSET(h, 0, (size_t)width * sizeof(double));
+    for (int l = -(Ly - 1); l < Ly; l++) {
+        const double r = srm_phase_cov_at(m, k, l);
+        double* at = h + (l + Ly - 1);
+        for (int j = 0; j < len; j++) {
+            at[j] += (double)taps[j] * r;
         }
     }
 }
 
+/* Every output phase's covariance behind the @p len channel taps into cov (period rows of @p lags = lags + len - 1),
+   from the covariance ahead of the filter: E{z_n z_{n+m}} = sum_i c_i H_{n-i}(m + i). Output phase n takes the rows of
+   bases n - len + 1 to n, which the ring keeps, one base made as each phase is: P + len - 1 rows, whatever Q is. */
+static void
+srm_cov_from_covariance(dsd_squelch_reader_model* m, const float* taps, int len, int lags) {
+    const int Ly = m->lags;
+    const int width = len + (2 * Ly) - 2;
+    for (int64_t k = -(int64_t)(len - 1); k < m->period; k++) {
+        srm_ring_row(m, k, taps, len, m->ring + ((size_t)((k + len) % len) * (size_t)m->ring_len));
+        if (k < 0) {
+            continue;
+        }
+        double* row = m->cov + ((size_t)k * (size_t)lags);
+        DSD_MEMSET(row, 0, (size_t)lags * sizeof(double));
+        for (int i = 0; i < len; i++) {
+            const double* h = m->ring + ((size_t)((k - i + len) % len) * (size_t)m->ring_len) + (i + Ly - 1);
+            const double c = (double)taps[i];
+            const int top = width - (i + Ly - 1) < lags ? width - (i + Ly - 1) : lags;
+            for (int t = 0; t < top; t++) {
+                row[t] += c * h[t];
+            }
+        }
+    }
+}
+
+/* ------------------------------------------------------------------------------------------- the exact design */
+
+/* The multiply-adds each route takes for @p len channel taps (doubles: Q x span^2 passes 2^53 at the largest Q). */
+static double
+srm_responses_cost(const dsd_squelch_reader_model* m, int len) {
+    const double lags = (double)(m->resp_len + len - 1);
+    const double conv = lags * (double)(len < m->resp_len ? len : m->resp_len);
+    return (double)m->inputs * (conv + (lags * lags / 2.0));
+}
+
+static double
+srm_covariance_cost(const dsd_squelch_reader_model* m, int len) {
+    const double rows = (double)(m->period + len - 1) * (double)len * (double)((2 * m->lags) - 1);
+    return rows + ((double)m->period * (double)len * (double)(m->lags + len - 1));
+}
+
 int
-dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out, const float* taps,
-                                          int taps_len, int rate_hz) {
+dsd_squelch_reader_model_floor_plan_route(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out, const float* taps,
+                                          int taps_len, int rate_hz, dsd_squelch_reader_route route) {
     if (!out) {
         return -1;
     }
     DSD_MEMSET(out, 0, sizeof(*out));
     const float* run_taps = taps;
     int run_len = taps_len;
-    if (!srm_floor_args(m, &run_taps, &run_len, rate_hz) || !m->exact_ready) {
+    if (!srm_floor_args(m, &run_taps, &run_len, rate_hz) || !m->exact_ready || route < DSD_SQUELCH_READER_ROUTE_CHEAPER
+        || route > DSD_SQUELCH_READER_ROUTE_COVARIANCE) {
         return -1;
     }
-    const int lags = m->resp_len + run_len - 1;
-    srm_accumulate_cov(m, run_taps, run_len, lags);
+    if (route == DSD_SQUELCH_READER_ROUTE_CHEAPER) {
+        route = srm_responses_cost(m, run_len) <= srm_covariance_cost(m, run_len) ? DSD_SQUELCH_READER_ROUTE_RESPONSES
+                                                                                  : DSD_SQUELCH_READER_ROUTE_COVARIANCE;
+    }
+    if (route == DSD_SQUELCH_READER_ROUTE_RESPONSES) {
+        m->exact_lags = m->resp_len + run_len - 1;
+        srm_cov_from_responses(m, run_taps, run_len, m->exact_lags);
+    } else {
+        m->exact_lags = m->lags + run_len - 1;
+        srm_cov_from_covariance(m, run_taps, run_len, m->exact_lags);
+    }
     dsd_squelch_floor_periodic_noise noise;
     noise.period = m->period;
-    noise.lags = lags;
+    noise.lags = m->exact_lags;
     noise.cov = m->cov;
     return dsd_squelch_floor_plan_design_periodic_mean(out, taps, taps_len, &noise, rate_hz);
+}
+
+int
+dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out, const float* taps,
+                                          int taps_len, int rate_hz) {
+    return dsd_squelch_reader_model_floor_plan_route(m, out, taps, taps_len, rate_hz, DSD_SQUELCH_READER_ROUTE_CHEAPER);
 }
 
 /* The phase-averaged covariance behind the channel taps into mean_chan (exact: the taps are time-invariant),

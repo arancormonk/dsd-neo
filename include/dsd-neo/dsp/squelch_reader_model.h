@@ -22,11 +22,13 @@
  *   reader's output phases lined up on the samples the real decimators keep: each stage's output n is centred on its
  *   input 2n, counted from the stream's start, which the reader and the cascade start over at together. The period
  *   left at the channel filter is P = L / gcd(L, 2^passes) (40 kHz to 32 kHz by 4/5, then one pass: 2 phases).
- * - The covariance averaged over that period, and the largest distance of any phase's from it.
- * - For every output phase in full: the response to an input at each of the Q = M 2^passes / gcd(L, 2^passes) input
- *   phases (shifting an input by Q shifts its response by P outputs), through the reader's taps and the half-band
- *   stages as the decimators run them. With the channel taps these give every output phase's covariance at a cost of
- *   about Q x (responses' span)^2 / 2, not P x lags x taps^2.
+ * - The covariance at every one of those phases (phase_cov), averaged over the period, and the largest distance of any
+ *   phase's from the average.
+ * - For every output phase in full, two exact routes through the channel taps (dsd_squelch_reader_route): the
+ *   response to an input at each of the Q = M 2^passes / gcd(L, 2^passes) input phases (shifting an input by Q shifts
+ *   its response by P outputs), through the reader's taps and the half-band stages as the decimators run them, about
+ *   Q x (responses' span)^2 / 2; or phase_cov through the taps, about P x taps x (lags + taps), whatever Q is. A design
+ *   takes the cheaper, so every reader the rate plans make has one, in bounded tables.
  *
  * dsd_squelch_reader_model_build() makes all of it on the controller thread while the demod thread is idle (the rate
  * plan's commit, dsd_demod_squelch_reader_model_sync()), and keeps it while the plan and passes stay: a build for the
@@ -59,6 +61,17 @@
 extern "C" {
 #endif
 
+/** @brief The routes the every-phase design can take (dsd_squelch_reader_model_floor_plan_route()); both exact. */
+typedef enum {
+    /** The cheaper of the two for the channel taps, by their multiply-add counts. */
+    DSD_SQUELCH_READER_ROUTE_CHEAPER = 0,
+    /** Every input phase's response through the channel taps, in bounded batches: about Q x (span + taps)^2 / 2. */
+    DSD_SQUELCH_READER_ROUTE_RESPONSES = 1,
+    /** The covariance every output phase has ahead of the channel filter, through its taps: about P x taps x (lags +
+        taps), whatever Q is. */
+    DSD_SQUELCH_READER_ROUTE_COVARIANCE = 2,
+} dsd_squelch_reader_route;
+
 /** @brief The model for one reader plan behind one cascade: what dsd_squelch_reader_model_build() makes. */
 typedef struct dsd_squelch_reader_model {
     int ready;               /**< 1 once built for plan and passes */
@@ -69,19 +82,29 @@ typedef struct dsd_squelch_reader_model {
     int lags;                /**< The covariance's lags there, 0 included; 0 beyond */
     double* mean;            /**< The covariance averaged over the period (lags of it) */
     double cyclo_dev;        /**< The largest absolute distance of any phase's covariance from it */
-    /* The responses: one per input phase k (an input at k), resp_len outputs from an output at phase resp_phase[k] of
-       the period. exact_ready is 1 when they and the exact plan's scratch below were built: past the size limit they
-       are not, and only the averaged plan is available (a plan its bound refuses is then not valid). */
+    double* phase_cov;       /**< Every output phase's covariance there: period rows of lags */
+    /* The every-phase design's tables, bounded whatever the reader (exact_ready 1 once built; a reader past the size
+       limit, or no memory for them, leaves the averaged plan only, and a plan its bound refuses is then not valid). */
     int exact_ready;
-    int inputs; /**< Q: the input phases */
-    int resp_len;
-    int* resp_phase;
-    double* resp;
-    /* The exact plan's scratch, sized for DSD_NOISE_SQUELCH_MAX_TAPS channel taps: every output phase's covariance
-       (period rows of cov_lags), and every response through the channel taps (inputs rows of cov_lags). */
+    int inputs;   /**< Q: the input phases */
+    int resp_len; /**< The longest span a response takes, at the reader or after any stage */
+    /** The lags a row of cov holds: the longer of resp_len and lags, plus DSD_NOISE_SQUELCH_MAX_TAPS - 1 */
     int cov_lags;
-    double* cov;
+    double* cov; /**< The last every-phase design's covariance: period rows of exact_lags */
+    int exact_lags;
+    /* The responses route: the stages' taps (copied), a response's two halves, and a batch of responses through the
+       channel taps (batch rows of cov_lags) with the output phase each starts at. */
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    float* stage_taps;
+    double* resp_a;
+    double* resp_b;
+    int batch;
+    int* resp_phase;
     double* chan;
+    /* The covariance route: the rows it carries through the taps, DSD_NOISE_SQUELCH_MAX_TAPS of ring_len (an output
+       phase's covariance ahead of the filter, through it, at every offset). */
+    int ring_len;
+    double* ring;
     /* The averaged plan's scratch: the mean covariance through the channel taps (lags +
        DSD_NOISE_SQUELCH_MAX_TAPS - 1), and the taps' autocorrelation. */
     double* mean_chan;
@@ -106,8 +129,10 @@ int dsd_squelch_reader_model_matches(const dsd_squelch_reader_model* m, const ds
  *
  * @return 0, or -1: bad arguments (a disabled plan, a stage with no taps or more than 64), a design the resampler
  * refuses, a reader covariance or cascade workspace past the size limit (8 Mi doubles for any one table), or no
- * memory. Responses and every-phase tables past the limit (or with no memory for them) leave the model ready for the
- * averaged plan only (exact_ready 0).
+ * memory. The every-phase tables (the covariance a design writes, a batch of responses of at most 1 MB, one row per
+ * channel tap) do not grow with Q; past the limit, or with no memory for them, they leave the model ready for the
+ * averaged plan only (exact_ready 0). The largest model the rate plans make retains about 35 MB (8,046 Hz read into
+ * 72 kHz, 4000 output phases).
  */
 int dsd_squelch_reader_model_build(dsd_squelch_reader_model* m, const dsd_iq_reader_plan* plan,
                                    const dsd_noise_squelch_stage* stages, int stage_count);
@@ -127,12 +152,26 @@ int dsd_squelch_reader_model_floor_plan(dsd_squelch_reader_model* m, dsd_squelch
 
 /**
  * @brief dsd_squelch_reader_model_floor_plan() from every output phase's covariance in full, whatever the bound: the
- * reference the averaged path is held to, and its fallback. Allocates nothing.
+ * reference the averaged path is held to, and its fallback. dsd_squelch_reader_model_floor_plan_route() with
+ * DSD_SQUELCH_READER_ROUTE_CHEAPER. Allocates nothing.
  *
  * @return As dsd_squelch_reader_model_floor_plan(), and -1 when the every-phase tables were not built (exact_ready 0).
  */
 int dsd_squelch_reader_model_floor_plan_exact(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out,
                                               const float* taps, int taps_len, int rate_hz);
+
+/**
+ * @brief The every-phase design by @p route (see dsd_squelch_reader_route): the two routes compute the same covariance
+ * by separate arithmetic, from the responses through the reader's bank and the stages as the decimators run them, and
+ * from the reader's covariance carried through the cascade phase by phase. Either leaves its table in cov (period rows
+ * of exact_lags). Allocates nothing; the time is the route's multiply-adds (8,046 Hz read into 72 kHz, NFM 16k: the
+ * responses, about 1.2e8; 864,058 Hz read into 576 kHz ahead of three passes, 201 taps: the covariance, about 1e8).
+ *
+ * @return As dsd_squelch_reader_model_floor_plan_exact(), and -1 for another @p route.
+ */
+int dsd_squelch_reader_model_floor_plan_route(dsd_squelch_reader_model* m, dsd_squelch_floor_plan* out,
+                                              const float* taps, int taps_len, int rate_hz,
+                                              dsd_squelch_reader_route route);
 
 /**
  * @brief The noise squelch's plan for the channel taps @p taps (@p taps_len; NULL or 0 when no channel filter runs)

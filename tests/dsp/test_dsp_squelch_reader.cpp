@@ -404,9 +404,11 @@ plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor_plan& w
 constexpr double kReaderTolerance = 1e-5;
 
 /* The plan full_demod() installs under AUTO behind the reader after the first block that leaves channel samples, and
-   the taps it ran; the model's period, and whether the plan is its every-phase design (@p exact). */
+   the taps it ran; the model's period, whether the plan is its every-phase design (@p exact), and the every-phase
+   design by each route (@p routes: the responses', the covariance's; not valid with no model). */
 dsd_squelch_floor_plan
-installed_plan(const ReaderChain& c, std::vector<float>* taps, int* period, int* exact) {
+installed_plan(const ReaderChain& c, std::vector<float>* taps, int* period, int* exact,
+               dsd_squelch_floor_plan routes[2]) {
     const DemodBox box;
     demod_state* s = box.s;
     const int synced = configure(s, c, DSD_SQUELCH_MODE_AUTO);
@@ -424,23 +426,29 @@ installed_plan(const ReaderChain& c, std::vector<float>* taps, int* period, int*
         taps->clear();
     }
     *exact = 0;
+    DSD_MEMSET(routes, 0, 2 * sizeof(routes[0]));
+    const dsd_squelch_floor_plan installed = s->squelch_floor.plan;
     if (s->squelch_reader_model.ready) {
         dsd_squelch_floor_plan full;
         const float* run = taps->empty() ? NULL : taps->data();
-        *exact =
-            dsd_squelch_reader_model_floor_plan_exact(&s->squelch_reader_model, &full, run, (int)taps->size(), c.rate())
-                == 0
-            && dsd_squelch_floor_plan_equal(&full, &s->squelch_floor.plan);
+        const int len = (int)taps->size();
+        *exact = dsd_squelch_reader_model_floor_plan_exact(&s->squelch_reader_model, &full, run, len, c.rate()) == 0
+                 && dsd_squelch_floor_plan_equal(&full, &installed);
+        (void)dsd_squelch_reader_model_floor_plan_route(&s->squelch_reader_model, &routes[0], run, len, c.rate(),
+                                                        DSD_SQUELCH_READER_ROUTE_RESPONSES);
+        (void)dsd_squelch_reader_model_floor_plan_route(&s->squelch_reader_model, &routes[1], run, len, c.rate(),
+                                                        DSD_SQUELCH_READER_ROUTE_COVARIANCE);
     }
-    return s->squelch_floor.plan;
+    return installed;
 }
 
 /* ------------------------------------------------------------------------------------------- the installed plan */
 
 /* Behind the reader the auto squelch's plan is the chain's own (issue #899): white noise at the source rate through the
-   reader's bank, the cascade and the channel filter, at every output phase. Every row's installed plan matches the
-   impulse oracle's; 8 to 16 kHz unfiltered matches the independent figures (and is not the cascade's plan without the
-   reader: beta 0); two output phases survive the pass at 40 to 32 to 16 kHz; with no reader the cascade's own plan. */
+   reader's bank, the cascade and the channel filter, at every output phase. Every row's installed plan, and the
+   every-phase design by either route, matches the impulse oracle's; 8 to 16 kHz unfiltered matches the independent
+   figures (and is not the cascade's plan without the reader: beta 0); two output phases survive the pass at 40 to 32
+   to 16 kHz; with no reader the cascade's own plan. */
 void
 test_installed_plan_is_the_chain(void) {
     struct Row {
@@ -465,9 +473,13 @@ test_installed_plan_is_the_chain(void) {
         std::vector<float> taps;
         int period = 0;
         int exact = 0;
-        const dsd_squelch_floor_plan got = installed_plan(row.c, &taps, &period, &exact);
+        dsd_squelch_floor_plan routes[2];
+        const dsd_squelch_floor_plan got = installed_plan(row.c, &taps, &period, &exact, routes);
         const Oracle want = oracle(row.c);
-        const double off = plan_distance(got, want.plan);
+        double off = plan_distance(got, want.plan);
+        if (period > 0) {
+            off = std::fmax(off, std::fmax(plan_distance(routes[0], want.plan), plan_distance(routes[1], want.plan)));
+        }
         worst = std::fmax(worst, off);
         bool ok = off <= kReaderTolerance && taps == want.taps;
         if (row.period > 0) {
@@ -494,7 +506,8 @@ test_installed_plan_is_the_chain(void) {
         std::vector<float> taps;
         int period = 0;
         int exact = 0;
-        const dsd_squelch_floor_plan got = installed_plan(c, &taps, &period, &exact);
+        dsd_squelch_floor_plan routes[2];
+        const dsd_squelch_floor_plan got = installed_plan(c, &taps, &period, &exact, routes);
         dsd_noise_squelch_stage st[2] = {{hb31_q15_taps, 31}, {hb_q15_taps, HB_TAPS}};
         dsd_squelch_floor_plan want;
         (void)dsd_squelch_cascade_noise_floor_plan(&want, NULL, 0, st, 2, 16000);
@@ -533,13 +546,15 @@ rows_distance(const double* got, int got_lags, const Oracle& want) {
     return power > 0.0 ? best / power : INFINITY;
 }
 
-/* The reader model against the impulses, unfiltered: every output phase's covariance (its exact plan's table, from the
-   responses), the period, and the mean over it and the largest distance from it (from the reader's covariance carried
-   through the cascade phase by phase). Within 1e-6 of the power: the float chain's rounding. That bound checks the
-   reader-to-cascade alignment only to about 1e-6 of the power: on these chains the cosets of the reader's phases the
-   decimators keep differ that little (a one-sample shift moves the 250 to 192 kHz mean by 1.2e-6, the 40 to 32 kHz
-   rows not at all, their cosets mirroring each other), so a misalignment could not move a plan either, and the rows
-   are compared up to a rotation of the period (a constant shift of the output count moves nothing a plan uses). */
+/* The reader model against the impulses, unfiltered: every output phase's covariance (its exact plan's table, by each
+   route: from the responses, and from the reader's covariance through the cascade), the period, and the mean over it
+   and the largest distance from it (from the reader's covariance carried through the cascade phase by phase). Within
+   1e-6 of the power: the float chain's rounding. That bound checks the reader-to-cascade alignment only to about 1e-6
+   of the power: on these chains the cosets of the reader's phases the decimators keep differ that little (a
+   one-sample shift moves the 250 to 192 kHz mean by 1.2e-6, the 40 to 32 kHz rows not at all, their cosets mirroring
+   each other), and
+   the rows are compared up to a rotation of the period (a constant shift of the output count moves nothing a plan
+   uses). */
 void
 test_model_is_the_chain(void) {
     const ReaderChain chains[] = {
@@ -566,9 +581,15 @@ test_model_is_the_chain(void) {
             dsd_squelch_reader_model_release(&m);
             continue;
         }
+        /* Each route's table, held to the impulses on its own. */
         dsd_squelch_floor_plan exact;
-        const int rc = dsd_squelch_reader_model_floor_plan_exact(&m, &exact, NULL, 0, c.rate());
-        const double rows = rows_distance(m.cov, m.resp_len, want);
+        int rc = dsd_squelch_reader_model_floor_plan_route(&m, &exact, NULL, 0, c.rate(),
+                                                           DSD_SQUELCH_READER_ROUTE_RESPONSES);
+        double rows = rows_distance(m.cov, m.exact_lags, want);
+        dsd_squelch_floor_plan by_cov;
+        rc |= dsd_squelch_reader_model_floor_plan_route(&m, &by_cov, NULL, 0, c.rate(),
+                                                        DSD_SQUELCH_READER_ROUTE_COVARIANCE);
+        rows = std::fmax(rows, rows_distance(m.cov, m.exact_lags, want));
         /* The oracle's mean and largest distance from it. */
         std::vector<double> mean((size_t)want.lags, 0.0);
         for (int n = 0; n < want.period; n++) {
@@ -914,11 +935,12 @@ test_floor_plans_kept_by_key(void) {
           (unsigned long long)filled, (unsigned long long)evicted, (unsigned long long)s->squelch_plan_designs);
 }
 
-/* A reader whose every-phase tables pass the size limit (2,097,152 Hz read into 2,096,640 Hz by 4095/4096 ahead of
-   seven passes: 524,288 input phases) builds for the averaged plan only; its spread is small, so the plan is valid, and
-   the every-phase design refuses rather than run without its tables. */
+/* A reader with hundreds of thousands of input phases (2,097,152 Hz read into 2,096,640 Hz by 4095/4096 ahead of seven
+   passes: 524,288) keeps its every-phase plan: the covariance route's tables do not grow with Q, and the responses
+   route runs them in batches. Both routes give the same plan, which its small spread keeps within 1e-6 of the
+   averaged one. */
 void
-test_model_past_the_table_limit(void) {
+test_model_with_many_input_phases(void) {
     dsd_iq_reader_plan plan;
     (void)dsd_iq_reader_plan_for(&plan, 2097152U, 2096640U, 16380U);
     dsd_noise_squelch_stage st[7];
@@ -930,15 +952,78 @@ test_model_past_the_table_limit(void) {
     dsd_squelch_reader_model_init(&m);
     const int built = dsd_squelch_reader_model_build(&m, &plan, st, 7);
     dsd_squelch_floor_plan averaged;
-    dsd_squelch_floor_plan exact;
+    dsd_squelch_floor_plan by_cov;
+    dsd_squelch_floor_plan by_resp;
     const int rc_avg = dsd_squelch_reader_model_floor_plan(&m, &averaged, NULL, 0, 16380);
-    const int rc_exact = dsd_squelch_reader_model_floor_plan_exact(&m, &exact, NULL, 0, 16380);
-    printf("reader model: 2,097,152 Hz into 2,096,640 Hz, 7 passes: built %d, %d input phases, every-phase tables %d, "
-           "averaged plan %d (beta %.5f)\n",
-           built, m.inputs, m.exact_ready, rc_avg, averaged.beta);
-    CHECK(built == 0 && m.ready && !m.exact_ready && rc_avg == 0 && averaged.valid && rc_exact == -1 && !exact.valid,
-          "a model past the table limit did not keep the averaged plan alone");
+    const int rc_cov =
+        dsd_squelch_reader_model_floor_plan_route(&m, &by_cov, NULL, 0, 16380, DSD_SQUELCH_READER_ROUTE_COVARIANCE);
+    const int rc_resp =
+        dsd_squelch_reader_model_floor_plan_route(&m, &by_resp, NULL, 0, 16380, DSD_SQUELCH_READER_ROUTE_RESPONSES);
+    const double off = std::fmax(plan_distance(by_cov, by_resp), plan_distance(by_cov, averaged));
+    printf("reader model: 2,097,152 Hz into 2,096,640 Hz, 7 passes: built %d, %d input phases in batches of %d, "
+           "every-phase tables %d, averaged beta %.5f, every-phase beta %.5f, the routes and the average within %.2e\n",
+           built, m.inputs, m.batch, m.exact_ready, averaged.beta, by_cov.beta, off);
+    CHECK(built == 0 && m.ready && m.exact_ready && m.inputs == 524288 && m.batch < m.inputs && rc_avg == 0
+              && rc_cov == 0 && rc_resp == 0 && off <= 1e-6,
+          "a model with many input phases lost its every-phase plan, or its routes disagree (%.3e)", off);
     dsd_squelch_reader_model_release(&m);
+}
+
+/* A reader whose every-phase design the channel taps call for at thousands of input phases (issue #899): 864,058 Hz
+   read into 576 kHz (L/M 2729/4094), three passes to 72 kHz, and the 5 kHz analog channel filter (201 taps): Q =
+   32,752 input phases and P = 2729 output phases, and the taps' bound sends the plan to every phase. The plan is
+   valid, the one the covariance route designs (the responses route agrees within 1e-9), and from cold start under AUTO
+   not one idle sample opens while a carrier 25 dB over the noise opens the gate. */
+void
+test_large_reader_filtered(void) {
+    const ReaderChain c = {"864,058 Hz read into 576 kHz, 3 passes to 72 kHz, 5 kHz filter", 864058U, 576000U, 3, 5000};
+    const DemodBox box;
+    demod_state* s = box.s;
+    const int synced = configure(s, c, DSD_SQUELCH_MODE_AUTO);
+    dsd_demod_squelch_prime_reader_plan(s);
+    const dsd_squelch_floor_plan primed = s->squelch_floor.plan;
+    dsd_squelch_reader_model* m = &s->squelch_reader_model;
+    dsd_squelch_floor_plan by_cov;
+    const int rc_cov =
+        dsd_squelch_reader_model_floor_plan_route(m, &by_cov, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len,
+                                                  c.rate(), DSD_SQUELCH_READER_ROUTE_COVARIANCE);
+    CHECK(synced == 0 && m->ready && m->exact_ready && m->inputs == 32752 && m->period == 2729
+              && s->channel_lpf_plan_taps_len == 201 && primed.valid && rc_cov == 0
+              && plan_distance(primed, by_cov) <= 1e-12,
+          "%s: no valid every-phase plan (model %d, every-phase tables %d, Q %d, P %d, %d taps, plan valid %d)", c.name,
+          m->ready, m->exact_ready, m->inputs, m->period, s->channel_lpf_plan_taps_len, primed.valid);
+    if (m->exact_ready) {
+        dsd_squelch_floor_plan by_resp;
+        const int rc_resp = dsd_squelch_reader_model_floor_plan_route(m, &by_resp, s->channel_lpf_plan_taps,
+                                                                      s->channel_lpf_plan_taps_len, c.rate(),
+                                                                      DSD_SQUELCH_READER_ROUTE_RESPONSES);
+        CHECK(rc_resp == 0 && plan_distance(by_resp, by_cov) <= 1e-9, "%s: the routes disagree by %.3e", c.name,
+              plan_distance(by_resp, by_cov));
+        printf("reader model: %s: %d input phases, %d output phases, beta %.5f N_eff %.2f gain %.8f, the routes within "
+               "%.2e\n",
+               c.name, m->inputs, m->period, by_cov.beta, by_cov.neff, by_cov.noise_gain,
+               plan_distance(by_resp, by_cov));
+    }
+    Reader rd(c, 0);
+    const double var = 1e-3;
+    SourceNoise src{Rng{0x89A8ULL}, std::sqrt(var / 2.0), std::sqrt(std::pow(10.0, 2.5) * var), 1.0, 1.4};
+    long at = 0;
+    std::vector<uint8_t> flags;
+    run_source(s, rd, &src, c.source_hz, &at, 1.6, &flags, NULL);
+    const int rate = c.rate();
+    const size_t burst_from = (size_t)(1.05 * rate);
+    const size_t burst_to = (size_t)(1.4 * rate);
+    long idle_open = 0;
+    long burst_open = 0;
+    for (size_t k = 0; k < flags.size() && k < burst_to; k++) {
+        const int open = (flags[k] & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+        idle_open += k < (size_t)rate ? open : 0;
+        burst_open += k >= burst_from ? open : 0;
+    }
+    printf("DSP_SQUELCH_READER: %s, AUTO from cold start: %ld idle samples open, carrier %.1f %% open\n", c.name,
+           idle_open, 100.0 * (double)burst_open / (double)(burst_to - burst_from));
+    CHECK(flags.size() >= burst_to && idle_open == 0 && burst_open >= (long)((burst_to - burst_from) * 95U / 100U),
+          "%s: the idle channel opened (%ld samples), or the carrier did not open", c.name, idle_open);
 }
 
 /* The reader and the live step never run together (the IO layer refuses such an open): should both be on, the DSP
@@ -1040,7 +1125,8 @@ main(void) {
     test_noise_band_clipped_by_the_reader();
     test_reader_names_the_context();
     test_floor_plans_kept_by_key();
-    test_model_past_the_table_limit();
+    test_model_with_many_input_phases();
+    test_large_reader_filtered();
     test_reader_and_step_design_nothing();
     test_plan_designed_at_commit();
     if (g_failures != 0) {
