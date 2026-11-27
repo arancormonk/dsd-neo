@@ -63,6 +63,13 @@ ModalSheet {
         selectedId = "";
         listedIds = [];
         open();
+        // Visible, with its selection set: what stands for the recording shown
+        // (a playlist's Resume refused) is said as it opens, as History's
+        // detail sheet does; the shared refusal key keeps it from being said
+        // twice (#909 R58).
+        follow();
+        recordingPlayer.follow();
+        recordingPlayer.noteFailure();
     }
     /** "14:03:22 · 0:42": when the recording started, and its length. */
     function timeLine(recording) {

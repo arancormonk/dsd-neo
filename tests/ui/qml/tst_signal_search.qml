@@ -2052,6 +2052,26 @@ Item {
             return y >= 0 && y + item.height <= scroll.height + 0.5;
         }
 
+        // R58: a History playlist's Resume refused before the sheet opens on that file is read as the sheet opens,
+        // once (it takes the shared refusal key, so the bar does not read it again), and not again after it closes.
+        function test_sheet_reads_a_standing_refusal_on_open() {
+            var a = rec("a", 1700000100, 2000);
+            testContext.publishPlaybackReading({playbackGeneration: 7, playbackMode: 2, playbackState: 3, playbackToken: 4, playbackPath: a.path,
+                                                playbackSize: a.identitySize, playbackMtimeSec: a.mtimeSec, playbackMtimeNanos: 0,
+                                                playbackDurationMs: 2000, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            var player = findChild(recordingsSheet(), "detectionRecordingPlayer");
+            var said = player.announcements;
+            var sheet = openRecordings([a]);
+            tryCompare(findChild(sheet, "recordingNotice"), "text", "Can't play right now. Another app has the audio, such as a phone call.", 2000,
+                       "the standing refusal is said as the sheet opens");
+            compare(player.announcements, said + 1, "and read out once");
+            compare(Ui.Navigation.refusalSaid, Ui.Navigation.refusalKey(7, 1), "heard: the bar will not read it again");
+            sheet.visible = false;
+            wait(50);
+            compare(player.announcements, said + 1, "closing reads nothing more");
+            testContext.resetHostPlayback();
+        }
+
         // A row that kept recordings says how many under its details, and reads
         // it in its name; one that kept none says nothing. It follows the store.
         function test_row_recordings_count() {

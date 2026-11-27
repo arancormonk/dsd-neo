@@ -20222,7 +20222,10 @@ Qt Quick frontend (`src/ui/qt`):
       ends its delete confirmation (forgetting the file it named) and its save picker when its sheet hides or opens
       again (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the
       first call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the
-      block). The bar's height and a row of list come out of the list's share before the header gives room up, but
+      block). Each sheet reconciles the reading once it is visible with its selection set, as it opens
+      (`HistoryDetailSheet.open()`, `DetectionRecordingsSheet.openFor()`, R58), so a refusal standing on that file is
+      said then, once: the shared refusal key keeps the bar from reading it again.
+      The bar's height and a row of list come out of the list's share before the header gives room up, but
       the header keeps its top control row, or at least a 48 px control row, within what the bar leaves
       (`HistoryScreen.headerFloor`), scrolling for the rest. Squeezed below that row (360×240 at 2x text leaves it 56
       px), it scrolls the row's controls whole into view when its height changes and nothing in it has the focus
