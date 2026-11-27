@@ -206,8 +206,11 @@ start a player failure; the 3,000 ms rule from the acknowledgement; during a hel
 Pause and seek, the session buffering, a Pause taking it back unmade, and a headset tap in the phases suite pausing it;
 a held start failing as the player's at 10 s with the focus given back, one acknowledged at 9.9 s playing, a late
 acknowledgement ignored, a Pause before the expiry taking it back; a seek taking a pending start back and asking again,
-the old acknowledgement stale and the new one playing from the target), each move making only the candidates it tries (N
-calls or N parts played make N, Previous from the last call one; `candidatesMade`), a candidate that prepared and failed
+the old acknowledgement stale and the new one playing from the target; the next part's start posted only once the
+outgoing player's held silence comes, the watchdog ending a play whose silence never comes, five Next with the silence
+late starting only the last candidate once, a player never started asked for none, and Stop not waiting), each move
+making only the candidates it tries (N calls or N parts played make N, Previous from the last call one;
+`candidatesMade`), a candidate that prepared and failed
 before it played continuing its move (Previous from C with B failing: A plays; Next from A: C opens with no gap), a part
 opened after one that failed while it played reading 0 and unknown (Previous then going to the call before, and the gap
 naming the part that played), the skip notice on the call a part played on after the skips (A skipped, B plays, C opens:

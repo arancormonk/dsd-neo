@@ -134,6 +134,7 @@ private class Playing(val rig: ServiceRig) {
                 override fun seekTo(positionMs: Long) {
                     seeks += token to positionMs
                 }
+                override fun silence() = machine.onSilenced(token)
                 override val durationMs: Long get() = 10_000
                 override fun release(ended: () -> Unit) = ended()
             }

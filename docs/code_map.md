@@ -19966,8 +19966,15 @@ Qt Quick frontend (`src/ui/qt`):
       fails as the player's, as a start that throws: the play ends, the focus and the service go, the player is let go
       and counted, and a late acknowledgement changes nothing. A seek while a start is pending takes that start back on
       the looper before posting `seekTo()`, then, the wish to play unchanged, asks for a new start behind it (R45): the
-      old acknowledgement is stale, and the part plays from the seek's target. Anything a start, pause or seek throws on
-      the owner is `onFailed(token, REASON_PLAYER)`, and so is anything the prepared listener throws (its length read),
+      old acknowledgement is stale, and the part plays from the seek's target. The next part starts only once the
+      outgoing one is silent (R52): a move that lets go of a player that may sound (a start was posted to it) asks its
+      owner for its silence behind the move's pause (`Player.silence()`, answered by `onSilenced(token)` on the
+      looper); the next part opens and prepares meanwhile, and its start, asked for and watched as usual, is posted
+      only once every such player is silent, so a silence that never comes ends the play at 10 s as the player's. The
+      looper never waits on it; a player never started needs none, Stop and a replacement need no wait (they forget
+      the players outstanding), and a silence the play is not waiting for is ignored. Anything a start, pause or seek
+      throws on the owner is `onFailed(token, REASON_PLAYER)`, and so is anything the prepared listener throws (its
+      length read),
       in place of `onPrepared` (R47); a release that throws is logged and the thread still ends (main ran `start()` on
       the looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner in order; the
       posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit

@@ -233,6 +233,12 @@ class RecordingPlayer(
 
         fun seekTo(positionMs: Long)
 
+        /**
+         * Report silence (R52): once this player's own thread has run everything passed to it before (the move's
+         * [pause]), [onSilenced] is posted with its token; at once if its thread has ended, which released it.
+         */
+        fun silence()
+
         /** The length, once prepared: read when [onPrepared] has come for this player. */
         val durationMs: Long
 
@@ -653,6 +659,17 @@ class RecordingPlayer(
     private var startPending = 0L
     private var startSerial = 0L
 
+    /** A start was posted to the current player ([Player.start]): it may sound until its owner has paused it. */
+    private var startMade = false
+
+    /**
+     * The players a move let go while they may have been sounding, by token, whose silence ([onSilenced]) has not
+     * come yet (R52). A start asked for meanwhile waits ([startDeferred]) under its watchdog; the play's end and a
+     * replacement forget them, since nothing new starts.
+     */
+    private val silencing = HashSet<Long>()
+    private var startDeferred = false
+
     /** The current part has played (a start of it was acknowledged) since it opened (R46). */
     private var partPlayed = false
     private var positionMs = 0L
@@ -1012,6 +1029,7 @@ class RecordingPlayer(
         gapSinceMs = -1
         halt()
         dropOpening()
+        askSilence()
         if (player != null && prepared) {
             leave()
         }
@@ -1148,6 +1166,7 @@ class RecordingPlayer(
         positionMs = 0
         durationMs = 0
         partPlayed = false
+        startMade = false
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a thread let go to end too.
         val opened = token
@@ -1326,13 +1345,47 @@ class RecordingPlayer(
                 failItem(REASON_PLAYER)
             }
         }
+        if (silencing.isEmpty()) {
+            postStart(current, serial)
+        } else {
+            startDeferred = true // posted once every player let go is silent; the watchdog runs meanwhile (R52)
+        }
+    }
+
+    private fun postStart(current: Player, serial: Long) {
+        startDeferred = false
+        startMade = true
         current.start(serial)
     }
 
     /** The pending start is taken back (a pause, a seek, a move, the end): no acknowledgement of it counts. */
     private fun withdrawStart() {
         startPending = 0L
+        startDeferred = false
         cancel(Slot.START)
+    }
+
+    /**
+     * A player a move let go is silent (R52): its owner has run the move's pause. Once every such player of the play
+     * is, a start that waited for them is posted. One this play is not waiting for (an earlier play's) is ignored.
+     */
+    fun onSilenced(token: Long) {
+        if (!silencing.remove(token) || silencing.isNotEmpty()) {
+            return
+        }
+        val current = player
+        if (startDeferred && startPending != 0L && current != null && prepared) {
+            postStart(current, startPending)
+        }
+    }
+
+    /** The current player, let go by a move while it may sound, is asked for its silence (R52). */
+    private fun askSilence() {
+        val current = player ?: return
+        if (startMade) {
+            silencing += token
+            current.silence()
+        }
     }
 
     /**
@@ -1575,6 +1628,7 @@ class RecordingPlayer(
     private fun end(state: Int, error: String, reason: String) {
         positionMs = currentPositionMs()
         cancelAll()
+        silencing.clear() // nothing new starts after Stop or a replacement: no wait (R52)
         releasePlayer()
         dropOpening()
         left = null
@@ -1605,6 +1659,7 @@ class RecordingPlayer(
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
     private fun close() {
         cancelAll()
+        silencing.clear() // nothing new starts after Stop or a replacement: no wait (R52)
         releasePlayer()
         dropOpening()
         left = null

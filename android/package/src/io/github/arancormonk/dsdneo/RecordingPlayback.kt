@@ -688,6 +688,14 @@ object RecordingPlayback {
 
         override fun seekTo(positionMs: Long) = onOwner { it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST) }
 
+        override fun silence() {
+            // Behind the move's pause on the owner (and ahead of the release posted after it): silent once it runs.
+            val posted = owner.post { post { it.onSilenced(token) } }
+            if (!posted) {
+                post { it.onSilenced(token) } // its thread had ended: released, so silent
+            }
+        }
+
         override val durationMs: Long
             get() = duration
 

@@ -18,6 +18,7 @@ import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_NONE
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_PAUSED
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_PLAYING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.SESSION_STOPPED
+import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.STARTING
 import io.github.arancormonk.dsdneo.RecordingPlayer.Companion.STOPPED
 import io.github.arancormonk.dsdneo.RecordingPlayer.FocusChange
 import io.github.arancormonk.dsdneo.RecordingPlayer.FocusMode
@@ -42,6 +43,8 @@ private class FakePlayer(
     private val unmakeable: () -> Boolean = { false },
     /** What its own thread does with start request [Long] (the rig makes and acknowledges it, holds or fails it). */
     private val onStart: (FakePlayer, Long) -> Unit = { player, serial -> player.makeStart(serial) },
+    /** What its own thread does with a silence request: the rig reports it at once, or holds it (a delayed owner). */
+    private val onSilence: (FakePlayer) -> Unit = {},
     /** What its own thread does with the release: the rig ends the thread at once, or holds it in native code. */
     private val onRelease: (FakePlayer, () -> Unit) -> Unit = { _, ended -> ended() },
 ) : RecordingPlayer.Player {
@@ -134,6 +137,12 @@ private class FakePlayer(
         ops += "seek $positionMs"
         valid("seek", prepared)
         seeks += positionMs
+    }
+
+    override fun silence() {
+        check(!released) { "silence asked of a released player" }
+        ops += "silence"
+        onSilence(this)
     }
 
     override val durationMs: Long
@@ -321,6 +330,24 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     var failStarts = false
     val heldStarts = mutableListOf<Pair<FakePlayer, Long>>()
 
+    /**
+     * Silences: reported at once unless [holdSilences] (the owner delayed: they wait in [heldSilences] for
+     * [ackSilence]). A player whose silence is held still sounds ([audible]); a start made while another sounds fails.
+     */
+    var holdSilences = false
+    val heldSilences = mutableListOf<FakePlayer>()
+
+    fun audible(player: FakePlayer) = (player.started && !player.released && !player.errored) || player in heldSilences
+
+    /** The first player of the play now: the overlap check is within a play (Stop and a replacement do not wait). */
+    var playFirst = 0
+
+    /** The oldest held silence reaches the machine. */
+    fun ackSilence() {
+        val player = heldSilences.removeAt(0)
+        machine.onSilenced(player.token)
+    }
+
     /** Releases: their threads end at once unless [holdReleases] (held in native code, in [heldReleases]). */
     var holdReleases = false
     val heldReleases = mutableListOf<Pair<FakePlayer, () -> Unit>>()
@@ -341,11 +368,17 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
             FakePlayer(
                 token, length, damaged, log, threads, { createFails },
                 { player, serial ->
+                    check(players.drop(playFirst).none { it !== player && audible(it) }) {
+                        "a start made while another player of the play sounds"
+                    }
                     when {
                         failStarts -> machine.onFailed(player.token, RecordingPlayer.REASON_PLAYER)
                         holdStarts -> heldStarts += player to serial
                         player.makeStart(serial) -> machine.onStarted(player.token, serial)
                     }
+                },
+                onSilence = { player ->
+                    if (holdSilences) heldSilences += player else machine.onSilenced(player.token)
                 },
             ) { player, ended -> if (holdReleases) heldReleases += player to ended else ended() }.also { players += it }
         },
@@ -384,6 +417,7 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
             }
         }
         val generation = ++generation
+        playFirst = players.size
         machine.play(generation, mode, items, start)
         if (promote && mode == MODE_PLAYLIST) {
             machine.onPromoted(generation)
@@ -1288,6 +1322,94 @@ private fun anInterruptedOpeningReadsPausedOnTheSession() {
     check(rig.status.sessionState == SESSION_PAUSED) { "interrupted, it reads paused: ${rig.status.sessionState}" }
     rig.machine.onFocusChange(rig.focus.epoch, FocusChange.GAINED)
     check(rig.status.sessionState == SESSION_BUFFERING) { "the focus back: buffering again" }
+}
+
+/**
+ * The next part starts only once the outgoing one is silent (R52): a move lets go of a player that may sound and asks
+ * its owner for its silence; the next part opens and prepares meanwhile, and its start, asked for under its watchdog,
+ * is posted only once every such player is silent. A player that never sounded needs none; Stop and a replacement
+ * need no wait, and a silence from an earlier play is ignored.
+ */
+private fun theNextPartStartsOnceTheOutgoingOneIsSilent() {
+    val rig = Rig()
+    rig.queue(1, 1, 1, 1, 1, 1, 1)
+    rig.prepared()
+    val a = rig.current
+    check(rig.state == PLAYING) { "A plays" }
+    rig.holdSilences = true
+    rig.machine.next()
+    check(rig.heldSilences == listOf(a) && a.ops.takeLast(2) == listOf("pause", "silence")) {
+        "Next pauses A, then asks its owner for its silence: ${a.ops}"
+    }
+    rig.prepared()
+    val b = rig.current
+    check(b.startRequests.isEmpty() && rig.state == STARTING) { "B prepared: its start waits, the reading starting" }
+    rig.ackSilence()
+    check(b.startRequests.size == 1 && rig.state == PLAYING) { "A silent: B's start is posted, and B plays" }
+
+    // A silence that never comes: B's watchdog ends the play as the player's.
+    val stuck = Rig()
+    stuck.queue(1, 1)
+    stuck.prepared()
+    stuck.holdSilences = true
+    stuck.machine.next()
+    stuck.prepared()
+    stuck.elapse(RecordingPlayer.START_TIMEOUT_MS - 1)
+    check(stuck.state == STARTING && stuck.current.startRequests.isEmpty()) { "waiting, under the watchdog" }
+    stuck.elapse(1)
+    check(stuck.state == FAILED && stuck.service.ends.size == 1) {
+        "the watchdog ends the play at 10 s (${stuck.state}, ${stuck.service.ends})"
+    }
+
+    // Five Next with the silences late: only the last candidate starts, once.
+    val burst = Rig()
+    burst.queue(1, 1, 1, 1, 1, 1, 1)
+    burst.prepared()
+    burst.holdSilences = true
+    repeat(5) {
+        burst.machine.next()
+        burst.prepared()
+    }
+    check(burst.heldSilences.size == 1 && burst.status.call == 5) { "only A sounded: one silence asked for" }
+    check(burst.players.drop(1).none { it.startRequests.isNotEmpty() }) { "no start posted yet" }
+    burst.ackSilence()
+    val started = burst.players.drop(1).filter { it.startRequests.isNotEmpty() }
+    check(started == listOf(burst.current) && burst.current.startRequests.size == 1 && burst.state == PLAYING) {
+        "the last candidate starts, once"
+    }
+
+    // A player that never sounded (paused before it started) needs no silence: B starts at once.
+    val quiet = Rig()
+    quiet.queue(1, 1)
+    quiet.machine.pause()
+    quiet.prepared()
+    quiet.holdSilences = true
+    quiet.machine.resume()
+    quiet.machine.pause()
+    quiet.machine.next()
+    check(quiet.heldSilences.size == 1) { "a player that had a start posted is asked, even paused since" }
+    val never = Rig()
+    never.queue(1, 1)
+    never.holdSilences = true
+    never.machine.next()
+    never.prepared()
+    check(never.heldSilences.isEmpty() && never.current.startRequests.size == 1 && never.state == PLAYING) {
+        "the outgoing player never started: B starts at once"
+    }
+
+    // Stop needs no wait, and a silence from the play before is ignored.
+    val stop = Rig()
+    stop.queue(1, 1)
+    stop.prepared()
+    stop.holdSilences = true
+    stop.machine.next()
+    stop.machine.stop(stop.generation)
+    stop.holdSilences = false
+    stop.queue(1, 1)
+    stop.prepared()
+    check(stop.state == PLAYING) { "a new play after Stop starts at once" }
+    stop.ackSilence()
+    check(stop.state == PLAYING && stop.current.startRequests.size == 1) { "the old play's silence changes nothing" }
 }
 
 /**
@@ -3500,6 +3622,7 @@ fun main() {
     aPendingStartHasAWatchdog()
     aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
+    theNextPartStartsOnceTheOutgoingOneIsSilent()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()
     theQueueIsLetGoAtTheEnd()
