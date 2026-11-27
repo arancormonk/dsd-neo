@@ -329,7 +329,8 @@ DecoderHost::startRecordingPlayback(const QString& path) {
 
 namespace {
 
-/* @p text, a decimal integer and nothing else (no space, no junk), into @p out (strtoll with its end checked). */
+/* @p text, a decimal integer and nothing else (no space, no junk, no NUL inside), into @p out (strtoll with its end
+ * checked against the whole text, so a NUL that would end the parse early refuses it). */
 bool
 playback_whole_text(const QString& text, qint64* out) {
     const QByteArray bytes = text.toUtf8();
@@ -341,7 +342,7 @@ playback_whole_text(const QString& text, qint64* out) {
     errno = 0;
     char* end = nullptr;
     const long long parsed = std::strtoll(begin, &end, 10);
-    if (errno != 0 || end == begin || end == nullptr || *end != '\0') {
+    if (errno != 0 || end == begin || end == nullptr || end != begin + bytes.size()) {
         return false;
     }
     *out = static_cast<qint64>(parsed);

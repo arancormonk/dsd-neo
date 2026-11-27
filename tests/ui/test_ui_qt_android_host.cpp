@@ -2935,7 +2935,10 @@ check_playlist_arrays() {
         }
     }
     for (const char* field : {"call", "partOrdinal", "partCount", "mtimeNanos", "mtimeSec", "size"}) {
-        const QVariant malformed[] = {QVariant(1.5), QVariant(QStringLiteral("1x")), QVariant(QStringLiteral(" 1"))};
+        // M1: text with a NUL inside is refused too, never read as the number before the NUL.
+        const QString nul = QStringLiteral("1") + QChar(0) + QStringLiteral("x");
+        const QVariant malformed[] = {QVariant(1.5), QVariant(QStringLiteral("1x")), QVariant(QStringLiteral(" 1")),
+                                      QVariant(nul)};
         for (const QVariant& odd : malformed) {
             QVariantMap item = items.at(0).toMap();
             item.insert(QString::fromLatin1(field), odd);
