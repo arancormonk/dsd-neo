@@ -28180,7 +28180,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_recording_store
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_playlist.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp

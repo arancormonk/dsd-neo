@@ -21,6 +21,7 @@
 #include <QCoreApplication>
 #include <QDate>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -39,6 +40,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
@@ -75,7 +77,9 @@
 #endif
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
+#include "call_history_filter.h"
 #include "call_history_model.h"
+#include "call_history_playlist.h"
 #include "call_recording_provider.h"
 #include "decoder_host.h"
 #include "platform_path.h"
@@ -6061,6 +6065,96 @@ test_seen_away_root_is_not_admitted(void) {
     expect("seen away: read again, it is admitted again", admitted());
 }
 
+/* A host that plays: what History's playlist hands it is counted, the play running named by its generation. */
+class PlayingHost : public dsd_qt::DecoderHost {
+  public:
+    int plays = 0;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    bool
+    playbackSupported() const override {
+        return true;
+    }
+
+    int
+    playRecordings(const QVariantList& items, int mode, const QString& origin) override {
+        (void)items;
+        (void)mode;
+        (void)origin;
+        return ++plays;
+    }
+};
+
+/* The emulator's defect, R74 and M5: Play all looks at its storage live. With the root's folder replaced by a file and
+ * no scan since, Play all is refused ("none") and the play running is unchanged; the root back, the same press asks for
+ * its read again and is still refused, and once that read is done Play all is admitted. */
+void
+test_playlist_admission_checks_roots_live(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    Ring ring;
+    dsd_qt::CallHistoryModel model;
+    model.setRecordingProvider(&s.store);
+    QObject::connect(&s.store, &RecordingStore::recordingFragmentsChanged, &model,
+                     &dsd_qt::CallHistoryModel::recordingFragmentsChanged);
+    const time_t when = 1754703000;
+    ring.commit(31001, 501, when, when + 4);
+    model.refresh(ring.state);
+    record(folder, QStringLiteral("00000000000000CE-1"), QStringLiteral("a.wav"), when, ring.rings[0].push_seq);
+    s.pass();
+    dsd_qt::CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    PlayingHost host;
+    dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
+    const auto result = [&playlist]() { return playlist.start(0).value(QStringLiteral("result")).toString(); };
+    expect("live roots: on storage that is there, Play all plays",
+           result() == QLatin1String("accepted") && host.plays == 1);
+
+    // The root's folder replaced by a file, with no scan since.
+    expect("live roots: the folder moved away", QDir().rename(roots.external, away));
+    make_file(roots.external, 10); // a file where the folder was
+    expect("live roots: Play all is refused", result() == QLatin1String("none"));
+    expect("live roots: the play running is unchanged", host.plays == 1);
+
+    // Back: the press asks for its read again at once and is still refused; after that read, which no one else asked
+    // for, it is admitted.
+    s.pass(); // the pass the first look asked for marks the root away
+    expect("live roots: the folder back", QFile::remove(roots.external) && QDir().rename(away, roots.external));
+    const quint64 before = s.store.passCountForTest();
+    expect("live roots: back but not read again: still refused", result() == QLatin1String("none") && host.plays == 1);
+    QElapsedTimer waited;
+    waited.start();
+    while (s.store.passCountForTest() == before && waited.elapsed() < 5000) {
+        QThread::msleep(5);
+    }
+    expect("live roots: the press asked for the read again", s.store.passCountForTest() > before);
+    s.pass();
+    expect("live roots: read again, Play all plays", result() == QLatin1String("accepted") && host.plays == 2);
+    model.setRecordingProvider(nullptr);
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -6332,6 +6426,7 @@ main(int argc, char** argv) {
     test_checked_delete_refuses_another_file();
     test_checked_delete_refuses_another_path();
     test_seen_away_root_is_not_admitted();
+    test_playlist_admission_checks_roots_live();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

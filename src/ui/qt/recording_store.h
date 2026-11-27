@@ -665,6 +665,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* A root seen away (R74): found missing outside a pass, or back and not read again yet, from that first look
      * through the pass's read of it. */
     bool rootSeenAwayLocked(int root) const;
+    /* A playlist's admission's look at each root of @p roots as it is now: true when a pass was asked for (a root gone
+     * was noted seen away, or one back asks for its read again). Under the store's lock. */
+    bool admissionRootsCheckedLocked(const QSet<int>& roots) const;
     /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
     bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
@@ -706,7 +709,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void deferFolderReadLocked(const QString& path, Pass* pass);
     /* A session start found @p root missing: listed in full when it is back, deletes held, selections stale. Lock
      * held. */
-    void noteRootSeenAwayLocked(int root);
+    void noteRootSeenAwayLocked(int root) const;
     /* A recheck could not read @p id's name: kept, its journal line with it, and out of every index, count and usage
      * (Entry::unreadable). Under the store's lock. */
     void markEntryUnreadableLocked(const QString& id, Pass* pass);
@@ -826,7 +829,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* History reads that took m_mutex (readerLocksForTest()). */
     mutable std::atomic<int> m_readerLocks{0};
 #endif
-    std::condition_variable m_wake;
+    /* Mutable: a const read that records what it observed (the playlist read's live root look) wakes the worker. */
+    mutable std::condition_variable m_wake;
     std::condition_variable m_passed;
     std::condition_variable m_settled;
 
@@ -879,7 +883,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QHash<QString, DeleteAsk> m_deleteQueue;
     /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
      * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
-    QSet<int> m_rootsSeenAway;
+    /* Mutable, under m_mutex: a const read that records what it observed (the playlist read's live root look). */
+    mutable QSet<int> m_rootsSeenAway;
     /* The seen-away roots the pass under way took into refreshRoots() and has not finished reading yet (R74): their
      * recordings stay unavailable to every reader until that read is done, as while they wait in m_rootsSeenAway. */
     QSet<int> m_rootsRereading;
@@ -908,7 +913,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool m_stop = false;
     /* m_stop, readable without the lock between the folders and slices of a long read. */
     std::atomic<bool> m_stopping{false};
-    bool m_passRequested = false;
+    /* Mutable, under m_mutex: a const read that records what it observed asks for the pass that reads it again. */
+    mutable bool m_passRequested = false;
     bool m_inPass = false;
     /* A pass's end hook running (setPassEndHookForTest()): the pass is not counted done until it returns. */
     bool m_passEnding = false;

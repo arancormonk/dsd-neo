@@ -20428,17 +20428,21 @@ Qt Quick frontend (`src/ui/qt`):
     of `m_rootsSeenAway`), its recordings read as unavailable to every reader (`rootSeenAwayLocked()` in the entry map's
     `available`, R74), so Play all and Play from here admit none of them and answer `none` or `rowNone`, a sheet shows
     them as storage not available, and the unlink and compaction checks hold for the same window
-    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). A
-    recheck a transfer asked for that finds the file the index knows but cannot open it (no read access) marks it
-    unreadable, so the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`);
-    the mark is kept by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read
-    alone never bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read
-    (loaded false) offers no recording path for save and share once its read is done, and a refreshed History row shows
-    it as away with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues
-    after a session start between its slices marked the folder unread, a share can still take a path from the committed
-    view, and a History call's part buttons play by path (limits below). A journal is compacted only in a folder read
-    and on storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
-    `test_compaction_waits_for_a_rescan`).
+    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). Play all
+    and Play from here also look at each root they would admit from as it is now (`recordingsForFragmentLists()` through
+    `admissionRootsCheckedLocked()`: one `rootAvailableNow()` stat per root the request names, under the store's lock):
+    a root gone is noted seen away, so the press is refused with what plays left playing, and one back while seen away
+    or marked away asks for its read again at once, its recordings ineligible until that read is done
+    (`test_playlist_admission_checks_roots_live`). A recheck a transfer asked for that finds the file the index knows
+    but cannot open it (no read access) marks it unreadable, so the next export takes the others (`opensToRead()`,
+    `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through later reads of its
+    folder until an open succeeds, a metadata read alone never bringing it back (`opensAgainLocked()`,
+    `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no recording path for save and
+    share once its read is done, and a refreshed History row shows it as away with Play refused (`folderReadLocked()`,
+    `test_unread_folder_offers_no_paths`); while a read continues after a session start between its slices marked the
+    folder unread, a share can still take a path from the committed view, and a History call's part buttons play by path
+    (limits below). A journal is compacted only in a folder read and on storage not seen away since, checked again right
+    before the rewrite is committed (`compactableLocked()`, `test_compaction_waits_for_a_rescan`).
     A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
     with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
     that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told

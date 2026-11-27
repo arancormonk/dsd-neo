@@ -2500,7 +2500,7 @@ RecordingStore::deliver() {
 /* --- Sessions. --- */
 
 void
-RecordingStore::noteRootSeenAwayLocked(int root) {
+RecordingStore::noteRootSeenAwayLocked(int root) const {
     // The one way a root found missing (or back unread) outside a pass is recorded, by a delete request's probe, a
     // session start's or its owner lookup: back before the pass samples it, it is still listed in full, no delete runs
     // against it meanwhile, and every selection made before is stale at once, as for any read of storage again.
@@ -2875,19 +2875,63 @@ RecordingStore::recordingEntryNames(const QList<QStringList>& fragmentsPerRow) c
 
 QList<QVariantList>
 RecordingStore::recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const {
-    const ReaderLock lock(*this);
+    // A playlist's admission looks at its storage as it is now (R74's defect): a root found gone is noted seen away
+    // and one back asks for its read again, as a delete or a session start does, so this read records what it found
+    // (in the store's mutable bookkeeping, under the same lock).
+    bool wake = false;
     QList<QVariantList> rows;
-    rows.reserve(fragmentsPerRow.size());
-    for (const QStringList& fragments : fragmentsPerRow) {
-        QVariantList list;
-        for (const Entry* entry : fragmentEntriesLocked(fragments)) {
-            QVariantMap map = entryMap(*entry);
-            map.insert(QStringLiteral("deleteQueued"), m_deleteQueue.contains(entry->id));
-            list.append(map);
+    {
+        const ReaderLock lock(*this);
+        QList<QList<const Entry*>> found;
+        QSet<int> roots;
+        found.reserve(fragmentsPerRow.size());
+        for (const QStringList& fragments : fragmentsPerRow) {
+            found.append(fragmentEntriesLocked(fragments));
+            for (const Entry* entry : std::as_const(found.last())) {
+                roots.insert(m_folders.value(entry->folder).root);
+            }
         }
-        rows.append(list);
+        wake = admissionRootsCheckedLocked(roots);
+        rows.reserve(found.size());
+        for (const QList<const Entry*>& entries : std::as_const(found)) {
+            QVariantList list;
+            for (const Entry* entry : entries) {
+                QVariantMap map = entryMap(*entry);
+                map.insert(QStringLiteral("deleteQueued"), m_deleteQueue.contains(entry->id));
+                list.append(map);
+            }
+            rows.append(list);
+        }
+    }
+    if (wake) {
+        m_wake.notify_all();
     }
     return rows;
+}
+
+bool
+RecordingStore::admissionRootsCheckedLocked(const QSet<int>& roots) const {
+    // One look per root the request would admit from, under the store's lock. Gone: noted seen away (R74), so none of
+    // its recordings is admitted. Back while seen away or marked away: its read again is asked at once, its recordings
+    // ineligible until that read is done.
+    bool wake = false;
+    for (const int root : roots) {
+        if (root < 0 || root >= m_roots.size()) {
+            continue;
+        }
+        const bool known = m_rootAvailable.value(root);
+        const bool seen = rootSeenAwayLocked(root);
+        if (!rootAvailableNow(m_roots.at(root))) {
+            if (known && !seen) {
+                noteRootSeenAwayLocked(root);
+                wake = true;
+            }
+        } else if (seen || !known) {
+            m_passRequested = true;
+            wake = true;
+        }
+    }
+    return wake;
 }
 
 /* --- Signal search (issue #809). --- */
