@@ -662,6 +662,14 @@ class RecordingPlayer(
     private var gapSinceMs = -1L
     private var pausedSinceMs = -1L
     private var ended: Ended? = null
+
+    /**
+     * What an ended play's terminal reading names once its queue is let go (R43): the item it ended on and its call
+     * count. The queue itself (items, failed marks, call starts) goes at the end; nothing reads it after, as every
+     * command and task needs the play open.
+     */
+    private var endedItem: Item? = null
+    private var endedCalls = 0
     private var endNotified = true
     private var taskIds = 0
     private val pending = HashMap<Slot, Pending>()
@@ -1291,9 +1299,15 @@ class RecordingPlayer(
         skipsPending = 0
     }
 
+    /** The item the readings name: the current one, or the one an ended play ended on. */
+    private fun shownItem(): Item? = if (ended != null) endedItem else items.getOrNull(index)
+
+    /** The recordings a play holds, its queue's every entry, for the tests: none once it has ended. */
+    internal val queueHeld: Int get() = items.size + failed.size + callStarts.size - 1
+
     /** The notice lasts while its call is current: another call (or none) ends it. */
     private fun followSkipNotice() {
-        if (skipNoticeCall >= 0 && items.getOrNull(index)?.call != skipNoticeCall) {
+        if (skipNoticeCall >= 0 && shownItem()?.call != skipNoticeCall) {
             skipNoticeCall = -1
             skipNoticeCount = 0
         }
@@ -1513,6 +1527,11 @@ class RecordingPlayer(
         resumeSuspended = false
         dropFocus()
         ended = Ended(state, error, reason)
+        endedItem = items.getOrNull(index)
+        endedCalls = items.lastOrNull()?.let { it.call + 1 } ?: 0
+        items = emptyList()
+        failed = BooleanArray(0)
+        callStarts = IntArray(1)
         publish()
         if (mode == MODE_PLAYLIST && !endNotified) {
             endNotified = true
@@ -1549,6 +1568,8 @@ class RecordingPlayer(
         startRequest = true
         resumeSuspended = false
         ended = null
+        endedItem = null
+        endedCalls = 0
         dropFocus()
     }
 
@@ -1654,7 +1675,7 @@ class RecordingPlayer(
     }
 
     private fun snapshot(): Status {
-        val item = items.getOrNull(index)
+        val item = shownItem()
         return Status(
             generation = generation,
             state = state(),
@@ -1667,7 +1688,7 @@ class RecordingPlayer(
             item = item,
             playToken = token,
             call = item?.call ?: -1,
-            calls = items.lastOrNull()?.let { it.call + 1 } ?: 0,
+            calls = if (ended != null) endedCalls else items.lastOrNull()?.let { it.call + 1 } ?: 0,
             partOrdinal = item?.partOrdinal ?: 0,
             partCount = item?.partCount ?: 0,
             gap = gap && active,

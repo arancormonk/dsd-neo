@@ -197,14 +197,15 @@ the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part,
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
 pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
 then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
-good, B all failed, C good), all failed, a player-wide error, a start played only from its acknowledgement (held: not
-playing, the position still; a resume just before the deadline then a focus loss keeping the old stretch; Stop, Next or
-a sheet play before it leaving the start unmade and its late acknowledgement ignored; a failed start a player failure;
-the 3,000 ms rule from the acknowledgement), each move making only the candidates it tries (N calls or N parts played
-make N, Previous from the last call one; `candidatesMade`), a part opened after one that failed while it played reading
-0 and unknown (Previous then going to the call before, and the gap naming the part that played), the skip notice on the
-call a part played on after the skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the gap
-after the call the skip happened on), queued items with a negative size refused and only SINGLE opening
+good, B all failed, C good), all failed, a player-wide error, the queue let go at the end (finished, stopped, timed
+out, unplayable) with the terminal record unchanged after a later publish, a start played only from its acknowledgement
+(held: not playing, the position still; a resume just before the deadline then a focus loss keeping the old stretch;
+Stop, Next or a sheet play before it leaving the start unmade and its late acknowledgement ignored; a failed start a
+player failure; the 3,000 ms rule from the acknowledgement), each move making only the candidates it tries (N calls or N
+parts played make N, Previous from the last call one; `candidatesMade`), a part opened after one that failed while it
+played reading 0 and unknown (Previous then going to the call before, and the gap naming the part that played), the skip
+notice on the call a part played on after the skips (A skipped, B plays, C opens: none; a call's own parts adding up;
+never the gap after the call the skip happened on), queued items with a negative size refused and only SINGLE opening
 unchecked, by its mode, the refusal count moving on each refused focus request, the recheck list across Stop and
 replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
 and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump, a late task and deep sleep (the
@@ -222,17 +223,16 @@ refused hand-off ending the play), a stuck setup holding only its own thread, at
 it (the next item and a later sheet play set up at once, never failing; a hung prepare is not counted as stuck), at most
 two threads let go still running at once, counted until they end (a third open waits with no player made: it goes on
 when one ends, and times out and is skipped one at a time when both are stuck; a stalled prepare dropped by its timeout
-whose release is held stays counted, two of them make the next open wait until one release returns, and a thread
-dropped during its setup then released counts once; a setup done but not delivered counts until it lands; Stop drops
-the wait; five Next then five Previous fail nothing, with every setup in flight or with releases ending at once), a
-prepare timeout past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes
-after Stop or Next, Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a
-completion around a
-Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
-in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
-one is released; Previous on a recording deleted while it played skipping it), a resume from the paused gap or the focus
-back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the first
-pause: "timeout"),
+whose release is held stays counted, two of them make the next open wait until one release returns, and a thread dropped
+during its setup then released counts once; a setup done but not delivered counts until it lands; Stop drops the wait;
+five Next then five Previous fail nothing, with every setup in flight or with releases ending at once), a prepare
+timeout past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop
+or Next, Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion
+around a Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying
+paused in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the
+completed one is released; Previous on a recording deleted while it played skipping it), a resume from the paused gap or
+the focus back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the
+first pause: "timeout"),
 and `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build
 of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
@@ -269,12 +269,13 @@ result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row or
 identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
 identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
 (`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 21-field status record and malformed ones ignored (a
-reason not among its own field's codes included), the terminal record after a platform stop, the recheck paths on a
-serial change, on a foreground return and with the next play, a PARTS or PLAYLIST item without its identity (no size, a
-negative one, no mtime or one that is no number) refused with the play open left playing while a single item needs none,
-token commands (a stale token's dropped, and no position shown for any seek: only the player's record moves it), the
-replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right after its
-one check (`decoder_host_test_hooks.h`) stopping nothing, and no status reads while idle or on position-only ticks); and
+reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
+reading unchanged), the recheck paths on a serial change, on a foreground return and with the next play, a PARTS or
+PLAYLIST item without its identity (no size, a negative one, no mtime or one that is no number) refused with the play
+open left playing while a single item needs none, token commands (a stale token's dropped, and no position shown for any
+seek: only the player's record moves it), the replacement point, the legacy `playRecording()` missing-file reading, a
+sheet's own play whose file goes right after its one check (`decoder_host_test_hooks.h`) stopping nothing, and no status
+reads while idle or on position-only ticks); and
 `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
 the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a
 press acting only on the target it began on (the bar's ✕, Previous and Next held across a new playlist, Show in list

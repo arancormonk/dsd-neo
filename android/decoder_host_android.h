@@ -78,6 +78,14 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_scale.reportsKeyboard();
     }
 
+#ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Test seam (#909): how many items of a play the host still keeps for its readings. */
+    std::size_t
+    playbackItemsHeld() const {
+        return m_playback_items.size();
+    }
+#endif
+
     void setDarkAppearance(bool dark) override;
     void requestNotificationPermission() override;
 
@@ -554,6 +562,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool playbackTokenCurrent(qint64 token) const;
     /** @brief RecordingPlayback.takeRecheck() to recordingFilesMissing(). */
     void drainRecordingRecheck();
+    /** @brief The play is over (its terminal record, or a stop): it is polled no more, and its items are let go. */
+    void closePlayback();
     /** @brief Connect noteApplicationState() to the application's state, where there is a GUI application. */
     void followApplicationState();
     /** @brief Publish the running transfer's progress (#708). */
@@ -947,7 +957,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     bool m_reduced_motion = false;
     bool m_notification_permission_needed = false;
     // #708, #909: the open play's generation (0: nothing to poll, none or it ended), its mode and origin, and its
-    // items in the platform's order.
+    // items in the platform's order, let go once it ends: the reading published then keeps what its item named.
     int m_playback_generation = 0;
     int m_playback_mode = PlaybackSingle;
     QString m_playback_origin;

@@ -3069,6 +3069,7 @@ check_playlist_terminal_record() {
     check(r.statusReads == 0, "no status is read before the first play");
     r.nextGeneration = 40;
     (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    check(host.playbackItemsHeld() == 3, "an open play keeps its items for its readings");
     StatusFields stopped = ended_record(40, DecoderHost::PlaybackStopped, QStringLiteral("stopped"));
     stopped.item = 1;
     stopped.call = 0;
@@ -3079,11 +3080,17 @@ check_playlist_terminal_record() {
               && host.playbackEndedReason() == QStringLiteral("stopped")
               && host.playbackPath() == QStringLiteral("/r/a3.wav"),
           "a Stop from the notification ends the play, its last reading kept under its generation");
+    // #909 (R43): the terminal poll lets the items go; the reading published keeps what its item named.
+    check(host.playbackItemsHeld() == 0, "the ended play's items are let go");
+    check(host.playbackTitle() == QStringLiteral("TG 0") && host.playbackKey() == QStringLiteral("uid-a")
+              && host.playbackSize() == 1000 && host.playbackMtimeSec() == 1754714003 && host.playbackCallCount() == 2,
+          "and the published reading is unchanged");
     const int reads = r.statusReads;
     for (int poll = 0; poll < 3; ++poll) {
         host.refresh();
     }
-    check(r.statusReads == reads, "an ended play is read no more");
+    check(r.statusReads == reads && host.playbackPath() == QStringLiteral("/r/a3.wav"),
+          "an ended play is read no more, its reading kept");
     r.commands.clear();
     host.stopPlaybackGeneration(40);
     host.nextPlayback();
@@ -3107,11 +3114,13 @@ check_playlist_terminal_record() {
     (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
     r.commands.clear();
     host.stopPlaybackGeneration(41);
-    check(r.commands.isEmpty() && host.playbackGeneration() == 42, "a stop for another play leaves this one alone");
+    check(r.commands.isEmpty() && host.playbackGeneration() == 42 && host.playbackItemsHeld() == 3,
+          "a stop for another play leaves this one alone");
     host.stopPlaybackGeneration(42);
     check(r.commands == QStringList({QStringLiteral("stopGeneration 42")}) && host.playbackGeneration() == 0
-              && host.playbackState() == DecoderHost::PlaybackStopped && host.playbackPath().isEmpty(),
-          "the bar's stop names its play, and closes it");
+              && host.playbackState() == DecoderHost::PlaybackStopped && host.playbackPath().isEmpty()
+              && host.playbackItemsHeld() == 0,
+          "the bar's stop names its play, and closes it, its items let go");
     const int after = r.statusReads;
     host.refresh();
     check(r.statusReads == after, "and nothing is read once it is closed");

@@ -257,7 +257,7 @@ DecoderHostAndroid::stopPlaybackGeneration(int generation) {
         return;
     }
     platformStopPlaybackGeneration(generation);
-    m_playback_generation = 0;
+    closePlayback();
     dsd_qt::DecoderHost::stopPlayback();
 }
 
@@ -265,8 +265,15 @@ void
 DecoderHostAndroid::stopPlayback() {
     // Always asked: the player may still be preparing a play no poll has seen yet. Before the first play it is a no-op.
     platformStopPlayback();
-    m_playback_generation = 0;
+    closePlayback();
     dsd_qt::DecoderHost::stopPlayback();
+}
+
+void
+DecoderHostAndroid::closePlayback() {
+    m_playback_generation = 0;
+    // A long playlist's paths, titles and identities are let go with it; nothing reads them once it is polled no more.
+    std::vector<PlaybackItem>().swap(m_playback_items);
 }
 
 void
@@ -336,7 +343,7 @@ DecoderHostAndroid::applyPlaybackRecord(const PlaybackStatusRecord& record) {
     // Ended (a stop from the notification, the end, a failure): its last reading stays, and it is polled no more.
     // Zeroed before the publish, so a handler that starts the next play from inside the signal is safe.
     if (failed || record.state == PlaybackStopped) {
-        m_playback_generation = 0;
+        closePlayback();
     }
     publishPlayback(reading);
     // A single recording gone is told here; a part or a playlist item gone comes through the recheck list.

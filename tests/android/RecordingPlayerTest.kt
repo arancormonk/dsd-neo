@@ -1091,6 +1091,60 @@ private fun aStartPlaysFromItsAcknowledgement() {
     check(back.status.call == 0) { "1 s played after a 2.5 s wait: Previous goes to the call before (${back.status.call})" }
 }
 
+/**
+ * The queue is let go when the play ends (R43): finished, stopped, timed out or unplayable, the machine holds none of
+ * its recordings, and the terminal record (the item it ended on, its call count, the counters) stays as it was, also
+ * when a later setup result publishes again.
+ */
+private fun theQueueIsLetGoAtTheEnd() {
+    fun withoutSerial(record: String) = record.split('\t').filterIndexed { i, _ -> i != 17 }
+
+    // Finished, with a superseded setup landing after: its gone file is rechecked and published, the reading kept.
+    val done = Rig()
+    done.threads.stuck += 1
+    done.queue(1, 2)
+    done.machine.next()
+    done.prepared()
+    done.playOut()
+    check(done.machine.queueHeld > 0 && done.status.partOrdinal == 2) { "the play holds its queue while it plays" }
+    done.playOut()
+    check(done.status.endedReason == RecordingPlayer.ENDED_FINISHED && done.machine.queueHeld == 0) {
+        "finished: the queue is let go (${done.machine.queueHeld})"
+    }
+    val record = done.status.record(done.nowMs)
+    check(done.status.item?.path == path(1, 2) && done.status.calls == 2 && done.status.partCount == 2) {
+        "the terminal reading still names the part it ended on and the calls"
+    }
+    val serial = done.status.recheckSerial
+    done.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+    done.threads.setups.single().land()
+    check(done.status.recheckSerial == serial + 1) { "a later result publishes again" }
+    check(withoutSerial(done.status.record(done.nowMs)) == withoutSerial(record)) {
+        "with the terminal record unchanged: ${done.status.record(done.nowMs)}"
+    }
+
+    // Stopped, timed out and unplayable let it go too.
+    val stopped = Rig()
+    val g = stopped.queue(1, 1)
+    stopped.prepared()
+    stopped.machine.stop(g)
+    check(stopped.status.endedReason == RecordingPlayer.ENDED_STOPPED && stopped.machine.queueHeld == 0) { "stopped" }
+    check(stopped.status.itemIndex == 0 && stopped.status.calls == 2) { "naming its item and calls" }
+    val paused = Rig()
+    paused.queue(1, 1)
+    paused.prepared()
+    paused.machine.pause()
+    paused.elapse(RecordingPlayer.PAUSED_LIMIT_MS)
+    check(paused.status.endedReason == RecordingPlayer.ENDED_TIMEOUT && paused.machine.queueHeld == 0) { "timed out" }
+    val none = Rig()
+    none.fail(path(0, 1), RecordingPlayer.REASON_GONE)
+    none.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+    none.queue(1, 1)
+    none.turn()
+    check(none.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE && none.machine.queueHeld == 0) { "unplayable" }
+    check(none.status.skipped == 2 && none.status.itemIndex == 1) { "with its counters and the item it ended on" }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -3095,6 +3149,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()
     eachMoveMakesOnlyTheCandidatesItTries()
     aSkipOpensThePartWithItsOwnReadings()
