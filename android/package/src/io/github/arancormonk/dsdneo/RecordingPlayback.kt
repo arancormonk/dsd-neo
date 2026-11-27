@@ -616,17 +616,23 @@ object RecordingPlayback {
         @Volatile
         private var wantedStart = 0L
 
-        /** The owner's only: MediaPlayer.start() was made and no pause has undone it. */
-        private var started = false
-
-        /** The owner's only: its seeks, one platform seek in flight and the newest held (R59). */
+        /**
+         * The owner's only: its seeks (one platform seek in flight, the newest held, R59) and its silence (only once
+         * a pause has returned, or the release has, R62).
+         */
         private val state = PlayerOwnerState(
             object : PlayerOwnerState.Platform {
                 override fun seekTo(positionMs: Long) {
                     media?.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
                 }
+
+                override fun pause() {
+                    media?.pause()
+                }
             },
-        ) { serial -> post { machine -> machine.onSeekCompleted(token, serial) } }
+            { serial -> post { machine -> machine.onSeekCompleted(token, serial) } },
+            { post { it.onSilenced(token) } },
+        )
 
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
@@ -697,7 +703,7 @@ object RecordingPlayback {
                 // Checked right before the start: a pause, a release or a move since takes it back.
                 if (wantedStart == serial) {
                     it.start()
-                    started = true
+                    state.onStarted()
                     post { machine -> machine.onStarted(token, serial) }
                 }
             }
@@ -705,19 +711,15 @@ object RecordingPlayback {
 
         override fun pause() {
             wantedStart = 0L
-            onOwner {
-                if (started) {
-                    started = false
-                    it.pause()
-                }
-            }
+            onOwner { state.pause() }
         }
 
         override fun seekTo(positionMs: Long, serial: Long) = onOwner { state.seek(positionMs, serial) }
 
         override fun silence() {
-            // Behind the move's pause on the owner (and ahead of the release posted after it): silent once it runs.
-            val posted = owner.post { post { it.onSilenced(token) } }
+            // Behind the move's pause on the owner, ahead of the release posted after it: silent at once when that
+            // pause returned (or nothing had started), else once the release has returned (R62).
+            val posted = owner.post { state.silence() }
             if (!posted) {
                 post { it.onSilenced(token) } // its thread had ended: released, so silent
             }
@@ -729,13 +731,15 @@ object RecordingPlayback {
         override fun release(ended: () -> Unit) {
             wantedStart = 0L
             val posted = owner.post {
-                try {
+                val returned = try {
                     media?.release()
+                    true
                 } catch (e: Throwable) {
                     Log.w(TAG, "could not release a call recording's player", e)
+                    false
                 }
                 media = null
-                state.released()
+                state.released(returned)
                 // Only now: until release() returns, the native player may still post an event (one a pause just
                 // before it raised), and a Looper that has quit refuses it ("sending message to a Handler on a dead
                 // thread"). Release clears the native listener, so no new event is posted after it (a callback already

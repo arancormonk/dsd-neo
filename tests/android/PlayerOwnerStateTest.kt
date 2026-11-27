@@ -1,19 +1,29 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 package io.github.arancormonk.dsdneo
 
-/** A fake platform player: the seeks it was handed. */
+/** A fake platform player: the seeks and pauses it was handed, a pause that throws when [pauseThrows]. */
 private class FakePlatform : PlayerOwnerState.Platform {
     val seeks = mutableListOf<Long>()
+    var pauses = 0
+    var pauseThrows = false
 
     override fun seekTo(positionMs: Long) {
         seeks += positionMs
+    }
+
+    override fun pause() {
+        pauses++
+        if (pauseThrows) {
+            throw IllegalStateException("pause refused")
+        }
     }
 }
 
 private class Owner {
     val platform = FakePlatform()
     val landed = mutableListOf<Long>()
-    val state = PlayerOwnerState(platform) { landed += it }
+    var silences = 0
+    val state = PlayerOwnerState(platform, { landed += it }, { silences++ })
 }
 
 /** R59: two seeks before the first completes: the first completion lands the first, never the second. */
@@ -54,8 +64,10 @@ private fun aSeekThatThrowsHoldsNothing() {
             if (throwing) throw IllegalStateException("seek refused")
             seeks += positionMs
         }
+
+        override fun pause() = Unit
     }
-    val state = PlayerOwnerState(platform) {}
+    val state = PlayerOwnerState(platform, {}, {})
     try {
         state.seek(1_000, 1)
     } catch (_: IllegalStateException) {
@@ -66,9 +78,49 @@ private fun aSeekThatThrowsHoldsNothing() {
     check(platform.seeks == listOf(2_000L)) { "the next seek goes to the platform at once" }
 }
 
+/** R62: silence only once the audio has stopped: after a pause that returned, else after the release. */
+private fun silenceComesOnlyOnceTheAudioStopped() {
+    val never = Owner()
+    never.state.silence()
+    check(never.silences == 1) { "nothing started: silent at once" }
+
+    val paused = Owner()
+    paused.state.onStarted()
+    paused.state.pause()
+    check(!paused.state.started && paused.platform.pauses == 1) { "a pause that returned clears the start" }
+    paused.state.silence()
+    check(paused.silences == 1) { "silent at once after it" }
+
+    val refused = Owner()
+    refused.state.onStarted()
+    refused.platform.pauseThrows = true
+    try {
+        refused.state.pause()
+    } catch (_: IllegalStateException) {
+        // onOwner reports it under the outgoing token
+    }
+    check(refused.state.started) { "a pause that threw leaves the start standing" }
+    refused.state.silence()
+    check(refused.silences == 0) { "so no silence yet" }
+    refused.state.released(returned = true)
+    check(refused.silences == 1 && !refused.state.started) { "the release, once it returned, confirms it" }
+
+    val stuck = Owner()
+    stuck.state.onStarted()
+    stuck.state.silence()
+    stuck.state.released(returned = false)
+    check(stuck.silences == 0) { "a release that threw confirms nothing: the incoming start's watchdog bounds it" }
+
+    val unasked = Owner()
+    unasked.state.onStarted()
+    unasked.state.released(returned = true)
+    check(unasked.silences == 0) { "no silence asked for: none reported" }
+}
+
 fun main() {
     eachCompletionNamesTheSeekThatLanded()
     quickSeeksKeepOnlyTheNewest()
     aSeekThatThrowsHoldsNothing()
+    silenceComesOnlyOnceTheAudioStopped()
     println("PlayerOwnerStateTest: OK")
 }
