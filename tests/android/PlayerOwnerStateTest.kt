@@ -4,11 +4,15 @@ package io.github.arancormonk.dsdneo
 /** A fake platform player: the seeks and pauses it was handed, a pause that throws when [pauseThrows]. */
 private class FakePlatform : PlayerOwnerState.Platform {
     val seeks = mutableListOf<Long>()
+
+    /** What it was handed, in order: "seek <ms>", "pause", "start". */
+    val ops = mutableListOf<String>()
     var pauses = 0
     var pauseThrows = false
 
     override fun seekTo(positionMs: Long) {
         seeks += positionMs
+        ops += "seek $positionMs"
     }
 
     override fun pause() {
@@ -19,11 +23,29 @@ private class FakePlatform : PlayerOwnerState.Platform {
     }
 }
 
+/** The owner's delayed tasks, run when told. */
+private class FakeLater : PlayerOwnerState.Later {
+    val tasks = mutableListOf<Pair<Long, () -> Unit>>()
+
+    override fun post(delayMs: Long, task: () -> Unit): () -> Unit {
+        val entry = delayMs to task
+        tasks += entry
+        return { tasks.remove(entry) }
+    }
+
+    fun runAll() {
+        val due = tasks.toList()
+        tasks.clear()
+        due.forEach { it.second() }
+    }
+}
+
 private class Owner {
     val platform = FakePlatform()
+    val later = FakeLater()
     val landed = mutableListOf<Long>()
     var silences = 0
-    val state = PlayerOwnerState(platform, { landed += it }, { silences++ })
+    val state = PlayerOwnerState(platform, { landed += it }, { silences++ }, later)
 }
 
 /** R59: two seeks before the first completes: the first completion lands the first, never the second. */
@@ -67,7 +89,7 @@ private fun aSeekThatThrowsHoldsNothing() {
 
         override fun pause() = Unit
     }
-    val state = PlayerOwnerState(platform, {}, {})
+    val state = PlayerOwnerState(platform, {}, {}, FakeLater())
     try {
         state.seek(1_000, 1)
     } catch (_: IllegalStateException) {
@@ -117,7 +139,52 @@ private fun silenceComesOnlyOnceTheAudioStopped() {
     check(unasked.silences == 0) { "no silence asked for: none reported" }
 }
 
+/**
+ * M1: a seek in flight is bounded at 2 s. With no completion by then it is given up, never reported as landed, and the
+ * held seek goes to the platform and is matched to the next completion.
+ */
+private fun aSeekInFlightIsGivenUpAfterItsBound() {
+    val o = Owner()
+    o.state.seek(10_000, 1)
+    o.state.seek(30_000, 2)
+    check(o.later.tasks.size == 1 && o.later.tasks.single().first == PlayerOwnerState.SEEK_GIVE_UP_MS) {
+        "the seek in flight is bounded at 2 s"
+    }
+    o.later.runAll() // its completion never came
+    check(o.landed.isEmpty()) { "the given-up seek is not reported as landed" }
+    check(o.platform.seeks == listOf(10_000L, 30_000L)) { "the held seek goes to the platform" }
+    o.state.seekCompleted()
+    check(o.landed == listOf(2L)) { "the next completion is the held seek's" }
+    check(o.later.tasks.isEmpty()) { "its own bound is cancelled by its completion" }
+}
+
+/** M2: a start asked for while a seek is held waits until that seek has gone to the platform: seek, seek, start. */
+private fun aStartWaitsForAHeldSeek() {
+    val o = Owner()
+    o.state.seek(10_000, 1)
+    o.state.seek(30_000, 2)
+    o.state.start { o.platform.ops += "start" }
+    check(o.platform.ops == listOf("seek 10000")) { "the start waits behind the held seek: ${o.platform.ops}" }
+    o.state.seekCompleted()
+    check(o.platform.ops == listOf("seek 10000", "seek 30000", "start")) { "seek, seek, then start: ${o.platform.ops}" }
+
+    val none = Owner()
+    none.state.seek(10_000, 1)
+    none.state.start { none.platform.ops += "start" }
+    check(none.platform.ops == listOf("seek 10000", "start")) { "with no seek held, a start goes at once" }
+
+    val paused = Owner()
+    paused.state.seek(10_000, 1)
+    paused.state.seek(30_000, 2)
+    paused.state.start { paused.platform.ops += "start" }
+    paused.state.pause()
+    paused.state.seekCompleted()
+    check(paused.platform.ops == listOf("seek 10000", "seek 30000")) { "a pause drops the start that waited" }
+}
+
 fun main() {
+    aSeekInFlightIsGivenUpAfterItsBound()
+    aStartWaitsForAHeldSeek()
     eachCompletionNamesTheSeekThatLanded()
     quickSeeksKeepOnlyTheNewest()
     aSeekThatThrowsHoldsNothing()

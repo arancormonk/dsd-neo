@@ -20106,15 +20106,17 @@ Qt Quick frontend (`src/ui/qt`):
       seek is a landing only once the player confirms it: each carries a seek serial, the owner forwards
       `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` for the seek that landed (R59: the listener names no
       request, so the owner, `PlayerOwnerState`, keeps one platform seek in flight and holds the newest request, which
-      replaces an older held one and goes to the platform once the one in flight completes), and until the latest seek
-      lands the readings keep the confirmed position and its clock (so Previous's 3,000 ms rule reads it); a superseded
-      seek's completion counts for nothing. A plain seek (no start pending to ask again) publishes nothing until it
-      lands, so a system scrubber the user dragged never snaps back to the old position (M4). The sheet takes a position
-      near its target as the landing only from a record whose landing count moved since it asked, so a position read
-      before the seek reached the player never lands it; its preview, with the 2 s fallback, shows the target meanwhile.
-      The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the item index of the same
-      record, and publishes everything together; the position alone goes on `playbackPositionChanged`. Zero status reads
-      while idle; a foreground return refreshes at once, from Hidden, Suspended or Inactive (R51: an app visible but not
+      replaces an older held one and goes to the platform once the one in flight completes, or is given up at 2 s with
+      no completion, M1, never reported as landed; a start asked for while a seek is held waits until that seek has gone
+      to the platform, M2, so the platform sees seek, then start, R45), and until the latest seek lands the readings
+      keep the confirmed position and its clock (so Previous's 3,000 ms rule reads it); a superseded seek's completion
+      counts for nothing. A plain seek (no start pending to ask again) publishes nothing until it lands, so a system
+      scrubber the user dragged never snaps back to the old position (M4). The sheet takes a position near its target as
+      the landing only from a record whose landing count moved since it asked, so a position read before the seek
+      reached the player never lands it; its preview, with the 2 s fallback, shows the target meanwhile. The host
+      resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the item index of the same record,
+      and publishes everything together; the position alone goes on `playbackPositionChanged`. Zero status reads while
+      idle; a foreground return refreshes at once, from Hidden, Suspended or Inactive (R51: an app visible but not
       active, as in split screen, holds the bar's events, so the first active reading comes before the bar says
       anything).
     - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
@@ -20259,9 +20261,10 @@ Qt Quick frontend (`src/ui/qt`):
       in the background Qt does not update the bar or the rows (the notification does); after the end a media key no
       longer restarts it; interrupted, the lock screen shows Play, which changes nothing; a lock-screen or system seek
       applies to the part current when the looper runs it, so one sent in the instant a part changes lands on the new
-      part; a play whose start waited for an old player's silence (R52, a move or a replacement) and failed at its
-      10 s watchdog forgets that wait as it ends, so a later play does not wait for the stuck player again and may
-      start over it if it ever sounds, while its thread stays counted until it ends (R40).
+      part; a play whose start waited for an old player's silence (R52, a move or a replacement) and failed at its 10 s
+      watchdog forgets that wait as it ends, so a later play does not wait for the stuck player again and may start over
+      it if it ever sounds, while its thread stays counted until it ends (R40); a seek completion lost past its 2 s
+      bound (M1) that arrives late is matched to the seek in flight then, which can land that seek early.
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,

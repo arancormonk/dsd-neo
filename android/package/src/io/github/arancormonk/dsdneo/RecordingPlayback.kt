@@ -632,7 +632,14 @@ object RecordingPlayback {
             },
             { serial -> post { machine -> machine.onSeekCompleted(token, serial) } },
             { post { it.onSilenced(token) } },
-        )
+        ) { delayMs, task ->
+            // A seek's 2 s bound (M1), on the owner. What it then passes on (the held seek, a start that waited) may
+            // throw: the player's failure, never the app's.
+            val run = Runnable { guarded(task) }
+            owner.postDelayed(run, delayMs)
+            val cancel: () -> Unit = { owner.removeCallbacks(run) }
+            cancel
+        }
 
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
@@ -672,14 +679,7 @@ object RecordingPlayback {
             made.setOnCompletionListener { post { it.onCompleted(token) } }
             // On the owner: the seek in flight landed, and names its own request (R59). The held seek it then passes on
             // may throw, outside onOwner's guard: the player's failure, never the app's.
-            made.setOnSeekCompleteListener {
-                try {
-                    state.seekCompleted()
-                } catch (e: Throwable) {
-                    Log.w(TAG, "a call recording's player refused a seek", e)
-                    post { machine -> machine.onFailed(token, RecordingPlayer.REASON_PLAYER) }
-                }
-            }
+            made.setOnSeekCompleteListener { guarded { state.seekCompleted() } }
             made.setOnErrorListener { _, what, _ ->
                 val reason = if (what == MediaPlayer.MEDIA_ERROR_SERVER_DIED) {
                     RecordingPlayer.REASON_PLAYER
@@ -699,12 +699,15 @@ object RecordingPlayback {
 
         override fun start(serial: Long) {
             wantedStart = serial
-            onOwner {
-                // Checked right before the start: a pause, a release or a move since takes it back.
-                if (wantedStart == serial) {
-                    it.start()
-                    state.onStarted()
-                    post { machine -> machine.onStarted(token, serial) }
+            onOwner { made ->
+                // After a held seek has gone to the platform (M2); checked right before the start: a pause, a release
+                // or a move since takes it back.
+                state.start {
+                    if (wantedStart == serial) {
+                        made.start()
+                        state.onStarted()
+                        post { machine -> machine.onStarted(token, serial) }
+                    }
                 }
             }
         }
@@ -752,6 +755,16 @@ object RecordingPlayback {
             }
             if (!posted) {
                 post { ended() } // its thread had ended already
+            }
+        }
+
+        /** [task] on the owner: anything it throws is the player's failure, never a crashed thread. */
+        private fun guarded(task: () -> Unit) {
+            try {
+                task()
+            } catch (e: Throwable) {
+                Log.w(TAG, "a call recording's player refused a command", e)
+                post { it.onFailed(token, RecordingPlayer.REASON_PLAYER) }
             }
         }
 
