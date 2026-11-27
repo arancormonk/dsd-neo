@@ -1392,8 +1392,9 @@ the share of the span's bins over the 98th percentile the reference implies for 
 (`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reference the check keeps can still read high: about 0.3 dB in simulation when
 2.6 to 3 dB is raised over part of the span, but a broad, low raise moves few bins over the percentile, and with 70%
 of the span raised 1.5 dB (six transforms a sub-window, 2,000 bins) the check kept every reading and the reference
-read 0.95 dB high on average. Noise alone stays under 1.5%. A floor with a lower part inside the span trips it too:
-a speed cost, never a missed signal.
+read 0.95 dB high on average. Noise alone typically stays under 1.5% over the 2% in simulation, but not always: the
+RTL-SDR validation below voided 8 of its 3,408,000 noise-only trials, so a silent channel now and then keeps its
+normal timing. A floor with a lower part inside the span trips it too: a speed cost, never a missed signal.
 
 The check counts bins over a level it takes from the span itself, so it needs part of the span left on the noise.
 When a raise fills much of the span and reaches the channel's sidebands, while the channel itself stays clear, the

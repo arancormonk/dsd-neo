@@ -1420,8 +1420,9 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
    and the channel reads low by about the raise (a documented limit, docs/signal-search.md "Limits"). A reference it
    keeps can read high: about 0.3 dB in simulation for a floor raised 2.6 to 3 dB over part of the span, but 0.95 dB
    on average with 70% of the span raised only 1.5 dB (six transforms, 2,000 bins), which moves few bins over the
-   percentile. Noise alone never reaches it (its share stays under 1.5%). It only voids readings, so it never adds a
-   quiet verdict. */
+   percentile. Noise alone typically stays under 1.5% in simulation but can reach it: the RTL-SDR validation voided 8 of
+   its 3,408,000 noise-only trials (docs/signal-search.md), each a silent channel kept at its normal timing. It only
+   voids readings, so it never adds a quiet verdict. */
 #define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE      0.05f
 /* A native Airspy's centred capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) is judged at its own threshold. Its
    calibration rendered the Airspy's passband in hardware coordinates, and a floor 2 dB lower over the three channel
