@@ -133,7 +133,8 @@ private class FakePlayer(
             valid("pause", true)
             started = false
         }
-        // In the Error state the platform's pause throws on its owner, which reports it under a token gone by then.
+        // In the Error state the platform's pause does not throw: it returns and reports error -38, which changes
+        // nothing here.
     }
 
     override fun seekTo(positionMs: Long, serial: Long) {

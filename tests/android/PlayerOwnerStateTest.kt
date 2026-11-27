@@ -131,7 +131,7 @@ private fun silenceComesOnlyOnceTheAudioStopped() {
     stuck.state.onStarted()
     stuck.state.silence()
     stuck.state.released(returned = false)
-    check(stuck.silences == 0) { "a release that threw confirms nothing: the incoming start's watchdog bounds it" }
+    check(stuck.silences == 0) { "a release that threw confirms nothing here: its ended thread counts as silent" }
 
     val unasked = Owner()
     unasked.state.onStarted()
@@ -156,6 +156,16 @@ private fun aSeekInFlightIsGivenUpAfterItsBound() {
     o.state.seekCompleted()
     check(o.landed == listOf(2L)) { "the next completion is the held seek's" }
     check(o.later.tasks.isEmpty()) { "its own bound is cancelled by its completion" }
+
+    // m1: a slow single seek, given up at 2 s with no later seek issued, still lands when it completes at 3 s.
+    val slow = Owner()
+    slow.state.seek(10_000, 7)
+    slow.later.runAll() // 2 s: given up
+    check(slow.landed.isEmpty()) { "not reported as landed at its bound" }
+    slow.state.seekCompleted() // 3 s: its completion comes late
+    check(slow.landed == listOf(7L)) { "nothing else in flight: its late completion lands it" }
+    slow.state.seekCompleted()
+    check(slow.landed == listOf(7L)) { "once" }
 }
 
 /** M2: a start asked for while a seek is held waits until that seek has gone to the platform: seek, seek, start. */
