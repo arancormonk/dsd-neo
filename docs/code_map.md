@@ -3120,7 +3120,16 @@ suite runs under this compiler.
   else `opts->rdio_analog_talkgroup`), worked out at export time only and never stored in `Event_History::target_id`;
   tag the channel label, else `<sysid_string> <MHz to 4 decimals> MHz` (below 1 MHz too: `AM 0.5300 MHz`), else the
   mode word, never the service name; no source; never encrypted. The sidecar's `system`, and the API upload's, is
-  `dsd_rdio_call_system_id()`: `opts->rdio_analog_system_id` for an analog row when set, else `rdio_system_id`.
+  `dsd_rdio_resolve_call_system()`'s (`src/runtime/rdio_export_internal.h`; the public `dsd_rdio_call_system_id()` is
+  its id), an id and the rule that chose it, decided once per export in `dsd_rdio_export_call_fallback()` and handed to
+  the sidecar fields and the API job alike: `opts->rdio_analog_system_id` for an analog row (`DSD_SYNC_ANALOG`: NFM,
+  AM, audio input) when set (ANALOG); else, with `opts->rdio_system_by_frequency` (issue #931), the row's `freq_hz` in
+  whole kHz, rounded down, by the digital kHz rule (`dsd_rdio_digital_khz()`, 1..2147483647, so it fits the `int`
+  system; 999 Hz names none, 530 kHz is 530) (FREQUENCY); else `rdio_system_id` (BASE). EDACS analog and ProVoice rows
+  are not `DSD_SYNC_ANALOG` and take the FREQUENCY/BASE branch. A FREQUENCY call's `short_name` is `System <kHz>`,
+  formatted into the fields' own `system_name` buffer; BASE and ANALOG keep the rule above. The label follows the rule,
+  never a comparison of numbers, and the row's `sysid_string` (WAV name, journal, event feed, analog tag) is not
+  touched.
   Its `start_time` is the closing segment's `event_start_time`, or the WAV's open stamp when that is later
   (per-call WAV switched on mid-call). Every per-call WAV open sets `opts->wav_out_open_time`/`wav_out_open_timeR`
   from the decode clock, and the close passes the stamp to `dsd_rdio_export_call()`. A per-call WAV's temp name
@@ -5644,15 +5653,29 @@ suite runs under this compiler.
       `ENGINE_CLEANUP_AUDIO`, `APP_COMMAND_QUEUE`, `CORE_STATE_EXT`.
   - CLI parsing and interactive/bootstrap helpers (`include/dsd-neo/runtime/cli.h`); the control API options and
     their `DSD_NEO_API_*` fallbacks are resolved at parse time, token file included, so a bad value is an argument
-    error. A token can read like an option (`--print-config`), and so can the name of a CSV file to read
-    (`--dmr-chan-overrides`, `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`), so every pass over the raw argv --
-    bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction -- steps over the value of an
-    option `dsd_cli_option_takes_free_value()` names; a new raw pass must do the same. `--profile`'s name is any text
-    too: bootstrap reads it as the next argument, compaction steps over it, and so do `dsd_parse_args()`'s long-option
-    pre-scan and the one-shot check (`cli_option_value_read_by_bootstrap()`), so a profile named `--` ends no options
-    and one named `--print-config` is no one-shot. The Android receiver's
-    `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user typed
-    walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
+    error. No credential is printed (issue #931): the `--rdio-api-url` notice says only that a URL is configured (a URL
+    can carry `user:password@`), and `--print-config` renders its snapshot without `rdio_api_key`, `rdio_api_url` and
+    the RadioReference `app_key` (`bootstrap_print_config_drop_secrets()`), with or without `--show-keys`, which is for
+    radio keys only; a save to the private config file keeps them. A `--name=value` token the parser refuses
+    (`--rdio-api-key=...` is no form it takes) is named without its value (`cli_report_short_opt_error()`, the Airspy
+    option error). A token, a key or a file name can read like an option (`--print-config`, `--config`, `--`), so every
+    pass over the raw argv -- bootstrap's pre-parse and inherited-trunk-scan checks, the one-shot check, compaction --
+    steps over every long option's value by the parser's arity (`dsd_cli_long_option_span()`, issue #931) and stops at
+    the first `--` that is no value; a new raw pass must do the same. What follows that `--` is operands, positional
+    inputs that turn an inherited `[trunk_scan]` off whatever they read like (`-- --iq-replay`;
+    `bootstrap_compacted_arg_disables_inherited_trunk_scan()`). The tables give each option the arity the parser reads
+    it with: only `--config` and `--validate-config` take their value only when it does not start with `-`; every other
+    valued option takes the next argument whatever it is (the eight that validate a port, an address or a TETRA value
+    included, so `--api -T --api 0` turns no trunking on). Bootstrap reads its own options in place, `--config`'s
+    optional path, `--validate-config`'s and `--profile`'s name with them, and leaves `-s` to getopt itself: the parse
+    sets `opts->input_rate_cli_seen` where it reads `-s`, so `-o -s` sets no rate and a `-s` after an operand counts
+    only where that getopt reads past operands (glibc's does, unless `POSIXLY_CORRECT`; MSVC's does not). So
+    `--rdio-api-key --print-config` is a key, a profile named `--` ends no options, and `--no-config -- --print-config`
+    runs no one-shot.
+    `dsd_cli_option_takes_free_value()` names the options whose value is any text whatever it starts with
+    (`--api-token`, `--dmr-chan-overrides`, ...), which compaction steps over even when it starts with `-`. The Android
+    receiver's `UsbReceiverKind.kt` mirrors the lists (`ANDROID_USB_RECEIVER_JVM`). A frontend reading options a user
+    typed walks them by the parser's own arity: `dsd_cli_long_option_arity()` (the tables compaction steps by) and
     `dsd_cli_short_option_takes_value()` (the getopt string `dsd_cli_short_options()` the parser reads), in the
     parser's order: the long options out of the whole argv first, up to the first `--` that is no long option's value
     (compaction keeps that `--` and everything after it), then getopt over what is left, where a `--` that is a short
@@ -5660,9 +5683,11 @@ suite runs under this compiler.
     creates folders (`-Q`, `-d`), imports CSVs and key files, reads token files, prints usage and leaves getopt's
     globals behind. A pre-scan long option that takes the next argument, given last without it, is refused (exit code
     1), never dropped: the options that used to drop it say `<option> requires a value` (issue #756,
-    `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`, the
-    numeric rdio options, `-z`, `-V`, `-s`) clamp while it is still the parsed `long` and only then narrow
-    (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead of wrapping.
+    `cli_has_value()`), and the newer ones their own message. The options that clamp a number (`--input-volume`,
+    `--rdio-upload-timeout-ms`, `--rdio-upload-retries`, `-z`, `-V`, `-s`) clamp while it is still the parsed `long`
+    and only then narrow (`cli_clamp_long_to_int()`), so a value past `int`'s range clamps to the nearer bound instead
+    of wrapping. The rdio-scanner system IDs (`--rdio-system-id`, `--rdio-analog-system-id`) are refused outside
+    0..2147483647 instead, each occurrence as it is read (`cli_parse_rdio_system_id_option()`, issue #931).
     A path option whose value does not fit its buffer is refused before it is used (`cli_path_fits()`: "<option> path is
     too long", exit code 1), never cut short to another file's name: `--trunk-scan`, `-C`, `-G`, `-k`/`-K`, `-w`, `-6`,
     `-c`, `-J`, `-L`, `-Q`'s file name, `--frame-log`, `--wav-journal` and `--p25-sm-log`, and `-i`/`-o`, which also
@@ -6362,9 +6387,18 @@ suite runs under this compiler.
   - rdio-scanner export (`src/runtime/rdio_export.c`, `include/dsd-neo/runtime/rdio_export.h`): DirWatch sidecars and,
     with `USE_CURL`, API uploads on one background worker fed by a bounded queue (`DSD_RDIO_UPLOAD_QUEUE_MAX`).
     The WAV close calls it only for a row whose `stream` verdict allows it (Core, "rdio-scanner export verdict").
-    Conventional analog (NFM) rows are exported under `dsd_rdio_analog_talkgroup()` and `dsd_rdio_call_system_id()`
-    (issue #668; Core, sidecar fields); the call's system is resolved before the API settings are validated and
-    copied into the job, so an analog system with a base system of 0 still uploads. A digital row with no talkgroup
+    Analog rows (`DSD_SYNC_ANALOG`: NFM, AM, audio input) are exported under `dsd_rdio_analog_talkgroup()`, and every
+    row under `dsd_rdio_resolve_call_system()` (issue #668, #931 `--rdio-system-by-frequency`; Core, sidecar fields);
+    the call's system is resolved once, before the sidecar is written and before the API settings are validated and
+    copied into the job, so the sidecar and the upload name one system, and an analog or per-frequency system with a
+    base system of 0 still uploads. A call whose system is still 0 or less (issue #931 B4) is skipped, not failed:
+    `dsd_rdio_validate_api_config()` checks the API key first (missing, it is a failure on every call), then answers
+    `DSD_RDIO_UPLOAD_NO_SYSTEM`, before any worker start, job or private input; the sidecar is published as on every
+    API export (its own failure still fails the export), nothing is queued, the export returns 0 (no `Rdio export
+    failed` at the WAV close, journal `rdio` false), and one LOG_WARN says so the first time in a run. That latch, the
+    private-input removal one and the "delete-after-upload ignored beside DirWatch" one are reset per decoder run by
+    `dsd_rdio_session_reset()`, which `dsd_engine_run_common_setup()` calls beside `dsd_wav_recording_session_reset()`,
+    so the CLI and each Android session start over. A digital row with no talkgroup
     is exported only through `dsd_rdio_export_call_fallback()` with `allow_fallback` set, under
     `dsd_rdio_call_talkgroup()`'s number (its frequency in kHz when 1..2147483647, else
     `opts->rdio_unknown_talkgroup`), labelled by `dsd_rdio_fallback_tag()` (issue #888 D2, D3; Core, sidecar fields
@@ -6429,7 +6463,7 @@ suite runs under this compiler.
     `rdio` stays false. A run only ever removes its own private inputs, at
     each job's end: there is no cleanup of other runs' files. A run that ends without that release (killed) leaves
     them, and so does a removal that fails (Windows: a DirWatch holding the public WAV open without delete sharing
-    also blocks the delete of its hard link), which is not retried and is logged once a process
+    also blocks the delete of its hard link), which is not retried and is logged once a run
     (`dsd_rdio_remove_private_input()`); `docs/cli.md` says how to delete such files by hand. A copy that cannot be made
     fails the export (no job, journal `rdio` false), as a full queue does; the public pair is still published. A
     failed join of the worker at shutdown (not expected) detaches the queued jobs under the queue's mutex, which the
@@ -17607,9 +17641,13 @@ single "current call".
   encryption) is observed at once (`calls_sync_published()`), on a carrier no block proved yet too, since the call was
   published before and the PDU passed its CRC; only publication itself waits for the proof. A reallocation of the
   followed call to another carrier moves its canonical call there when its tune completes
-  (`tetra_calls_followed_moved()`), and not while it is in flight; a grant of another call that took the receiver from
-  the followed one ends the call left as a teardown when its tune completes, and the new call publishes once it proves
-  itself on its carrier. What changes a carried call's crypto class without
+  (`tetra_calls_followed_moved()`), and not while it is in flight, so a followed call that moves carriers
+  mid-recording is filed under the carrier it moved to. Not trunking, nothing follows an allocation: a reallocation of
+  the heard call to another carrier moves its channel, while the call slot 0 carries keeps the frequency it was first
+  published with, the decoded carrier it was heard on (`calls_heard_freq()`; the tuner is not read, as it can sit a few
+  kHz off the carrier or have no frequency), so its row, recording and exports name that carrier. A grant of another
+  call that took the receiver from the followed one ends the call left as a teardown when its tune completes, and the
+  new call publishes once it proves itself on its carrier. What changes a carried call's crypto class without
   any PDU of it (a cipher key loaded, the network's KSG learnt, or the timeslot's signalling encryption that classifies
   anonymous speech) reaches it with its next speech (`calls_reclassify()`). Speech marks the media
   (`dsd_call_state_update_media()`). D-TX CEASED and releases end the call

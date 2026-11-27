@@ -1835,7 +1835,7 @@ test_account_state_for_each_failure(void) {
     {
         Harness h;
         /* RadioReference answers a lapsed subscription with a past date, not a fault. */
-        h.fake.replaceFrom = QByteArrayLiteral("12-31-2099");
+        h.fake.replaceFrom = QByteArrayLiteral("11-24-2999");
         h.fake.replaceTo = QByteArrayLiteral("01-01-2000");
         SinkLog log;
         install_sink(h, &log);

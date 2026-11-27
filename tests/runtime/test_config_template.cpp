@@ -232,8 +232,10 @@ test_template_contains_keys(void) {
         DSD_FPRINTF(stderr, "FAIL: template missing analog_preroll_ms range hint, default or off value\n");
         rc = 1;
     }
-    /* [recording] (issue #668): the NFM rdio-scanner keys, their ranges and their 0 defaults. */
-    if (strstr(content, "# Range: 0 to 65535\n# rdio_analog_system_id = 0\n") == nullptr
+    /* [recording] (issues #668, #931): the rdio-scanner system IDs and the NFM talkgroup, their ranges and their 0
+     * defaults. */
+    if (strstr(content, "# Range: 0 to 2147483647\n# rdio_system_id = 0\n") == nullptr
+        || strstr(content, "# Range: 0 to 2147483647\n# rdio_analog_system_id = 0\n") == nullptr
         || strstr(content, "# Range: 0 to 2147483647\n# rdio_analog_talkgroup = 0\n") == nullptr) {
         DSD_FPRINTF(stderr, "FAIL: template missing the rdio_analog_* range hints or defaults\n");
         rc = 1;
@@ -242,6 +244,12 @@ test_template_contains_keys(void) {
     if (strstr(content, "# Range: 0 to 2147483647\n# rdio_unknown_talkgroup = 0\n") == nullptr
         || strstr(content, "digital calls with no talkgroup and no known frequency") == nullptr) {
         DSD_FPRINTF(stderr, "FAIL: template missing the rdio_unknown_talkgroup range hint, default or description\n");
+        rc = 1;
+    }
+    /* [recording] (issue #931): the per-frequency system switch, a bool that is off by default. */
+    if (strstr(content, "# Values: true, false\n# rdio_system_by_frequency = false\n") == nullptr
+        || strstr(content, "under the system numbered by that frequency in kHz") == nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: template missing rdio_system_by_frequency, its values or its description\n");
         rc = 1;
     }
     /* [analog] (issue #525): the NFM width's range and the width its default resolves to. Uncommenting the line is not

@@ -44,7 +44,7 @@ static const char k_valid_body[] =
     "<?xml version=\"1.0\" encoding=\"utf-8\"?>"
     "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
     "<SOAP-ENV:Body><ns1:getUserDataResponse xmlns:ns1=\"http://api.radioreference.com/soap2\">"
-    "<return><username>user</username><subExpireDate>12-31-2099</subExpireDate></return>"
+    "<return><username>user</username><subExpireDate>11-24-2026</subExpireDate></return>"
     "</ns1:getUserDataResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
 
 static void

@@ -3500,6 +3500,37 @@ test_bootstrap_inherited_trunk_scan_disables_for_positional_input(void) {
     return test_rc;
 }
 
+static int print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size);
+
+/* Issue #931 (gate r2): what follows an unconsumed "--" is an operand, a positional input, whatever it reads like: it
+   turns the config's [trunk_scan] off ("-- --iq-replay" as "-- input.amb"). Without one the scan stays on. */
+static int
+test_bootstrap_inherited_trunk_scan_disables_after_terminator(void) {
+    static const char ini[] = "[trunk_scan]\nenabled = true\ntargets_csv = \"targets.csv\"\n";
+
+    static const struct {
+        const char* args[5];
+        int nargs;
+        const char* want;
+    } cases[] = {
+        {{"--config", "{ini}", "--print-config"}, 3, "[trunk_scan]\nenabled = true\n"},
+        {{"--config", "{ini}", "--print-config", "--", "--iq-replay"}, 5, "[trunk_scan]\nenabled = false\n"},
+        {{"--config", "{ini}", "--print-config", "--", "input.amb"}, 5, "[trunk_scan]\nenabled = false\n"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static char printed[65536];
+        if (print_config_with_ini(ini, cases[i].args, cases[i].nargs, printed, sizeof printed) != 0
+            || strstr(printed, cases[i].want) == NULL) {
+            const char* at = strstr(printed, "[trunk_scan]");
+            DSD_FPRINTF(stderr, "case %zu: want %s, got %.60s\n", i, cases[i].want, at ? at : "(no [trunk_scan])");
+            rc = 1;
+        }
+    }
+    return rc;
+}
+
 static int
 test_bootstrap_inherited_trunk_scan_disables_for_long_only_runtime_mode(void) {
     dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
@@ -8376,9 +8407,9 @@ test_analog_record_preroll_option(void) {
     return test_rc;
 }
 
-/* Issue #668: --rdio-analog-system-id (0..65535) and --rdio-analog-talkgroup (0..2147483647) take a whole number in
- * range, 0 included to reset; anything else, past the range or past int's, is refused, never clamped. Left out, both
- * are 0. */
+/* Issue #668: --rdio-analog-system-id and --rdio-analog-talkgroup (0..2147483647, the system ID since issue #931) take
+ * a whole number in range, 0 included to reset; anything else, past the range or past int's, is refused, never
+ * clamped. Left out, both are 0. */
 static int
 test_rdio_analog_options(void) {
     static const struct {
@@ -8393,13 +8424,15 @@ test_rdio_analog_options(void) {
         {"--rdio-analog-system-id", "9", DSD_PARSE_CONTINUE, 9, 0, NULL},
         {"--rdio-analog-system-id", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
         {"--rdio-analog-system-id", "65535", DSD_PARSE_CONTINUE, 65535, 0, NULL},
+        {"--rdio-analog-system-id", "65536", DSD_PARSE_CONTINUE, 65536, 0, NULL},
+        {"--rdio-analog-system-id", "2147483647", DSD_PARSE_CONTINUE, 2147483647, 0, NULL},
         {
             "--rdio-analog-system-id",
-            "65536",
+            "2147483648",
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"65536\" (expected 0..65535)",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8407,7 +8440,7 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"-1\" (expected 0..65535)",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
         {
             "--rdio-analog-system-id",
@@ -8415,9 +8448,10 @@ test_rdio_analog_options(void) {
             DSD_PARSE_ERROR,
             0,
             0,
-            "Invalid --rdio-analog-system-id value \"4294967305\"",
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
         },
-        {"--rdio-analog-system-id", "9x", DSD_PARSE_ERROR, 0, 0, "Invalid --rdio-analog-system-id value \"9x\""},
+        {"--rdio-analog-system-id", "9x", DSD_PARSE_ERROR, 0, 0,
+         "Invalid --rdio-analog-system-id value (expected 0..2147483647)"},
         {"--rdio-analog-talkgroup", "4242", DSD_PARSE_CONTINUE, 0, 4242, NULL},
         {"--rdio-analog-talkgroup", "0", DSD_PARSE_CONTINUE, 0, 0, NULL},
         {"--rdio-analog-talkgroup", "2147483647", DSD_PARSE_CONTINUE, 0, 2147483647, NULL},
@@ -8555,6 +8589,14 @@ test_help_describes_recording_options(void) {
         DSD_FPRINTF(stderr, "-h recording text is wrong:\n%s\n", text);
         return 1;
     }
+    /* Issue #931: a base system is not required for every API upload (--rdio-analog-system-id and
+       --rdio-system-by-frequency number calls of their own; a call none numbers is skipped, not failed). */
+    if (strstr(text, "required for API uploads")
+        || !strstr(text, "--rdio-system-id <N>  rdio-scanner numeric system ID, 0 to 2147483647\n"
+                         "                 (API uploads need it for calls no other rdio system option numbers)\n")) {
+        DSD_FPRINTF(stderr, "-h --rdio-system-id text is wrong:\n%s\n", text);
+        return 1;
+    }
     return 0;
 }
 
@@ -8619,11 +8661,6 @@ wide_input_volume(const dsd_opts* opts) {
 }
 
 static int
-wide_rdio_system_id(const dsd_opts* opts) {
-    return opts->rdio_system_id;
-}
-
-static int
 wide_rdio_timeout(const dsd_opts* opts) {
     return opts->rdio_upload_timeout_ms;
 }
@@ -8662,8 +8699,6 @@ test_wide_values_clamp_before_narrowing(void) {
     } cases[] = {
         {"--input-volume", "4294967300", wide_input_volume, 16},
         {"--input-volume", "-4294967292", wide_input_volume, 1},
-        {"--rdio-system-id", "4294967301", wide_rdio_system_id, 65535},
-        {"--rdio-system-id", "-4294967291", wide_rdio_system_id, 0},
         {"--rdio-upload-timeout-ms", "4294967796", wide_rdio_timeout, 120000},
         {"--rdio-upload-timeout-ms", "-4294966796", wide_rdio_timeout, 100},
         {"--rdio-upload-retries", "4294967299", wide_rdio_retries, 10},
@@ -8691,6 +8726,404 @@ test_wide_values_clamp_before_narrowing(void) {
             DSD_FPRINTF(stderr, "%s %s (long %s): rc=%d exit_rc=%d value=%d, want %d\n%s\n", cases[i].option,
                         cases[i].value, long_is_wide ? "64-bit" : "32-bit", run.rc, run.exit_rc, got, cases[i].want,
                         run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* Issue #931 (B7): --rdio-mode and --frontend check each occurrence as it is read, so a later valid one does not hide
+ * an earlier invalid one (both used to keep only the last; an invalid --rdio-mode only warned). An empty --rdio-mode
+ * is refused rather than read as off; valid spellings stay case-insensitive, and so does the native frontend alias. */
+static int
+test_enum_options_checked_per_occurrence(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        const char* d;
+        int want_rc;
+        int want_mode;
+        int want_frontend;
+        const char* want_text;
+    } cases[] = {
+        {"--rdio-mode", "DirWatch", NULL, NULL, DSD_PARSE_CONTINUE, DSD_RDIO_MODE_DIRWATCH, -1, NULL},
+        {"--rdio-mode", "api", "--rdio-mode", "BOTH", DSD_PARSE_CONTINUE, DSD_RDIO_MODE_BOTH, -1, NULL},
+        {
+            "--rdio-mode",
+            "bad",
+            "--rdio-mode",
+            "api",
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
+        },
+        {
+            "--rdio-mode",
+            "api",
+            "--rdio-mode",
+            "dirwach",
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
+        },
+        {
+            "--rdio-mode",
+            "",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --rdio-mode value (expected off|dirwatch|api|both)",
+        },
+        {"--frontend", "NATIVE", NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_NONE, "native compatibility alias"},
+        {"--frontend=Terminal", NULL, NULL, NULL, DSD_PARSE_CONTINUE, -1, DSD_FRONTEND_TERMINAL, NULL},
+        {
+            "--frontend=bad",
+            "--frontend",
+            "none",
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --frontend value (expected none|terminal|native)",
+        },
+        {
+            "--frontend",
+            "bad",
+            "--frontend=none",
+            NULL,
+            DSD_PARSE_ERROR,
+            -1,
+            -1,
+            "Invalid --frontend value (expected none|terminal|native)",
+        },
+        {"--frontend=", NULL, NULL, NULL, DSD_PARSE_ERROR, -1, -1,
+         "Invalid --frontend value (expected none|terminal|native)"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, cases[i].d, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        const int mode_ok = cases[i].want_mode < 0 || run.opts->rdio_mode == cases[i].want_mode;
+        const int frontend_ok = cases[i].want_frontend < 0 || (int)run.opts->frontend_kind == cases[i].want_frontend;
+        if (run.rc != cases[i].want_rc || !mode_ok || !frontend_ok || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s %s: rc=%d mode=%d frontend=%d exit_rc=%d\n%s\n", cases[i].a,
+                        cases[i].b ? cases[i].b : "", cases[i].c ? cases[i].c : "", cases[i].d ? cases[i].d : "",
+                        run.rc, run.opts->rdio_mode, (int)run.opts->frontend_kind, run.exit_rc, run.err);
+            test_rc = 1;
+        }
+        am_cli_free(&run);
+    }
+    return test_rc;
+}
+
+/* dsd_parse_args() of @p argc / @p argv with what it printed on stdout in @p out and on stderr in @p err. */
+static int
+parse_args_capture_both(int argc, char** argv, dsd_opts* opts, dsd_state* state, int* exit_rc, char* out,
+                        size_t out_size, char* err, size_t err_size) {
+    out[0] = '\0';
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_both");
+    if (fd < 0) {
+        return -100;
+    }
+    (void)fflush(stdout);
+    const int saved = dsd_dup(DSD_STDOUT_FILENO);
+    if (saved < 0 || dsd_dup2(fd, DSD_STDOUT_FILENO) < 0) {
+        if (saved >= 0) {
+            dsd_close(saved);
+        }
+        dsd_close(fd);
+        (void)remove(path);
+        return -100;
+    }
+    dsd_close(fd);
+    int argc_effective = 0;
+    const int rc = parse_args_capture_stderr(argc, argv, opts, state, &argc_effective, exit_rc, err, err_size);
+    (void)fflush(stdout);
+    (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
+    dsd_close(saved);
+    const int read_rc = read_file_to_buffer(path, out, out_size);
+    (void)remove(path);
+    return read_rc == 0 ? rc : -100;
+}
+
+/* Issue #931 (gate r1): an option written "--name=value" that the parser does not take, a credential's included
+   ("--rdio-api-key=...", "--rdio-api-url=https://user:password@..."), is refused naming the option alone: its value
+   reaches neither stderr nor stdout. So is an Airspy option's refused "=value". */
+static int
+test_rejected_long_option_value_not_echoed(void) {
+    static const struct {
+        const char* token;
+        const char* want;
+    } cases[] = {
+        {"--rdio-api-key=SENTINELKEY", "Unrecognized option '--rdio-api-key' (given with a value, not shown)"},
+        {"--rdio-api-url=https://u:SENTINELPW@host.invalid/api",
+         "Unrecognized option '--rdio-api-url' (given with a value, not shown)"},
+        {"--no-such-option=SENTINELVALUE", "Unrecognized option '--no-such-option' (given with a value, not shown)"},
+        {"--airspy-gain-mode=SENTINELMODE", "Invalid Airspy option: --airspy-gain-mode\n"},
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char arg0[] = "dsd-neo";
+        char token[128];
+        char print_config[] = "--print-config";
+        DSD_SNPRINTF(token, sizeof token, "%s", cases[i].token);
+        char* argv[] = {arg0, token, print_config, NULL};
+        int exit_rc = -1;
+        static char out[16384];
+        static char err[16384];
+        const int rc = parse_args_capture_both(3, argv, opts, state, &exit_rc, out, sizeof out, err, sizeof err);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, cases[i].want) == NULL || strstr(err, "SENTINEL")
+            || strstr(out, "SENTINEL")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\nstderr:\n%s\nstdout:\n%s\n", cases[i].want, rc, exit_rc, err,
+                        out);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+
+    /* Issue #931 (gate r2): a value the option-value checks refuse is never quoted either. A launcher that drops the
+       mode's value makes "--rdio-api-key=SECRET" the value of --rdio-mode: it is refused naming the option and the
+       expected form, and the key is printed nowhere. */
+    static const struct {
+        const char* args[4];
+        const char* want;
+    } swallowed[] = {
+        {{"--rdio-mode", "--rdio-api-key=SENTINELKEY", "--rdio-mode", "api"},
+         "Invalid --rdio-mode value (expected off|dirwatch|api|both)"},
+        {{"--frontend", "--rdio-api-key=SENTINELKEY", "--frontend", "none"},
+         "Invalid --frontend value (expected none|terminal|native)"},
+        {{"--frontend=SENTINELVALUE", "--frontend", "none", NULL},
+         "Invalid --frontend value (expected none|terminal|native)"},
+        {{"--rdio-system-id", "--rdio-api-key=SENTINELKEY", "--rdio-system-id", "7"},
+         "Invalid --rdio-system-id value (expected 0..2147483647)"},
+        {{"--rdio-analog-system-id", "SENTINEL9", NULL, NULL},
+         "Invalid --rdio-analog-system-id value (expected 0..2147483647)"},
+    };
+
+    for (size_t i = 0; i < sizeof swallowed / sizeof swallowed[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        char storage[5][64];
+        char* argv[6] = {NULL};
+        int argc = 0;
+        DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", "dsd-neo");
+        argv[argc] = storage[argc];
+        argc++;
+        for (int a = 0; a < 4 && swallowed[i].args[a] != NULL; a++) {
+            DSD_SNPRINTF(storage[argc], sizeof storage[argc], "%s", swallowed[i].args[a]);
+            argv[argc] = storage[argc];
+            argc++;
+        }
+        int exit_rc = -1;
+        static char out[16384];
+        static char err[16384];
+        const int rc = parse_args_capture_both(argc, argv, opts, state, &exit_rc, out, sizeof out, err, sizeof err);
+        if (rc != DSD_PARSE_ERROR || exit_rc != 1 || strstr(err, swallowed[i].want) == NULL || strstr(err, "SENTINEL")
+            || strstr(out, "SENTINEL")) {
+            DSD_FPRINTF(stderr, "%s: rc=%d exit_rc=%d\nstderr:\n%s\nstdout:\n%s\n", swallowed[i].want, rc, exit_rc, err,
+                        out);
+            test_rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return test_rc;
+}
+
+/* Issue #931 (B11): --rdio-api-url (1023 bytes at most) and --rdio-api-key (255) take the largest value that fits whole
+ * and refuse one byte more with exit 1 and a message naming the option, never the value, instead of cutting it to
+ * another endpoint or key. */
+static int
+test_rdio_credentials_too_long_refused(void) {
+    static const struct {
+        const char* option;
+        size_t capacity;
+    } fields[] = {
+        {"--rdio-api-url", sizeof(((dsd_opts*)0)->rdio_api_url)},
+        {"--rdio-api-key", sizeof(((dsd_opts*)0)->rdio_api_key)},
+    };
+
+    int test_rc = 0;
+    for (size_t f = 0; f < sizeof fields / sizeof fields[0]; f++) {
+        for (size_t len = fields[f].capacity - 1U; len <= fields[f].capacity; len++) {
+            char* value = (char*)calloc(len + 1U, 1U);
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!value || !opts || !state) {
+                free(value);
+                free(opts);
+                free(state);
+                return 1;
+            }
+            DSD_MEMSET(value, 'q', len);
+            DSD_MEMCPY(value, "SECRETMARK", 10);
+            initOpts(opts);
+            initState(state);
+            char arg0[] = "dsd-neo";
+            char option[32];
+            DSD_SNPRINTF(option, sizeof option, "%s", fields[f].option);
+            char* argv[] = {arg0, option, value, NULL};
+            int argc_effective = 0;
+            int exit_rc = -1;
+            static char err[8192];
+            const int rc = parse_args_capture_stderr(3, argv, opts, state, &argc_effective, &exit_rc, err, sizeof err);
+            const char* stored = f == 0 ? opts->rdio_api_url : opts->rdio_api_key;
+            const int fits = len < fields[f].capacity;
+            char want[64];
+            DSD_SNPRINTF(want, sizeof want, "%s value is too long", fields[f].option);
+            const int ok = fits ? (rc == DSD_PARSE_CONTINUE && strcmp(stored, value) == 0)
+                                : (rc == DSD_PARSE_ERROR && exit_rc == 1 && strstr(err, want) != NULL);
+            if (!ok || strstr(err, "SECRETMARK") != NULL) {
+                DSD_FPRINTF(stderr, "%s with %zu bytes: rc=%d exit_rc=%d stored %zu bytes\n%s\n", fields[f].option, len,
+                            rc, exit_rc, strlen(stored), err);
+                test_rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+            free(opts);
+            free(state);
+            free(value);
+        }
+    }
+    return test_rc;
+}
+
+/* Issue #931 (B3): --rdio-system-id and --rdio-analog-system-id take 0..2147483647 and refuse anything else with exit 1
+ * and the range named, never clamped (154437 used to become 65535). Each occurrence is checked as it is read: a later
+ * valid one does not hide an earlier invalid one. */
+static int
+test_rdio_system_id_range(void) {
+    static const struct {
+        const char* a;
+        const char* b;
+        const char* c;
+        const char* d;
+        int want_rc;
+        int want_system;
+        const char* want_text;
+    } cases[] = {
+        {"--rdio-system-id", "65536", NULL, NULL, DSD_PARSE_CONTINUE, 65536, "NOTICE: Rdio system ID: 65536"},
+        {"--rdio-system-id", "154437", NULL, NULL, DSD_PARSE_CONTINUE, 154437, "NOTICE: Rdio system ID: 154437"},
+        {"--rdio-system-id", "2147483647", NULL, NULL, DSD_PARSE_CONTINUE, 2147483647, NULL},
+        {"--rdio-system-id", "0", NULL, NULL, DSD_PARSE_CONTINUE, 0, NULL},
+        {
+            "--rdio-system-id",
+            "2147483648",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "4294967301",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "-1",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "48x",
+            NULL,
+            NULL,
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {"--rdio-system-id", "", NULL, NULL, DSD_PARSE_ERROR, 0,
+         "Invalid --rdio-system-id value (expected 0..2147483647)"},
+        {
+            "--rdio-system-id",
+            "2147483648",
+            "--rdio-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {
+            "--rdio-system-id",
+            "48x",
+            "--rdio-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            0,
+            "Invalid --rdio-system-id value (expected 0..2147483647)",
+        },
+        {"--rdio-system-id", "7", "--rdio-system-id", "154437", DSD_PARSE_CONTINUE, 154437, NULL},
+        {
+            "--rdio-analog-system-id",
+            "-1",
+            "--rdio-analog-system-id",
+            "12",
+            DSD_PARSE_ERROR,
+            -1,
+            "Invalid --rdio-analog-system-id value (expected 0..2147483647)",
+        },
+    };
+
+    int test_rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        const char* const args[] = {"dsd-neo", cases[i].a, cases[i].b, cases[i].c, cases[i].d, NULL};
+        am_cli_run run;
+        if (am_cli_parse(args, 0, &run) != 0) {
+            return 1;
+        }
+        const int got =
+            strcmp(cases[i].a, "--rdio-system-id") == 0 ? run.opts->rdio_system_id : run.opts->rdio_analog_system_id;
+        const int text_ok = !cases[i].want_text || strstr(run.err, cases[i].want_text) != NULL;
+        const int value_ok = cases[i].want_system < 0 || got == cases[i].want_system;
+        if (run.rc != cases[i].want_rc || !value_ok || !text_ok
+            || (cases[i].want_rc == DSD_PARSE_ERROR && run.exit_rc != 1)) {
+            DSD_FPRINTF(stderr, "%s %s %s %s: rc=%d system=%d exit_rc=%d\n%s\n", cases[i].a, cases[i].b,
+                        cases[i].c ? cases[i].c : "", cases[i].d ? cases[i].d : "", run.rc, got, run.exit_rc, run.err);
             test_rc = 1;
         }
         am_cli_free(&run);
@@ -12938,8 +13371,19 @@ bootstrap_with_ini(const char* ini, const char* const* args, int nargs, int* exi
 /* --print-config of a bootstrap of @p ini plus the @p nargs arguments @p args (as bootstrap_with_ini() takes them):
    what it printed, read back from a file stdout points at meanwhile. Returns 0 when @p out holds it and the bootstrap
    exited 0. */
+static int print_config_with_ini_err(const char* ini, const char* const* args, int nargs, char* out, size_t out_size,
+                                     char* err, size_t err_size);
+
 static int
 print_config_with_ini(const char* ini, const char* const* args, int nargs, char* out, size_t out_size) {
+    char err[4096];
+    return print_config_with_ini_err(ini, args, nargs, out, out_size, err, sizeof err);
+}
+
+/* print_config_with_ini(), also handing back what the bootstrap printed on stderr in @p err. */
+static int
+print_config_with_ini_err(const char* ini, const char* const* args, int nargs, char* out, size_t out_size, char* err,
+                          size_t err_size) {
     char path[DSD_TEST_PATH_MAX];
     int fd = dsd_test_mkstemp(path, sizeof path, "runtime_cli_print_config");
     if (fd < 0) {
@@ -12963,8 +13407,7 @@ print_config_with_ini(const char* ini, const char* const* args, int nargs, char*
     initOpts(opts);
     initState(state);
     int exit_rc = -1;
-    char err[4096];
-    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, sizeof err, opts, state);
+    const int boot = bootstrap_with_ini(ini, args, nargs, &exit_rc, err, err_size, opts, state);
     (void)fflush(stdout);
     (void)dsd_dup2(saved, DSD_STDOUT_FILENO);
     dsd_close(saved);
@@ -12978,6 +13421,403 @@ print_config_with_ini(const char* ini, const char* const* args, int nargs, char*
         return -1;
     }
     return read_rc;
+}
+
+/* Issue #931 (B6/B9): no credential reaches stdout or stderr. The rdio API URL notice says only that one is
+   configured (a URL can carry user:password@), and --print-config leaves out rdio_api_key, rdio_api_url and the
+   RadioReference app_key, whichever side of the other options it stands and with or without --show-keys, which
+   reveals radio keys only. A save of the same session, to its private file, keeps all three and loads them back. */
+static int
+test_print_config_leaves_out_credentials(void) {
+    static const char ini[] = "[recording]\n"
+                              "rdio_mode = \"api\"\n"
+                              "rdio_api_url = \"https://ini-user:ini-pw@ini.invalid/api\"\n"
+                              "rdio_api_key = \"INI-RDIO-KEY\"\n"
+                              "\n"
+                              "[radioreference]\n"
+                              "username = \"rruser\"\n"
+                              "app_key = \"RR-APP-KEY\"\n";
+    static const char k_url[] = "https://cli-user:cli-pw@cli.invalid/api";
+    static const char k_key[] = "CLI-RDIO-KEY";
+    static const char* const k_secrets[] = {"ini-pw", "ini.invalid", "INI-RDIO-KEY", "RR-APP-KEY",
+                                            "cli-pw", "cli.invalid", "CLI-RDIO-KEY"};
+
+    static const struct {
+        const char* args[7];
+        int nargs;
+        int cli_url;
+    } cases[] = {
+        {{"--config", "{ini}", "--rdio-api-url", k_url, "--rdio-api-key", k_key, "--print-config"}, 7, 1},
+        {{"--print-config", "--rdio-api-url", k_url, "--rdio-api-key", k_key, "--config", "{ini}"}, 7, 1},
+        {{"--show-keys", "--config", "{ini}", "--rdio-api-url", k_url, "--print-config"}, 6, 1},
+        {{"--print-config", "--rdio-api-key", k_key, "--config", "{ini}", "--show-keys"}, 6, 0},
+        {{"--config", "{ini}", "--print-config"}, 3, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        static char printed[65536];
+        static char err[16384];
+        if (print_config_with_ini_err(ini, cases[i].args, cases[i].nargs, printed, sizeof printed, err, sizeof err)
+            != 0) {
+            rc = 1;
+            continue;
+        }
+        if (strstr(printed, "rdio_mode = \"api\"\n") == NULL || strstr(printed, "username = \"rruser\"\n") == NULL
+            || strstr(printed, "rdio_api_url") != NULL || strstr(printed, "rdio_api_key") != NULL
+            || strstr(printed, "app_key") != NULL) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config keys:\n%s\n", i, printed);
+            rc = 1;
+        }
+        for (size_t k = 0; k < sizeof k_secrets / sizeof k_secrets[0]; k++) {
+            if (strstr(printed, k_secrets[k]) != NULL || strstr(err, k_secrets[k]) != NULL) {
+                DSD_FPRINTF(stderr, "case %zu: \"%s\" was printed\nstdout:\n%s\nstderr:\n%s\n", i, k_secrets[k],
+                            printed, err);
+                rc = 1;
+            }
+        }
+        if (cases[i].cli_url && strstr(err, "NOTICE: Rdio API URL configured\n") == NULL) {
+            DSD_FPRINTF(stderr, "case %zu: no URL notice:\n%s\n", i, err);
+            rc = 1;
+        }
+    }
+
+    /* A [radioreference] holding only the app key prints no section at all: an empty header would say a key is set. */
+    {
+        static const char key_only_ini[] = "[radioreference]\napp_key = \"RR-ONLY-KEY\"\n";
+        const char* const key_only_args[] = {"--config", "{ini}", "--print-config"};
+        static char key_only_printed[65536];
+        if (print_config_with_ini(key_only_ini, key_only_args, 3, key_only_printed, sizeof key_only_printed) != 0
+            || strstr(key_only_printed, "[radioreference]") != NULL
+            || strstr(key_only_printed, "RR-ONLY-KEY") != NULL) {
+            DSD_FPRINTF(stderr, "--print-config with only an RR app key:\n%s\n", key_only_printed);
+            rc = 1;
+        }
+    }
+
+    /* The run's own save, to a private file, keeps the three and reloads them. */
+    const char* const run_args[] = {"--config", "{ini}", "--rdio-api-url", k_url, "--rdio-api-key", k_key};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+    dsdneoUserConfig* loaded = (dsdneoUserConfig*)calloc(1, sizeof(*loaded));
+    char save_path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(save_path, sizeof save_path, "runtime_cli_secret_save");
+    if (!opts || !state || !snap || !loaded || fd < 0) {
+        free(opts);
+        free(state);
+        free(snap);
+        free(loaded);
+        return 1;
+    }
+    (void)dsd_close(fd);
+    initOpts(opts);
+    initState(state);
+    int exit_rc = -1;
+    char err[4096];
+    const int boot = bootstrap_with_ini(ini, run_args, 6, &exit_rc, err, sizeof err, opts, state);
+    dsd_snapshot_opts_to_user_config(opts, state, snap);
+    if (boot != DSD_BOOTSTRAP_CONTINUE || dsd_user_config_save_atomic(save_path, snap) != 0
+        || dsd_user_config_load(save_path, loaded) != 0 || strcmp(loaded->rdio_api_url, k_url) != 0
+        || strcmp(loaded->rdio_api_key, k_key) != 0 || strcmp(loaded->rr_app_key, "RR-APP-KEY") != 0) {
+        DSD_FPRINTF(stderr, "a save did not keep the credentials: boot=%d url=%d key=%d app_key=%d\n%s\n", boot,
+                    strcmp(loaded->rdio_api_url, k_url) == 0, strcmp(loaded->rdio_api_key, k_key) == 0,
+                    strcmp(loaded->rr_app_key, "RR-APP-KEY") == 0, err);
+        rc = 1;
+    }
+    (void)remove(save_path);
+    freeState(state);
+    free(opts);
+    free(state);
+    free(snap);
+    free(loaded);
+    return rc;
+}
+
+/* One bootstrap of @p ini plus @p args (bootstrap_with_ini()): its result, and the options it left, in @p opts. */
+typedef struct {
+    int boot;
+    int exit_rc;
+    int system_id;
+    int sample_rate;
+    char key[256];
+    char url[1024];
+    char err[4096];
+} boot_values_run;
+
+static int
+boot_values(const char* ini, const char* const* args, int nargs, boot_values_run* run) {
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+    dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+    if (!opts || !state) {
+        free(opts);
+        free(state);
+        return -1;
+    }
+    initOpts(opts);
+    initState(state);
+    run->exit_rc = -1;
+    run->boot = bootstrap_with_ini(ini, args, nargs, &run->exit_rc, run->err, sizeof run->err, opts, state);
+    run->system_id = opts->rdio_system_id;
+    run->sample_rate = opts->wav_sample_rate;
+    DSD_SNPRINTF(run->key, sizeof run->key, "%s", opts->rdio_api_key);
+    DSD_SNPRINTF(run->url, sizeof run->url, "%s", opts->rdio_api_url);
+    close_parse_outputs(opts);
+    freeState(state);
+    free(opts);
+    free(state);
+    return 0;
+}
+
+/* Issue #931 (B10): bootstrap reads the argv as the parser does. Every long option's value is stepped over by the
+   parser's arity, not only a free-value option's, so a key spelled like a bootstrap option is the key: "--print-config"
+   runs the decoder, "--config" loads no config, and "--" ends no options. The options end at a "--" that is no value,
+   so "--print-config" after it is an operand. --config still takes its path, and -s counts only where getopt reads it
+   as an option ("-o -s" is an output device). */
+static int
+test_bootstrap_steps_over_option_values(void) {
+    static const char ini[] = "[recording]\nrdio_system_id = 77\n";
+    int rc = 0;
+    boot_values_run run;
+
+    static const struct {
+        const char* what;
+        const char* args[4];
+        int nargs;
+        int want_boot;
+        int want_system;
+        const char* want_key;
+    } cases[] = {
+        {"key --print-config", {"--rdio-api-key", "--print-config"}, 2, DSD_BOOTSTRAP_CONTINUE, 0, "--print-config"},
+        {"key --config", {"--rdio-api-key", "--config", "{ini}"}, 3, DSD_BOOTSTRAP_CONTINUE, 0, "--config"},
+        {"url --print-config", {"--rdio-api-url", "--print-config"}, 2, DSD_BOOTSTRAP_CONTINUE, 0, ""},
+        {"key-profile-ref --list-profiles",
+         {"--key-profile-ref", "--list-profiles", "--config", "{ini}"},
+         4,
+         DSD_BOOTSTRAP_CONTINUE,
+         77,
+         ""},
+        {"--no-config -- --print-config", {"--no-config", "--", "--print-config"}, 3, DSD_BOOTSTRAP_CONTINUE, 0, ""},
+        {"--config path", {"--config", "{ini}", "--rdio-api-key", "k"}, 4, DSD_BOOTSTRAP_CONTINUE, 77, "k"},
+        {"key -- then --config", {"--rdio-api-key", "--", "--config", "{ini}"}, 4, DSD_BOOTSTRAP_CONTINUE, 77, "--"},
+    };
+
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        if (boot_values(ini, cases[i].args, cases[i].nargs, &run) != 0) {
+            return 1;
+        }
+        const int url_ok = strcmp(cases[i].args[0], "--rdio-api-url") != 0 || strcmp(run.url, "--print-config") == 0;
+        if (run.boot != cases[i].want_boot || run.system_id != cases[i].want_system
+            || strcmp(run.key, cases[i].want_key) != 0 || !url_ok) {
+            DSD_FPRINTF(stderr,
+                        "%s: bootstrap rc=%d exit=%d system=%d key=\"%s\" url=\"%s\" (want rc %d system %d)\n%s\n",
+                        cases[i].what, run.boot, run.exit_rc, run.system_id, run.key, run.url, cases[i].want_boot,
+                        cases[i].want_system, run.err);
+            rc = 1;
+        }
+    }
+
+    /* A bare --config, followed by another option, takes no value and loads the config DSD_NEO_CONFIG names; the
+       option after it is still read as one ("--rdio-api-key k", "-s 96000"). */
+    {
+        char env_ini[1024] = "";
+        if (test_create_temp_ini_with_contents(ini, env_ini, sizeof env_ini) != 0) {
+            return 1;
+        }
+
+        static const struct {
+            const char* args[4];
+            int argc;
+            const char* want_key;
+            int want_rate;
+        } bare[] = {
+            {{"dsd-neo", "--config", "--rdio-api-key", "k"}, 4, "k", 48000},
+            {{"dsd-neo", "--config", "-s", "96000"}, 4, "", 96000},
+        };
+
+        for (size_t i = 0; i < sizeof bare / sizeof bare[0]; i++) {
+            dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+            dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+            if (!opts || !state) {
+                free(opts);
+                free(state);
+                (void)remove(env_ini);
+                return 1;
+            }
+            initOpts(opts);
+            initState(state);
+            (void)dsd_test_setenv("DSD_NEO_CONFIG", env_ini, 1);
+            (void)dsd_test_setenv("DSD_NEO_NO_BOOTSTRAP", "1", 1);
+            char storage[4][64];
+            char* argv[5] = {NULL};
+            for (int a = 0; a < bare[i].argc; a++) {
+                DSD_SNPRINTF(storage[a], sizeof storage[a], "%s", bare[i].args[a]);
+                argv[a] = storage[a];
+            }
+            int argc_effective = 0;
+            int exit_rc = -1;
+            char err[4096] = "";
+            dsd_test_capture_stderr cap;
+            int boot = -101;
+            if (dsd_test_capture_stderr_begin(&cap, "runtime_cli_parse_bare_config") == 0) {
+                boot = dsd_runtime_bootstrap(bare[i].argc, argv, opts, state, &argc_effective, &exit_rc);
+                if (dsd_test_capture_stderr_end(&cap) != 0 || read_file_to_buffer(cap.path, err, sizeof err) != 0) {
+                    boot = -102;
+                }
+                (void)remove(cap.path);
+            }
+            (void)dsd_test_unsetenv("DSD_NEO_CONFIG");
+            if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_system_id != 77
+                || strcmp(opts->rdio_api_key, bare[i].want_key) != 0 || opts->wav_sample_rate != bare[i].want_rate
+                || strstr(err, "Loaded user config from") == NULL) {
+                DSD_FPRINTF(stderr, "bare --config %s %s: rc=%d system=%d key=\"%s\" rate=%d\n%s\n", bare[i].args[2],
+                            bare[i].args[3], boot, opts->rdio_system_id, opts->rdio_api_key, opts->wav_sample_rate,
+                            err);
+                rc = 1;
+            }
+            close_parse_outputs(opts);
+            freeState(state);
+            free(opts);
+            free(state);
+        }
+        (void)remove(env_ini);
+    }
+
+    /* --api takes the next argument whatever it is, as the parser does: in
+       "--api --rdio-api-key --print-config --api 0" the first port is "--rdio-api-key", so --print-config is the option
+       and the run prints (issue #931). */
+    {
+        static char api_printed[65536];
+        const char* const api_args[] = {"--api", "--rdio-api-key", "--print-config", "--api", "0"};
+        if (print_config_with_ini(ini, api_args, 5, api_printed, sizeof api_printed) != 0
+            || strstr(api_printed, "[recording]") == NULL) {
+            DSD_FPRINTF(stderr, "--api --rdio-api-key --print-config --api 0 did not print the config:\n%s\n",
+                        api_printed);
+            rc = 1;
+        }
+        /* ... and a port getopt never reads too: "--api -T --api 0" turns no trunking on. */
+        const char* const api_t[] = {"dsd-neo", "--api", "-T", "--api", "0", NULL};
+        am_cli_run cli;
+        if (am_cli_parse(api_t, 0, &cli) != 0) {
+            return 1;
+        }
+        if (cli.rc != DSD_PARSE_CONTINUE || cli.opts->trunk_enable != 0) {
+            DSD_FPRINTF(stderr, "--api -T --api 0: rc=%d trunk_enable=%d\n%s\n", cli.rc, cli.opts->trunk_enable,
+                        cli.err);
+            rc = 1;
+        }
+        am_cli_free(&cli);
+    }
+
+    /* A key "--" is a value: the --print-config after it is the option, and the run prints. */
+    static char printed[65536];
+    const char* const dash_key[] = {"--rdio-api-key", "--", "--config", "{ini}", "--print-config"};
+    if (print_config_with_ini(ini, dash_key, 5, printed, sizeof printed) != 0
+        || strstr(printed, "rdio_system_id = 77\n") == NULL) {
+        DSD_FPRINTF(stderr, "key -- then --print-config did not print the config:\n%s\n", printed);
+        rc = 1;
+    }
+
+    /* -s, the file input's rate, counts as getopt reads it: the config's file input keeps its rate unless one is. */
+    static const char file_ini[] =
+        "[input]\nsource = \"file\"\nfile_path = \"capture.wav\"\nfile_sample_rate = 96000\n";
+
+    static const struct {
+        const char* what;
+        const char* args[4];
+        int nargs;
+        int want_rate;
+    } rates[] = {
+        {"config rate", {"--config", "{ini}"}, 2, 96000},
+        {"-s 48000", {"--config", "{ini}", "-s", "48000"}, 4, 48000},
+        {"key -s", {"--config", "{ini}", "--rdio-api-key", "-s"}, 4, 96000},
+        {"-o -s", {"--config", "{ini}", "-o", "-s"}, 4, 96000},
+    };
+
+    for (size_t i = 0; i < sizeof rates / sizeof rates[0]; i++) {
+        if (boot_values(file_ini, rates[i].args, rates[i].nargs, &run) != 0) {
+            return 1;
+        }
+        if (run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != rates[i].want_rate) {
+            DSD_FPRINTF(stderr, "%s: bootstrap rc=%d rate=%d (want %d)\n%s\n", rates[i].what, run.boot, run.sample_rate,
+                        rates[i].want_rate, run.err);
+            rc = 1;
+        }
+    }
+
+    /* Issue #931 (gate r1): only the parse's own getopt says whether it read -s. One that stops at the first operand
+       (POSIXLY_CORRECT, MSVC, musl) never reads the -s after "operand", and the config's rate stays; glibc's
+       permuting getopt does read it. */
+    const char* const after_operand[] = {"--config", "{ini}", "-i", "capture.wav", "operand", "-ps48000"};
+    (void)dsd_test_setenv("POSIXLY_CORRECT", "1", 1);
+    const int posix_rc = boot_values(file_ini, after_operand, 6, &run);
+    (void)dsd_test_unsetenv("POSIXLY_CORRECT");
+    if (posix_rc != 0 || run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != 96000) {
+        DSD_FPRINTF(stderr, "POSIXLY_CORRECT: -s after an operand: bootstrap rc=%d rate=%d (want 96000)\n%s\n",
+                    run.boot, run.sample_rate, run.err);
+        rc = 1;
+    }
+#if defined(__GLIBC__)
+    if (getenv("POSIXLY_CORRECT") == NULL) {
+        if (boot_values(file_ini, after_operand, 6, &run) != 0) {
+            return 1;
+        }
+        if (run.boot != DSD_BOOTSTRAP_CONTINUE || run.sample_rate != 48000) {
+            DSD_FPRINTF(stderr, "glibc: -s after an operand: bootstrap rc=%d rate=%d (want 48000)\n%s\n", run.boot,
+                        run.sample_rate, run.err);
+            rc = 1;
+        }
+    }
+#endif
+    return rc;
+}
+
+/* Issue #931 (gate r3fix): a config that cannot be read is said to be unreadable, once by the loader with its path,
+   and bootstrap does not call it a missing profile. Linux's /proc/self/mem opens and fails its first read (EIO). */
+static int
+test_bootstrap_config_read_error_reported(void) {
+#if defined(__linux__)
+    static const struct {
+        const char* args[4];
+        int nargs;
+        int want_boot;
+        const char* want;
+    } cases[] = {
+        {{"--config", "/proc/self/mem", "--profile", "p"},
+         4,
+         DSD_BOOTSTRAP_ERROR,
+         "Profile 'p' not loaded: the config could not be read (see above)"},
+        {{"--config", "/proc/self/mem"}, 2, DSD_BOOTSTRAP_CONTINUE, "Config not loaded: a read error (see above)"},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        if (!opts || !state) {
+            free(opts);
+            free(state);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        static char err[8192];
+        const int boot = bootstrap_with_ini("", cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        if (boot != cases[i].want_boot || strstr(err, cases[i].want) == NULL
+            || strstr(err, "a read error in /proc/self/mem") == NULL || strstr(err, "not found") != NULL) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d\n%s\n", i, boot, err);
+            rc = 1;
+        }
+        close_parse_outputs(opts);
+        freeState(state);
+        free(opts);
+        free(state);
+    }
+    return rc;
+#else
+    return 0;
+#endif
 }
 
 /* Issue #888: the command line's --rdio-unknown-talkgroup wins over the config's, 0 included, which turns a config's
@@ -13053,6 +13893,87 @@ test_bootstrap_rdio_unknown_talkgroup_cli_over_ini(void) {
                         "not\n")
                == NULL) {
         DSD_FPRINTF(stderr, "-h does not list --rdio-unknown-talkgroup\n");
+        rc = 1;
+    }
+    return rc;
+}
+
+/* Issue #931: --rdio-system-by-frequency turns the per-frequency system on and --no-rdio-system-by-frequency turns it
+   off, the last one given winning, over the config's rdio_system_by_frequency either way; the config saved from that
+   run, and --print-config, write the key only when it is on. -h lists both. */
+static int
+test_bootstrap_rdio_system_by_frequency_cli_over_ini(void) {
+    static const char ini_on[] = "[recording]\nrdio_system_by_frequency = true\n";
+    static const char ini_off[] = "[recording]\nrdio_mode = \"dirwatch\"\n";
+
+    static const struct {
+        const char* ini;
+        const char* args[4];
+        int nargs;
+        int want;
+    } cases[] = {
+        {ini_off, {"--config", "{ini}"}, 2, 0},
+        {ini_on, {"--config", "{ini}"}, 2, 1},
+        {ini_on, {"--config", "{ini}", "--no-rdio-system-by-frequency"}, 3, 0},
+        {ini_off, {"--config", "{ini}", "--rdio-system-by-frequency"}, 3, 1},
+        {ini_off, {"--config", "{ini}", "--rdio-system-by-frequency", "--no-rdio-system-by-frequency"}, 4, 0},
+        {ini_on, {"--config", "{ini}", "--no-rdio-system-by-frequency", "--rdio-system-by-frequency"}, 4, 1},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(dsd_opts));
+        dsd_state* state = (dsd_state*)calloc(1, sizeof(dsd_state));
+        dsdneoUserConfig* snap = (dsdneoUserConfig*)calloc(1, sizeof(*snap));
+        if (!opts || !state || !snap) {
+            free(opts);
+            free(state);
+            free(snap);
+            return 1;
+        }
+        initOpts(opts);
+        initState(state);
+        int exit_rc = -1;
+        char err[4096];
+        const int boot =
+            bootstrap_with_ini(cases[i].ini, cases[i].args, cases[i].nargs, &exit_rc, err, sizeof err, opts, state);
+        dsd_snapshot_opts_to_user_config(opts, state, snap);
+        if (boot != DSD_BOOTSTRAP_CONTINUE || opts->rdio_system_by_frequency != cases[i].want
+            || snap->rdio_system_by_frequency != cases[i].want) {
+            DSD_FPRINTF(stderr, "case %zu: bootstrap rc=%d exit=%d by_frequency=%d saved=%d (want %d)\n%s\n", i, boot,
+                        exit_rc, opts->rdio_system_by_frequency, snap->rdio_system_by_frequency, cases[i].want, err);
+            rc = 1;
+        }
+        freeState(state);
+        free(opts);
+        free(state);
+        free(snap);
+
+        static char printed[65536];
+        const char* print_args[5];
+        for (int a = 0; a < cases[i].nargs; a++) {
+            print_args[a] = cases[i].args[a];
+        }
+        print_args[cases[i].nargs] = "--print-config";
+        if (print_config_with_ini(cases[i].ini, print_args, cases[i].nargs + 1, printed, sizeof printed) != 0) {
+            rc = 1;
+            continue;
+        }
+        const int shown = strstr(printed, "rdio_system_by_frequency") != NULL;
+        if (cases[i].want ? strstr(printed, "rdio_system_by_frequency = true\n") == NULL : shown) {
+            DSD_FPRINTF(stderr, "case %zu: --print-config %s rdio_system_by_frequency (want %d):\n%s\n", i,
+                        shown ? "shows" : "omits", cases[i].want, printed);
+            rc = 1;
+        }
+    }
+
+    static char help[65536];
+    if (help_text(help, sizeof help) != 0
+        || strstr(help, "--rdio-system-by-frequency  Export each call with a known frequency to the rdio-scanner "
+                        "system\n")
+               == NULL
+        || strstr(help, "--no-rdio-system-by-frequency  Turn --rdio-system-by-frequency off (the default)\n") == NULL) {
+        DSD_FPRINTF(stderr, "-h does not list --rdio-system-by-frequency and --no-rdio-system-by-frequency\n");
         rc = 1;
     }
     return rc;
@@ -14096,6 +15017,7 @@ main(void) {
     rc |= test_bootstrap_print_config_normalizes_soapy_shorthand();
     rc |= test_bootstrap_profile_preserves_trunking_with_ncurses_cli();
     rc |= test_bootstrap_inherited_trunk_scan_preserves_ui_only_short_options();
+    rc |= test_bootstrap_inherited_trunk_scan_disables_after_terminator();
     rc |= test_bootstrap_inherited_trunk_scan_ignores_api_token_text();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_channel_map();
     rc |= test_bootstrap_inherited_trunk_scan_allows_cli_p25_bandplan();
@@ -14263,9 +15185,17 @@ main(void) {
     rc |= test_rdio_analog_options();
     rc |= test_rdio_unknown_talkgroup_option();
     rc |= test_bootstrap_rdio_unknown_talkgroup_cli_over_ini();
+    rc |= test_bootstrap_rdio_system_by_frequency_cli_over_ini();
     rc |= test_help_describes_recording_options();
     rc |= test_value_options_refuse_a_missing_value();
     rc |= test_wide_values_clamp_before_narrowing();
+    rc |= test_rdio_system_id_range();
+    rc |= test_enum_options_checked_per_occurrence();
+    rc |= test_print_config_leaves_out_credentials();
+    rc |= test_bootstrap_steps_over_option_values();
+    rc |= test_bootstrap_config_read_error_reported();
+    rc |= test_rdio_credentials_too_long_refused();
+    rc |= test_rejected_long_option_value_not_echoed();
     rc |= test_config_am_on_pcm_input_falls_back();
     rc |= test_f_fr_restores_single_slot_mono_preset();
     rc |= test_f_dmr_preset_selects_gfsk();

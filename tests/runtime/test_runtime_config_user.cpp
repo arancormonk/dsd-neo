@@ -2564,7 +2564,7 @@ test_validate_iq_stream_input(void) {
          "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"7k\"\niq_format = \"cs16\"\n",
          DSDCFG_DIAG_ERROR, "input", "iq_rate", "RATE '7k' is outside"},
         {"", "[input]\nsource = \"iqudp\"\niq_host = \"0.0.0.0\"\niq_port = 1\niq_rate = \"8k\"\niq_format = \"s16\"\n",
-         DSDCFG_DIAG_ERROR, "input", "iq_format", "'s16'"},
+         DSDCFG_DIAG_ERROR, "input", "iq_format", "Invalid value (allowed: cu8|cs8|cs16|cs32|cf32)"},
         {"iq_freq = \"5G\"\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_freq", "FREQ '5G' is above"},
         {"iq_rate = \"49152000\"\nrtl_bw_khz = 24\n", NULL, DSDCFG_DIAG_ERROR, "input", "iq_rate",
          "the stream's rate (49152000 Hz) is above 3200000 Hz; send one channel (the sending program's VFO mode)"},
@@ -5612,7 +5612,7 @@ test_recording_rdio_analog_roundtrip(void) {
         const char* key;
         const char* value;
     } refused[] = {
-        {"rdio_analog_system_id", "-1"},         {"rdio_analog_system_id", "65536"},
+        {"rdio_analog_system_id", "-1"},         {"rdio_analog_system_id", "2147483648"},
         {"rdio_analog_system_id", "9x"},         {"rdio_analog_talkgroup", "-1"},
         {"rdio_analog_talkgroup", "2147483648"}, {"rdio_analog_talkgroup", "99999999999"},
         {"rdio_analog_talkgroup", "1e3"},
@@ -5629,6 +5629,528 @@ test_recording_rdio_analog_roundtrip(void) {
             DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", c.key, c.value, kept,
                         g_log_text);
             rc |= 1;
+        }
+    }
+    return rc;
+}
+
+static int
+load_profile_text(const char* ini, const char* profile, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini, path, sizeof path) != 0) {
+        return 1;
+    }
+    const int load_rc = dsd_user_config_load_profile(path, profile, cfg);
+    (void)remove(path);
+    return load_rc;
+}
+
+static int*
+rdio_system_field(dsdneoUserConfig* cfg, const char* key) {
+    return strcmp(key, "rdio_system_id") == 0 ? &cfg->rdio_system_id : &cfg->rdio_analog_system_id;
+}
+
+/* One rdio-scanner system ID key (issue #931): a value up to 2147483647 (154437, a kHz-sized one) loads, reaches
+   dsd_opts and survives a save and a reload; 0 is not written. */
+static int
+rdio_system_id_key_roundtrip(const char* key) {
+    int rc = 0;
+    char ini[160];
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 154437\n", key);
+    dsdneoUserConfig cfg{};
+    if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 154437 did not load (%d)\n", key, *rdio_system_field(&cfg, key));
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    const int applied = strcmp(key, "rdio_system_id") == 0 ? opts.rdio_system_id : opts.rdio_analog_system_id;
+    if (applied != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: %s did not reach dsd_opts (%d)\n", key, applied);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\n%s = 154437\n", key);
+    rc |= expect_contains_quiet("rdio system ID saved", rendered, want);
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || *rdio_system_field(&reloaded, key) != 154437) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load %s back\n", key);
+        rc |= 1;
+    }
+
+    DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 154437\n%s = 0\n", key, key);
+    if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 0 did not reset it\n", key);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(want, sizeof want, "\n%s =", key);
+    if (strstr(rendered, want) != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: %s = 0 was written to the saved config\n", key);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #931 (B3): [recording] rdio_system_id and rdio_analog_system_id take 0..2147483647. A value outside it, or not
+   a whole number, is refused with a warning naming the key, and the value already loaded stays: rdio_system_id used to
+   clamp to 65535 and turn text into 0, silently, so a bad profile value wiped the base file's. */
+static int
+test_recording_rdio_system_id_range(void) {
+    int rc = rdio_system_id_key_roundtrip("rdio_system_id") | rdio_system_id_key_roundtrip("rdio_analog_system_id");
+    for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
+        for (const char* value : {"48x", "-1", "2147483648", "99999999999", "1e3", "\"\""}) {
+            char ini[160];
+            DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 77\n%s = %s\n", key, key, value);
+            dsdneoUserConfig cfg{};
+            g_log_text[0] = '\0';
+            if (load_config_text(ini, &cfg) != 0 || *rdio_system_field(&cfg, key) != 77
+                || strstr(g_log_text, key) == nullptr) {
+                DSD_FPRINTF(stderr, "FAIL: %s = %s was not refused with a warning (%d; log: '%s')\n", key, value,
+                            *rdio_system_field(&cfg, key), g_log_text);
+                rc |= 1;
+            }
+            /* A profile's bad value over a nonzero base value keeps the base value. */
+            DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 12\n\n[profile.p]\nrecording.%s = %s\n", key, key, value);
+            dsdneoUserConfig prof{};
+            if (load_profile_text(ini, "p", &prof) != 0 || *rdio_system_field(&prof, key) != 12) {
+                DSD_FPRINTF(stderr, "FAIL: profile %s = %s over base 12 left %d\n", key, value,
+                            *rdio_system_field(&prof, key));
+                rc |= 1;
+            }
+        }
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 12\n\n[profile.p]\nrecording.%s = 2147483647\n", key, key);
+        dsdneoUserConfig prof{};
+        if (load_profile_text(ini, "p", &prof) != 0 || *rdio_system_field(&prof, key) != 2147483647) {
+            DSD_FPRINTF(stderr, "FAIL: profile %s = 2147483647 did not load (%d)\n", key,
+                        *rdio_system_field(&prof, key));
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #931 (B7): [recording] rdio_mode takes off|dirwatch|api|both in any case. An invalid value, or an empty one
+   (which the parser reads as off), is refused with a warning and the mode already loaded stays, in a base file and in a
+   profile over a valid base alike; --validate-config already reports both as errors. */
+static int
+test_recording_rdio_mode_refused(void) {
+    int rc = 0;
+    for (const char* value : {"apii", "dirwach", "\"\"", "\"api \""}) {
+        char ini[160];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_mode = api\nrdio_mode = %s\n", value);
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_text(ini, &cfg) != 0 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || strstr(g_log_text, "rdio_mode") == nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: rdio_mode = %s was not refused with a warning (%d; log: '%s')\n", value,
+                        cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\nrdio_mode = api\n\n[profile.p]\nrecording.rdio_mode = %s\n", value);
+        dsdneoUserConfig prof{};
+        if (load_profile_text(ini, "p", &prof) != 0 || prof.rdio_mode != DSD_RDIO_MODE_API) {
+            DSD_FPRINTF(stderr, "FAIL: profile rdio_mode = %s over base api left %d\n", value, prof.rdio_mode);
+            rc |= 1;
+        }
+    }
+    dsdneoUserConfig prof{};
+    if (load_profile_text("[recording]\nrdio_mode = api\n\n[profile.p]\nrecording.rdio_mode = DirWatch\n", "p", &prof)
+            != 0
+        || prof.rdio_mode != DSD_RDIO_MODE_DIRWATCH) {
+        DSD_FPRINTF(stderr, "FAIL: profile rdio_mode = DirWatch did not load (%d)\n", prof.rdio_mode);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* Issue #931 (gate r1): a physical line longer than the reader's 8191 bytes is dropped whole, with a warning that
+   quotes none of it. Its tail used to be read as a line of its own, so "rdio_system_id=91" past the cut of an
+   oversized key line took effect. A line that just fits (8191 bytes, its newline after) still loads, and the lines
+   after an oversized one do. */
+static int
+test_config_line_too_long_dropped_whole(void) {
+    int rc = 0;
+    const std::string prefix = "rdio_api_key = \"";
+    const std::string oversized =
+        prefix + "SECRETMARK" + std::string(8191U - prefix.size() - 10U, 'k') + "rdio_system_id=91\n";
+    const std::string ini =
+        std::string("[recording]\nrdio_system_id = 7\nrdio_api_key = \"kept\"\n") + oversized + "rdio_mode = \"api\"\n";
+    dsdneoUserConfig cfg{};
+    g_log_text[0] = '\0';
+    if (load_config_text(ini.c_str(), &cfg) != 0 || cfg.rdio_system_id != 7 || strcmp(cfg.rdio_api_key, "kept") != 0
+        || cfg.rdio_mode != DSD_RDIO_MODE_API || strstr(g_log_text, "longer than 8191 bytes") == nullptr
+        || strstr(g_log_text, "SECRETMARK") != nullptr || strstr(g_log_text, "kkkk") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: oversized line: system=%d key=%.16s mode=%d (log: '%.200s')\n", cfg.rdio_system_id,
+                    cfg.rdio_api_key, cfg.rdio_mode, g_log_text);
+        rc |= 1;
+    }
+    /* 8191 bytes with the newline after them fit: a comment that long is a comment, and the next line loads. */
+    const std::string fits = std::string("[recording]\n#") + std::string(8190U, 'c') + "\nrdio_system_id = 9\n";
+    g_log_text[0] = '\0';
+    if (load_config_text(fits.c_str(), &cfg) != 0 || cfg.rdio_system_id != 9
+        || strstr(g_log_text, "longer") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: an 8191-byte line was not read as one (system=%d, log: '%.200s')\n",
+                    cfg.rdio_system_id, g_log_text);
+        rc |= 1;
+    }
+    /* A profile load reads the same way: the tail of an oversized profile line sets nothing. */
+    const std::string profile = std::string("[recording]\nrdio_system_id = 7\n\n[profile.p]\n") + "recording." + prefix
+                                + std::string(8191U - prefix.size() - 10U, 'k') + "recording.rdio_system_id=91\n";
+    dsdneoUserConfig prof{};
+    if (load_profile_text(profile.c_str(), "p", &prof) != 0 || prof.rdio_system_id != 7) {
+        DSD_FPRINTF(stderr, "FAIL: an oversized profile line's tail took effect (system=%d)\n", prof.rdio_system_id);
+        rc |= 1;
+    }
+    return rc;
+}
+
+/* @p ini (any bytes, NULs included) written to a temporary config and loaded. */
+static int
+load_config_bytes(const std::string& ini, dsdneoUserConfig* cfg) {
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_config_user_bytes");
+    if (fd < 0) {
+        return 1;
+    }
+    const ssize_t wr = dsd_write(fd, ini.data(), ini.size());
+    (void)dsd_close(fd);
+    const int load_rc = (wr >= 0 && (size_t)wr == ini.size()) ? dsd_user_config_load(path, cfg) : 1;
+    (void)remove(path);
+    return load_rc;
+}
+
+/* Issue #931 (gate r2): the reader counts the bytes it reads. A line holding a NUL is one invalid line, consumed whole:
+   neither the part before the NUL nor, in an oversized line, the bytes past the buffer are read as a setting, and the
+   warning quotes none of it. A line of exactly 8191 bytes loads the same with LF and with CRLF after it. */
+static int
+test_config_line_nul_and_crlf(void) {
+    int rc = 0;
+    const std::string base = "[recording]\nrdio_system_id = 7\nrdio_api_key = \"kept\"\n";
+    std::string nul_long = "rdio_api_key = \"SECRETMARK";
+    nul_long.push_back('\0');
+    nul_long += std::string(9000U, 'k') + "rdio_system_id=91\n";
+    std::string nul_short = "rdio_system_id = 5";
+    nul_short.push_back('\0');
+    nul_short += "SECRETMARK\n";
+    for (const std::string& bad : {nul_long, nul_short}) {
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_bytes(base + bad + "rdio_mode = \"api\"\n", &cfg) != 0 || cfg.rdio_system_id != 7
+            || strcmp(cfg.rdio_api_key, "kept") != 0 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || strstr(g_log_text, "NUL byte") == nullptr || strstr(g_log_text, "SECRETMARK") != nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: a line with a NUL (%zu bytes): system=%d key=%.16s mode=%d (log: '%.200s')\n",
+                        bad.size(), cfg.rdio_system_id, cfg.rdio_api_key, cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+    }
+    std::string max_line = "rdio_system_id = 9 #";
+    max_line += std::string(8191U - max_line.size(), 'c');
+    for (const char* eol : {"\n", "\r\n"}) {
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        const std::string ini = std::string("[recording]") + eol + max_line + eol + "rdio_mode = \"api\"" + eol;
+        if (load_config_bytes(ini, &cfg) != 0 || cfg.rdio_system_id != 9 || cfg.rdio_mode != DSD_RDIO_MODE_API
+            || g_log_text[0] != '\0') {
+            DSD_FPRINTF(stderr, "FAIL: an 8191-byte line ending %s: system=%d mode=%d (log: '%.200s')\n",
+                        eol[0] == '\r' ? "CRLF" : "LF", cfg.rdio_system_id, cfg.rdio_mode, g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+#if defined(DSD_TEST_FAULT_READS)
+// IWYU pragma: no_include <bits/types/cookie_io_functions_t.h>
+
+/* Issue #931 (gate r3): a stream that serves g_fault_content and then, from the g_fault_from_open-th open on (1-based),
+   fails with EIO instead of ending; earlier opens end cleanly after it. With g_fault_path set, only an open of a path
+   holding it is faulted and every other open is the real one. Off unless g_fault_reads. */
+static int g_fault_reads;
+static std::string g_fault_path;
+static int g_fault_from_open;
+static int g_fault_opens;
+static int g_fault_hits;
+static std::string g_fault_content;
+
+namespace {
+struct fault_stream {
+    size_t offset;
+    int faults;
+};
+} // namespace
+
+static ssize_t
+fault_read(void* cookie, char* buf, size_t size) {
+    fault_stream* fs = static_cast<fault_stream*>(cookie);
+    if (fs->offset >= g_fault_content.size()) {
+        if (!fs->faults) {
+            return 0;
+        }
+        g_fault_hits++;
+        errno = EIO;
+        return -1;
+    }
+    size_t n = g_fault_content.size() - fs->offset;
+    if (n > size) {
+        n = size;
+    }
+    DSD_MEMCPY(buf, g_fault_content.data() + fs->offset, n);
+    fs->offset += n;
+    return (ssize_t)n;
+}
+
+/* The validator rewinds the stream before it reads: only a rewind is needed. */
+static int
+fault_seek(void* cookie, off64_t* pos, int whence) {
+    if (whence != SEEK_SET || *pos < 0 || (size_t)*pos > g_fault_content.size()) {
+        errno = EINVAL;
+        return -1;
+    }
+    static_cast<fault_stream*>(cookie)->offset = (size_t)*pos;
+    return 0;
+}
+
+static int
+fault_close(void* cookie) {
+    delete static_cast<fault_stream*>(cookie);
+    return 0;
+}
+
+// GNU ld --wrap requires these exact external symbol names.
+// NOLINTBEGIN(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+extern "C" FILE* __real_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+extern "C" FILE* __wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size);
+
+extern "C" FILE*
+__wrap_dsd_path_fopen_user_read_file(const char* requested, char* out, size_t out_size) {
+    if (!g_fault_reads || (!g_fault_path.empty() && (!requested || !strstr(requested, g_fault_path.c_str())))) {
+        return __real_dsd_path_fopen_user_read_file(requested, out, out_size);
+    }
+    if (out && out_size > 0) {
+        DSD_SNPRINTF(out, out_size, "%s", requested ? requested : "");
+    }
+    fault_stream* fs = new fault_stream{0U, ++g_fault_opens >= g_fault_from_open ? 1 : 0};
+    cookie_io_functions_t io{};
+    io.read = fault_read;
+    io.seek = fault_seek;
+    io.close = fault_close;
+    return fopencookie(fs, "r", io);
+}
+
+// NOLINTEND(bugprone-reserved-identifier,cert-dcl37-c,cert-dcl51-cpp,misc-use-internal-linkage)
+
+static void
+fault_arm(const char* content, int from_open) {
+    g_fault_path.clear();
+    g_fault_content = content;
+    g_fault_from_open = from_open;
+    g_fault_opens = 0;
+    g_fault_hits = 0;
+    g_fault_reads = 1;
+}
+
+/* Issue #931 (gate r3, r3fix): one rule for read errors. A read error in any file of a load (the root, an include, a
+   profile overlay) fails the whole load with DSD_USER_CONFIG_READ_ERROR: the caller's config is zeroed (config.h),
+   holding nothing of the files, not even the complete lines before the error, and the failing file is named once. A
+   partial line ("rdio_system_id = 154" then EIO) is never applied. The profile list fails on a read error even after
+   its output is full, and --validate-config reports a read error, a failed profile listing included. */
+static int
+test_config_read_error_mid_line(void) {
+    int rc = 0;
+    static const char k_partial[] = "[recording]\nrdio_system_id = 154";
+    dsdneoUserConfig cfg{};
+    fault_arm(k_partial, 99);
+    int load_rc = dsd_user_config_load("faulted.ini", &cfg);
+    g_fault_reads = 0;
+    if (load_rc != 0 || cfg.rdio_system_id != 154) {
+        DSD_FPRINTF(stderr, "FAIL: a clean end after the bytes: rc=%d system=%d\n", load_rc, cfg.rdio_system_id);
+        rc |= 1;
+    }
+    /* A complete line, then EIO, on the include pass (open 1) or the main pass (open 2): nothing of it is kept. */
+    for (int from_open : {1, 2}) {
+        g_log_text[0] = '\0';
+        cfg.rdio_system_id = 5;
+        fault_arm("[recording]\nrdio_system_id = 77\n", from_open);
+        load_rc = dsd_user_config_load("faulted.ini", &cfg);
+        g_fault_reads = 0;
+        if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || g_fault_hits == 0
+            || strstr(g_log_text, "a read error in faulted.ini") == nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: a read error from open %d: rc=%d system=%d hits=%d (log: '%s')\n", from_open,
+                        load_rc, cfg.rdio_system_id, g_fault_hits, g_log_text);
+            rc |= 1;
+        }
+    }
+    fault_arm(k_partial, 2);
+    load_rc = dsd_user_config_load("faulted.ini", &cfg);
+    g_fault_reads = 0;
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id == 154) {
+        DSD_FPRINTF(stderr, "FAIL: a partial line before EIO: rc=%d system=%d\n", load_rc, cfg.rdio_system_id);
+        rc |= 1;
+    }
+    /* The profile overlay is the third open (include pass, base pass, overlay): the profile load fails as a read
+       error, not a missing profile, and keeps none of the base's values. */
+    g_log_text[0] = '\0';
+    fault_arm("[recording]\nrdio_system_id = 12\n\n[profile.p]\nrecording.rdio_system_id = 154", 3);
+    load_rc = dsd_user_config_load_profile("faulted.ini", "p", &cfg);
+    g_fault_reads = 0;
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || g_fault_hits == 0) {
+        DSD_FPRINTF(stderr, "FAIL: a read error in the profile overlay: rc=%d system=%d\n", load_rc,
+                    cfg.rdio_system_id);
+        rc |= 1;
+    }
+    /* An include whose read fails fails the whole load, naming the include. */
+    char child[DSD_TEST_PATH_MAX];
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config("[recording]\nrdio_unknown_talkgroup = 3\n", child, sizeof child) != 0) {
+        return 1;
+    }
+    const std::string root_ini = std::string("include = \"") + child + "\"\n[recording]\nrdio_system_id = 7\n";
+    if (write_temp_config(root_ini.c_str(), root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    g_log_text[0] = '\0';
+    fault_arm("[recording]\nrdio_unknown_talkgroup = 3\n", 1);
+    g_fault_path = child;
+    load_rc = dsd_user_config_load(root, &cfg);
+    g_fault_reads = 0;
+    g_fault_path.clear();
+    const std::string want_child = std::string("a read error in ") + child;
+    if (load_rc != DSD_USER_CONFIG_READ_ERROR || cfg.rdio_system_id != 0 || cfg.rdio_unknown_talkgroup != 0
+        || strstr(g_log_text, want_child.c_str()) == nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: an include's read error: rc=%d system=%d (log: '%s')\n", load_rc, cfg.rdio_system_id,
+                    g_log_text);
+        rc |= 1;
+    }
+    (void)remove(root);
+    (void)remove(child);
+    /* The list fails on a read error even when one name fills it first. */
+    const char* names[4] = {nullptr};
+    char names_buf[256];
+    fault_arm("[profile.a]\nx = 1\n[profile.b]\n", 1);
+    const int listed = dsd_user_config_list_profiles("faulted.ini", names, names_buf, sizeof names_buf, 1);
+    g_fault_reads = 0;
+    if (listed != -1) {
+        DSD_FPRINTF(stderr, "FAIL: a read error after a full profile list listed %d\n", listed);
+        rc |= 1;
+    }
+
+    /* --validate-config: a read error in the file it checks, and one in the profile listing of the composed checks
+       (opens: syntax pass 1, composed include pass 2, base 3, the list 4). */
+    static const struct {
+        const char* content;
+        int from_open;
+        const char* want;
+    } validations[] = {
+        {k_partial, 1, "Read error; the file cannot be loaded"},
+        {"[recording]\nrdio_system_id = 7\n[profile.a]\n", 4, "Read error; the profiles could not be listed"},
+    };
+
+    for (const auto& v : validations) {
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        fault_arm(v.content, v.from_open);
+        const int validated = dsd_user_config_validate("faulted.ini", &diags);
+        g_fault_reads = 0;
+        int read_errors = 0;
+        for (int i = 0; i < diags.count; i++) {
+            read_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, v.want);
+        }
+        if (validated == 0 || read_errors != 1) {
+            DSD_FPRINTF(stderr, "FAIL: --validate-config, %s: rc=%d errors=%d\n", v.want, validated, read_errors);
+            for (int i = 0; i < diags.count; i++) {
+                DSD_FPRINTF(stderr, "  %s\n", diags.items[i].message);
+            }
+            rc |= 1;
+        }
+        dsdcfg_diags_free(&diags);
+    }
+    return rc;
+}
+#endif
+
+/* Issue #931 (gate r3): a refused [recording] number is never quoted. A credential put in rdio_system_id by mistake
+   (a generated config) is warned about by key, range and the value kept, and is printed nowhere. */
+static int
+test_recording_refused_number_not_quoted(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* key;
+        const char* want;
+    } cases[] = {
+        {"rdio_system_id", "Config: invalid rdio_system_id (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_analog_system_id", "Config: invalid rdio_analog_system_id (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_analog_talkgroup", "Config: invalid rdio_analog_talkgroup (expected 0 to 2147483647); keeping 77\n"},
+        {"rdio_unknown_talkgroup", "Config: invalid rdio_unknown_talkgroup (expected 0 to 2147483647); keeping 77\n"},
+        {"analog_preroll_ms", "Config: invalid analog_preroll_ms (expected 0 to 1000); keeping 77\n"},
+        {"analog_max_gap_ms", "Config: invalid analog_max_gap_ms (expected 0 to 10000); keeping 77\n"},
+    };
+
+    for (const auto& c : cases) {
+        char ini[256];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = 77\n%s = \"https://user:SECRETMARK@host.invalid/\"\n", c.key,
+                     c.key);
+        dsdneoUserConfig cfg{};
+        g_log_text[0] = '\0';
+        if (load_config_text(ini, &cfg) != 0 || strstr(g_log_text, c.want) == nullptr
+            || strstr(g_log_text, "SECRETMARK") != nullptr) {
+            DSD_FPRINTF(stderr, "FAIL: %s refused a credential as: '%s'\n", c.key, g_log_text);
+            rc |= 1;
+        }
+    }
+    return rc;
+}
+
+/* Issue #931 (B11): [recording] rdio_api_url (1023 bytes at most) and rdio_api_key (255) load the largest value that
+   fits whole; one byte more is refused with a warning naming the key, never the value, and the value already loaded
+   stays, instead of a value cut to another endpoint or key. */
+static int
+test_recording_rdio_credentials_too_long(void) {
+    static const struct {
+        const char* key;
+        size_t capacity;
+    } fields[] = {
+        {"rdio_api_url", sizeof(dsdneoUserConfig::rdio_api_url)},
+        {"rdio_api_key", sizeof(dsdneoUserConfig::rdio_api_key)},
+    };
+
+    int rc = 0;
+    for (const auto& field : fields) {
+        for (size_t len = field.capacity - 1U; len <= field.capacity; len++) {
+            std::string value(len, 'q');
+            value.replace(0, 10, "SECRETMARK");
+            const std::string ini =
+                std::string("[recording]\n") + field.key + " = \"kept\"\n" + field.key + " = \"" + value + "\"\n";
+            dsdneoUserConfig cfg{};
+            g_log_text[0] = '\0';
+            const int loaded = load_config_text(ini.c_str(), &cfg);
+            const char* got = strcmp(field.key, "rdio_api_url") == 0 ? cfg.rdio_api_url : cfg.rdio_api_key;
+            const bool fits = len < field.capacity;
+            const bool ok =
+                loaded == 0
+                && (fits ? value == got : strcmp(got, "kept") == 0 && strstr(g_log_text, field.key) != nullptr);
+            if (!ok || strstr(g_log_text, "SECRETMARK") != nullptr) {
+                DSD_FPRINTF(stderr, "FAIL: %s of %zu bytes: loaded %zu bytes (log: '%s')\n", field.key, len,
+                            strlen(got), g_log_text);
+                rc |= 1;
+            }
         }
     }
     return rc;
@@ -5702,6 +6224,72 @@ test_recording_rdio_unknown_talkgroup_roundtrip(void) {
                         value, cfg.rdio_unknown_talkgroup, g_log_text);
             rc |= 1;
         }
+    }
+    return rc;
+}
+
+/* Issue #931: [recording] rdio_system_by_frequency loads as a bool, reaches dsd_opts, saves back as true, and loads
+   again; false (the default) is not written. A value that is not a bool keeps the one already loaded. */
+int
+test_recording_rdio_system_by_frequency_roundtrip(void) {
+    int rc = 0;
+    dsdneoUserConfig cfg{};
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency did not load (%d)\n", cfg.rdio_system_by_frequency);
+        return 1;
+    }
+    auto opts_storage = std::unique_ptr<dsd_opts>(new dsd_opts{});
+    auto state_storage = std::unique_ptr<dsd_state>(new dsd_state{});
+    dsd_opts& opts = *opts_storage;
+    dsd_state& state = *state_storage;
+    reset_opts_and_state(opts, state);
+    if (opts.rdio_system_by_frequency != 0) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency defaults to %d, want 0\n", opts.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    if (opts.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency did not reach dsd_opts (%d)\n",
+                    opts.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsdneoUserConfig snap;
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    char rendered[8192];
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    rc |= expect_contains_quiet("rdio_system_by_frequency saved", rendered, "rdio_system_by_frequency = true\n");
+    dsdneoUserConfig reloaded{};
+    if (load_config_text(rendered, &reloaded) != 0 || reloaded.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: the saved config did not load rdio_system_by_frequency back\n");
+        rc |= 1;
+    }
+
+    /* false turns it off, and a config at the default neither writes it nor loads anything but off. */
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\nrdio_system_by_frequency = false\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 0) {
+        DSD_FPRINTF(stderr, "FAIL: false did not turn rdio_system_by_frequency off (%d)\n",
+                    cfg.rdio_system_by_frequency);
+        rc |= 1;
+    }
+    dsd_apply_user_config_to_opts(&cfg, &opts, &state);
+    dsd_snapshot_opts_to_user_config(&opts, &state, &snap);
+    if (render_config_to_buffer(&snap, rendered, sizeof rendered) != 0) {
+        return 1;
+    }
+    if (opts.rdio_system_by_frequency != 0 || strstr(rendered, "rdio_system_by_frequency") != nullptr) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency off reached dsd_opts or the saved config\n");
+        rc |= 1;
+    }
+
+    /* Not a bool: the value already loaded stays. */
+    if (load_config_text("[recording]\nrdio_system_by_frequency = true\nrdio_system_by_frequency = maybe\n", &cfg) != 0
+        || cfg.rdio_system_by_frequency != 1) {
+        DSD_FPRINTF(stderr, "FAIL: rdio_system_by_frequency = maybe changed the value (%d)\n",
+                    cfg.rdio_system_by_frequency);
+        rc |= 1;
     }
     return rc;
 }
@@ -7240,7 +7828,17 @@ main(void) {
     rc |= test_recording_analog_max_gap_roundtrip();
     rc |= test_recording_analog_preroll_roundtrip();
     rc |= test_recording_rdio_analog_roundtrip();
+    rc |= test_recording_rdio_system_id_range();
+    rc |= test_recording_rdio_mode_refused();
+    rc |= test_recording_rdio_credentials_too_long();
+    rc |= test_config_line_too_long_dropped_whole();
+    rc |= test_config_line_nul_and_crlf();
+    rc |= test_recording_refused_number_not_quoted();
+#if defined(DSD_TEST_FAULT_READS)
+    rc |= test_config_read_error_mid_line();
+#endif
     rc |= test_recording_rdio_unknown_talkgroup_roundtrip();
+    rc |= test_recording_rdio_system_by_frequency_roundtrip();
     rc |= test_apply_file_input_rescales_symbol_timing();
     rc |= test_apply_file_input_without_decode_keeps_session_timing();
     rc |= test_decode_mode_and_load_guards();

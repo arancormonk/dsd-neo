@@ -103,6 +103,11 @@ read_fixture(const char* leaf, char** out, size_t* out_len) {
     return 0;
 }
 
+/* user_data.xml's subExpireDate. The capture's own date was moved far into the
+ * future (tests/fixtures/radioreference/NOTES.md, edit 3): the account check
+ * reads the real clock, so a near date makes every valid-account case lapse. */
+static const char k_fixture_sub_expire[] = "11-24-2999";
+
 static void
 fill_auth(dsd_rr_auth* auth, const char* username) {
     DSD_MEMSET(auth, 0, sizeof(*auth));
@@ -423,7 +428,7 @@ test_status_mapping(void) {
             DSD_MEMSET(&err, 0, sizeof(err));
 
             expect("getUserData succeeds", dsd_rr_get_user_data(client, &auth, &info, &err) == 0);
-            expect("subExpireDate decoded", strcmp(info.sub_expire, "12-31-2099") == 0);
+            expect("subExpireDate decoded", strcmp(info.sub_expire, k_fixture_sub_expire) == 0);
             dsd_rr_client_destroy(client);
             free(user_body);
         }
@@ -892,6 +897,81 @@ test_subscription_expiry(void) {
             g_failures++;
         }
     }
+}
+
+/**
+ * @brief Run getUserData against user_data.xml with its subExpireDate replaced.
+ *
+ * @param date Date text served in place of the fixture's, or NULL for the fixture as captured.
+ * @param info Receives the decoded account.
+ * @param err  Receives the error.
+ * @return The getter's return value, or -2 when the test could not build the body.
+ */
+static int
+user_data_with_date(const char* date, dsd_rr_user_info* info, dsd_rr_error* err) {
+    /* Set before any early return, so a fixture that cannot be served leaves nothing uninitialized to read. */
+    DSD_MEMSET(info, 0, sizeof(*info));
+    DSD_MEMSET(err, 0, sizeof(*err));
+    char* body = NULL;
+    size_t len = 0;
+    if (read_fixture("user_data.xml", &body, &len) != 0) {
+        return -2;
+    }
+    char served[2048];
+    const char* at = strstr(body, k_fixture_sub_expire);
+    const size_t old_len = sizeof(k_fixture_sub_expire) - 1U;
+    const size_t new_len = (date != NULL) ? strlen(date) : old_len;
+    if (at == NULL || len - old_len + new_len >= sizeof(served)) {
+        free(body);
+        return -2;
+    }
+    const size_t head = (size_t)(at - body);
+    DSD_MEMCPY(served, body, head);
+    DSD_MEMCPY(served + head, (date != NULL) ? date : k_fixture_sub_expire, new_len);
+    DSD_MEMCPY(served + head + new_len, at + old_len, len - head - old_len);
+    const size_t served_len = len - old_len + new_len;
+    served[served_len] = '\0';
+    free(body);
+
+    fake_ctx fake;
+    DSD_MEMSET(&fake, 0, sizeof(fake));
+    fake.body = served;
+    fake.body_len = served_len;
+    fake.http_status = 200;
+    dsd_rr_client* client = make_fake_client(&fake);
+    if (client == NULL) {
+        return -2;
+    }
+    dsd_rr_auth auth;
+    fill_auth(&auth, "user");
+    const int rc = dsd_rr_get_user_data(client, &auth, info, err);
+    dsd_rr_client_destroy(client);
+    return rc;
+}
+
+static void
+test_user_data_subscription_verdict(void) {
+    /* The account check is the one place DSD_RR_ERR_SUBSCRIPTION comes from, and
+     * it reads the real clock. Each case here holds whatever that clock says:
+     * the fixture's date is centuries ahead, the lapsed one decades behind. */
+    dsd_rr_user_info info;
+    dsd_rr_error err;
+
+    const int fixture_rc = user_data_with_date(NULL, &info, &err);
+    expect_ll("the fixture verifies", fixture_rc, 0);
+    if (fixture_rc == -2) {
+        return; /* user_data.xml could not be served: the cases below would test nothing */
+    }
+    expect_ll("with no error", (long long)err.status, (long long)DSD_RR_OK);
+    expect("and its date decoded", strcmp(info.sub_expire, k_fixture_sub_expire) == 0);
+
+    expect_ll("a lapsed date fails the check", user_data_with_date("01-01-2000", &info, &err), -1);
+    expect_ll("as a subscription error", (long long)err.status, (long long)DSD_RR_ERR_SUBSCRIPTION);
+    expect("whose detail is the date", strcmp(err.detail, "01-01-2000") == 0);
+    expect_no_credentials("a lapsed subscription", &err);
+
+    expect_ll("a feed provider's 'Never' verifies", user_data_with_date("Never - Feed Provider", &info, &err), 0);
+    expect_ll("with no error either", (long long)err.status, (long long)DSD_RR_OK);
 }
 
 static void
@@ -1422,6 +1502,7 @@ int
 main(void) {
     test_availability_and_arguments();
     test_subscription_expiry();
+    test_user_data_subscription_verdict();
     test_request_shape();
     test_talkgroups_send_zero_filters();
     test_country_list_needs_no_auth();

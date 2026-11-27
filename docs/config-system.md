@@ -40,6 +40,13 @@ We use a minimal INI-style format:
 - Key-value pairs: `key = value`
 - Comments: lines starting with `#` or `;`, plus quote-aware inline comments
   introduced by either character.
+- Lines: at most 8191 bytes each, not counting the line ending (LF or CRLF, read
+  alike). A longer line, or one holding a NUL byte, is ignored whole, with a
+  warning that quotes none of it; `--validate-config` reports it as an error
+  against the file it is in, an included one too. A read error part way through
+  any file of a load (the config, an include, a profile) fails the whole load:
+  nothing of it is used, and the file is named once. `--validate-config` reports
+  it as an error.
 - Values:
   - Strings (unquoted or double-quoted).
   - Integers (parsed with `strtol`).
@@ -517,16 +524,17 @@ audio input) sound no alert.
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
 | `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
-| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
-| `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
-| `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
-| `rdio_api_key` | STRING | rdio API key | (empty) |
+| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both; any other value, an empty one included, is refused with a warning and the mode already loaded stays | `off` |
+| `rdio_system_id` | INT | rdio-scanner numeric system ID, 0 to 2147483647 (`--rdio-system-id`) | `0` |
+| `rdio_api_url` | STRING | rdio API base URL, up to 1023 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | `http://127.0.0.1:3000` |
+| `rdio_api_key` | STRING | rdio API key, up to 255 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
-| `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
-| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
+| `rdio_analog_system_id` | INT | rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls; EDACS analog and ProVoice calls follow the digital rule), 0 to 2147483647; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
+| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for analog calls with no known frequency (audio input with no `-Y` or `--trunk-scan` landing), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
 | `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
+| `rdio_system_by_frequency` | BOOL | Export each call whose frequency is known to the rdio-scanner system numbered by that frequency in kHz, rounded down, with the `short_name` `System <kHz>`; a call with no known frequency keeps `rdio_system_id`, and an analog call keeps `rdio_analog_system_id` when that is set (`--rdio-system-by-frequency`, `--no-rdio-system-by-frequency`) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -544,13 +552,17 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
-`rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges, or not whole
-numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them as errors.
+`rdio_system_id`, `rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges,
+or not whole numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them
+as errors.
 An analog call with a frequency is exported under it in kHz; how analog calls are exported, and the limits, are in
 `docs/cli.md`, "Analog calls in rdio-scanner". A digital call with no talkgroup is exported under its frequency in kHz
 too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in
 `docs/cli.md`, "Digital calls with no talkgroup in rdio-scanner". A saved config writes `rdio_unknown_talkgroup` only
 when it is above 0, and `--rdio-unknown-talkgroup 0` on the command line turns a config's value off.
+A saved config writes `rdio_system_by_frequency` only when it is on, and `--no-rdio-system-by-frequency` on the command
+line turns a config's `true` off. Which calls it moves, how each rdio-scanner server takes the systems, and the limits,
+are in `docs/cli.md`, "One rdio-scanner system per frequency".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
@@ -1112,7 +1124,7 @@ the reason and the mode question is asked again.
 | Flag | Description |
 |------|-------------|
 | `--config [PATH]` | Enable config loading; optionally specify path (uses default if omitted) |
-| `--print-config` | Print effective config (as INI) and exit |
+| `--print-config` | Print effective config (as INI) and exit; `rdio_api_key`, `rdio_api_url` and `[radioreference] app_key` are left out (a saved config keeps them) |
 
 ### Template and Validation
 

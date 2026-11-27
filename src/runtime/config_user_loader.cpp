@@ -912,28 +912,55 @@ static void
 apply_recording_analog_max_gap(dsdneoUserConfig* cfg, const char* val) {
     int ms = 0;
     if (user_config_parse_int_value(val, &ms) != 0 || ms < 0 || ms > DSD_ANALOG_RECORD_MAX_GAP_MAX_MS) {
-        LOG_WARN("Config: invalid analog_max_gap_ms = '%s' (expected 0 to %d); keeping %d\n", val,
-                 DSD_ANALOG_RECORD_MAX_GAP_MAX_MS, cfg->analog_max_gap_ms);
+        LOG_WARN("Config: invalid analog_max_gap_ms (expected 0 to %d); keeping %d\n", DSD_ANALOG_RECORD_MAX_GAP_MAX_MS,
+                 cfg->analog_max_gap_ms);
         return;
     }
     cfg->analog_max_gap_ms = ms;
 }
 
-/* Issue #668: the NFM pre-roll and rdio-scanner settings are refused, never clamped: a value outside
-   @p min_value..@p max_value, or not a whole number, is reported under @p name and the one already loaded stays.
-   --validate-config reports it as an error. */
+/* Issue #668: the NFM pre-roll and rdio-scanner settings (the system IDs too, issue #931) are refused, never clamped:
+   a value outside @p min_value..@p max_value, or not a whole number, is reported under @p name, never quoted (a
+   mistaken value can be a credential; issue #931), and the one already loaded stays. --validate-config reports it as
+   an error. */
 namespace {
 void
 apply_recording_refused_range(const char* name, const char* val, int min_value, int max_value, int* out_value) {
     int v = 0;
     if (user_config_parse_int_value(val, &v) != 0 || v < min_value || v > max_value) {
-        LOG_WARN("Config: invalid %s = '%s' (expected %d to %d); keeping %d\n", name, val, min_value, max_value,
-                 *out_value);
+        LOG_WARN("Config: invalid %s (expected %d to %d); keeping %d\n", name, min_value, max_value, *out_value);
         return;
     }
     *out_value = v;
 }
 } // namespace
+
+/* Issue #931: rdio_mode is off, dirwatch, api or both, in any case. Anything else, an empty value included (the
+   parser reads "" as off), is refused with a warning and the mode already loaded stays, as --validate-config reports it
+   as an error. */
+static void
+apply_recording_rdio_mode(dsdneoUserConfig* cfg, const char* val) {
+    int mode = DSD_RDIO_MODE_OFF;
+    if (!val || val[0] == '\0' || dsd_rdio_mode_from_string(val, &mode) != 0) {
+        LOG_WARN("Config: invalid rdio_mode (expected off|dirwatch|api|both); keeping %s\n",
+                 dsd_rdio_mode_to_string(cfg->rdio_mode));
+        return;
+    }
+    cfg->rdio_mode = mode;
+}
+
+/* Issue #931: the rdio-scanner API URL and key are refused when they do not fit, never cut short to another endpoint or
+   credential; the warning names the key, never the value, which can carry a credential. --validate-config reports it
+   as an error. */
+static void
+apply_recording_rdio_credential(const char* field, char* dst, size_t dst_size, const char* val) {
+    if (strlen(val) >= dst_size) {
+        LOG_WARN("Config: invalid %s; too long (at most %zu bytes), keeping previous/default value\n", field,
+                 dst_size - 1U);
+        return;
+    }
+    copy_text_value(dst, dst_size, val);
+}
 
 static int
 apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
@@ -967,16 +994,13 @@ apply_recording_basic_keys(dsdneoUserConfig* cfg, const char* key_lc, const char
 static int
 apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
     if (strcmp(key_lc, "rdio_mode") == 0) {
-        int mode = DSD_RDIO_MODE_OFF;
-        if (dsd_rdio_mode_from_string(val, &mode) == 0) {
-            cfg->rdio_mode = mode;
-        }
+        apply_recording_rdio_mode(cfg, val);
     } else if (strcmp(key_lc, "rdio_system_id") == 0) {
-        apply_recording_rdio_range_value(val, 0, 0, 65535, &cfg->rdio_system_id);
+        apply_recording_refused_range("rdio_system_id", val, 0, 2147483647, &cfg->rdio_system_id);
     } else if (strcmp(key_lc, "rdio_api_url") == 0) {
-        copy_text_value(cfg->rdio_api_url, sizeof cfg->rdio_api_url, val);
+        apply_recording_rdio_credential(key_lc, cfg->rdio_api_url, sizeof cfg->rdio_api_url, val);
     } else if (strcmp(key_lc, "rdio_api_key") == 0) {
-        copy_text_value(cfg->rdio_api_key, sizeof cfg->rdio_api_key, val);
+        apply_recording_rdio_credential(key_lc, cfg->rdio_api_key, sizeof cfg->rdio_api_key, val);
     } else if (strcmp(key_lc, "rdio_upload_timeout_ms") == 0) {
         apply_recording_rdio_range_value(val, cfg->rdio_upload_timeout_ms, 100, 120000, &cfg->rdio_upload_timeout_ms);
     } else if (strcmp(key_lc, "rdio_upload_retries") == 0) {
@@ -987,7 +1011,7 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
             cfg->rdio_api_delete_after_upload = b;
         }
     } else if (strcmp(key_lc, "rdio_analog_system_id") == 0) {
-        apply_recording_refused_range("rdio_analog_system_id", val, 0, 65535, &cfg->rdio_analog_system_id);
+        apply_recording_refused_range("rdio_analog_system_id", val, 0, 2147483647, &cfg->rdio_analog_system_id);
     } else if (strcmp(key_lc, "rdio_analog_talkgroup") == 0) {
         apply_recording_refused_range("rdio_analog_talkgroup", val, 0, 2147483647, &cfg->rdio_analog_talkgroup);
     } else if (strcmp(key_lc, "rdio_unknown_talkgroup") == 0) {
@@ -998,9 +1022,22 @@ apply_recording_rdio_keys(dsdneoUserConfig* cfg, const char* key_lc, const char*
     return 1;
 }
 
+/* The rdio-scanner routing switches (issue #931): which system a call is filed under. */
+static int
+apply_recording_rdio_routing_keys(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
+    if (strcmp(key_lc, "rdio_system_by_frequency") != 0) {
+        return 0;
+    }
+    int b = 0;
+    if (user_config_parse_bool_value(val, &b) == 0) {
+        cfg->rdio_system_by_frequency = b;
+    }
+    return 1;
+}
+
 static void
 apply_recording_section_key(dsdneoUserConfig* cfg, const char* key_lc, const char* val) {
-    if (apply_recording_basic_keys(cfg, key_lc, val)) {
+    if (apply_recording_basic_keys(cfg, key_lc, val) || apply_recording_rdio_routing_keys(cfg, key_lc, val)) {
         return;
     }
     (void)apply_recording_rdio_keys(cfg, key_lc, val);
@@ -1187,6 +1224,13 @@ note_section_present(dsdneoUserConfig* cfg, const char* section) {
     }
 }
 
+/* @p line trimmed in place: nonzero when nothing is left of it but a comment. */
+static int
+config_line_trim_is_blank(char* line) {
+    user_config_trim_ascii_whitespace(line);
+    return line[0] == '\0' || line[0] == '#' || line[0] == ';';
+}
+
 /* Internal loader that does NOT reset the config struct.
  * Used for accumulating values from multiple files (includes). */
 static int
@@ -1200,9 +1244,14 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
     char current_section[64];
     current_section[0] = '\0';
 
-    while (fgets(line, sizeof line, fp)) {
-        user_config_trim_ascii_whitespace(line);
-        if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+    int invalid = 0;
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, &invalid)) > 0) {
+        if (invalid) {
+            LOG_WARN("Config: ignored a line longer than %zu bytes or holding a NUL byte, whole\n", sizeof line - 1U);
+            continue;
+        }
+        if (config_line_trim_is_blank(line)) {
             continue;
         }
 
@@ -1240,8 +1289,30 @@ user_config_load_no_reset_stream(FILE* fp, dsdneoUserConfig* cfg) {
 
         apply_section_key(cfg, current_section, key_lc, val, USER_CFG_PARSE_MODE_BASE);
     }
+    return got < 0 ? DSD_USER_CONFIG_READ_ERROR : 0;
+}
 
-    return 0;
+/* @p rc of reading @p opened_path: a read error of that file itself (DSD_USER_CONFIG_READ_ERROR) is logged once, with
+   its path, and passed on as USER_CFG_READ_ERROR_SAID, which every caller up to the public loader passes on unchanged
+   (issue #931). */
+static int
+note_read_error(int rc, const char* opened_path) {
+    if (rc != DSD_USER_CONFIG_READ_ERROR) {
+        return rc;
+    }
+    LOG_WARN("Config: a read error in %s; the config is not loaded\n", opened_path);
+    return USER_CFG_READ_ERROR_SAID;
+}
+
+/* The public loaders' result: on any failure @p cfg is reset, holding nothing of the files (config.h); a read error
+   anywhere is DSD_USER_CONFIG_READ_ERROR. */
+static int
+finish_public_load(int rc, dsdneoUserConfig* cfg) {
+    if (rc == 0) {
+        return 0;
+    }
+    user_cfg_reset(cfg);
+    return rc == USER_CFG_READ_ERROR_SAID ? DSD_USER_CONFIG_READ_ERROR : rc;
 }
 
 static int
@@ -1258,7 +1329,7 @@ user_config_load_no_reset(const char* path, dsdneoUserConfig* cfg) {
 
     int rc = user_config_load_no_reset_stream(fp, cfg);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 int
@@ -1273,12 +1344,15 @@ dsd_user_config_load(const char* path, dsdneoUserConfig* cfg) {
         return -1;
     }
 
-    /* Process includes first (they provide base values that can be overridden) */
+    /* Process includes first (they provide base values that can be overridden); a read error in any file fails the
+       load, and nothing of it is used. */
     const char* stack[1] = {root_path};
-    (void)process_includes(root_path, cfg, 0, stack, 1);
+    if (process_includes(root_path, cfg, 0, stack, 1) == USER_CFG_READ_ERROR_SAID) {
+        return finish_public_load(USER_CFG_READ_ERROR_SAID, cfg);
+    }
 
     /* Now load the main config (which overrides included values) */
-    return user_config_load_no_reset(root_path, cfg);
+    return finish_public_load(user_config_load_no_reset(root_path, cfg), cfg);
 }
 
 // Profile support -------------------------------------------------------------
@@ -1521,7 +1595,8 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
     }
 
     char line[8192];
-    while (fgets(line, sizeof line, fp)) {
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, NULL)) > 0) {
         char inc_path[1024];
         int parse_rc = user_config_parse_include_directive_line(line, inc_path, sizeof inc_path);
         if (parse_rc < 0) {
@@ -1545,17 +1620,24 @@ process_includes_stream(FILE* fp, dsdneoUserConfig* cfg, int depth, const char**
             continue;
         }
 
-        /* Apply each optional include atomically. Missing, unreadable, or invalid includes are skipped without
-         * discarding values already composed from earlier includes. Nested includes retain their normal precedence
-         * below the file that names them. */
+        /* Apply each optional include atomically. Missing or invalid includes are skipped without discarding values
+         * already composed from earlier includes; a read error in one fails the whole load (issue #931). Nested
+         * includes retain their normal precedence below the file that names them. */
         dsdneoUserConfig candidate = *cfg;
-        (void)process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size);
-        if (user_config_load_no_reset(inc_path, &candidate) == 0) {
+        if (process_nested_includes(inc_path, &candidate, depth, include_stack, include_stack_size)
+            == USER_CFG_READ_ERROR_SAID) {
+            return USER_CFG_READ_ERROR_SAID;
+        }
+        const int child_rc = user_config_load_no_reset(inc_path, &candidate);
+        if (child_rc == USER_CFG_READ_ERROR_SAID) {
+            return USER_CFG_READ_ERROR_SAID;
+        }
+        if (child_rc == 0) {
             *cfg = candidate;
         }
     }
 
-    return 0;
+    return got < 0 ? DSD_USER_CONFIG_READ_ERROR : 0;
 }
 
 static int
@@ -1569,7 +1651,7 @@ process_includes(const char* path, dsdneoUserConfig* cfg, int depth, const char*
 
     int rc = process_includes_stream(fp, cfg, depth, include_stack, include_stack_size);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 static int
@@ -1642,9 +1724,9 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
     int in_target_profile = 0;
     int profile_found = 0;
 
-    while (fgets(line, sizeof line, fp)) {
-        user_config_trim_ascii_whitespace(line);
-        if (line[0] == '\0' || line[0] == '#' || line[0] == ';') {
+    int got = 0;
+    while ((got = user_config_read_line(fp, line, sizeof line, NULL)) > 0) {
+        if (config_line_trim_is_blank(line)) {
             continue;
         }
 
@@ -1671,6 +1753,9 @@ load_config_internal_stream(FILE* fp, const char* profile_name, dsdneoUserConfig
         if (handle_profile_overlay_key(cfg, current_section, in_target_profile, key, val)) {
             continue;
         }
+    }
+    if (got < 0) {
+        return DSD_USER_CONFIG_READ_ERROR;
     }
 
     /* If a profile was requested but not found, return error */
@@ -1700,7 +1785,7 @@ load_config_internal(const char* path, const char* profile_name, dsdneoUserConfi
 
     int rc = load_config_internal_stream(fp, profile_name, cfg);
     fclose(fp);
-    return rc;
+    return note_read_error(rc, opened_path);
 }
 
 int
@@ -1716,23 +1801,21 @@ dsd_user_config_load_profile(const char* path, const char* profile_name, dsdneoU
         return -1;
     }
 
-    /* Process includes first (they provide base values that can be overridden) */
+    /* Process includes first (they provide base values that can be overridden); a read error in any file fails the
+       load, and nothing of it is used. */
     const char* stack[1] = {root_path};
-    (void)process_includes(root_path, cfg, 0, stack, 1);
+    if (process_includes(root_path, cfg, 0, stack, 1) == USER_CFG_READ_ERROR_SAID) {
+        return finish_public_load(USER_CFG_READ_ERROR_SAID, cfg);
+    }
 
     /* Now load the main config (which overrides included values) */
     int rc = user_config_load_no_reset(root_path, cfg);
-    if (rc != 0) {
-        return rc;
-    }
-
-    /* If no profile requested, we're done */
-    if (!profile_name || !*profile_name) {
-        return 0;
+    if (rc != 0 || !profile_name || !*profile_name) {
+        return finish_public_load(rc, cfg);
     }
 
     /* Now overlay profile settings */
-    return load_config_internal(root_path, profile_name, cfg, 0, stack, 1);
+    return finish_public_load(load_config_internal(root_path, profile_name, cfg, 0, stack, 1), cfg);
 }
 
 static int
@@ -1793,18 +1876,20 @@ dsd_user_config_list_profiles_stream(FILE* stream, const char** names, char* nam
     size_t buf_used = 0;
     char line[8192];
 
-    while (fgets(line, sizeof line, stream) && count < max_names) {
+    /* Read to the end even once the output is full: a read error after it still fails the list (issue #931). */
+    int got = 0;
+    int full = 0;
+    while ((got = user_config_read_line(stream, line, sizeof line, NULL)) > 0) {
         const char* profile_name = NULL;
-        if (!extract_profile_section_name(line, &profile_name)) {
+        if (full || !extract_profile_section_name(line, &profile_name)) {
             continue;
         }
-        if (!append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
-                                           &buf_used)) {
-            break; /* buffer full */
-        }
+        full = count >= max_names
+               || !append_profile_name_to_buffer(profile_name, names, &count, max_names, names_buf, names_buf_size,
+                                                 &buf_used);
     }
 
-    return count;
+    return got < 0 ? -1 : count; /* a read error lists nothing */
 }
 
 int
@@ -1822,5 +1907,8 @@ dsd_user_config_list_profiles(const char* path, const char** names, char* names_
 
     int count = dsd_user_config_list_profiles_stream(fp, names, names_buf, names_buf_size, max_names);
     fclose(fp);
+    if (count < 0) {
+        LOG_WARN("Config: a read error in %s; no profiles listed\n", opened_path);
+    }
     return count;
 }

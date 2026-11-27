@@ -717,13 +717,13 @@ typedef struct dsdneoUserConfig {
     char static_wav_path[1024];
     char raw_wav_path[1024];
     int rdio_mode;
-    int rdio_system_id;
+    int rdio_system_id; /* 0..2147483647; the loader refuses a value outside it and keeps the one it had (issue #931) */
     char rdio_api_url[1024];
     char rdio_api_key[256];
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; /* bool */
-    /* Analog calls' rdio-scanner system, 0..65535 (0: rdio_system_id), and the talkgroup of one with no frequency,
+    /* Analog calls' rdio-scanner system, 0..2147483647 (0: rdio_system_id), and the talkgroup of one with no frequency,
        0..2147483647 (0: not exported) (issue #668). The loader refuses a value outside the range and keeps the one it
        had. */
     int rdio_analog_system_id;
@@ -731,7 +731,8 @@ typedef struct dsdneoUserConfig {
     /* The talkgroup of a digital call with no talkgroup and no frequency, 0..2147483647 (0: not exported) (issue
        #888). The loader refuses a value outside the range and keeps the one it had. */
     int rdio_unknown_talkgroup;
-    int unknown_talkgroups_only; /* bool: record only talkgroups without a row (opts->record_unknown_only) */
+    int rdio_system_by_frequency; /* bool: system = the call's frequency in kHz (opts->rdio_system_by_frequency) */
+    int unknown_talkgroups_only;  /* bool: record only talkgroups without a row (opts->record_unknown_only) */
     /* The longest pause in ms one analog call and its recording survive (opts->analog_record_max_gap_ms; issue #756):
        0..10000, 200 or less is off. The loader refuses a value outside the range and keeps the one it had. */
     int analog_max_gap_ms;
@@ -799,13 +800,19 @@ int dsd_user_imports_dir_create(void);
 /**
  * @brief Load a user config from the given path.
  *
- * On error (missing/unreadable file or parse error), cfg is zeroed.
+ * On error (missing/unreadable file or parse error), cfg is zeroed: it holds the reset defaults and nothing of the file
+ * or its includes. A read error in the file or in any file it includes fails the whole load (issue #931), with
+ * DSD_USER_CONFIG_READ_ERROR; the failing file is logged once.
  *
  * @param path Path to the INI file.
  * @param cfg [out] Destination user config.
- * @return 0 on success; non-zero on error.
+ * @return 0 on success; DSD_USER_CONFIG_READ_ERROR on a read error; other non-zero on other errors.
  */
 int dsd_user_config_load(const char* path, dsdneoUserConfig* cfg);
+
+/** dsd_user_config_load() / dsd_user_config_load_profile() result: a read error part way through the file or an
+    include (the file is unreadable, not missing). */
+#define DSD_USER_CONFIG_READ_ERROR (-3)
 
 /**
  * @brief Atomically write cfg to the given path (for interactive save).

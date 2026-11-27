@@ -67,7 +67,7 @@ internal object UsbReceiverKind {
         "--strict-crc", "--no-scan-voice-only", "--dmr-debug-burst", "--dmr-debug-unsynced", "--show-keys",
         "--scan-voice-only", "--no-tone-filter", "--no-slot-filter", "--no-dcc-filter", "--no-ran-filter",
         "--no-nac-filter", "--no-service-names", "--record-unknown-only", "--scan-skip-silent",
-        "--no-scan-skip-silent",
+        "--no-scan-skip-silent", "--rdio-system-by-frequency", "--no-rdio-system-by-frequency",
     )
 
     /** Long options that take the next argument as their value, whatever it is. `k_skip_exact_next_any`. */
@@ -89,7 +89,8 @@ internal object UsbReceiverKind {
         "--tone-allow", "--slot-allow", "--slot-block", "--dcc-allow", "--dcc-block", "--ran-allow", "--ran-block",
         "--nac-allow", "--nac-block", "--slot-name", "--dcc-name", "--ran-name", "--nac-name", "--tone-name",
         "--tone-block", "--calc-lcn", "--calc-step", "--calc-cc-freq", "--calc-cc-lcn", "--calc-start-lcn",
-        "--analog-record-max-gap-ms", "--analog-record-preroll-ms",
+        "--analog-record-max-gap-ms", "--analog-record-preroll-ms", "--lrrp-extra-port", "--dmr-udp-comp-port",
+        "--rtl-udp-control", "--rtl-udp-control-bind", "--api", "--api-bind", "--tetra-net", "--tetra-key",
     )
 
     /** Long options that take the next argument, whatever it starts with. `k_skip_exact_next_nonnull`. */
@@ -110,8 +111,7 @@ internal object UsbReceiverKind {
 
     /** Long options that take the next argument only when it does not start with '-'. `k_skip_exact_next_nonopt`. */
     private val LONG_NEXT_NON_OPTION: Set<String> = setOf(
-        "--lrrp-extra-port", "--dmr-udp-comp-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--config",
-        "--validate-config", "--api", "--api-bind", "--tetra-net", "--tetra-key",
+        "--config", "--validate-config",
     )
 
     /** Long options given with their value attached ("--name=value"), as prefixes. `k_skip_prefix`. */

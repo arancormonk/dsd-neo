@@ -1,7 +1,7 @@
 # RadioReference SOAP fixtures — capture notes
 
 Captured 2026-08-15 against the live v18 API (`POST https://api.radioreference.com/soap2/`) with a
-real premium account. Bodies are byte-exact `curl --output` captures with **two** edits, both
+real premium account. Bodies are byte-exact `curl --output` captures with **three** edits, all
 recorded here so nobody mistakes them for wire behaviour:
 
 1. the `<username>` value in `user_data.xml` is the placeholder `user`;
@@ -9,6 +9,12 @@ recorded here so nobody mistakes them for wire behaviour:
    an FCC/amateur licence callsign inside `siteLicenses`, and on this ham network it happened to
    equal the capturing account's RR username (RR usernames are often callsigns). Nothing parses
    `siteLicenses`, so the substitution has no effect on any test.
+3. the `<subExpireDate>` value in `user_data.xml` is `11-24-2999`; the capture said `11-24-2026`.
+   The account check compares that date with the real clock (`rr_subscription_expired()` with
+   `dsd_realtime_time()`), so the captured date made every test that serves this file as a valid
+   account fail once it passed. Only the year changed; the `MM-DD-YYYY` form is the captured one.
+   Tests that need a lapsed account rewrite the date to a past one (`01-01-2000`), and the date
+   arithmetic itself is tested with an explicit "now" in `test_runtime_rr_client.c`.
 
 No request bodies are stored here, and no appKey, username or password appears in any file.
 
@@ -32,7 +38,7 @@ observed, not inferred; the synthetic addition is explicitly identified.
 | `trs_details_edacs.xml`, `trs_sites_edacs.xml`, `trs_talkgroups_edacs.xml` | sid 220 | Hillsborough County FL, EDACS Networked Standard — 2 sites, 8 contiguous LCNs each |
 | `trs_details_dmr_conv.xml`, `trs_sites_dmr_conv.xml`, `trs_talkgroups_dmr_conv.xml` | sid 9340 | Iowa DMR Users Group, DMR **Conventional Networked** — **36 single-frequency sites**, 14 talkgroups |
 | `trs_sites_dmr_conv_small.xml` | sid 12244 | Linn County REC, DMR Conventional Networked — 2 sites, the ordinary small case |
-| `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` set to `12-31-2099` (the captured `11-24-2026` lapsed, and the client reads it against the real clock) |
+| `user_data.xml` | `getUserData` | username scrubbed to `user`; `subExpireDate` moved from `11-24-2026` to `11-24-2999` (edit 3) |
 | `fault_auth.xml` | `getUserData` with a wrong password | HTTP 500, `faultcode` `AUTH` |
 | `trs_details_tetra.xml`, `trs_sites_tetra.xml`, `trs_talkgroups_tetra.xml`, `trs_talkgroup_cats_tetra.xml` | sid 10880 | Kordia KorKor (Auckland, NZ), TETRA — 9 sites, 24 freqs, 16 TGs, 1 category; captured 2026-11-01, see below |
 
