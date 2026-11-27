@@ -84,8 +84,8 @@ private class ServiceRig {
     }
 
     /** An asynchronous end posted to the service's thread: the phases settle it, then the instance checks. */
-    fun ended(generation: Int) {
-        phases.ended(generation)
+    fun ended(generation: Int, startAbandoned: Boolean = false) {
+        phases.ended(generation, startAbandoned)
         if (instance != 0) retireCheck()
     }
 
@@ -159,7 +159,7 @@ private class Playing(val rig: ServiceRig) {
             override fun changed(status: RecordingPlayer.Status) = Unit
             override fun ended(generation: Int, reason: String) {
                 ends += generation to reason
-                rig.ended(generation)
+                rig.ended(generation, startAbandoned = reason == RecordingPlayer.ENDED_START)
             }
         },
         RecordingRecheck(),
@@ -272,6 +272,26 @@ fun atMostOneStartIsOutstanding() {
     check(rig.phases.currentOwner == 0) { "and ends the playlist's ownership as it is accepted" }
     rig.ended(c)
     check(rig.retired) { "the replaced playlist's end retires the service" }
+}
+
+/**
+ * A start that timed out is not joined (R53): the play that waited for it ends "start", the next play issues a fresh
+ * start, and the abandoned one, delivered late, promotes nothing; the fresh one promotes the new play.
+ */
+fun aTimedOutStartIsNotJoined() {
+    val playing = Playing(ServiceRig())
+    val rig = playing.rig
+    val a = playing.playlist()
+    check(rig.starts == listOf(Start.ISSUE) && rig.inFlight.size == 1) { "A issues a start" }
+    playing.elapse(RecordingPlayer.PROMOTION_MS)
+    check(playing.ends == listOf(a to RecordingPlayer.ENDED_START)) { "A's promotion times out: ${playing.ends}" }
+    val b = playing.playlist()
+    check(rig.starts.last() == Start.ISSUE && rig.inFlight.size == 2) { "B issues a fresh start: ${rig.starts}" }
+    playing.deliver() // A's, late
+    check(rig.promoted.isEmpty() && rig.phases.currentRequest == b) { "the abandoned start promotes nothing" }
+    playing.deliver()
+    check(rig.promoted == listOf(b) && rig.phases.currentOwner == b) { "B's own start promotes B" }
+    check(playing.machine.status.generation == b && playing.ends.size == 1) { "and B plays" }
 }
 
 fun aStalePromoteKeepsTheOwnersNotification() {
@@ -615,7 +635,7 @@ fun thePlayersEndsDriveTheServiceOrder() {
     val d = playing.playlist()
     playing.elapse(RecordingPlayer.PROMOTION_MS)
     check(playing.ends.last() == d to RecordingPlayer.ENDED_START) { "D could not start: ${playing.ends}" }
-    check(rig.phases.currentRequest == 0 && rig.phases.currentPhase == Phase.ISSUED) { "its start still stands" }
+    check(rig.phases.currentRequest == 0 && rig.phases.currentPhase == Phase.NONE) { "its start is given up (R53)" }
     playing.deliver()
     check(rig.promoted == listOf(b) && playing.machine.status.endedReason == RecordingPlayer.ENDED_START) {
         "the late delivery promotes nothing, and D stays ended"
@@ -895,6 +915,7 @@ fun main() {
     aPromoteFromAnotherProcessServesNothing()
     atMostOneStartIsOutstanding()
     aStalePromoteKeepsTheOwnersNotification()
+    aTimedOutStartIsNotJoined()
     aStaleTransportNeverActsOnALaterPlaylist()
     theRetireCheckNeedsNoOwnerNoRequestAndNoStart()
     theDestroyIsFencedToWhatTheInstanceServed()

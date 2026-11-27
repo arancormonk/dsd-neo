@@ -488,7 +488,8 @@ object RecordingPlayback {
 
         override fun ended(generation: Int, reason: String) {
             main.post {
-                phases.ended(generation)
+                // A play that gave up on its start (the promotion timed out) gives the start up too (R53).
+                phases.ended(generation, startAbandoned = reason == RecordingPlayer.ENDED_START)
                 service?.ended(generation)
                 service?.retireCheck()
             }

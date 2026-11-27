@@ -20113,9 +20113,12 @@ Qt Quick frontend (`src/ui/qt`):
       then for a playlist with no service issues `startForegroundService()` (PROMOTE); a playlist while a start is
       issued joins that start, and one while the service is promoted is handed to it in the process: at most one start
       is ever outstanding. A thrown refusal (`ForegroundServiceStartNotAllowedException`, `IllegalStateException`) ends
-      that reserved, positive generation "start". Each PROMOTE delivery runs `startForeground(MEDIA_PLAYBACK)` first,
-      always, with the current owner's notification (a stale PROMOTE never overwrites B's controls) or the instance's
-      own "Opening…" one, then promotes only this process's outstanding start for its generation. Intents carry
+      that reserved, positive generation "start". A start not promoted in time is given up with the play that waited
+      for it (R53: `ended(generation, startAbandoned)`), so the next play issues a fresh one, not a join of a start
+      that may never be delivered; its late delivery is fenced by its generation, promotes nothing and retires. Each
+      PROMOTE delivery runs `startForeground(MEDIA_PLAYBACK)` first, always, with the current owner's notification (a
+      stale PROMOTE never overwrites B's controls) or the instance's own "Opening…" one, then promotes only this
+      process's outstanding start for its generation. Intents carry
       `(process token, generation)` in their extras and their data URI
       (`dsdneo-playback://<token>/<generation>/<action>`), so PendingIntent identity differs across processes and
       generations; a transport delivery (the 29-32 notification buttons) is applied on the looper only while its
