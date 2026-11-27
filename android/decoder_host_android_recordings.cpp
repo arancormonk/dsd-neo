@@ -597,11 +597,14 @@ DecoderHostAndroid::shareRecordingFile(const QString& path, const QString& title
         return false;
     }
     // Held in the store until its copy is made: behind a running export, the limit or a delete would otherwise take
-    // the recording before the copy, and the share the user was told began would fail.
+    // the recording before the copy, and the share the user was told began would fail. No hold, no share (r12): the
+    // store refuses one for a recording not available now (its folder read again, or its storage seen away), whose
+    // path may name another call's file.
     const int hold = holdRecording(path);
-    if (hold > 0) {
-        m_share_holds.insert(hold);
+    if (hold <= 0) {
+        return false;
     }
+    m_share_holds.insert(hold);
     // The copy is a file's worth of I/O, so it runs on the transfer worker, never the GUI or Android main thread.
     m_transfer_worker->start([link = m_transfer_link, path, title, hold]() {
         const bool staged = platformShareRecording(path, title);

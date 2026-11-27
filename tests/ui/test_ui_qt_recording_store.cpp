@@ -3428,7 +3428,7 @@ test_queries_between_rebuild_slices(void) {
     expect("between slices: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
     int slices = 0;
     int partial = 0;
-    int unplayable = 0;
+    int shareHeld = 0;
     int accepted = 0;
     s.store.setSliceHookForTest([&](const QString& path) {
         if (path != folder) {
@@ -3437,12 +3437,12 @@ test_queries_between_rebuild_slices(void) {
         slices++;
         partial += whole() ? 0 : 1;
         accepted += refused() ? 0 : 1;
-        // Played (the player's hold, selectPath()), never saved: a save between slices is refused as loading.
+        // A share's hold (selectPath()) is refused too (r12): the rows held from before the read again are not
+        // available (R78), and a save between slices is refused as loading.
         const int selection = s.store.selectPath(folder + QStringLiteral("/k.wav"));
         if (selection > 0) {
             s.store.releaseSelection(selection);
-        } else {
-            unplayable++;
+            shareHeld++;
         }
         const QVariantMap save = s.store.selectRecordings({keyedId});
         accepted +=
@@ -3453,7 +3453,10 @@ test_queries_between_rebuild_slices(void) {
     s.store.setSliceHookForTest({});
     expect("between slices: read again slice by slice", slices >= 3);
     expect("between slices: every query read the folder whole", partial == 0);
-    expect("between slices: the listed recording could be played", unplayable == 0);
+    expect("between slices: no share took a held row", shareHeld == 0);
+    const int after = s.store.selectPath(folder + QStringLiteral("/k.wav"));
+    expect("between slices: read again, its share is held", after > 0);
+    s.store.releaseSelection(after);
     expect("between slices: every export, save and delete request was refused", accepted == 0);
     expect("between slices: read again, whole", whole() && exportWhole() && deletesWhole());
 }

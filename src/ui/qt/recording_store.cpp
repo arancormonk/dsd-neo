@@ -2894,14 +2894,19 @@ RecordingStore::entryMap(const Entry& entry) const {
         {QStringLiteral("mtimeSec"), static_cast<qint64>(entry.identity.mtime_s)},
         {QStringLiteral("mtimeNanos"), static_cast<int>(entry.identity.mtime_ns)},
         {QStringLiteral("failed"), entry.failed},
-        // Not while its root is seen away (R74: found missing, or back unread, from the first look through its read
-        // again), nor while its folder's read again is still applying (R78: the rows readers get are the ones held from
-        // before it, m_committed, until commitFolderLocked() replaces them): a playlist then admits none of it, and a
-        // sheet shows it as storage not available.
-        {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)
-                                          && !m_committed.contains(entry.folder)
-                                          && !rootSeenAwayLocked(m_folders.value(entry.folder).root)},
+        // entryAvailableLocked(): a playlist admits none of it otherwise, and a sheet shows it as storage not
+        // available.
+        {QStringLiteral("available"), entryAvailableLocked(entry)},
     };
+}
+
+bool
+RecordingStore::entryAvailableLocked(const Entry& entry) const {
+    // Not while its root is seen away (R74: found missing, or back unread, from the first look through its read
+    // again), nor while its folder's read again is still applying (R78: the rows readers get are the ones held from
+    // before it, m_committed, until commitFolderLocked() replaces them).
+    return folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder) && !m_committed.contains(entry.folder)
+           && !rootSeenAwayLocked(m_folders.value(entry.folder).root);
 }
 
 /* A History read: counted while it waits, so a rebuild's next slice lets it in first. */
@@ -3613,14 +3618,19 @@ RecordingStore::selectIdsLocked(const QStringList& ids) {
 
 int
 RecordingStore::selectPath(const QString& path) {
-    QString id;
-    {
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        id = path.isEmpty() ? QString() : readerIdForPathLocked(clean_absolute(path));
+    if (path.isEmpty()) {
+        return 0;
     }
     // A hold for a share's copy, taken whenever: never transferred (selectionToken() refuses it while not settled).
+    // Only of a recording available as the entry map says (r12): a row held from before its folder's read again, or
+    // on a root seen away since, may name another file at its path now, so no share takes it.
     const std::lock_guard<std::mutex> lock(m_mutex);
-    return id.isEmpty() ? 0 : selectIdsLocked({id}).value(QStringLiteral("selection")).toInt();
+    const QString id = readerIdForPathLocked(clean_absolute(path));
+    const Entry* entry = id.isEmpty() ? nullptr : readerEntryLocked(id);
+    if (entry == nullptr || !entryAvailableLocked(*entry)) {
+        return 0;
+    }
+    return selectIdsLocked({id}).value(QStringLiteral("selection")).toInt();
 }
 
 void

@@ -3829,6 +3829,9 @@ check_recording_share() {
               && recordings().diagnosticsCleanOnWorker.load(),
           "a host cleans old diagnostics share copies once, at its start, on the transfer worker");
     host.setRecordingIndex([&a](const QString& path) { return path == a; });
+    // The store's hold for the share's copy; 0 for one it refuses (r12: not available now).
+    std::atomic<bool> holdRefused{false};
+    host.setRecordingHold([&holdRefused](const QString&) { return holdRefused.load() ? 0 : 1; }, [](int) {});
     const auto shared = [](const QString& path, const QString& title) {
         return with_transfer([&path, &title](const PlatformRecordings& r) {
             return r.sharedPath == path && r.sharedTitle == title && r.shareOnWorker;
@@ -3838,11 +3841,15 @@ check_recording_share() {
               return recordings().shares.load() == 1;
           }) && shared(a, QStringLiteral("Call recording")),
           "an indexed recording is shared through the platform, copied on the transfer worker");
+    holdRefused = true;
+    check(!host.shareRecording(a, QStringLiteral("Call recording")) && recordings().shares.load() == 1,
+          "#909 r12: a recording the store will not hold is not shared, nothing staged");
+    holdRefused = false;
     recordings().canShareAnswer = false;
     check(!host.shareRecording(a, QStringLiteral("Call recording")), "the platform's refusal is the answer");
     recordings().canShareAnswer = true;
     check(!host.shareRecording(dir.filePath(QStringLiteral("other.wav")), QStringLiteral("x"))
-              && recordings().canShares == 2 && recordings().shares.load() == 1,
+              && recordings().canShares == 3 && recordings().shares.load() == 1,
           "a path the store does not manage never reaches the platform");
 
     // A share the platform took can still fail on its way; the next refresh reports it. One whose file is gone (here

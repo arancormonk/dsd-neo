@@ -694,6 +694,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * then publish order). */
     QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
+    /* Whether @p entry is available to a reader (the entry map's `available`, a share's hold): its folder read, on
+     * storage there, not seen away since, and not held from before its read again. Lock held. */
+    bool entryAvailableLocked(const Entry& entry) const;
     /* A root seen away (R74): found missing outside a pass, or back and not read again yet, from that first look
      * through the pass's read of it. */
     bool rootSeenAwayLocked(int root) const;

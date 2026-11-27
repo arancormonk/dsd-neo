@@ -19726,7 +19726,10 @@ Qt Quick frontend (`src/ui/qt`):
     Preparing to the end, SINGLE only: a PARTS or PLAYLIST play holds nothing and clears that hold when it starts,
     issue #909 D9), releases each transfer's selection when it finishes, rechecks the missing files
     (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`) and a hold for work outside a
-    selection (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`).
+    selection (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`). The share's hold is taken
+    only of a recording available as the entry map says (`entryAvailableLocked()`: not held from before its folder's
+    read again, R78, nor on a root seen away since, R74), and the Android host stages nothing without it (issue #909
+    r12; main held and staged such a row, `test_queries_between_rebuild_slices` and `check_recording_share`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
