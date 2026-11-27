@@ -19967,13 +19967,13 @@ Qt Quick frontend (`src/ui/qt`):
       and counted, and a late acknowledgement changes nothing. A seek while a start is pending takes that start back on
       the looper before posting `seekTo()`, then, the wish to play unchanged, asks for a new start behind it (R45): the
       old acknowledgement is stale, and the part plays from the seek's target. Anything a start, pause or seek throws on
-      the
-      owner is `onFailed(token, REASON_PLAYER)`; a release that throws is logged and the thread still ends (main ran
-      `start()` on the looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner
-      in order; the posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since
-      a Looper quit earlier refuses the native events still in flight from a pause just before ("sending message to a
-      Handler on a dead thread"); release clears the native listener, so no new event is posted after it (a callback
-      already running can still be refused, harmlessly), and an event already queued, for a released player, is dropped.
+      the owner is `onFailed(token, REASON_PLAYER)`, and so is anything the prepared listener throws (its length read),
+      in place of `onPrepared` (R47); a release that throws is logged and the thread still ends (main ran `start()` on
+      the looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner in order; the
+      posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit
+      earlier refuses the native events still in flight from a pause just before ("sending message to a Handler on a
+      dead thread"); release clears the native listener, so no new event is posted after it (a callback already running
+      can still be refused, harmlessly), and an event already queued, for a released player, is dropped.
       Until the result is back the looper never touches that player (a prepare answering first is noted and applied at
       adoption; an error drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end,
       a replacement) only releases its player; one that found its file gone or changed still puts the path it tried

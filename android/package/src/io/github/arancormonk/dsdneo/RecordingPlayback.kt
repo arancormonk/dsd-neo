@@ -628,8 +628,20 @@ object RecordingPlayback {
             media = made // Released with the item, also when what follows throws.
             made.setAudioAttributes(attributes)
             made.setOnPreparedListener { prepared ->
-                duration = prepared.duration.toLong()
-                post { it.onPrepared(token) }
+                // On the owner, outside every other guard: a platform throw here (reading the length of a player that
+                // went wrong) fails the part as the player's, never the app (R47).
+                val length = try {
+                    prepared.duration.toLong()
+                } catch (e: Throwable) {
+                    Log.w(TAG, "could not read a call recording's length", e)
+                    null
+                }
+                if (length == null) {
+                    post { it.onFailed(token, RecordingPlayer.REASON_PLAYER) }
+                } else {
+                    duration = length
+                    post { it.onPrepared(token) }
+                }
             }
             made.setOnCompletionListener { post { it.onCompleted(token) } }
             made.setOnErrorListener { _, what, _ ->
