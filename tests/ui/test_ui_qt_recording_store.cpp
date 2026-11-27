@@ -5159,6 +5159,33 @@ test_folder_missing_at_a_cold_start(void) {
     }
 }
 
+/* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
+ * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
+ * is away; it is listed again once the directory is back. */
+void
+test_root_without_rows_is_not_held_away(void) {
+    const Roots roots;
+    Store s({roots.external});
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000963-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("no rows: indexed", listed_as(s.store, 1, true));
+    expect("no rows: its only recording deleted", s.store.deleteRecording(QStringLiteral("0000000000000963-1")));
+    s.pass();
+    expect("no rows: none left, the folder kept",
+           s.store.recordingsForFragments({fragment(1)}).isEmpty() && s.store.folderPathsForTest().contains(a));
+    const QString staged = roots.dir.path() + QStringLiteral("/kept");
+    expect("no rows: the root's directory removed", QDir().rename(roots.external, staged));
+    s.pass();
+    expect("no rows: the storage still reads as there", s.store.available());
+    record(staged + QLatin1Char('/') + QFileInfo(a).fileName(), QStringLiteral("0000000000000963-2"),
+           QStringLiteral("b.wav"), 1754000100, 2);
+    expect("no rows: the directory back", QDir().rename(staged, roots.external));
+    s.pass();
+    expect("no rows: back, listed again", listed_as(s.store, 2, true));
+}
+
 /* I2: a session start that makes a root's recordings folder over folders the index holds on it (renamed away before
  * any pass marked the root away) has the root read again in full at once: the old rows are unavailable from the start
  * on, and after the read they are gone and the session's recordings are indexed. */
@@ -6593,6 +6620,7 @@ main(int argc, char** argv) {
     test_marker_retry_takes_the_label_on_disk();
     test_session_start_remembers_storage_away();
     test_folder_missing_at_a_cold_start();
+    test_root_without_rows_is_not_held_away();
     test_session_making_the_folder_reads_its_root_again();
     test_delete_held_when_its_root_was_seen_away();
     test_owner_lookup_failure_ends_a_tail_in_flight();

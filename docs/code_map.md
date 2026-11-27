@@ -20640,21 +20640,24 @@ Qt Quick frontend (`src/ui/qt`):
     a request (a queued delete) or counts usage rests on a cached `m_rootAvailable` or on a failed stat, open or unlink
     alone: the root is checked again first, through `rootStillAvailable()` (`rootThereForIndex()` for a root being read
     back, which is not available yet). A root is there for the index (R83, `rootThereForIndex()`) when it is an existing
-    readable directory, or a missing one that could be made while the index holds no folder on it: one whose directory
-    went (renamed or removed, its parent there) is away, not empty, its rows kept and unavailable, and read again once
-    it is back; main dropped them at the next pass (`tailFolder()` found folder.json gone and `readFolderOwner()`
-    removed the folder, `rootAvailableNow()` calling a root that can be made there) and, renamed back, never read them
-    again until a restart. `rootAvailableNow()`'s rule that a root that can be made is there stays for a session start
-    alone (`usableRootsLocked()`), which also records into a root held away only because its directory is missing; its
-    next read again finds the folder made anew, and the old rows go then (`test_playlist_admission_checks_roots_live`).
-    A root whose directory is missing at a cold start holds nothing and reads as there and empty, so a fresh install's
+    readable directory, or a missing one that could be made while the index holds no row on it (m2,
+    `rootHoldsRowsLocked()`, a count per folder: a root whose folders hold no recording reads as there and empty, so a
+    desktop store's one root never reads as away for an emptied folder removed,
+    `test_root_without_rows_is_not_held_away`; main read it as there too): one whose directory went (renamed or removed,
+    its parent there) is away, not empty, its rows kept and unavailable, and read again once it is back; main dropped
+    them at the next pass (`tailFolder()` found folder.json gone and `readFolderOwner()` removed the folder,
+    `rootAvailableNow()` calling a root that can be made there) and, renamed back, never read them again until a
+    restart. `rootAvailableNow()`'s rule that a root that can be made is there stays for a session start alone
+    (`usableRootsLocked()`), which also records into a root held away only because its directory is missing; its next
+    read again finds the folder made anew, and the old rows go then (`test_playlist_admission_checks_roots_live`). A
+    root whose directory is missing at a cold start holds nothing and reads as there and empty, so a fresh install's
     screens never say its storage is away; it is remembered as missing (`m_rootDirMissing`), looked at each pass and by
     an export's or delete's look at away roots (`awayRootsBackLocked()`), and listed in full once it is a readable
-    directory (I1, `test_folder_missing_at_a_cold_start`). A session start that makes a root's directory over folders
-    the index holds on it (renamed away before any pass marked the root away) notes the root seen away, so its old rows
-    are unavailable at once and the pass the start asks for lists it in full, dropping them and reading the session's
+    directory (I1, `test_folder_missing_at_a_cold_start`). A session start that makes a root's directory over rows the
+    index holds on it (renamed away before any pass marked the root away) notes the root seen away, so its old rows are
+    unavailable at once and the pass the start asks for lists it in full, dropping them and reading the session's
     journal; one that makes it over nothing indexed lists nothing (`noteRootMadeLocked()`, I2,
-    `test_session_making_the_folder_reads_its_root_again`). Decided limit (M3): while a root that holds folders has its
+    `test_session_making_the_folder_reads_its_root_again`). Decided limit (M3): while a root that holds rows has its
     directory missing, Delete all and an owner's or a recording's delete that name any of its rows are refused as
     storage away (`checkRootsLocked()`): their files are not there to delete, and the rows come back with the folder; a
     restart (nothing indexed on a missing directory), a session start that makes the folder (I2) or the folder's return

@@ -590,14 +590,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * rootAvailableNow(), whose root that can be made counts for a session start, not for recordings already in it. */
     static bool rootPlayableNow(const QString& root);
     /* Whether root @p root (at @p path) is there for the index (R83): an existing readable directory, or a missing one
-     * a session could make (rootAvailableNow()) while the index holds no folder on it. So a root never made reads as
-     * there and empty, and one whose directory went (renamed, removed) holds its rows away, never dropped. Takes the
-     * lock for the folder table only when the directory is missing; the Locked form is for a caller holding it. */
+     * a session could make (rootAvailableNow()) while the index holds no row on it (m2). So a root never made, or one
+     * whose folders hold no recording, reads as there and empty, and one whose directory went (renamed, removed) with
+     * rows indexed holds them away, never dropped. Takes the lock only when the directory is missing; the Locked form
+     * is for a caller holding it. */
     bool rootThereForIndex(int root, const QString& path) const;
     bool rootThereForIndexLocked(int root) const;
-    /* Whether the index holds a folder on @p root. Lock held. */
-    bool rootHoldsFoldersLocked(int root) const;
-    /* A session start made @p root's directory (it was missing): with folders indexed on it (I2), it is listed again in
+    /* Whether the index holds a row on @p root: an entry in a folder on it (m_rowsInFolder), or one a folder's read
+     * again holds from before it (m_committed). Lock held. */
+    bool rootHoldsRowsLocked(int root) const;
+    /* A session start made @p root's directory (it was missing): with rows indexed on it (I2), it is listed again in
      * full at once, its old rows unavailable until then; with none, nothing is left to list. Lock held. */
     void noteRootMadeLocked(int root);
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
@@ -879,6 +881,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * indexed on them): one found a readable directory since is listed in full at once, as a root back from away is.
      * Cleared when it is listed, or when a session start makes the directory itself. */
     QList<bool> m_rootDirMissing;
+    /* How many entries each folder holds (insertEntryLocked(), removeEntryLocked()): whether a root holds rows without
+     * a walk of every entry. */
+    QHash<QString, int> m_rowsInFolder;
     QHash<QString, Folder> m_folders;
     QHash<QString, Entry> m_entries;
     QHash<QString, QStringList> m_byFragment;

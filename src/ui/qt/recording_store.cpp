@@ -699,29 +699,42 @@ RecordingStore::rootThereForIndex(int root, const QString& path) const {
         return false;
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
-    return !rootHoldsFoldersLocked(root);
+    return !rootHoldsRowsLocked(root);
 }
 
 bool
 RecordingStore::rootThereForIndexLocked(int root) const {
     const QString& path = m_roots.at(root);
-    return rootPlayableNow(path) || (rootAvailableNow(path) && !rootHoldsFoldersLocked(root));
+    return rootPlayableNow(path) || (rootAvailableNow(path) && !rootHoldsRowsLocked(root));
 }
 
 void
 RecordingStore::noteRootMadeLocked(int root) {
     m_rootDirMissing[root] = false; // made here: nothing appeared that a listing must find
-    if (rootHoldsFoldersLocked(root)) {
-        // Folders indexed on a directory that was missing (renamed or removed, perhaps before any pass marked the root
+    if (rootHoldsRowsLocked(root)) {
+        // Rows indexed on a directory that was missing (renamed or removed, perhaps before any pass marked the root
         // away): what is there now is read in full, and their rows are unavailable until then (R74, R78).
         noteRootSeenAwayLocked(root);
     }
 }
 
 bool
-RecordingStore::rootHoldsFoldersLocked(int root) const {
-    return std::any_of(m_folders.cbegin(), m_folders.cend(),
-                       [root](const Folder& folder) { return folder.root == root; });
+RecordingStore::rootHoldsRowsLocked(int root) const {
+    const auto onRoot = [this, root](const QString& path) {
+        const auto folder = m_folders.constFind(path);
+        return folder != m_folders.cend() && folder->root == root;
+    };
+    for (auto it = m_rowsInFolder.cbegin(); it != m_rowsInFolder.cend(); ++it) {
+        if (it.value() > 0 && onRoot(it.key())) {
+            return true;
+        }
+    }
+    for (auto it = m_committed.cbegin(); it != m_committed.cend(); ++it) {
+        if (!it->entries.isEmpty() && onRoot(it.key())) {
+            return true;
+        }
+    }
+    return false;
 }
 
 void
@@ -739,7 +752,7 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
         m_rootsRereading = seenAway; // still seen away to the readers until this read is done (R74)
     }
     for (int i = 0; i < roots.size(); i++) {
-        // Its directory missing while it holds folders is away (R83): the rows stay, unavailable, until it is back.
+        // Its directory missing while it holds rows is away (R83): the rows stay, unavailable, until it is back.
         // Missing with nothing indexed on it (I1: a cold start) it is there and empty, and remembered as missing, so
         // its directory found since is listed in full, as a root back from away is.
         const bool playable = rootPlayableNow(roots.at(i));
@@ -1453,6 +1466,7 @@ RecordingStore::insertEntryLocked(Entry entry, Pass* pass) {
     if (!entry.search.isEmpty() && !entry.unreadable) {
         m_bySearch[entry.search].append(entry.id);
     }
+    m_rowsInFolder[entry.folder]++;
     m_entries.insert(entry.id, entry);
     noteQueryChangeLocked(pass);
 }
@@ -1491,6 +1505,10 @@ RecordingStore::removeEntryLocked(const QString& id, Pass* pass) {
     const auto byPath = m_byPath.find(it->path);
     if (byPath != m_byPath.end() && byPath.value() == id) {
         m_byPath.erase(byPath);
+    }
+    const auto rows = m_rowsInFolder.find(it->folder);
+    if (rows != m_rowsInFolder.end() && --rows.value() <= 0) {
+        m_rowsInFolder.erase(rows);
     }
     m_entries.erase(it);
     noteQueryChangeLocked(pass);
