@@ -5808,7 +5808,8 @@ test_playlist_recordings_per_row(void) {
 
     const int locks = s.store.readerLocksForTest();
     const QList<QVariantList> rows = s.store.recordingsForFragmentLists(asked);
-    expect("playlist read: one hold of the lock", s.store.readerLocksForTest() == locks + 1);
+    // Two holds whatever the rows (R77): the roots taken, then, after the unlocked look at them, the rows read.
+    expect("playlist read: two holds of the lock, not one per row", s.store.readerLocksForTest() == locks + 2);
     expect("playlist read: one list per row", rows.size() == asked.size());
     if (rows.size() != asked.size()) {
         return;
@@ -6152,6 +6153,45 @@ test_playlist_admission_checks_roots_live(void) {
     expect("live roots: the press asked for the read again", s.store.passCountForTest() > before);
     QCoreApplication::processEvents(); // the read's publication; no further pass: the press's own read is enough
     expect("live roots: read again, Play all plays", result() == QLatin1String("accepted") && host.plays == 2);
+
+    // R77: a store that changes while the roots are looked at (no lock held) is looked at again, the admission run
+    // once more from the top. The storage goes and a pass marks it away meanwhile: looked at again, refused.
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString extAway = roots.dir.path() + QStringLiteral("/ext-gone");
+    int looks = 0;
+    s.store.setAdmissionProbeHookForTest([&] {
+        if (looks++ == 0) {
+            (void)QDir().rename(ext, extAway);
+            s.pass(); // marked away
+        }
+    });
+    expect("live roots: changed during the look: refused", result() == QLatin1String("none") && host.plays == 2);
+    expect("live roots: changed during the look: looked at again", looks == 2);
+    // Changed during each look (the storage back and read again, then gone and marked away again): refused after the
+    // second, with no third.
+    looks = 0;
+    s.store.setAdmissionProbeHookForTest([&] {
+        const bool back = looks++ % 2 == 0;
+        (void)(back ? QDir().rename(extAway, ext) : QDir().rename(ext, extAway));
+        s.pass();
+    });
+    const bool changedTwice = result() == QLatin1String("none") && host.plays == 2;
+    expect("live roots: changed again during the second look: refused", changedTwice);
+    expect("live roots: changed again: looked at twice, no more", looks == 2);
+    s.store.setAdmissionProbeHookForTest({});
+    expect("live roots: the storage back", QDir().rename(extAway, ext));
+    s.pass();
+    expect("live roots: unchanged, Play all plays", result() == QLatin1String("accepted") && host.plays == 3);
+
+    // R77: the plain rename. The recordings folder renamed while its parent is there: Play all looks for an existing
+    // readable directory, not one that can be made, and is refused with what plays left playing.
+    expect("live roots: the recordings folder renamed", QDir().rename(roots.external, away));
+    expect("live roots: renamed: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
+    // A session start keeps its own rule: a root that can be made is one it records into (rootAvailableNow()).
+    const QString made = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    expect("live roots: renamed: a session start still makes its folder there",
+           made.startsWith(roots.external + QLatin1Char('/')) && QFileInfo(made).isDir());
     model.setRecordingProvider(nullptr);
 }
 

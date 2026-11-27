@@ -2875,58 +2875,114 @@ RecordingStore::recordingEntryNames(const QList<QStringList>& fragmentsPerRow) c
 
 QList<QVariantList>
 RecordingStore::recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const {
-    // A playlist's admission looks at its storage as it is now (R74's defect): a root found gone is noted seen away
-    // and one back asks for its read again, as a delete or a session start does, so this read records what it found
-    // (in the store's mutable bookkeeping, under the same lock).
-    bool wake = false;
-    QList<QVariantList> rows;
-    {
-        const ReaderLock lock(*this);
-        QList<QList<const Entry*>> found;
-        QSet<int> roots;
-        found.reserve(fragmentsPerRow.size());
-        for (const QStringList& fragments : fragmentsPerRow) {
-            found.append(fragmentEntriesLocked(fragments));
-            for (const Entry* entry : std::as_const(found.last())) {
-                roots.insert(m_folders.value(entry->folder).root);
+    // A playlist's admission looks at its storage as it is now (R74's defect, R77): the roots it would admit from are
+    // taken under the lock, looked at with no lock held (one look each, an existing readable directory), and the store
+    // is looked at again. Changed meanwhile, the admission runs again from the top, once; changed again, it is refused
+    // (no row covered). What the look found is recorded in the store's mutable bookkeeping, under the lock: a root gone
+    // noted seen away, a root back asked to be read again.
+    for (int attempt = 0; attempt < 2; attempt++) {
+        QHash<int, AdmissionRoot> roots;
+        std::function<void()> probeHook;
+        {
+            const ReaderLock lock(*this);
+            QList<QList<const Entry*>> found;
+            found.reserve(fragmentsPerRow.size());
+            for (const QStringList& fragments : fragmentsPerRow) {
+                found.append(fragmentEntriesLocked(fragments));
+            }
+            roots = admissionRootsLocked(found);
+            probeHook = m_admissionProbeHook;
+        }
+        QHash<int, bool> playable;
+        for (auto it = roots.cbegin(); it != roots.cend(); ++it) {
+            playable.insert(it.key(), rootPlayableNow(it->path));
+        }
+        if (probeHook) {
+            probeHook();
+        }
+        bool wake = false;
+        bool current = false;
+        QList<QVariantList> rows;
+        {
+            const ReaderLock lock(*this);
+            QList<QList<const Entry*>> found;
+            found.reserve(fragmentsPerRow.size());
+            for (const QStringList& fragments : fragmentsPerRow) {
+                found.append(fragmentEntriesLocked(fragments));
+            }
+            current = admissionRootsLocked(found) == roots;
+            if (current) {
+                wake = admissionLookRecordedLocked(roots, playable);
+                rows.reserve(found.size());
+                for (const QList<const Entry*>& entries : std::as_const(found)) {
+                    QVariantList list;
+                    for (const Entry* entry : entries) {
+                        QVariantMap map = entryMap(*entry);
+                        // Not from a root the look found gone (R77), whatever the store held for it.
+                        const int root = m_folders.value(entry->folder).root;
+                        if (!playable.value(root)) {
+                            map.insert(QStringLiteral("available"), false);
+                        }
+                        map.insert(QStringLiteral("deleteQueued"), m_deleteQueue.contains(entry->id));
+                        list.append(map);
+                    }
+                    rows.append(list);
+                }
             }
         }
-        wake = admissionRootsCheckedLocked(roots);
-        rows.reserve(found.size());
-        for (const QList<const Entry*>& entries : std::as_const(found)) {
-            QVariantList list;
-            for (const Entry* entry : entries) {
-                QVariantMap map = entryMap(*entry);
-                map.insert(QStringLiteral("deleteQueued"), m_deleteQueue.contains(entry->id));
-                list.append(map);
-            }
-            rows.append(list);
+        if (wake) {
+            m_wake.notify_all();
+        }
+        if (current) {
+            return rows;
         }
     }
-    if (wake) {
-        m_wake.notify_all();
+    return {};
+}
+
+QHash<int, RecordingStore::AdmissionRoot>
+RecordingStore::admissionRootsLocked(const QList<QList<const Entry*>>& found) const {
+    QHash<int, AdmissionRoot> roots;
+    for (const QList<const Entry*>& entries : found) {
+        for (const Entry* entry : entries) {
+            const int root = m_folders.value(entry->folder).root;
+            if (root < 0 || root >= m_roots.size() || roots.contains(root)) {
+                continue;
+            }
+            AdmissionRoot look;
+            look.path = m_roots.at(root);
+            look.known = m_rootAvailable.value(root);
+            look.pending = m_rootsSeenAway.contains(root);
+            look.rereading = m_rootsRereading.contains(root);
+            roots.insert(root, look);
+        }
     }
-    return rows;
+    return roots;
 }
 
 bool
-RecordingStore::admissionRootsCheckedLocked(const QSet<int>& roots) const {
-    // One look per root the request would admit from, under the store's lock. Gone: noted seen away (R74), so none of
-    // its recordings is admitted. Back while marked away: its read again is asked at once; seen away, it has one asked
-    // or under way. Either way its recordings stay ineligible until that read is done.
+RecordingStore::rootPlayableNow(const QString& root) {
+    // One look: its type (following a link, as a session's use of it does) and whether it can be read.
+    const QFileInfo info(root);
+    return info.isDir() && info.isReadable();
+}
+
+bool
+RecordingStore::admissionLookRecordedLocked(const QHash<int, AdmissionRoot>& roots,
+                                            const QHash<int, bool>& playable) const {
+    // Gone: noted seen away (R74), so none of its recordings is admitted. Back while marked away: its read again is
+    // asked at once; seen away, it has one asked or under way. Either way its recordings stay ineligible until that
+    // read is done.
     bool wake = false;
-    for (const int root : roots) {
-        if (root < 0 || root >= m_roots.size()) {
-            continue;
-        }
-        const bool known = m_rootAvailable.value(root);
-        const bool seen = rootSeenAwayLocked(root);
-        if (!rootAvailableNow(m_roots.at(root))) {
-            if (known && !seen) {
-                noteRootSeenAwayLocked(root);
+    for (auto it = roots.cbegin(); it != roots.cend(); ++it) {
+        const AdmissionRoot& look = it.value();
+        const bool seen = look.pending || look.rereading;
+        if (!playable.value(it.key())) {
+            if (look.known && !seen) {
+                noteRootSeenAwayLocked(it.key());
                 wake = true;
             }
-        } else if (!known) {
+        } else if (!look.known) {
             // Back while marked away: its read again is asked for at once. A root seen away needs none here: its
             // pass was asked for when it was noted, or is reading it now (m4).
             m_passRequested = true;
@@ -3630,6 +3686,12 @@ void
 RecordingStore::setSliceHookForTest(std::function<void(const QString& folder)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_sliceHook = std::move(hook);
+}
+
+void
+RecordingStore::setAdmissionProbeHookForTest(std::function<void()> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_admissionProbeHook = std::move(hook);
 }
 
 void

@@ -70,12 +70,14 @@ class CallRecordingProvider {
      * @brief For each row's fragments in @p fragmentsPerRow, its recordings as recordingsForFragments() lists them
      * (oldest first within the row, by start then publish order, each recording once), one list per row, in order.
      *
-     * One read for every row, so a History playlist (issue #909) takes the provider's lock once. Each map carries
-     * `id`, `path`, `identitySize`, `mtimeSec` and `mtimeNanos` (the file as the provider indexed it), `durationMs`,
-     * `available` and `deleteQueued` (a delete asked for it has not run yet). A provider without recordings lists none:
-     * one empty list per row. The read may probe the storage roots it admits from (the recording store: one stat each,
-     * under its lock), marking a root found gone as seen away and asking for a root back to be read again, so it is for
-     * a playlist's admission (Play all, Play from here), not for per-refresh reads.
+     * One read for every row, so a History playlist (issue #909) takes the provider's lock a fixed number of times,
+     * never once per row. Each map carries `id`, `path`, `identitySize`, `mtimeSec` and `mtimeNanos` (the file as the
+     * provider indexed it), `durationMs`, `available` and `deleteQueued` (a delete asked for it has not run yet). A
+     * provider without recordings lists none: one empty list per row. The read may look at the storage roots it admits
+     * from (the recording store: one look each, an existing readable directory, with no lock held, the store looked at
+     * again after and the read run again once if it changed, else refused with an empty answer), marking a root found
+     * gone as seen away and asking for a root back to be read again, so it is for a playlist's admission (Play all,
+     * Play from here), not for per-refresh reads.
      */
     virtual QList<QVariantList>
     recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const {

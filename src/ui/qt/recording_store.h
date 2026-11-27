@@ -403,6 +403,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after each slice of a folder's journal is applied, with the lock released;
      * before start() or between passes. Test hook. */
     void setSliceHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook in a playlist's admission (recordingsForFragmentLists()) after its look at the storage
+     * roots, with the lock released, before the store is looked at again; on the reading thread. Test hook. */
+    void setAdmissionProbeHookForTest(std::function<void()> hook);
     /** @brief Call @p hook on the worker, under the lock, each time a sum takes its copy of the folder table, with
      * whether that copy still shares the table's storage (it never should: foldersCopyLocked()). Test hook. */
     void setFolderCopyHookForTest(std::function<void(bool shared)> hook);
@@ -583,6 +586,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * @p starts). */
     bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
+    /* Whether @p root is an existing directory that can be read now (R77): a playlist's admission's look. Not
+     * rootAvailableNow(), whose root that can be made counts for a session start, not for recordings already in it. */
+    static bool rootPlayableNow(const QString& root);
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
     static bool opensToRead(const QString& path);
     /* False for @p path, read as @p stat, while it is a recording a transfer could not open (m_unopenable) and it still
@@ -667,9 +673,27 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* A root seen away (R74): found missing outside a pass, or back and not read again yet, from that first look
      * through the pass's read of it. */
     bool rootSeenAwayLocked(int root) const;
-    /* A playlist's admission's look at each root of @p roots as it is now: true when a pass was asked for (a root gone
-     * was noted seen away, or one back asks for its read again). Under the store's lock. */
-    bool admissionRootsCheckedLocked(const QSet<int>& roots) const;
+
+    /* One root a playlist's admission admits from, as the store held it when the admission took its roots (R77). */
+    struct AdmissionRoot {
+        QString path;
+        bool known = false;     // m_rootAvailable
+        bool pending = false;   // in m_rootsSeenAway: a listing in full asked for, not begun
+        bool rereading = false; // in m_rootsRereading
+
+        bool
+        operator==(const AdmissionRoot& other) const {
+            return path == other.path && known == other.known && pending == other.pending
+                   && rereading == other.rereading;
+        }
+    };
+
+    /* The roots the recordings of @p found are on, each as the store holds it. Under the store's lock. */
+    QHash<int, AdmissionRoot> admissionRootsLocked(const QList<QList<const Entry*>>& found) const;
+    /* A playlist's admission records what its look found, @p playable (rootPlayableNow()) for each root of @p roots:
+     * true when a pass was asked for (a root gone was noted seen away, or one back asks for its read again). Under the
+     * store's lock, which the look itself never held. */
+    bool admissionLookRecordedLocked(const QHash<int, AdmissionRoot>& roots, const QHash<int, bool>& playable) const;
     /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
     bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
@@ -955,6 +979,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_rootReadHook;
     std::function<void(const QString&)> m_tailHook;
     std::function<void(const QString&)> m_sliceHook;
+    std::function<void()> m_admissionProbeHook; // set and copied under m_mutex: called on the reading thread
     std::function<void(bool)> m_folderCopyHook;
     std::function<void(const QString&)> m_entryCheckHook;
     std::function<void()> m_passEndHook;
