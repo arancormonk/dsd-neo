@@ -33,6 +33,7 @@
  * from a tracker that starts LEARNING.
  */
 
+#include <dsd-neo/core/parse.h>
 #include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -214,6 +215,37 @@ run_tracker(void) {
     return 0;
 }
 
+/* The request's optional reader field, the rest of the line after the passes: 0 (no reader) when it holds nothing but
+   white space, else one whole source rate from 0 (no reader, as the paths model writes it) to 100,000,000 Hz with
+   nothing after it (dsd_parse_long_strict()). Returns 0, or -1 for a field that does not read so ("oops", "8000oops",
+   two fields). */
+static int
+parse_reader_field(const char* text, long* out) {
+    *out = 0;
+    while (*text == ' ' || *text == '\t') {
+        text++;
+    }
+    char field[32];
+    size_t n = 0U;
+    while (text[n] != '\0' && text[n] != ' ' && text[n] != '\t' && text[n] != '\n' && text[n] != '\r') {
+        if (n + 1U >= sizeof field) {
+            return -1;
+        }
+        field[n] = text[n];
+        n++;
+    }
+    field[n] = '\0';
+    for (const char* rest = text + n; *rest != '\0'; rest++) {
+        if (*rest != ' ' && *rest != '\t' && *rest != '\n' && *rest != '\r') {
+            return -1;
+        }
+    }
+    if (n == 0U) {
+        return 0;
+    }
+    return dsd_parse_long_strict(field, 10, 0, 100000000L, out);
+}
+
 int
 main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "track") == 0) {
@@ -259,17 +291,14 @@ main(int argc, char** argv) {
             profile = strtol(end4, &end5, 10);
             char* end6 = NULL;
             passes = strtol(end5, &end6, 10);
-            /* The optional reader field: the source rate the replay reader resamples into the cascade. */
-            char* end7 = NULL;
-            reader_source = strtol(end6, &end7, 10);
-            if (end7 == end6) {
-                reader_source = 0;
-            }
+            /* The optional reader field: the source rate the replay reader resamples into the cascade. Nothing but
+               white space after the passes is no reader; anything else must be a whole rate. */
+            const int reader_ok = parse_reader_field(end6, &reader_source) == 0;
             const int profile_ok = path == 0 ? (profile == -1 || profile == -2)
                                              : (profile == -2 || profile == DSD_CH_LPF_PROFILE_WIDE
                                                 || profile == DSD_CH_LPF_PROFILE_PROVOICE);
             if (end5 == end4 || end6 == end5 || path < 0 || path > 2 || !profile_ok || passes < 0 || passes > 10
-                || reader_source < 0 || reader_source > 100000000) {
+                || !reader_ok) {
                 DSD_FPRINTF(stderr, "bad request: %s", line);
                 rc = 1;
                 continue;
