@@ -323,7 +323,7 @@ class FirStream:
         if len(x) % self.down:
             raise ValueError("a push must hold whole output periods")
         buf = np.concatenate((self.hist, np.asarray(x, dtype=np.complex128)))
-        self.hist = buf[len(buf) - self.hist_len :]
+        self.hist = buf[len(buf) - self.hist_len :].copy()  # a copy: a view would keep the whole push alive
         y = sps.upfirdn(self.h, buf, self.up, self.down)
         start = self.hist_len * self.up // self.down
         return y[start : start + len(x) * self.up // self.down]
@@ -344,7 +344,7 @@ class FirStream:
             y = sps.oaconvolve(seg, self.h, mode="valid")
         self.n_out = end
         keep = min(end * self.down + self.advance - span, self.n_in)
-        self.buf = self.buf[keep - self.base :]
+        self.buf = self.buf[keep - self.base :].copy()  # the history alone, not a view of the whole push
         self.base = keep
         return y[:: self.down]
 
@@ -483,7 +483,7 @@ class SubWindowStream:
             out[name] = sums
         self.k += done
         self.count = end
-        self.hist = ext[len(ext) - self.lag :]
+        self.hist = ext[len(ext) - self.lag :].copy()  # the last L samples, not a view of the whole push
         return out
 
 
@@ -666,7 +666,7 @@ def impulse_cov(plan: RatePlan, hb_taps: dict, taps: np.ndarray) -> np.ndarray:
         count = len(buf) - (lags - 1)
         if count > 0:
             add_phase_products(cov, buf, first, count)
-            carry = buf[count:]
+            carry = buf[count:].copy()
             first += count
         else:
             carry = buf
