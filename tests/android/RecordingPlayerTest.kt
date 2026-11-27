@@ -1161,6 +1161,16 @@ private fun theQueueIsLetGoAtTheEnd() {
     none.turn()
     check(none.status.endedReason == RecordingPlayer.ENDED_UNPLAYABLE && none.machine.queueHeld == 0) { "unplayable" }
     check(none.status.skipped == 2 && none.status.itemIndex == 1) { "with its counters and the item it ended on" }
+
+    // The host's own stop (no generation) lets it go too, the failed marks and call starts included.
+    val host = Rig()
+    host.queue(2, 1, 3)
+    host.prepared()
+    check(host.machine.queueHeld > 0) { "a play holds its queue" }
+    host.machine.stop()
+    check(host.state == STOPPED && host.status.generation == 0 && host.machine.queueHeld == 0) {
+        "the host's stop leaves nothing held (${host.machine.queueHeld})"
+    }
 }
 
 private fun previousFollowsTheThreeSecondRule() {

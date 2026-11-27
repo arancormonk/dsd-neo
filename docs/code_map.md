@@ -20038,9 +20038,10 @@ Qt Quick frontend (`src/ui/qt`):
       focus, timeout, unplayable, start, failed, replaced; the item it ended on) stays as the status until the next
       play, so the host reads a notification Stop on its next poll. The queue goes at the end (R43): the machine
       drops `items`, the failed marks and `callStarts`, keeping only the item it ended on and the call count for the
-      terminal reading (`endedItem`, `endedCalls`; the counters stay), since every command and task needs the play
-      open; the recheck list keeps its own paths. The host lets `m_playback_items` go when it closes the play
-      (`closePlayback()`: its terminal poll, or a stop), the published reading keeping what its item named.
+      terminal reading (`endedItem`, `endedCalls`; the counters stay), since every command and task needs the play open;
+      the host's own stop (`stop()` with no generation) and a replacement let it all go too (`close()`), and the recheck
+      list keeps its own paths. The host lets `m_playback_items` go when it closes the play (`closePlayback()`: its
+      terminal poll, or a stop), the published reading keeping what its item named.
     - State/action table (one table drives Qt and the session, and every command is checked against it again on
       delivery): opening (wanted) PLAYING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
       Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;

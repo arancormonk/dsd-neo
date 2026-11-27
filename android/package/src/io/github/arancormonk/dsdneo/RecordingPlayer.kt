@@ -1573,6 +1573,9 @@ class RecordingPlayer(
         ended = null
         endedItem = null
         endedCalls = 0
+        // The queue goes with the play: the host's own stop leaves nothing held, as every other end does.
+        failed = BooleanArray(0)
+        callStarts = IntArray(1)
         dropFocus()
     }
 
