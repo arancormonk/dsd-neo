@@ -3120,6 +3120,18 @@ check_playlist_record() {
     r.status = f.text();
     host.refresh();
     check(!host.playbackCanNext(), "no Next offered: none published");
+    const qint64 shownBefore = host.playbackPositionMs();
+    // r17f: every number read whole: a state field with trailing data, a NUL or a leading space is no record, so a
+    // "4" prefix (Failed) never closes a play still running.
+    for (const QString& state : {QStringLiteral("4x"), QStringLiteral("4") + QChar(0), QStringLiteral(" 4")}) {
+        QStringList fields = f.text().split(QLatin1Char('\t'));
+        fields[1] = state;
+        r.status = fields.join(QLatin1Char('\t'));
+        host.refresh();
+        check(host.playbackState() != DecoderHost::PlaybackFailed && host.playbackGeneration() == f.generation
+                  && host.playbackPositionMs() == shownBefore,
+              "#909 r17f: a state field not wholly a number is no record, the play left open");
+    }
 
     f.item = 3;
     f.paused.clear();

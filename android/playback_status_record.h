@@ -14,12 +14,15 @@
 #ifndef DSD_NEO_ANDROID_PLAYBACK_STATUS_RECORD_H_
 #define DSD_NEO_ANDROID_PLAYBACK_STATUS_RECORD_H_
 
+#include <QByteArray>
 #include <QLatin1Char>
 #include <QLatin1String>
 #include <QString>
 #include <QStringList>
 #include <QtGlobal>
 #include <algorithm>
+#include <cerrno>
+#include <cstdlib>
 #include <iterator>
 #include <limits>
 #include <stddef.h>
@@ -59,15 +62,23 @@ constexpr int kPlaybackStatusFields = 23;
 
 namespace detail {
 
-/** @brief Whether @p text is a decimal within [@p low, @p high], read into @p out. */
+/** @brief Whether @p text is a decimal within [@p low, @p high] and nothing else (no space, sign other than a leading
+ * minus, NUL or trailing data: strtoll with its end checked against the whole text, r17f), read into @p out. */
 inline bool
 playback_status_number(const QString& text, qint64 low, qint64 high, qint64* out) {
-    bool ok = false;
-    const qint64 value = text.toLongLong(&ok, 10);
-    if (!ok || value < low || value > high) {
+    const QByteArray bytes = text.toLatin1();
+    const char* begin = bytes.constData();
+    const bool leadsWithDigitOrMinus = !bytes.isEmpty() && (begin[0] == '-' || (begin[0] >= '0' && begin[0] <= '9'));
+    if (!leadsWithDigitOrMinus) {
         return false;
     }
-    *out = value;
+    errno = 0;
+    char* end = nullptr;
+    const long long value = std::strtoll(begin, &end, 10);
+    if (errno != 0 || end != begin + bytes.size() || value < low || value > high) {
+        return false;
+    }
+    *out = static_cast<qint64>(value);
     return true;
 }
 
