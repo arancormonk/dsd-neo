@@ -278,12 +278,12 @@ identity tuple taken from the indexed identity and not `bytes` after a limit pas
 identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
 (`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 21-field status record and malformed ones ignored (a
 reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
-reading unchanged), the recheck paths on a serial change, on a foreground return and with the next play, a PARTS or
-PLAYLIST item without its identity (no size, a negative one, no mtime or one that is no number) refused with the play
-open left playing while a single item needs none, token commands (a stale token's dropped, and no position shown for any
-seek: only the player's record moves it), the replacement point, the legacy `playRecording()` missing-file reading, a
-sheet's own play whose file goes right after its one check (`decoder_host_test_hooks.h`) stopping nothing, and no status
-reads while idle or on position-only ticks); and
+reading unchanged), the recheck paths on a serial change, on a foreground return (Inactive included, an end between
+polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative
+one, no mtime or one that is no number) refused with the play open left playing while a single item needs none, token
+commands (a stale token's dropped, and no position shown for any seek: only the player's record moves it), the
+replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right after its
+one check (`decoder_host_test_hooks.h`) stopping nothing, and no status reads while idle or on position-only ticks); and
 `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
 the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a
 press acting only on the target it began on (the bar's ✕, Previous and Next held across a new playlist, Show in list

@@ -359,13 +359,16 @@ DecoderHostAndroid::followApplicationState() {
         return;
     }
     const Qt::ApplicationState state = app->applicationState();
-    m_app_away = state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden;
+    m_app_away =
+        state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden || state == Qt::ApplicationInactive;
     QObject::connect(app, &QGuiApplication::applicationStateChanged, this, &DecoderHostAndroid::noteApplicationState);
 }
 
 void
 DecoderHostAndroid::noteApplicationState(Qt::ApplicationState state) {
-    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden) {
+    // Inactive too (#909, R51): an app still visible but not active (split screen) holds the bar's events, so the
+    // first active reading must come before the bar says anything.
+    if (state == Qt::ApplicationSuspended || state == Qt::ApplicationHidden || state == Qt::ApplicationInactive) {
         m_app_away = true;
         return;
     }

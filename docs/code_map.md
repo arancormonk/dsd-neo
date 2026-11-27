@@ -20082,7 +20082,9 @@ Qt Quick frontend (`src/ui/qt`):
       starts, cleared when another call opens; -1 and 0 with none). `run_jvm_tests.py` checks the writers and the parser
       count the same fields. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the
       item index of the same record, and publishes everything together; the position alone goes on
-      `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once.
+      `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once, from Hidden,
+      Suspended or Inactive (R51: an app visible but not active, as in split screen, holds the bar's events, so the
+      first active reading comes before the bar says anything).
     - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
       the old generation ends (its service is told it was replaced), the new one publishes Preparing and the call
       returns its positive generation, which owns every later message, a synchronous service-start exception (published

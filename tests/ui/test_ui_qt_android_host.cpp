@@ -3213,6 +3213,28 @@ check_playlist_recheck() {
     check(host.playbackEndedReason() == QStringLiteral("finished") && host.playbackGeneration() == 52
               && r.rechecks == before + 1,
           "back in the foreground with a play open: its end is read at once, and the list taken");
+
+    // R51: Inactive is a leave too (split screen: visible, not active). The play finishes between polls; back to
+    // Active, the end is read and published at once, before the bar can say its waiting start.
+    r.nextGeneration = 53;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    StatusFields playingNow;
+    playingNow.generation = 53;
+    playingNow.item = 0;
+    playingNow.token = 9;
+    r.status = playingNow.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPlaying, "the playlist plays");
+    host.noteApplicationState(Qt::ApplicationInactive);
+    r.status = ended_record(53, DecoderHost::PlaybackStopped, QStringLiteral("finished")).text();
+    const int readsBefore = r.statusReads;
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == readsBefore + 1 && host.playbackEndedReason() == QStringLiteral("finished"),
+          "Inactive then Active: the end is read at once");
+    const int idle = r.statusReads;
+    host.noteApplicationState(Qt::ApplicationInactive);
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == idle, "and with no play open no status is read");
 }
 
 /* #909: item commands carry the play token of the gesture; one for another recording is dropped, shown nowhere. */

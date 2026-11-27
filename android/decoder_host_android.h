@@ -382,7 +382,8 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * status record (playback_status_record.h) and publishes all of it at once, the item's path, title and key looked
      * up in the play's own items by the record's item index. No play open, nothing is read. Leaving the foreground
      * pauses a single recording or a sheet's parts there (D10); a History playlist plays on under its own service
-     * (#909). Qt is not running then: coming back (noteApplicationState()) reads the record at once. A play that ends
+     * (#909). Qt is not running then: coming back (noteApplicationState(), from Hidden, Suspended or Inactive, the last
+     * for an app still visible, as in split screen) reads the record at once. A play that ends
      * keeps its last reading (its generation, its ended reason) until the next play or a stop; a single recording that
      * ends at its end reads Stopped with its path kept and its position at its length, unlike a stop. The paths the
      * player found gone or changed (RecordingPlayback.takeRecheck()) go to recordingFilesMissing() when the record's
