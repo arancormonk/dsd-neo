@@ -1518,6 +1518,62 @@ private fun anEndedOwnerThreadIsSilent() {
 }
 
 /**
+ * A completion while paused is held (the emulator's defect, ruled): the platform plays out what it had buffered at the
+ * Pause and reports completion. The part stays current, paused at its end, with no seek; Resume moves on as if it had
+ * just completed: the next part, or the gap after a call's last part. Previous reads the end position (the 3,000 ms
+ * rule), and the paused deadline counts on.
+ */
+private fun aCompletionWhilePausedIsHeld() {
+    val rig = Rig()
+    rig.queue(2, 1)
+    rig.prepared()
+    rig.elapse(9_850)
+    rig.machine.pause()
+    val first = rig.current
+    rig.complete()
+    check(rig.status.call == 0 && rig.status.partOrdinal == 1 && rig.state == PAUSED) {
+        "still part 1, paused (${rig.status.partOrdinal}, ${rig.state})"
+    }
+    check(rig.position == rig.status.durationMs && !rig.status.canSeek) { "at its end, no seek: ${rig.position}" }
+    check(rig.players.last() === first) { "nothing opened yet" }
+    rig.machine.resume()
+    check(rig.status.partOrdinal == 2 && rig.players.last() !== first) { "Resume: on to part 2" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.partOrdinal == 2) { "and part 2 plays" }
+
+    // At a call's last part: Resume enters the gap before the next call.
+    rig.elapse(1_000)
+    rig.machine.pause()
+    rig.complete()
+    check(rig.status.call == 0 && rig.status.partOrdinal == 2 && rig.state == PAUSED && !rig.status.gap) {
+        "the call's last part, held paused at its end"
+    }
+    rig.machine.resume()
+    check(rig.status.gap && rig.state == PLAYING) { "Resume: the gap before the next call" }
+
+    // Previous from a held completion reads the end position: past 3,000 ms it restarts the call.
+    val back = Rig()
+    back.queue(1, 1)
+    back.prepared()
+    back.machine.next()
+    back.prepared()
+    back.elapse(9_000)
+    back.machine.pause()
+    back.complete()
+    back.machine.previous()
+    check(back.status.call == 1) { "Previous at the end position restarts the call, on call ${back.status.call}" }
+
+    // The paused deadline counts on through a held completion.
+    val late = Rig()
+    late.queue(1, 1)
+    late.prepared()
+    late.machine.pause()
+    late.complete()
+    late.elapse(RecordingPlayer.PAUSED_LIMIT_MS)
+    check(late.state == STOPPED && late.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) { "the deadline ends it" }
+}
+
+/**
  * A silence outstanding outlives a normal end (R61): A sounds, its pause held, and Next finds every later recording
  * gone, so the play ends finished at once; a Play then prepares C and its start waits for A's silence, which starts it.
  */
@@ -3893,6 +3949,7 @@ fun main() {
     aSilenceOutlivesANormalEnd()
     everyEndLetsASoundingPlayerFallSilentFirst()
     anEndedOwnerThreadIsSilent()
+    aCompletionWhilePausedIsHeld()
     aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()

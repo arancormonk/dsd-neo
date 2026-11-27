@@ -729,6 +729,12 @@ class RecordingPlayer(
     private val silencing = HashSet<Long>()
     private var startDeferred = false
 
+    /**
+     * The current part completed while paused (the platform played out what it had buffered at the Pause): it stays
+     * current, paused at its end, with no seek, and moves on when resumed. Its player never starts again (R66).
+     */
+    private var completionHeld = false
+
     /** The current part has played (a start of it was acknowledged) since it opened (R46). */
     private var partPlayed = false
     private var positionMs = 0L
@@ -1031,7 +1037,11 @@ class RecordingPlayer(
         publish()
     }
 
-    /** It played to its end: the next part at once, the gap after a call, or the end, whatever its duration. */
+    /**
+     * It played to its end: the next part at once, the gap after a call, or the end, whatever its duration. Paused or
+     * interrupted (the platform played out what it had buffered at the Pause), the completion is held: the part stays
+     * current, paused at its end, and moves on when it is resumed ([completionHeld]).
+     */
     fun onCompleted(token: Long) {
         if (player == null || token != this.token || !prepared || expireIfDue()) {
             return
@@ -1040,6 +1050,19 @@ class RecordingPlayer(
         withdrawStart()
         playingSinceMs = -1
         positionMs = durationMs
+        if (!wanted || interrupted) {
+            // Paused (the platform drained what it had buffered at the Pause): the part stays current, paused at its
+            // end, and moves on when it is resumed, as if it had just completed. The paused deadline counts on.
+            completionHeld = true
+            publish()
+            return
+        }
+        finishPart()
+    }
+
+    /** The current part completed while wanted, or was resumed after a held completion: on to what follows. */
+    private fun finishPart() {
+        completionHeld = false
         // Done with: never touched again (a later callback from it carries a token no open has again), and released
         // once the next part is handed off, so its release adds nothing to the joint between parts.
         val done = player
@@ -1263,6 +1286,7 @@ class RecordingPlayer(
         partPlayed = false
         startMade = false
         seekPending = 0L
+        completionHeld = false
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a thread let go to end too.
         val opened = token
@@ -1399,6 +1423,11 @@ class RecordingPlayer(
     private fun advance() {
         if (!active || !wanted || !promoted || (mode != MODE_PLAYLIST && !foreground)) {
             publish()
+            return
+        }
+        if (completionHeld) {
+            // A completion held while paused: resumed, the part moves on as if it had just completed.
+            if (interrupted) publish() else finishPart()
             return
         }
         if (gap) {
@@ -1726,6 +1755,7 @@ class RecordingPlayer(
 
     /** The play is over: let everything go and keep its terminal reading. */
     private fun end(state: Int, error: String, reason: String) {
+        completionHeld = false
         positionMs = currentPositionMs()
         cancelAll()
         // The end is published at once; a player that may still sound is paused and asked for its silence as it is
@@ -1759,6 +1789,7 @@ class RecordingPlayer(
 
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
     private fun close() {
+        completionHeld = false
         cancelAll()
         // The next play's first start waits for this play's sounding player to fall silent (R52, M3, R61): it is
         // paused and asked as it is let go.
@@ -1851,7 +1882,7 @@ class RecordingPlayer(
     private fun hasCallAfter(call: Int): Boolean = (callEnd(call) + 1 until items.size).any { !failed[it] }
 
     private fun canSeek(): Boolean =
-        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0
+        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0 && !completionHeld
 
     private fun actions(): Int {
         if (!active) {
