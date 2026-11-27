@@ -449,7 +449,7 @@ class RecordingPlaybackService : Service() {
         private fun command(action: (RecordingPlayer) -> Unit) =
             RecordingPlayback.sessionCommand(target.generation) { player, _ -> action(player) }
 
-        /** A transport command: a waiting headset tap counts first, so this later command wins (R60). */
+        /** A transport command: the waiting headset tap is cancelled, so this command acts alone (R60, M7). */
         private fun transport(action: (RecordingPlayer) -> Unit) =
             keys.direct(target.generation) { player, _ -> action(player) }
     }

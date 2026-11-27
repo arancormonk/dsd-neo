@@ -113,6 +113,9 @@ private class Playing(val rig: ServiceRig) {
     val seeks = mutableListOf<Pair<Long, Long>>()
     val ends = mutableListOf<Pair<Int, String>>()
 
+    /** The focus requests the player made. */
+    var focusRequests = 0
+
     /** Ends posted to the main thread and not run yet (holdEnds); else run at once. */
     var holdEnds = false
     val heldEnds = mutableListOf<Int>()
@@ -156,7 +159,10 @@ private class Playing(val rig: ServiceRig) {
             )
         },
         object : RecordingPlayer.Focus {
-            override fun request(mode: RecordingPlayer.FocusMode, epoch: Int) = true
+            override fun request(mode: RecordingPlayer.FocusMode, epoch: Int): Boolean {
+                focusRequests++
+                return true
+            }
             override fun abandon() = Unit
         },
         { nowMs },
@@ -888,26 +894,35 @@ fun headsetTapsBelongToThePlaylistNotThePart() {
 }
 
 /**
- * A direct transport callback settles a waiting headset tap first (R60): playing, a tap waits for its double tap, and
- * a lock-screen Pause (onPause) arrives in the wait. The tap counts first, then the Pause: paused, and the tap's
- * timeout, which would have found the play paused and resumed it, changes nothing.
+ * A direct transport callback cancels a waiting headset tap (R60, M7): it acts alone. Playing, a tap waits and a
+ * lock-screen Pause arrives in the wait: paused, and the tap's timeout changes nothing. Paused, a tap waits and a
+ * Pause arrives: the tap never resumes it first (no focus asked for), and it stays paused.
  */
-fun aDirectPauseSettlesAWaitingTap() {
-    val playing = Playing(ServiceRig())
-    val machine = playing.machine
-    val t = Taps(playing)
-    val keys = SessionKeys(t.taps) { g, command -> if (playing.rig.phases.isOwner(g)) command(machine, g) }
-    val g = playing.playlist()
-    playing.deliver()
-    machine.onPrepared(playing.tokens.last())
-    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays" }
-    t.taps.keyDown(g, 0)
-    keys.direct(g) { player, generation -> SessionTarget(generation).pause(player) }
-    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the Pause pauses" }
-    val toggled = t.toggles.size
-    t.elapse(Taps.TAP_TIMEOUT_MS)
-    check(t.toggles.size == toggled && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
-        "the tap's timeout changes nothing: still paused"
+fun aDirectPauseCancelsAWaitingTap() {
+    for (startPaused in listOf(false, true)) {
+        val playing = Playing(ServiceRig())
+        val machine = playing.machine
+        val t = Taps(playing)
+        val keys = SessionKeys(t.taps) { g, command -> if (playing.rig.phases.isOwner(g)) command(machine, g) }
+        val g = playing.playlist()
+        playing.deliver()
+        machine.onPrepared(playing.tokens.last())
+        if (startPaused) {
+            machine.pause(g)
+            check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "paused" }
+        } else {
+            check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays" }
+        }
+        val focusAsked = playing.focusRequests
+        t.taps.keyDown(g, 0)
+        keys.direct(g) { player, generation -> SessionTarget(generation).pause(player) }
+        check(t.toggles.isEmpty()) { "paused $startPaused: the tap is cancelled, never counted" }
+        check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "paused $startPaused: the Pause pauses" }
+        check(playing.focusRequests == focusAsked) { "paused $startPaused: no focus asked for" }
+        t.elapse(Taps.TAP_TIMEOUT_MS)
+        check(t.toggles.isEmpty() && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+            "paused $startPaused: the tap's timeout changes nothing: still paused"
+        }
     }
 }
 
@@ -996,6 +1011,6 @@ fun main() {
     headsetTapsBelongToThePlaylistNotThePart()
     aDisconnectDropsAWaitingTap()
     transportKeysFollowAWaitingTapOnThePlayersState()
-    aDirectPauseSettlesAWaitingTap()
+    aDirectPauseCancelsAWaitingTap()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

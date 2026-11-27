@@ -540,13 +540,13 @@ class SessionKeys(
     }
 
     /**
-     * A direct transport callback of the session (onPlay, onPause, onStop, onSkipToNext, onSkipToPrevious, R60): a
-     * waiting tap counts as single first, as it does before a transport key, then [command] is sent for playlist
-     * [generation]. So the later command wins: a lock-screen Pause in a tap's double-tap wait is never undone by the
-     * tap's timeout.
+     * A direct transport callback of the session (onPlay, onPause, onStop, onSkipToNext, onSkipToPrevious, R60): the
+     * playlist [generation]'s waiting tap is cancelled, not counted, then [command] is sent, so it acts alone. A
+     * lock-screen Pause in a tap's double-tap wait is never undone by the tap's timeout, and a paused playlist's tap
+     * never resumes it (taking another app's audio) before the Pause.
      */
     fun direct(generation: Int, command: (RecordingPlayer, Int) -> Unit) {
-        taps.otherKey()
+        taps.ended(generation)
         send(generation, command)
     }
 
