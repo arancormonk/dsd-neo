@@ -1375,7 +1375,8 @@ brackets below), and the log says how to fix it; see
   which also removes that shift (`tuner`).
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
-- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off (`tuner`).
+- `DSD_NEO_DISABLE_FS4_SHIFT=1` on an RTL-SDR, rtl_tcp or SoapySDR input, which turns that shift off (`tuner`). A
+  native Airspy (`-i airspy`) takes no shift, so the setting leaves its check as it is.
 - A native Airspy (`-i airspy`) at a rate its firmware lists other than 2.5, 3, 6 and 10 MS/s (`rate`): set
   `--airspy-sample-rate` to one of those four that the Airspy lists (in samples per second, for example 2500000 or
   10000000 on an R2, 3000000 or 6000000 on a Mini). Leaving the rate to the device does not choose among those four:
@@ -1423,10 +1424,11 @@ check channels on this input. Normal scan timing applies."
 
 When a reason first applies, the log gets one line that says what cannot be checked and how to fix it. Each line
 starts with `WARNING: scan: silent channel skip cannot check` and ends with `Normal scan timing applies.` A reason
-that covers the whole receiver is logged once, and again when the input or its sample rate changes; a channel's
-reason is logged once for each channel, and again after that channel, its list or the decoders change. Turning the
-setting off and on logs them again. `<channel>` is a target's label (or its id when it has none), or `row N` for a
-`-Y` row, counted from 1:
+that covers the whole receiver is logged once, and again when the input changes, or, for a line that names a sample
+rate, when that rate changes; the SoapySDR Airspy and SoapySDR device lines below name no rate and are logged once for
+the input, whatever rates its lists run at. A channel's reason is logged once for each channel, and again after that
+channel, its list or the decoders change. Turning the setting off and on logs them again. `<channel>` is a target's
+label (or its id when it has none), or `row N` for a `-Y` row, counted from 1:
 
 - `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp, soapy or airspy).`,
   `... channels in an I/Q replay; it needs a live radio input.`,

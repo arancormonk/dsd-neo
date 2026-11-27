@@ -1317,8 +1317,9 @@ The check runs only where the calibration rendered and validated it, matched exa
 - A native Airspy input (`-i airspy`) delivers centred I/Q with no quarter-rate shift, tuned on the channel. It is
   checked under its own policy at 2.5, 3, 6 and 10 MS/s (`dsd_signal_quiet_airspy_centred_rate_supported()`), with
   the reference span narrowed to the flat part of its passband (±0.25 of the rate at 2.5 and 3 MS/s, ±0.375 at 6 and
-  10 MS/s) and the channel judged at 3.2 dB instead of 5 dB. An RTL-SDR with offset tuning on, or any capture with
-  the shift turned off, gets no check.
+  10 MS/s) and the channel judged at 3.2 dB instead of 5 dB. An RTL-SDR with offset tuning on, or a receiver on the
+  default geometry (RTL-SDR, rtl_tcp, SoapySDR) with the shift turned off, gets no check; a native Airspy has no shift
+  to turn off, and `DSD_NEO_DISABLE_FS4_SHIFT=1` leaves its check as it is.
 - Analog widths (`dsd_signal_quiet_analog_supported()`, given the kind as `dsd_opts.analog_demod` carries it): NFM 8,
   10, 11.25, 12, 12.5, 15, 16, 20 and 25 kHz and AM 5, 6, 8, 8.333 (8333 Hz), 10, 15 and 20 kHz, each rendered as
   that kind at every admitted rate. These are the Radio sheet's steps (`src/ui/qt/qml/Util.js`) and, for NFM 10, 12
