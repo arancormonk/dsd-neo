@@ -5439,6 +5439,37 @@ test_first_read_waits_for_its_last_slice(void) {
     s.store.releaseSelection(after);
 }
 
+/* r14t: a session start that sees an indexed root's recordings folder missing (its parent there) notes the root seen
+ * away though it records on another root: its rows are unavailable at once, and the folder back before any pass is
+ * read again in full, its rows available after. */
+void
+test_session_on_another_root_notes_a_missing_indexed_root(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString extAway = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString renamed = roots.dir.path() + QStringLiteral("/ext/renamed");
+    expect("other root: the external storage away", QDir().rename(ext, extAway));
+    Store s(roots.list());
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+    s.store.endSession();
+    expect("other root: the owner's folder on the internal storage", b.startsWith(roots.internal + QLatin1Char('/')));
+    expect("other root: the external storage back", QDir().rename(extAway, ext));
+    const QString a = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("other root: a folder on it", write_owner_json(a, QString(kUidA), QStringLiteral("County")));
+    record(a, QStringLiteral("0000000000000970-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    s.pass();
+    expect("other root: indexed", listed_as(s.store, 1, true));
+    expect("other root: the recordings folder renamed, no pass since", QDir().rename(roots.external, renamed));
+    const QString again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+    s.store.endSession();
+    expect("other root: the session recorded on the internal storage", again == b);
+    expect("other root: the missing root's row is unavailable at once", listed_as(s.store, 1, false));
+    expect("other root: the folder back", QDir().rename(renamed, roots.external));
+    s.pass();
+    expect("other root: read again, the row is available", listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -6884,6 +6915,7 @@ main(int argc, char** argv) {
     test_directory_gone_during_a_folder_read_is_remembered_missing();
     test_session_seeing_a_listing_root_gone_queues_another();
     test_first_read_waits_for_its_last_slice();
+    test_session_on_another_root_notes_a_missing_indexed_root();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

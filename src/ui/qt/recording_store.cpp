@@ -2635,10 +2635,11 @@ RecordingStore::usableRootsLocked() {
         // so a directory replaced between two looks never reads as there to one and missing to the other.
         const bool missing = !rootPlayableNow(m_roots.at(i));
         const bool creatable = !missing || rootAvailableNow(m_roots.at(i));
-        // Gone while its listing in full is in flight (r13, R79's rule): what that listing found may be from
-        // before, and the storage there at its end another card, so another listing follows it, wherever this
+        // Gone while its listing in full is in flight (r13, R79's rule), or while rows are indexed on it (r14t, R83):
+        // what the index holds of it may name files no longer there, and it is read in full once back, wherever this
         // session records.
-        if (missing && m_listing.contains(i) && !m_rootsSeenAway.contains(i)) {
+        const bool indexed = m_rootAvailable.value(i) && rootHoldsRowsLocked(i);
+        if (missing && (m_listing.contains(i) || indexed) && !m_rootsSeenAway.contains(i)) {
             noteRootSeenAwayLocked(i);
         }
         if (usable.at(i) && !creatable) {

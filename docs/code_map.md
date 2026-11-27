@@ -20458,39 +20458,43 @@ Qt Quick frontend (`src/ui/qt`):
     is in flight or done (not merely asked for) is noted again, so another listing runs after it: the storage there at
     the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`); so does a session start
     that sees only the root's directory gone during its listing, whatever root it records on (`usableRootsLocked()`,
-    r13, `test_session_seeing_a_listing_root_gone_queues_another`). A recheck a transfer asked for that finds the file
-    the index knows but cannot open it (no read access) marks it unreadable, so the next export takes the others
-    (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through
-    later reads of its folder until an open succeeds, a metadata read alone never bringing it back
-    (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no
-    recording path for save and share once its read is done, and a refreshed History row shows it as away with Play
-    refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session start
-    between its slices marked the folder unread, a share can still take a path from the committed view, and a History
-    call's part buttons play by path (limits below). A journal is compacted only in a folder read and on storage not
-    seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
-    `test_compaction_waits_for_a_rescan`). A journal tail is applied only while its folder is still read with the
-    session-start count its cursor was taken with, so an owner lookup that failed meanwhile ends it
-    (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck that finds a link, a folder or a FIFO at a
-    recording's name settles a delete waiting for it as skipped, told (`test_recheck_finding_a_link_tells_its_delete`).
-    A folder read opens and reads the journal before it lists or looks at any file, and a folder whose folder.json or
-    journal could not be read is tried again no more often than every 30 s (`Folder::retryAtMs`,
-    `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read, first or again, always
-    publishes, so `indexed` comes back even when no recording in it changed (`test_unread_journal_retry_publishes`). A
-    root listed again while it reads as available (a delete request saw it missing, back before the pass) keeps a folder
-    a session start made or took on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`,
-    `keepSessionFoldersLocked()`: one the listing has keeps the start's owner and label; one it has not was made new,
-    and what the index held at that path before, a folder removed while the storage was away, goes with its recordings;
-    `test_rescan_keeps_a_session_folder_made_meanwhile`, `test_rescan_drops_a_recreated_folders_old_recordings`,
-    `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
-    its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
-    does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
-    `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
-    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
-    preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
-    a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
-    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do. A recheck
-    keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording file (a link,
-    a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
+    r13, `test_session_seeing_a_listing_root_gone_queues_another`); and one that sees a root's recordings folder missing
+    while rows are indexed on it notes it seen away too, whatever root it records on, so its rows are unavailable at
+    once and it is read in full once back (r14t, `test_session_on_another_root_notes_a_missing_indexed_root`). A session
+    start's one look at a root (`rootPlayableNow()`) decides whether its directory is missing; only a missing one is
+    asked whether it can be made (r14t). A recheck a transfer asked for that finds the file the index knows but cannot
+    open it (no read access) marks it unreadable, so the next export takes the others (`opensToRead()`,
+    `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through later reads of its
+    folder until an open succeeds, a metadata read alone never bringing it back (`opensAgainLocked()`,
+    `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no recording path for save and
+    share once its read is done, and a refreshed History row shows it as away with Play refused (`folderReadLocked()`,
+    `test_unread_folder_offers_no_paths`); while a read continues after a session start between its slices marked the
+    folder unread, a share can still take a path from the committed view, and a History call's part buttons play by path
+    (limits below). A journal is compacted only in a folder read and on storage not seen away since, checked again right
+    before the rewrite is committed (`compactableLocked()`, `test_compaction_waits_for_a_rescan`). A journal tail is
+    applied only while its folder is still read with the session-start count its cursor was taken with, so an owner
+    lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck that finds a
+    link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
+    (`test_recheck_finding_a_link_tells_its_delete`). A folder read opens and reads the journal before it lists or looks
+    at any file, and a folder whose folder.json or journal could not be read is tried again no more often than every 30
+    s (`Folder::retryAtMs`, `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read,
+    first or again, always publishes, so `indexed` comes back even when no recording in it changed
+    (`test_unread_journal_retry_publishes`). A root listed again while it reads as available (a delete request saw it
+    missing, back before the pass) keeps a folder a session start made or took on it during the listing, or relabelled
+    (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one the listing has keeps the start's owner
+    and label; one it has not was made new, and what the index held at that path before, a folder removed while the
+    storage was away, goes with its recordings; `test_rescan_keeps_a_session_folder_made_meanwhile`,
+    `test_rescan_drops_a_recreated_folders_old_recordings`, `test_rescan_keeps_a_relabel_made_meanwhile`). Storage
+    plugged in again after a pass marked it away wakes no pass on its own, so an export or a save probes every root held
+    as away first (`awayRootsBackLocked()`, as a delete request does through `checkRootsLocked()`): one back asks for
+    the pass that reads it, and the request is refused as `loading` meanwhile (`test_export_probes_a_root_back`); so do
+    Delete all, Delete unfinished and an owner's delete, refused the same way (`requestDeletes()`,
+    `test_bulk_deletes_probe_a_root_back`). A session start that finds the preferred storage missing remembers it as a
+    delete request's probe does (`m_rootsSeenAway`), so storage back before a pass samples it is listed in full
+    (`test_session_start_remembers_storage_away`). On Windows the no-follow type probe (`dsd_path_type_nofollow()`)
+    takes a long absolute name in extended-length form, as the openers do. A recheck keeps a recording whose name cannot
+    be read: only a name confirmed missing, or confirmed no recording file (a link, a folder, a FIFO), leaves the index
+    (`test_recheck_keeps_an_unreadable_name`).
 
     Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
     documented rather than handled:
