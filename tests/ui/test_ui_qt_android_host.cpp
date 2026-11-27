@@ -3107,10 +3107,15 @@ check_playlist_record() {
     host.refresh();
     check(host.playbackCanNext() && host.property("playbackCanNext").toBool() && seen.changed == refusedChanges + 5,
           "#909 r13: Next as the player offers it is published, as a change");
+    const qint64 kept = host.playbackPositionMs();
+    const qint64 position = f.position;
     f.canNext = 2;
+    f.position = kept + 7000; // a record taken would move the position
     r.status = f.text();
     host.refresh();
-    check(host.playbackCanNext(), "a can-next flag that is neither 0 nor 1 is no record");
+    check(host.playbackCanNext() && host.playbackPositionMs() == kept,
+          "a can-next flag that is neither 0 nor 1 is no record: nothing of it is taken");
+    f.position = position;
     f.canNext = 0;
     r.status = f.text();
     host.refresh();
