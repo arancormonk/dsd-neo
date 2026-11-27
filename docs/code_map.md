@@ -19981,34 +19981,35 @@ Qt Quick frontend (`src/ui/qt`):
       The looper never waits on it; a player never started needs none. A replacement (a sheet play over a playlist, a
       playlist over a sheet play, Play all again) waits the same way: the replacing play's first start is posted only
       once the old play's sounding player is silent, under the new start's watchdog. The silences outstanding outlive
-      the play's end (R61: finished, nothing left to try, Stop, the host's own stop; the end itself pauses a player that
-      may sound and asks for its silence), which is published at once, and the next play's first start waits for them;
-      only a wait that failed at its watchdog drops them (the documented limit below). Each silence is fenced by its own
-      token, so it counts only for the wait it belongs to. Anything a start, pause or seek throws on the owner is
-      `onFailed(token, REASON_PLAYER)`, and so is anything the prepared listener throws (its length read), in place of
-      `onPrepared` (R47); a release that throws is logged and the thread still ends (main ran `start()` on the looper,
-      where a throw crashed the app). Start, pause, seek and release are posted to the owner in order; the posted
-      release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit
-      earlier refuses the native events still in flight from a pause just before ("sending message to a Handler on a
-      dead thread"); release clears the native listener, so no new event is posted after it (a callback already running
-      can still be refused, harmlessly), and an event already queued, for a released player, is dropped. Until the
-      result is back the looper never touches that player (a prepare answering first is noted and applied at adoption;
-      an error drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a
-      replacement) only releases its player; one that found its file gone or changed still puts the path it tried
-      (carried in the result) on the recheck list, leaving the play now open alone. A setup stuck in a read holds only
-      its own player's thread, so nothing ever queues behind it; it releases its player and ends once the read returns
-      and its result is delivered. Owner threads the machine has let go are counted for the process until they end
-      (`AbandonedSetups`, a limit of 2, `LIMIT`, R32/R35/R40): one counts from the moment its open is dropped or its
-      player released until its release task ends (`Player.release(ended)`, acknowledged on the looper; a release whose
-      post is refused ends at once), once for a thread dropped during its setup and then released; a completed part
-      counts before the next part's open checks the limit, its release posted after the hand-off (R48). While two are
-      running, each holding a `MediaPlayer` in a setup's or a release's read that may never return, an open makes no
-      player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the wait to 10 s;
-      the looper hearing a thread end lets the waiting open go on under its own token. Only the current part waits, and
-      Stop, a move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
-      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
-      a setup. The JVM tests drive it with fake owner threads, numbered per setup, that hold a setup, run it late, fail
-      it or refuse it, and releases that end at once or are held in native code.
+      the play's end (R61: finished, nothing left to try, Stop, the host's own stop; every release of a player that may
+      sound, a failure's too, pauses it and asks for its silence first if a move has not: `releasePlayer()`, I2), which
+      is published at once, and the next play's first start waits for them; only a wait that failed at its watchdog
+      drops them (the documented limit below). Each silence is fenced by its own token, so it counts only for the wait
+      it belongs to. Anything a start, pause or seek throws on the owner is `onFailed(token, REASON_PLAYER)`, and so is
+      anything the prepared listener throws (its length read), in place of `onPrepared` (R47); a release that throws is
+      logged and the thread still ends (main ran `start()` on the looper, where a throw crashed the app). Start, pause,
+      seek and release are posted to the owner in order; the posted release quits the owner's Looper (`quit()`) only
+      after `MediaPlayer.release()` returns, since a Looper quit earlier refuses the native events still in flight from
+      a pause just before ("sending message to a Handler on a dead thread"); release clears the native listener, so no
+      new event is posted after it (a callback already running can still be refused, harmlessly), and an event already
+      queued, for a released player, is dropped. Until the result is back the looper never touches that player (a
+      prepare answering first is noted and applied at adoption; an error drops the setup), and a result for a part no
+      longer current (timed out, Stop, a move, the end, a replacement) only releases its player; one that found its file
+      gone or changed still puts the path it tried (carried in the result) on the recheck list, leaving the play now
+      open alone. A setup stuck in a read holds only its own player's thread, so nothing ever queues behind it; it
+      releases its player and ends once the read returns and its result is delivered. Owner threads the machine has let
+      go are counted for the process until they end (`AbandonedSetups`, a limit of 2, `LIMIT`, R32/R35/R40): one counts
+      from the moment its open is dropped or its player released until its release task ends (`Player.release(ended)`,
+      acknowledged on the looper; a release whose post is refused ends at once), once for a thread dropped during its
+      setup and then released; a completed part counts before the next part's open checks the limit, its release posted
+      after the hand-off (R48). While two are running, each holding a `MediaPlayer` in a setup's or a release's read
+      that may never return, an open makes no player and starts no setup and waits (R35), its own prepare timeout armed
+      as usual and bounding the wait to 10 s; the looper hearing a thread end lets the waiting open go on under its own
+      token. Only the current part waits, and Stop, a move or the end drop the wait as they drop an opening, so stalled
+      storage costs one ten-second timeout per recording, one at a time, never a burst of failures, and quick moves
+      never fail a recording. Stop never waits for a setup. The JVM tests drive it with fake owner threads, numbered per
+      setup, that hold a setup, run it late, fail it or refuse it, and releases that end at once or are held in native
+      code.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed

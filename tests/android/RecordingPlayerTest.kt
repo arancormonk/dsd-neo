@@ -129,10 +129,11 @@ private class FakePlayer(
     override fun pause() {
         wantedStart = 0L
         ops += "pause"
-        if (started) {
+        if (started && !errored) {
             valid("pause", true)
             started = false
         }
+        // In the Error state the platform's pause throws on its owner, which reports it under a token gone by then.
     }
 
     override fun seekTo(positionMs: Long, serial: Long) {
@@ -1439,6 +1440,40 @@ private fun aReplacementStartsOnceTheOldPlayIsSilent() {
     stop.ackSilence()
     check(stop.state == PLAYING && y.startRequests.size == 1 && x.startRequests.isEmpty()) {
         "A's silence starts the next play, once, and nothing of X"
+    }
+}
+
+/**
+ * Every end lets a player that may sound go silent first (R61, I1, I2): with A playing and its owner slow, Stop, the
+ * host's own stop, a lasting focus loss and a failure of A's player each pause A and ask for its silence, the end
+ * published at once; the next play prepares and its start waits for A's silence, which starts it once.
+ */
+private fun everyEndLetsASoundingPlayerFallSilentFirst() {
+    val ends = listOf<Pair<String, (Rig) -> Unit>>(
+        "Stop" to { rig -> rig.machine.stop(rig.generation) },
+        "the host's stop" to { rig -> rig.machine.stop() },
+        "a lasting focus loss" to { rig -> rig.machine.onFocusChange(rig.focus.epoch, FocusChange.LOST) },
+        "a failure of A's player" to { rig -> rig.machine.onFailed(rig.current.token, RecordingPlayer.REASON_PLAYER) },
+    )
+    for ((name, endIt) in ends) {
+        val rig = Rig()
+        rig.queue(1, 1)
+        rig.prepared()
+        val a = rig.current
+        check(rig.state == PLAYING) { "$name: A plays" }
+        rig.holdSilences = true
+        endIt(rig)
+        check(rig.state != PLAYING && rig.state != STARTING) { "$name: the end is published at once (${rig.state})" }
+        check(rig.heldSilences == listOf(a) && a.ops.takeLast(2) == listOf("pause", "silence")) {
+            "$name: A is paused, then asked for its silence: ${a.ops}"
+        }
+        rig.holdSilences = false
+        rig.machine.play(++rig.generation, "/r/next.wav")
+        rig.prepared()
+        val next = rig.current
+        check(next !== a && rig.state == STARTING && next.startRequests.isEmpty()) { "$name: the next start waits" }
+        rig.ackSilence()
+        check(rig.state == PLAYING && next.startRequests.size == 1) { "$name: A silent: it starts, once" }
     }
 }
 
@@ -3803,6 +3838,7 @@ fun main() {
     theNextPartStartsOnceTheOutgoingOneIsSilent()
     aReplacementStartsOnceTheOldPlayIsSilent()
     aSilenceOutlivesANormalEnd()
+    everyEndLetsASoundingPlayerFallSilentFirst()
     aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()

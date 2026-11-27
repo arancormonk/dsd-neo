@@ -1131,9 +1131,17 @@ class RecordingPlayer(
         prepared = false
     }
 
-    /** Release the current part's player, if one is adopted: let go, it counts until its thread ends. */
+    /**
+     * Release the current part's player, if one is adopted: let go, it counts until its thread ends. One that may still
+     * sound (a start was posted to it) and was not asked for its silence yet is paused and asked first (R61, R62, I2),
+     * whatever let it go (a failure too), so the next start waits for its silence.
+     */
     private fun releasePlayer() {
         val current = player ?: return
+        if (startMade && token !in silencing) {
+            current.pause()
+            askSilence()
+        }
         val work = playerWork
         player = null
         playerWork = null
@@ -1454,8 +1462,7 @@ class RecordingPlayer(
     /** The current player, let go by a move or a replacement while it may sound, is asked for its silence (R52). */
     private fun askSilence() {
         val current = player ?: return
-        if (startMade) {
-            silencing += token
+        if (startMade && silencing.add(token)) {
             current.silence()
         }
     }
@@ -1700,12 +1707,10 @@ class RecordingPlayer(
 
     /** The play is over: let everything go and keep its terminal reading. */
     private fun end(state: Int, error: String, reason: String) {
-        // The end is published at once, but a player that may still sound is paused and asked for its silence, which
-        // the next play's first start waits for (R61). The pause freezes the position the terminal reading keeps.
-        halt()
-        askSilence()
         positionMs = currentPositionMs()
         cancelAll()
+        // The end is published at once; a player that may still sound is paused and asked for its silence as it is
+        // let go, which the next play's first start waits for (R61).
         releasePlayer()
         dropOpening()
         left = null
@@ -1736,9 +1741,8 @@ class RecordingPlayer(
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
     private fun close() {
         cancelAll()
-        // The next play's first start waits for this play's sounding player to fall silent (R52, M3, R61).
-        halt()
-        askSilence()
+        // The next play's first start waits for this play's sounding player to fall silent (R52, M3, R61): it is
+        // paused and asked as it is let go.
         releasePlayer()
         dropOpening()
         left = null
