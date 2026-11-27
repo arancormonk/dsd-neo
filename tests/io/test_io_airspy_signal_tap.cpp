@@ -9,8 +9,10 @@
  * programs (an R2's and a Mini's highest on the desktop, their lowest with AIRSPY_SOURCE_PREFER_LOWEST_RATE, as on
  * Android). What reaches the Signal search and quiet tap is the capture of a receiver tuned on the channel: no
  * rotation, no offset, the centred measurement policy, the default clip level, and a gain identity that follows the
- * Airspy's controls. A quiet request at the channel is measured there, and a retune moves the output generation. A
- * retune the device refuses logs a warning that names the native Airspy backend.
+ * Airspy's controls. A quiet request at the channel is measured there, and a retune moves the output generation. After
+ * a retune the samples its mute discards never reach the tap: the new capture starts with the first transfer past the
+ * mute, and a short request's lead counts from there. A retune the device refuses logs a warning that names the
+ * native Airspy backend.
  */
 
 #include <atomic>
@@ -24,6 +26,7 @@
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/platform/timing.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/signal_search.h>
 #include <memory>
 #include <mutex>
 #include <random>
@@ -266,6 +269,138 @@ test_tap_capture_geometry() {
     rates[1] = saved[1];
 }
 
+/* Reads @p ctx's output on its own thread until destroyed, so the demod never waits on a full output ring while the test
+   feeds the SDK's callback itself. Stop the stream before destroying it: a read waits for output until then. */
+class OutputReader {
+  public:
+    explicit OutputReader(RtlSdrContext* ctx) : ctx_(ctx), thread_([this] { run(); }) {}
+
+    ~OutputReader() {
+        stop_.store(true);
+        thread_.join();
+    }
+
+    OutputReader(const OutputReader&) = delete;
+    OutputReader& operator=(const OutputReader&) = delete;
+
+  private:
+    void
+    run() {
+        float block[2048];
+        while (!stop_.load()) {
+            int got = 0;
+            if (rtl_stream_read(ctx_, block, sizeof(block) / sizeof(block[0]), &got) != 0 || got == 0) {
+                dsd_sleep_ms(1);
+            }
+        }
+    }
+
+    RtlSdrContext* ctx_;
+    std::atomic<bool> stop_{false};
+    std::thread thread_;
+};
+
+/* One transfer of @p pairs from @p iq into the receive callback, then until the demod came back for input after it
+   (the paced feeder's boundary: the tap has taken what the transfer committed). */
+void
+deliver_paced(const float* iq, int pairs) {
+    const uint64_t start_ns = dsd_time_monotonic_ns();
+    while (!deliver(iq, pairs)) {
+        CHECK(dsd_time_monotonic_ns() - start_ns < kWaitNs);
+        dsd_sleep_ms(1);
+    }
+    const uint64_t produced = live_sequence().input_produced;
+    while (live_sequence().demod_idle_consumed < produced) {
+        CHECK(dsd_time_monotonic_ns() - start_ns < kWaitNs);
+        dsd_sleep_ms(1);
+    }
+}
+
+/* Whether the tap's capture is the one of the live output generation, centred on @p channel_hz, into @p capture. */
+bool
+tap_on(uint32_t channel_hz, dsd_signal_capture* capture) {
+    return rtl_signal_capture_get(capture) && capture->generation == rtl_stream_output_generation()
+           && capture->capture_hz == channel_hz;
+}
+
+/* A short quiet request after a native Airspy's retune (issue #834, D-E): the SDK hands over transfers the retune's
+   mute discards, a bright carrier at the new channel, then noise. None of the muted pairs reaches the tap as the new
+   channel's capture, which first shows with a noise transfer; a one-slice request made then, with the engine's 10 ms
+   lead, completes only once the noise after that block holds the lead and its slice, within the transfer that brings
+   the last of them, and reads the noise, not the carrier. */
+void
+test_retune_lead_after_the_mute() {
+    constexpr int kPairs = kTransferPairs;
+    auto opts = airspy_opts();
+    RtlSdrContext* ctx = nullptr;
+    CHECK(rtl_stream_create(opts.get(), &ctx) == 0 && ctx);
+    CHECK(rtl_stream_start(ctx) == 0);
+    const uint32_t capture_rate = rate;
+    std::vector<float> carrier(2 * (size_t)kPairs);
+    for (int i = 0; i < kPairs; ++i) {
+        carrier[2 * (size_t)i] = 0.5f; /* a carrier at the capture centre: the new channel */
+    }
+    std::vector<std::vector<float>> noises;
+    for (unsigned seed = 40; seed < 56; ++seed) {
+        noises.push_back(noise(kPairs, seed));
+    }
+    auto reader = std::make_unique<OutputReader>(ctx);
+    {
+        dsd_signal_capture capture{};
+        for (size_t i = 0; !tap_on(kChannelHz, &capture); ++i) {
+            deliver_paced(noises[i % noises.size()].data(), kPairs);
+        }
+        const uint32_t moved_hz = kChannelHz + 1000000U;
+        CHECK(rtl_stream_tune(ctx, moved_hz) == 0);
+        /* What the retune's last mute discards (rtl_device_mute(): two bytes a pair), as the stream sizes it. */
+        const int mute_bytes =
+            rtl_stream_test_retune_mute_bytes_for_device(rtl_stream_test_device(), capture_rate, 1, 0);
+        int muted = (mute_bytes + 1) / 2;
+        CHECK(muted > 0);
+        while (muted > 0) {
+            const int pairs = muted < kPairs ? muted : kPairs;
+            deliver_paced(carrier.data(), pairs);
+            muted -= pairs;
+            CHECK(!tap_on(moved_hz, &capture)); /* no muted pair reached the tap as the new capture */
+        }
+        /* The first noise transfer, or the next: a retune's input purge that the demod, waiting on the empty ring
+           through the mute, takes only once samples come again drops what it read with it. */
+        for (size_t t = 0; t < 2 && !tap_on(moved_hz, &capture); ++t) {
+            deliver_paced(noises[t].data(), kPairs);
+        }
+        CHECK(tap_on(moved_hz, &capture));
+        CHECK(capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED && capture.rate_hz == capture_rate);
+
+        dsd_signal_quiet_request request{};
+        request.request_id = 41U;
+        request.frequency_hz = moved_hz;
+        request.classes = DSD_SIGNAL_QUIET_CLASS_12K5;
+        request.windows = 1U;
+        request.lead_pairs = capture_rate / 100U;
+        request.capture = capture;
+        uint32_t ticket = 0U;
+        CHECK(rtl_signal_quiet_request(&request, &ticket, nullptr) == 0);
+        const size_t n = (size_t)dsd_signal_fft_size_for_width(capture_rate, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ);
+        CHECK(n > 0);
+        const size_t slice = n * ((capture_rate / 100U + n - 1) / n);
+        const size_t need = request.lead_pairs + slice;
+        const size_t transfers = (need + kPairs - 1) / kPairs;
+        for (size_t t = 2; t < 2 + transfers; ++t) {
+            CHECK(rtl_signal_quiet_status(ticket) == 0); /* nothing before the lead and the slice are in */
+            deliver_paced(noises[t % noises.size()].data(), kPairs);
+        }
+        CHECK(rtl_signal_quiet_status(ticket) != 0);
+        dsd_signal_quiet_result result{};
+        CHECK(rtl_signal_quiet_take(ticket, &result) == 1);
+        CHECK(result.failure == DSD_SIGNAL_MEASURE_OK && result.valid);
+        CHECK(result.capture.generation == capture.generation);
+        CHECK(result.max_ratio_db < 10.0f); /* the noise's reading: the carrier would stand tens of dB over it */
+    }
+    CHECK(rtl_stream_stop(ctx) == 0);
+    reader.reset();
+    CHECK(rtl_stream_destroy(ctx) == 0);
+}
+
 /* B3: a retune the device refuses names the native Airspy in its warning, not an RTL-SDR. */
 void
 test_retune_warning_names_airspy() {
@@ -297,5 +432,6 @@ main() {
     dsd_neo_log_set_tap(log_tap, nullptr);
     test_tap_capture_geometry();
     test_retune_warning_names_airspy();
+    test_retune_lead_after_the_mute();
     return 0;
 }
