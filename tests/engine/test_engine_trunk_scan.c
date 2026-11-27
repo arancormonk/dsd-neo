@@ -30612,9 +30612,158 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
     return rc;
 }
 
+/* The tap's capture at @p rate_hz on @p hz from receiver @p receiver with the Fs/4 shift off
+   (DSD_NEO_DISABLE_FS4_SHIFT=1): tuned on the channel, no rotation, the default policy. */
+static void
+qt_unshifted_capture(uint32_t hz, uint32_t rate_hz, uint8_t receiver) {
+    qt_shifted_capture(hz, rate_hz, receiver);
+    g_tap.capture.rotation_hz = 0;
+    g_tap.capture.capture_offset_hz = 0;
+    g_tap.capture.capture_hz = hz;
+}
+
+/* A SoapySDR receiver's own refusal (an Airspy through SoapySDR, or a SoapySDR device that may be one) outranks the
+   capture's geometry: with the Fs/4 shift off it says rate and the native-input line, not tuner and the shift advice
+   it would still be refused after. */
+static int
+test_scan_quiet_trunk_soapy_identity_outranks_the_shift(void) {
+    static const char k_targets[] = "a,dmr-conventional,452000000,,2000,1000,,\n"
+                                    "b,dmr-conventional,453000000,,2000,1000,,\n";
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state = qt_shared_state();
+    if (qt_warn_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_targets) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
+    qt_warns_watch();
+    qt_unshifted_capture(k_qt_hz_a, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY);
+    qt_decode_at(10U);
+    qt_pass(opts, state);
+    int rc = qt_expect_quiet(state, "a SoapySDR Airspy, the shift off", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                             DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("a SoapySDR Airspy, the shift off: the native-input line", 1, DSD_SCAN_QUIET_REASON_RATE,
+                         SCAN_QUIET_WARN_SOAPY_AIRSPY, 2500000U, NULL, 0U, 0, 0U);
+    rc |= qt_expect("a SoapySDR Airspy: no shift advice", strstr(g_qt_warn, "DSD_NEO_DISABLE_FS4_SHIFT") == NULL);
+
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=remote,remote=lab");
+    qt_next_target(opts, state, k_qt_hz_b, 0);
+    qt_unshifted_capture(k_qt_hz_b, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN);
+    qt_decode_at(20U);
+    qt_pass(opts, state);
+    rc |= qt_expect_quiet(state, "a proxy, the shift off", DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("a proxy, the shift off: its own line", 2, DSD_SCAN_QUIET_REASON_RATE,
+                         SCAN_QUIET_WARN_SOAPY_UNKNOWN, 2500000U, NULL, 0U, 0, 0U);
+    rc |= qt_expect("a proxy: no shift advice", strstr(g_qt_warn, "DSD_NEO_DISABLE_FS4_SHIFT") == NULL);
+    rc |= qt_expect("nothing requested of either", g_tap.requests == 0);
+    quiet_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
+/* The NFM 15 kHz target (k_qt_warn_targets' first) on the shifted capture at @p rate_hz from @p receiver, and its pass
+   at @p at_ms. */
+static void
+qt_soapy_width_visit(dsd_opts* opts, dsd_state* state, uint32_t rate_hz, uint8_t receiver, uint64_t at_ms) {
+    qt_next_target(opts, state, k_qt_hz_a, 0);
+    qt_shifted_capture(k_qt_hz_a, rate_hz, receiver);
+    qt_decode_at(at_ms);
+    qt_pass(opts, state);
+}
+
+/* The NFM target with no width (k_qt_warn_targets' second), which reads no capture of its own, on the shifted capture
+   of @p receiver at the rate before; three passes and a tick from @p at_ms. */
+static void
+qt_soapy_no_width_visit(dsd_opts* opts, dsd_state* state, uint8_t receiver, uint64_t at_ms) {
+    qt_next_target(opts, state, k_qt_hz_b, 0);
+    qt_shifted_capture(k_qt_hz_b, g_tap.capture.rate_hz, receiver);
+    for (int pass = 0; pass < 3; pass++) {
+        qt_decode_at(at_ms + 10U * (uint64_t)pass);
+        qt_pass(opts, state);
+        dsd_engine_trunk_scan_tick(opts, state);
+    }
+}
+
+/* A SoapySDR receiver's identity holds for the stream session and logs once whatever the rate: after a target that
+   reads an Airspy through SoapySDR (or a proxy), the NFM target with no width, which reads no capture, says rate, not
+   width (whose advice could not give it the check), and logs nothing; two lists' rates in turn log no line again. A
+   new stream session drops it, and a checked receiver's unsupported rate stays the visit's own. */
+static int
+test_scan_quiet_trunk_soapy_identity_holds_for_the_session(void) {
+    char dir[DSD_TEST_PATH_MAX];
+    char path[DSD_TEST_PATH_MAX];
+    dsd_opts* const opts = qt_shared_opts();
+    dsd_state* const state = qt_shared_state();
+    if (qt_warn_rig_start(opts, state, dir, sizeof dir, path, sizeof path, k_qt_warn_targets) != 0) {
+        return 1;
+    }
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=airspy");
+    qt_warns_watch();
+    qt_shifted_capture(k_qt_hz_a, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY);
+    qt_decode_at(10U);
+    qt_pass(opts, state);
+    int rc = qt_expect_warn("a SoapySDR Airspy: its line", 1, DSD_SCAN_QUIET_REASON_RATE, SCAN_QUIET_WARN_SOAPY_AIRSPY,
+                            2500000U, NULL, 0U, 0, 0U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, 20U);
+    rc |= qt_expect_quiet(state, "a SoapySDR Airspy: the NFM target with no width says rate",
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect("a SoapySDR Airspy: no width line, nothing requested", g_qt_warns == 1 && g_tap.requests == 0);
+
+    /* Two lists' capture rates in turn: the line names no rate, so it is not logged again. */
+    qt_soapy_width_visit(opts, state, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, 60U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, 70U);
+    qt_soapy_width_visit(opts, state, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, 110U);
+    rc |= qt_expect_quiet(state, "a SoapySDR Airspy at its rates in turn", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect("a SoapySDR Airspy at its rates in turn: one line", g_qt_warns == 1);
+
+    /* A proxy, which may be an Airspy: its own line, once, however its rate alternates; it holds for the target with
+       no width too. (The scan alternates the two targets: each visit below is the other one's.) */
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, 120U);
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=remote,remote=lab");
+    qt_soapy_width_visit(opts, state, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 150U);
+    rc |= qt_expect_warn("a proxy: its own line", 2, DSD_SCAN_QUIET_REASON_RATE, SCAN_QUIET_WARN_SOAPY_UNKNOWN,
+                         2500000U, NULL, 0U, 0, 0U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 160U);
+    rc |= qt_expect_quiet(state, "a proxy: the NFM target with no width says rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    qt_soapy_width_visit(opts, state, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 190U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 200U);
+    qt_soapy_width_visit(opts, state, 2500000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 230U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 240U);
+    qt_soapy_width_visit(opts, state, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 270U);
+    rc |= qt_expect_quiet(state, "a proxy at its rates in turn", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect("a proxy at its rates in turn: one line", g_qt_warns == 2);
+
+    /* The stream opens again: the identity read in the old session no longer stands for a visit that reads no
+       capture of its own. */
+    g_tap.session++;
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, 280U);
+    rc |= qt_expect_quiet(state, "a new stream session: the target's own width reason", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    rc |= qt_expect_warn("a new stream session: the width line", 3, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, "nun",
+                         k_qt_hz_b, DSD_ANALOG_DEMOD_FM, 0U);
+
+    /* A receiver the check covers at a rate it did not validate: RATE on its own visit only. */
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "soapy:driver=hackrf");
+    g_tap.rate_ok = 0;
+    qt_soapy_width_visit(opts, state, 3200000U, DSD_SIGNAL_RECEIVER_OTHER, 320U);
+    rc |= qt_expect_quiet(state, "another SoapySDR device at an unsupported rate", DSD_SCAN_QUIET_STATUS_NO_CHECK,
+                          DSD_SCAN_QUIET_REASON_RATE);
+    rc |= qt_expect_warn("another SoapySDR device at an unsupported rate: the rate line", 4, DSD_SCAN_QUIET_REASON_RATE,
+                         SCAN_QUIET_WARN_RATE, 3200000U, NULL, 0U, 0, 0U);
+    qt_soapy_no_width_visit(opts, state, DSD_SIGNAL_RECEIVER_OTHER, 330U);
+    rc |= qt_expect_quiet(state, "an unsupported rate does not carry to the target with no width",
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_NO_WIDTH);
+    g_tap.rate_ok = 1;
+    quiet_rig_finish(opts, state, dir, path);
+    return rc;
+}
+
 /* The receiver WARN lines name what to use: the audio-input line lists every radio input the check runs on, the native
    Airspy among them; a native Airspy at a rate its centred calibration did not validate gets its own line, naming the
-   rates it checks and the option that sets the Airspy's rate, and no SoapySDR advice. */
+   rates it checks and the option that sets the Airspy's rate to one of them, and no SoapySDR advice. */
 static int
 test_scan_quiet_receiver_lines_name_the_native_airspy(void) {
     char line[512];
@@ -31368,6 +31517,8 @@ test_scan_quiet_all(void) {
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_native_airspy_users_case);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_publishes_each_cause);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_names_the_soapy_receiver);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_soapy_identity_outranks_the_shift);
+    rc |= run_with_default_tune_hook(test_scan_quiet_trunk_soapy_identity_holds_for_the_session);
     rc |= run_with_default_tune_hook(test_scan_quiet_trunk_channel_lines_once_per_key);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_keeps_rate_precedence);
     rc |= run_with_default_tune_hook(test_scan_quiet_width_ahead_needs_the_stream_session);

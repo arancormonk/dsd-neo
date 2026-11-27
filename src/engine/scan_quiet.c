@@ -965,21 +965,22 @@ quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
     return c->capture_qualified;
 }
 
-/* The receiver's part of what the calibration refuses of the capture: exactly one of its two geometry policies is
-   covered, the default one with the Fs/4 shift (rotation a quarter of the rate, the channel that far from the hardware
-   centre) or a native Airspy's centred capture (tuned on the channel: no rotation, no offset). Anything else (centred
-   I/Q under the default policy, an offset-tuned E4000, the shift off, any other rotation or an unknown policy) is
-   TUNER; a covered geometry at a rate its policy did not validate is RATE, and so is a SoapySDR Airspy at any rate. */
+/* The receiver's part of what the calibration refuses of the capture. A SoapySDR Airspy, or a SoapySDR device that
+   cannot be ruled out as one, is RATE whatever its geometry and rate: that refusal is the receiver's own, which no
+   shift or rate setting lifts, so it comes first and its line names the native input. Otherwise exactly one of the two
+   geometry policies is covered, the default one with the Fs/4 shift (rotation a quarter of the rate, the channel that
+   far from the hardware centre) or a native Airspy's centred capture (tuned on the channel: no rotation, no offset).
+   Anything else (centred I/Q under the default policy, an offset-tuned E4000, the shift off, any other rotation or an
+   unknown policy) is TUNER; a covered geometry at a rate its policy did not validate is RATE. */
 static uint8_t
 quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
+    if (dsd_signal_quiet_receiver_refused(cap)) {
+        return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
     if (cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
         if (cap->rate_hz == 0U || cap->rotation_hz != (int32_t)(cap->rate_hz / 4U)
             || cap->capture_offset_hz != cap->rotation_hz) {
             return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
-        }
-        /* A SoapySDR Airspy, or a SoapySDR device that cannot be ruled out as one, at any rate. */
-        if (dsd_signal_quiet_receiver_refused(cap)) {
-            return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
         }
         return dsd_signal_quiet_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
                                                              : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
@@ -995,10 +996,15 @@ quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
 }
 
 /* The WARN detail of @p cap's receiver verdict @p reason (TUNER or RATE): which receiver it is, so the line can say what
-   to do. A centred capture on the native Airspy input is the Airspy's (at a rate its centred calibration did not
-   validate, the Airspy's rate line); a SoapySDR Airspy, or a SoapySDR device that may be one, says so. */
+   to do. A SoapySDR Airspy, or a SoapySDR device that may be one, says so (its refusal outranks the geometry's,
+   quiet_capture_receiver_reason()); a centred capture on the native Airspy input is the Airspy's (at a rate its centred
+   calibration did not validate, the Airspy's rate line). */
 static uint8_t
 quiet_capture_receiver_detail(const dsd_opts* opts, const dsd_signal_capture* cap, uint8_t reason) {
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && dsd_signal_quiet_receiver_refused(cap)) {
+        return (uint8_t)(cap->receiver == DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN ? SCAN_QUIET_WARN_SOAPY_UNKNOWN
+                                                                            : SCAN_QUIET_WARN_SOAPY_AIRSPY);
+    }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER) {
         return (uint8_t)(cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
                                  || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
@@ -1007,11 +1013,6 @@ quiet_capture_receiver_detail(const dsd_opts* opts, const dsd_signal_capture* ca
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) {
         return (uint8_t)SCAN_QUIET_WARN_AIRSPY_RATE;
-    }
-    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT
-        && dsd_signal_quiet_receiver_refused(cap)) {
-        return (uint8_t)(cap->receiver == DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN ? SCAN_QUIET_WARN_SOAPY_UNKNOWN
-                                                                            : SCAN_QUIET_WARN_SOAPY_AIRSPY);
     }
     return (uint8_t)SCAN_QUIET_WARN_RATE;
 }
@@ -1841,14 +1842,26 @@ scan_quiet_key_get(const dsd_state* state) {
     return none;
 }
 
-/* The receiver's verdict the last capture read showed, while the input it was read on is still the one in force: a
-   centred capture only (TUNER), which the input and its shift settings decide for every visit. A rate is no session
-   fact: a list's DSP bandwidth sets the capture rate a visit runs at, so RATE is a visit's own, read on its capture. */
+/* Whether the receiver verdict of @p c is the opened device's identity (a SoapySDR Airspy, or a SoapySDR device that
+   may be one): refused at every rate, so it holds for the stream session like the geometry does. */
+static int
+quiet_receiver_identity_refused(const scan_quiet_check* c) {
+    return c->receiver_reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE
+           && (c->receiver_detail == (uint8_t)SCAN_QUIET_WARN_SOAPY_AIRSPY
+               || c->receiver_detail == (uint8_t)SCAN_QUIET_WARN_SOAPY_UNKNOWN);
+}
+
+/* The receiver's verdict the last capture read showed, while the input it was read on is still the one in force, in
+   the same stream session: what the input decides for every visit, a centred capture (TUNER, which the input and its
+   shift settings decide) or the opened SoapySDR device's identity (quiet_receiver_identity_refused()). Any other rate
+   is no session fact: a list's DSP bandwidth sets the capture rate a visit runs at, so that RATE is a visit's own,
+   read on its capture. */
 static uint8_t
 quiet_receiver_reason_now(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_TUNER
-        || c->receiver_session != rtl_stream_session_generation() || c->receiver_input != opts->audio_in_type
-        || c->receiver_device != quiet_device_hash(opts)) {
+    const int session_fact =
+        c->receiver_reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER || quiet_receiver_identity_refused(c);
+    if (!session_fact || c->receiver_session != rtl_stream_session_generation()
+        || c->receiver_input != opts->audio_in_type || c->receiver_device != quiet_device_hash(opts)) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
     return c->receiver_reason;
@@ -1874,7 +1887,8 @@ quiet_warn_capture(const dsd_opts* opts, dsd_state* state, const scan_quiet_chec
     DSD_MEMSET(&key, 0, sizeof key);
     key.reason = reason;
     key.detail = c->receiver_detail;
-    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE) {
+    /* A rate line names its rate; a SoapySDR identity's line names none and holds at every rate, so it logs once. */
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && !quiet_receiver_identity_refused(c)) {
         key.rate_hz = c->receiver_rate_hz;
     }
     key.input = opts->audio_in_type;

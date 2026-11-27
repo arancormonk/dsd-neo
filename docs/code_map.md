@@ -694,9 +694,11 @@ Generated (do not edit/commit):
       later, or with other facts) waits 1000 ms from that restart, since a receive-profile or width change moves the
       output generation and its capture comes only then. A capture the calibration refuses is never an error and
       never DONE (`quiet_capture_refusal()`). Its geometry must be one of the two policies the calibration covers,
-      exactly (`quiet_capture_receiver_reason()`), or the reason is TUNER: `DSD_SIGNAL_GEOMETRY_DEFAULT` with the Fs/4
-      shift (`rotation_hz == rate_hz / 4` and `capture_offset_hz == rotation_hz`; centred I/Q under it, as an RTL-SDR
-      with offset tuning on, an E4000 by default over USB, or the shift off, and any other rotation are not covered),
+      exactly (`quiet_capture_receiver_reason()`), or the reason is TUNER, after the receiver's own refusal (below,
+      which outranks the geometry: a SoapySDR Airspy with the shift off is RATE): `DSD_SIGNAL_GEOMETRY_DEFAULT` with
+      the Fs/4 shift (`rotation_hz == rate_hz / 4` and `capture_offset_hz == rotation_hz`; centred I/Q under it, as an
+      RTL-SDR with offset tuning on, an E4000 by default over USB, or the shift off, and any other rotation are not
+      covered),
       or `DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED` (a native Airspy, tuned on the channel: rotation 0, offset 0; a SoapySDR
       Airspy rotates and runs the default policy, and `dsd_signal_quiet_receiver_refused()` makes it RATE at any rate,
       as it does a SoapySDR device of unknown identity). The verdict's WARN detail
@@ -1002,8 +1004,10 @@ Generated (do not edit/commit):
       session (`rtl_stream_session_generation()`) it was read in, also stands for a visit still waiting for its own
       capture or one that never reads one: the rotation comes from offset tuning, centred I/Q and the shift
       (`capture_fs4_shift_active()`), which the stream sets when it opens, offset tuning and direct sampling included,
-      and never per tune, so a list mixing direct-sampled and tuner rows has one rotation for the session; RATE does not
-      carry over, since a list's DSP bandwidth sets each visit's rate), then the
+      and never per tune, so a list mixing direct-sampled and tuner rows has one rotation for the session; so does the
+      RATE of a SoapySDR identity (`_SOAPY_AIRSPY`, `_SOAPY_UNKNOWN`: `quiet_receiver_identity_refused()`), which the
+      opened device decides for every rate, so a later NFM row with no width says rate, not width; any other RATE does
+      not carry over, since a list's DSP bandwidth sets each visit's rate), then the
       channel's (MODES: an untyped -Y row under a set with ProVoice, X2-TDMA, TETRA, the M17 encoder or no mode of a
       class; WIDTH at the capture; NO_WIDTH: an NFM channel or -8 monitor with no width), which the owners hand over
       with their facts (`scan_quiet_eligibility::reason`, `scan_quiet_facts_reason()`) and a publication records on its
@@ -1012,7 +1016,8 @@ Generated (do not edit/commit):
       late enable) is NONE. A reason in force is logged once per key as a WARN line (`scan_quiet_format_warn()`, the one
       place their wording lives, with `scan_quiet_warn_widths()`, the admitted widths it names, which
       `ENGINE_NO_CARRIER_RESET` holds to the admission table): the receiver's key (reason, detail, input kind, input
-      spec hash, capture rate) on the scan owner (`dsd_engine_scan_owner::quiet_warned_*`, radio-off too), the channel's
+      spec hash, and the capture rate for a line that names one, never a SoapySDR identity's) on the scan owner
+      (`dsd_engine_scan_owner::quiet_warned_*`, radio-off too), the channel's
       (list identity and revision: the coordinator's session with its target-edit and list counters, or -Y's
       `lcn_list_rev`; frequency, reason, classes, kind, width, `scan_quiet_channel_detail()`: which of
       ProVoice/X2-TDMA/TETRA or the M17 encoder gives MODES, or that a NO_WIDTH is the -8 monitor's, which the line
