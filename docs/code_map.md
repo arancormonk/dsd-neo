@@ -10322,16 +10322,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   from the stream's start, which the reader and the cascade start over at together: the reader is cleared at the
   RETUNE, RESET, MUTE and rewind where the demodulator's filters are reset, and an I/Q stream's resampler at each
   block its full ring drops; a documented limit where the cascade starts over without the reader: an FM <-> AM switch
-  on the analog monitor, and on an I/Q stream the blocks a boundary's purge takes after the reader's restart and an
-  external rigctl landing's purge, after which the decimators can keep another of the gcd(L, 2^passes) cosets of the
-  reader's phases until the next common start; the worst plan error that costs, over 9,530 readers the rate plans make
-  with every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel filters, is
-  1.2e-4, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
+  on the analog monitor, and on an I/Q stream the blocks a reconnect's or resume's purge takes after the reader's
+  restart, after which the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the
+  next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune on
+  a replay or I/Q stream before the rigctl or stream landing); the worst plan error that costs, over 9,530 readers the
+  rate plans make with every pass count and sources at every 1 % of the octave, unfiltered and through the analog
+  channel filters, is 1.2e-4, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
   phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
   pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
   when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,
   `demod_state::squelch_reader_model`; released with the reader off, by `rtl_demod_cleanup()`, and for another reader
-  on a digital chain, which builds none: 74.6 MB for nothing at 450,063 Hz read into 384 kHz), and does nothing for the
+  on a digital chain, which builds none: about 9 MB for nothing at 450,063 Hz read into 384 kHz, 74.6 MB before the
+  every-phase tables were bounded), and does nothing for the
   plan it holds, so a width change reuses it. A switch onto such a chain (an analog family request, the 9600 bit/s FSK
   profile) builds it before it is queued, on the requesting thread with the demod parked
   (`dsd_demod_squelch_reader_model_prepare()`, `rtl_stream_prepare_reader_model()`), so the first block of the new
@@ -12315,7 +12317,8 @@ Key public headers:
     forced with no step. It publishes the reader's resampler too (`controller_apply_replay_reader()`:
     `demod_state::iq_reader`, from the rule the device's and the stream's reader open by, a replay's and an `iqtcp:` /
     `iqudp:` stream's alike), builds the squelches' reader model for it on a chain a dynamic squelch runs on
-    (published for other threads as `g_pub_reader_*`, which the test replay state reads), and after the chain's
+    (published for other threads as one word, `g_pub_reader_state`, which the test replay state and the switch
+    preparation read, on every path that rewrites the reader or releases its model), and after the chain's
     finalize designs the
     auto squelch's plan behind it, all before samples arrive (issue #899); a reader that resamples and the live step
     never run together (only KEEP steps, at the capture's own rate; both on refuses the open). A live chain clears the
