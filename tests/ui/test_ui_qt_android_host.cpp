@@ -2726,6 +2726,21 @@ check_recording_playback() {
     f.generation = 7;
     f.position = 1500;
     f.token = 11;
+    StatusFields starting = f;
+    starting.state = DecoderHost::PlaybackStarting;
+    r.status = starting.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.playbackHoldPath() == a
+              && host.playbackCanSeek(),
+          "#909 R49: a start not yet acknowledged keeps the play open: its file held, seek allowed");
+    StatusFields unknown = starting;
+    unknown.state = DecoderHost::PlaybackStarting + 1;
+    unknown.position = 1700;
+    r.status = unknown.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.playbackPositionMs() == 1500
+              && host.playbackHoldPath() == a,
+          "a state past Starting is no record: the reading and the held file stay");
     r.status = f.text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackPlaying && host.playbackPositionMs() == 1500
