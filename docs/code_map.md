@@ -10341,8 +10341,9 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `demod_state::squelch_reader_model`; released with the reader off, by `rtl_demod_cleanup()`, and for another reader
   on a digital chain, which builds none: about 9 MB for nothing at 450,063 Hz read into 384 kHz, 74.6 MB before the
   every-phase tables were bounded), and does nothing for the
-  plan it holds, so a width change reuses it. A switch onto such a chain (an analog family request, the 9600 bit/s FSK
-  profile) builds it before it is queued, on the requesting thread with the demod parked
+  plan it holds, so a width change reuses it. A switch onto such a chain (an analog family request, a profile that can
+  land the 9600 bit/s FSK path, judged on the rate, levels, TED and CQPSK it leaves in force, a taken request's
+  included: a TED alone sets the complex rate over it) builds it before it is queued, on the requesting thread with the demod parked
   (`dsd_demod_squelch_reader_model_prepare()`, `rtl_stream_prepare_reader_model()`), so the first block of the new
   chain allocates nothing. `dsd_squelch_reader_model_floor_plan()` takes the mean through the channel taps (exact: the
   taps are time-invariant) while the step model's bound (`dsd_squelch_cascade_mean_suffices()`, the one rule both

@@ -993,6 +993,106 @@ test_hunt_over_a_taken_digital_landing_prepares_the_model(void) {
     dsd_neo_config_init();
 }
 
+/* Send tone blocks until @p done holds (kWaitMs). */
+template <typename Done>
+bool
+send_until(udp_sender& tx, uint64_t* phase, Done done) {
+    return wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, phase);
+            udp_send(tx, d.data(), d.size());
+            return done();
+        },
+        kWaitMs);
+}
+
+/* Whether the stream runs @p rate / @p levels with CQPSK @p cqpsk_want. */
+bool
+profile_is(int rate_want, int levels_want, int cqpsk_want) {
+    int rate = 0;
+    int levels = 0;
+    int cqpsk = -1;
+    (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+    return rate == rate_want && levels == levels_want && cqpsk == cqpsk_want;
+}
+
+/* ted_only_onto_fsk9600_prepares_the_model: a request that sets only the TED (-1, 0, 0, -1, 5, 0) changes the symbol
+ * rate too: both TED setters set the profile to the complex rate over the TED, keeping two levels two (issue #899).
+ * On a resampled DMR stream (24 kHz read up to a 48 kHz demod) put on 4800/2 with CQPSK off (TED 10, no reader model:
+ * 4800/2 runs no dynamic squelch), the request lands 48000 / 5 = 9600/2, the FSK path that runs one: the model must be
+ * built before the request returns. */
+void
+test_ted_only_onto_fsk9600_prepares_the_model(void) {
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(-1, 4800, 2, -1, -1, 0) == 0);
+    assert(send_until(tx, &phase, [] { return profile_is(4800, 2, 0); }));
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0 && rtl_stream_get_ted_sps() == 10);
+    assert(rtl_stream_request_demod_profile(-1, 0, 0, -1, 5, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const bool landed = send_until(tx, &phase, [] { return profile_is(9600, 2, 0); });
+    if (!landed || prepared != 1) {
+        DSD_FPRINTF(stderr, "TED 5 onto 4800/2 at 48 kHz: landed 9600/2 %d, model %d (want 1, 1)\n", landed ? 1 : 0,
+                    prepared);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+}
+
+/* cqpsk_off_over_a_taken_ted_only_request_prepares_the_model: the same rate for a TED-only request the demod took and
+ * holds unapplied (issue #899). On the resampled DMR stream put on CQPSK at 4800/2 ((1, 4800, 2): CQPSK on, so no
+ * reader model), a TED-only request (-1, 0, 0, -1, 5, 0) keeps CQPSK on and lands no FSK path; the demod takes it and
+ * holds it. A CQPSK-off request (0, 0, 0) made then keeps the rate that request lands, 9600/2, so it lands the FSK
+ * path: the published profile still reads 4800, and the request must build the model all the same. */
+void
+test_cqpsk_off_over_a_taken_ted_only_request_prepares_the_model(void) {
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(1, 4800, 2, -1, -1, 0) == 0);
+    assert(send_until(tx, &phase, [] { return profile_is(4800, 2, 1); }));
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    g_taken_held.store(0);
+    g_idle_wait_begun.store(0);
+    rtl_stream_test_set_profile_taken_hook(hold_taken_request, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(note_idle_wait, nullptr);
+    assert(rtl_stream_request_demod_profile(-1, 0, 0, -1, 5, 0) == 0);
+    rtl_stream_test_replay_state ted_queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&ted_queued) == 0);
+    assert(ted_queued.reader_model == 0);
+    assert(send_until(tx, &phase, [] { return g_taken_held.load() != 0; }));
+    assert(rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const int released = g_idle_wait_begun.load();
+    rtl_stream_test_set_profile_taken_hook(nullptr, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    const bool landed = send_until(tx, &phase, [] { return profile_is(9600, 2, 0); });
+    if (!landed || prepared != 1 || released != 1) {
+        DSD_FPRINTF(stderr,
+                    "CQPSK off over a taken TED 5 request: landed 9600/2 %d, model %d, demod released by the build %d "
+                    "(want 1, 1, 1)\n",
+                    landed ? 1 : 0, prepared, released);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+}
+
 /* ring_full_drops_whole_blocks: a demod that stops taking input leaves the ring full; the reader drops whole blocks,
  * each a gap mark only: no boundary, no discontinuity, no output generation move, the resampler kept. Blocks taken after
  * are still whole. */
@@ -1714,6 +1814,9 @@ const named_test kTests[] = {
      test_hunt_over_a_taken_cqpsk_off_request_prepares_the_model},
     {"hunt_behind_a_digital_landing_prepares_the_model", test_hunt_behind_a_digital_landing_prepares_the_model},
     {"hunt_over_a_taken_digital_landing_prepares_the_model", test_hunt_over_a_taken_digital_landing_prepares_the_model},
+    {"ted_only_onto_fsk9600_prepares_the_model", test_ted_only_onto_fsk9600_prepares_the_model},
+    {"cqpsk_off_over_a_taken_ted_only_request_prepares_the_model",
+     test_cqpsk_off_over_a_taken_ted_only_request_prepares_the_model},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
     {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},

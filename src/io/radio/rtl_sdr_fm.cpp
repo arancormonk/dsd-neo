@@ -12987,6 +12987,7 @@ static int g_profile_taken_in_flight = 0;
 static int g_profile_taken_cqpsk = -1;
 static int g_profile_taken_sym_rate = 0;
 static int g_profile_taken_levels = 0;
+static int g_profile_taken_ted_sps = -1;
 /* ... and whether that request came with a digital family request (a landing, or the switch out of analog), whose
    consume resolves its CQPSK as a landing does (rtl_stream_resolve_landing_profile()), with its explicit flag. */
 static int g_profile_taken_digital_family = 0;
@@ -13370,8 +13371,15 @@ static void rtl_stream_prepare_reader_model(void);
    (dsd_demod_fsk9600_active()), judged on every profile it can leave in force. What it leaves out (a symbol rate of 0,
    a CQPSK state of -1) the demod keeps as it runs when it applies the request: the published profile, or one it took
    and has not finished applying (g_profile_taken_*). A request still queued is replaced whole, so its values never
-   apply. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so does a hunt step (-1, 9600, 2) over a
-   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. A request the take pairs with a queued
+   apply. The fields that move the rate or the levels (rtl_stream_apply_demod_profile_params()): a positive symbol
+   rate, which lands with its levels whatever the TED; with none, a positive TED, which sets the rate the complex rate
+   gives over it and keeps the levels (rtl_stream_ted_request_symbol_rate()); and CQPSK on, which sets four levels and
+   never runs the path. Levels apply only with a rate, a TED of 0 clears the override alone, and the channel profile,
+   the override flag and the digital-decode mark move neither (the mark can only keep the request off the monitor); a
+   queued family request moves no rate, and the complex rate moves only with a rate chain (an open, a retune), never
+   with a profile. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so do a hunt step (-1, 9600, 2)
+   over a CQPSK-off stream and a TED-only (-1, 0, 0, -1, 5, 0) on a 48 kHz 4800/2 one; a profile that can only end on
+   CQPSK, or off 9600/2, cannot. A request the take pairs with a queued
    digital family request (a landing, or the switch out of analog) has its CQPSK resolved as a landing's
    (rtl_demod_landing_cqpsk(): DSD_NEO_CQPSK replaces a value that is not the target's own, -1 included), and so has a
    taken one that came with such a request: each resolution counts too, so a doubt builds. Called under
@@ -13398,17 +13406,58 @@ rtl_stream_cqpsk_may_end_off_locked(int cqpsk_enable) {
     return cqpsk_off;
 }
 
+/* The symbol rate a request's TED of @p ted_sps sets when the request names no rate: both TED setters
+   (rtl_stream_set_ted_sps(), rtl_stream_set_ted_sps_no_override()) clamp it and set the profile to the complex rate
+   over it, rounded. 0 when it sets none. */
+static int
+rtl_stream_ted_request_symbol_rate(int ted_sps) {
+    const int complex_rate = g_pub_complex_rate.load(std::memory_order_relaxed);
+    if (ted_sps <= 0 || complex_rate <= 0) {
+        return 0;
+    }
+    const int sps = ted_sps < 2 ? 2 : (ted_sps > 64 ? 64 : ted_sps);
+    return (complex_rate + (sps / 2)) / sps;
+}
+
+/* The rate the taken request in flight lands (0: none in flight, or one that keeps the rate), and in @p levels_2
+   whether it lands two levels: a named rate's own levels, or for a TED-only one the published levels it keeps. */
+static int
+rtl_stream_taken_landing_rate_locked(int* levels_2) {
+    *levels_2 = 0;
+    if (!g_profile_taken_in_flight) {
+        return 0;
+    }
+    if (g_profile_taken_sym_rate > 0) {
+        *levels_2 = g_profile_taken_levels == 2;
+        return g_profile_taken_sym_rate;
+    }
+    *levels_2 = g_pub_symbol_levels.load(std::memory_order_relaxed) == 2;
+    return rtl_stream_ted_request_symbol_rate(g_profile_taken_ted_sps);
+}
+
+/* The rate side: whether the request can leave 9600 sym/s on two levels in force. A named rate decides alone; a TED
+   alone sets its rate on the levels in force, the published ones or the taken request's; neither keeps the rate in
+   force. */
+static int
+rtl_stream_profile_may_land_9600_2_locked(int symbol_rate_hz, int levels, int ted_sps) {
+    if (symbol_rate_hz > 0) {
+        return symbol_rate_hz == 9600 && levels == 2;
+    }
+    int taken_levels_2 = 0;
+    const int taken_rate = rtl_stream_taken_landing_rate_locked(&taken_levels_2);
+    const int published_levels_2 = g_pub_symbol_levels.load(std::memory_order_relaxed) == 2;
+    if (ted_sps > 0) {
+        return rtl_stream_ted_request_symbol_rate(ted_sps) == 9600 && (published_levels_2 || taken_levels_2);
+    }
+    return (g_pub_symbol_rate.load(std::memory_order_relaxed) == 9600 && published_levels_2)
+           || (taken_rate == 9600 && taken_levels_2);
+}
+
 /* The whole decision described above: the rate side, then the CQPSK side. */
 static int
-rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz, int levels) {
-    const int taken = g_profile_taken_in_flight;
-    int rate_9600 = symbol_rate_hz == 9600 && levels == 2;
-    if (symbol_rate_hz <= 0) {
-        rate_9600 = (g_pub_symbol_rate.load(std::memory_order_relaxed) == 9600
-                     && g_pub_symbol_levels.load(std::memory_order_relaxed) == 2)
-                    || (taken && g_profile_taken_sym_rate == 9600 && g_profile_taken_levels == 2);
-    }
-    return rate_9600 && rtl_stream_cqpsk_may_end_off_locked(cqpsk_enable);
+rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int ted_sps) {
+    return rtl_stream_profile_may_land_9600_2_locked(symbol_rate_hz, levels, ted_sps)
+           && rtl_stream_cqpsk_may_end_off_locked(cqpsk_enable);
 }
 
 /* A demod profile request into the queue, replacing a queued one whole (g_profile_req_m held). */
@@ -13440,10 +13489,10 @@ rtl_stream_queue_demod_profile_locked(int cqpsk_enable, int symbol_rate_hz, int 
 /* Whether a request queued now needs the reader model built first (g_profile_req_m held): a reader runs with no model
    built (as published), and the request can land the 9600 bit/s FSK path. */
 static int
-rtl_stream_reader_model_wanted_locked(int cqpsk_enable, int symbol_rate_hz, int levels) {
+rtl_stream_reader_model_wanted_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int ted_sps) {
     const PublishedReaderState published = rtl_stream_published_reader_state();
     return published.in_hz != 0 && published.model == 0
-           && rtl_stream_profile_may_land_fsk9600_locked(cqpsk_enable, symbol_rate_hz, levels);
+           && rtl_stream_profile_may_land_fsk9600_locked(cqpsk_enable, symbol_rate_hz, levels, ted_sps);
 }
 
 static int
@@ -13479,7 +13528,7 @@ rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
        built the model, or could not). */
     for (int prepared = 0;; prepared = 1) {
         std::unique_lock<std::mutex> lock(g_profile_req_m);
-        if (!prepared && rtl_stream_reader_model_wanted_locked(cqpsk_enable, symbol_rate_hz, levels)) {
+        if (!prepared && rtl_stream_reader_model_wanted_locked(cqpsk_enable, symbol_rate_hz, levels, ted_sps)) {
             lock.unlock();
             rtl_stream_prepare_reader_model();
             continue;
@@ -13985,6 +14034,7 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     g_profile_taken_cqpsk = g_profile_req_has_demod ? g_profile_req_cqpsk : -1;
     g_profile_taken_sym_rate = g_profile_req_has_demod ? g_profile_req_sym_rate : 0;
     g_profile_taken_levels = g_profile_req_has_demod ? g_profile_req_levels : 0;
+    g_profile_taken_ted_sps = g_profile_req_has_demod ? g_profile_req_ted_sps : -1;
     g_profile_taken_digital_family = g_profile_req_has_demod && g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL;
     g_profile_taken_landing_explicit = g_profile_req_landing_explicit;
     g_profile_req_has_demod = 0;
