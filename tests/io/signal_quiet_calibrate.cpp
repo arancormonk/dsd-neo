@@ -108,8 +108,8 @@
  * that refusal raises it, and the run and completion records then name it. A trial the detector did not measure
  * (refused, failed or unfinished: an analog width it does not admit, for one) fails the run the same way, as it would
  * read busy with nothing behind it; a reading the guard or the occupancy check voids is a measurement and reads busy as
- * it should. Two outputs (--out, --dump, --trial-log, --bounds) that name one file, or an output that is a link to a
- * file not there yet, are refused before any is opened.
+ * it should. Two outputs (--out, --dump, --trial-log, --bounds) that name one file, or an output that is a symbolic
+ * link (a reparse point on Windows), are refused before any is opened.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs or the batches. */
@@ -3149,31 +3149,31 @@ output_location(const std::string& path) {
     return std::string(resolved) + "/" + path.substr(cut == std::string::npos ? 0 : cut + 1);
 }
 
-/* Whether @p path is a symbolic link to nothing yet: where it writes is decided only once something creates its target,
-   which may be another of the run's outputs, so no check made before any output exists can tell the two apart. */
+/* Whether @p path is a symbolic link (on Windows any reparse point, a cloud placeholder included). A link to nothing yet writes wherever something
+   later creates its target, which may be another of the run's outputs, so no check made before any output exists can
+   tell the two apart; and whether a link's target is there cannot be read the same way everywhere (on Windows the
+   stat calls describe the link itself). An output is always given by its own path. */
 bool
-dangling_link(const std::string& path) {
+output_link(const std::string& path) {
     dsd_path_type type = DSD_PATH_TYPE_FILE;
-    dsd_stat_t st;
-    return dsd_path_type_nofollow(path.c_str(), &type) == 1 && type == DSD_PATH_TYPE_LINK
-           && dsd_stat_path(path.c_str(), &st) != 0;
+    return dsd_path_type_nofollow(path.c_str(), &type) == 1 && type == DSD_PATH_TYPE_LINK;
 }
 
 /* False, with the two options named, when two of the run's outputs (--out, --dump, --trial-log, --bounds) are one file:
-   the same path however spelled, or two names of one existing file (a hard link); and a link to a file not there yet
-   (dangling_link()), which could name another output. Their writers would overwrite each other and the completion
+   the same path however spelled, or two names of one existing file (a hard link); and any output that is a symbolic
+   link (output_link()), which could name another output. Their writers would overwrite each other and the completion
    record's digests would describe neither; checked before any output is opened. */
 bool
 outputs_distinct(const Options& o) {
     const std::pair<const char*, const std::string*> outputs[] = {
         {"--out", &o.out}, {"--dump", &o.dump}, {"--trial-log", &o.trial_log}, {"--bounds", &o.bounds}};
     const size_t count = sizeof(outputs) / sizeof(outputs[0]);
-    const auto* dangling = std::find_if(std::begin(outputs), std::end(outputs), [](const auto& output) {
-        return !output.second->empty() && dangling_link(*output.second);
+    const auto* linked = std::find_if(std::begin(outputs), std::end(outputs), [](const auto& output) {
+        return !output.second->empty() && output_link(*output.second);
     });
-    if (dangling != std::end(outputs)) {
-        DSD_FPRINTF(stderr, "%s %s is a link to a file that does not exist: give the output's own path\n",
-                    dangling->first, dangling->second->c_str());
+    if (linked != std::end(outputs)) {
+        DSD_FPRINTF(stderr, "%s %s is a symbolic link or reparse point: give an output path that is neither\n",
+                    linked->first, linked->second->c_str());
         return false;
     }
     for (size_t a = 0; a < count; ++a) {
