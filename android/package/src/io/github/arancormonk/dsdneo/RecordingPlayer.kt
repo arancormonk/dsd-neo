@@ -737,7 +737,9 @@ class RecordingPlayer(
 
     /**
      * The current part completed while paused (the platform played out what it had buffered at the Pause): it stays
-     * current, paused at its end, with no seek, and moves on when resumed. Its player never starts again (R66).
+     * current, paused at its end, with no seek, and moves on when resumed. Its player is let go at the hold (R72),
+     * counted until its thread ends; the item, its token and its end reading stay, and nothing from that player
+     * reaches the play again.
      */
     private var completionHeld = false
 
@@ -1075,8 +1077,20 @@ class RecordingPlayer(
         positionMs = if (durationMs > 0) durationMs else reached
         if (!wanted || interrupted) {
             // Paused (the platform drained what it had buffered at the Pause): the part stays current, paused at its
-            // end, and moves on when it is resumed, as if it had just completed. The paused deadline counts on.
+            // end, and moves on when it is resumed, as if it had just completed. The paused deadline counts on. Its
+            // player goes now (R72): let go and counted until its thread ends, while the item, its token and its end
+            // reading stay for Resume and Previous; nothing from that player reaches the play again.
             completionHeld = true
+            val done = player
+            val doneWork = playerWork
+            player = null
+            playerWork = null
+            prepared = false
+            if (done != null && doneWork != null) {
+                letGo(done, doneWork)
+            } else {
+                done?.release {}
+            }
             publish()
             return
         }
@@ -1930,6 +1944,7 @@ class RecordingPlayer(
             over != null -> over.state
             generation == 0 -> STOPPED
             gap -> if (wanted && !interrupted) PLAYING else PAUSED
+            completionHeld -> PAUSED // its player let go (R72): paused at its end
             !promoted || player == null || !prepared -> PREPARING
             // Asked for, not acknowledged: the controls follow the wish (Pause), the clock waits for the audio (R49).
             startPending != 0L -> STARTING

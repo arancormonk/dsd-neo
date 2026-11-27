@@ -1568,6 +1568,25 @@ private fun aCompletionWhilePausedIsHeld() {
         check(back.status.call == expected) { "$length ms: Previous on call ${back.status.call}, not $expected" }
     }
 
+    // R72: the hold lets its player go, counted until its thread ends; nothing later from that player reaches the play.
+    val freed = Rig()
+    freed.queue(2, 1)
+    freed.prepared()
+    freed.holdReleases = true
+    freed.machine.pause()
+    val held = freed.current
+    freed.complete()
+    check(held.released && freed.abandoned.outstanding == 1) { "held: its player released, its thread counted" }
+    freed.machine.onFailed(held.token, RecordingPlayer.REASON_PLAYER)
+    freed.machine.onCompleted(held.token)
+    check(freed.state == PAUSED && freed.status.partOrdinal == 1 && freed.service.ends.isEmpty()) {
+        "the old player's failure and completion reach nothing: still paused (${freed.state})"
+    }
+    freed.finishRelease()
+    check(freed.abandoned.outstanding == 0) { "its thread ended: no longer counted" }
+    freed.machine.resume()
+    check(freed.status.partOrdinal == 2 && freed.players.last() !== held) { "Resume: on to part 2" }
+
     // R71: a part of unknown length (0) keeps how far it played: paused 4 s into the second call's first part, its
     // completion held, Previous restarts the second call (the 3,000 ms rule), not the first.
     val unknown = Rig(length = 0)
