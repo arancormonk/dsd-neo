@@ -1351,7 +1351,9 @@ private fun aSeekLandsOnlyWhenThePlayerConfirmsIt() {
     rig.prepared()
     rig.elapse(1_000)
     rig.holdSeeks = true
+    val published = rig.service.changes.size
     rig.machine.seek(20_000)
+    check(rig.service.changes.size == published) { "a plain seek publishes nothing until it lands (M4)" }
     check(rig.current.seeks == listOf(20_000L) && rig.position == 1_000L) {
         "the seek is posted; the position stays the confirmed one: ${rig.position}"
     }
@@ -1359,6 +1361,9 @@ private fun aSeekLandsOnlyWhenThePlayerConfirmsIt() {
     check(rig.position == 1_500L && rig.status.seeksLanded == 0) { "its clock runs on from there: ${rig.position}" }
     rig.landSeek()
     check(rig.position == 20_000L && rig.status.seeksLanded == 1) { "landed: the target, counted" }
+    check(rig.service.changes.size == published + 1 && rig.service.changes.last().positionMs(rig.nowMs) == 20_000L) {
+        "the landing publishes once, at the target"
+    }
     rig.elapse(1_000)
     check(rig.position == 21_000L) { "and the clock counts from it" }
 

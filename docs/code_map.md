@@ -20095,13 +20095,15 @@ Qt Quick frontend (`src/ui/qt`):
       seek is a landing only once the player confirms it: each carries a seek serial, the owner forwards
       `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` with the latest serial it passed, and until the
       latest seek lands the readings keep the confirmed position and its clock (so Previous's 3,000 ms rule reads it); a
-      superseded seek's completion counts for nothing. The sheet takes a position near its target as the landing only
-      from a record whose landing count moved since it asked, so a position read before the seek reached the player
-      never lands it; its preview, with the 2 s fallback, shows the target meanwhile. The host resolves `playbackPath`,
-      `playbackTitle`, `playbackKey` and the identity from the item index of the same record, and publishes everything
-      together; the position alone goes on `playbackPositionChanged`. Zero status reads while idle; a foreground return
-      refreshes at once, from Hidden, Suspended or Inactive (R51: an app visible but not active, as in split screen,
-      holds the bar's events, so the first active reading comes before the bar says anything).
+      superseded seek's completion counts for nothing. A plain seek (no start pending to ask again) publishes nothing
+      until it lands, so a system scrubber the user dragged never snaps back to the old position (M4). The sheet takes a
+      position near its target as the landing only from a record whose landing count moved since it asked, so a position
+      read before the seek reached the player never lands it; its preview, with the 2 s fallback, shows the target
+      meanwhile. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the item index
+      of the same record, and publishes everything together; the position alone goes on `playbackPositionChanged`. Zero
+      status reads while idle; a foreground return refreshes at once, from Hidden, Suspended or Inactive (R51: an app
+      visible but not active, as in split screen, holds the bar's events, so the first active reading comes before the
+      bar says anything).
     - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
       the old generation ends (its service is told it was replaced), the new one publishes Preparing and the call
       returns its positive generation, which owns every later message, a synchronous service-start exception (published

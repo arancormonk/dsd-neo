@@ -1565,8 +1565,10 @@ class RecordingPlayer(
             if (startPending == 0L || playing) {
                 return // acknowledged (or failed) at once, and published there: nothing after an end
             }
+            publish()
         }
-        publish()
+        // A plain seek changes no reading until it lands, and the landing publishes (R56): publishing the confirmed
+        // position now would snap a system scrubber the user just dragged back to it (M4).
     }
 
     private fun enterGap() {

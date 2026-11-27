@@ -206,8 +206,8 @@ start a player failure; the 3,000 ms rule from the acknowledgement; during a hel
 Pause and seek, the session buffering, a Pause taking it back unmade, and a headset tap in the phases suite pausing it;
 a held start failing as the player's at 10 s with the focus given back, one acknowledged at 9.9 s playing, a late
 acknowledgement ignored, a Pause before the expiry taking it back; a held seek leaving the confirmed position and its
-clock until its completion, a superseded seek's completion landing nothing, and Previous reading the confirmed
-position; a seek taking a pending start back and asking again,
+clock until its completion, publishing nothing until then, a superseded seek's completion landing nothing, and
+Previous reading the confirmed position; a seek taking a pending start back and asking again,
 the old acknowledgement stale and the new one playing from the target; the next part's start posted only once the
 outgoing player's held silence comes, the watchdog ending a play whose silence never comes, five Next with the silence
 late starting only the last candidate once, a player never started asked for none, a sheet play replacing a sounding
