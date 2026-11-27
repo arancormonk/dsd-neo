@@ -888,6 +888,30 @@ fun headsetTapsBelongToThePlaylistNotThePart() {
 }
 
 /**
+ * A direct transport callback settles a waiting headset tap first (R60): playing, a tap waits for its double tap, and
+ * a lock-screen Pause (onPause) arrives in the wait. The tap counts first, then the Pause: paused, and the tap's
+ * timeout, which would have found the play paused and resumed it, changes nothing.
+ */
+fun aDirectPauseSettlesAWaitingTap() {
+    val playing = Playing(ServiceRig())
+    val machine = playing.machine
+    val t = Taps(playing)
+    val keys = SessionKeys(t.taps) { g, command -> if (playing.rig.phases.isOwner(g)) command(machine, g) }
+    val g = playing.playlist()
+    playing.deliver()
+    machine.onPrepared(playing.tokens.last())
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays" }
+    t.taps.keyDown(g, 0)
+    keys.direct(g) { player, generation -> SessionTarget(generation).pause(player) }
+    check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "the Pause pauses" }
+    val toggled = t.toggles.size
+    t.elapse(Taps.TAP_TIMEOUT_MS)
+    check(t.toggles.size == toggled && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+        "the tap's timeout changes nothing: still paused"
+    }
+}
+
+/**
  * The transport keys are the session's own queue commands against the player's state on the looper (#909): paused, a
  * headset tap and then a dedicated Pause within the double-tap wait: the tap plays first, then the Pause pauses.
  */
@@ -972,5 +996,6 @@ fun main() {
     headsetTapsBelongToThePlaylistNotThePart()
     aDisconnectDropsAWaitingTap()
     transportKeysFollowAWaitingTapOnThePlayersState()
+    aDirectPauseSettlesAWaitingTap()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

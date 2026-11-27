@@ -539,6 +539,17 @@ class SessionKeys(
         return true
     }
 
+    /**
+     * A direct transport callback of the session (onPlay, onPause, onStop, onSkipToNext, onSkipToPrevious, R60): a
+     * waiting tap counts as single first, as it does before a transport key, then [command] is sent for playlist
+     * [generation]. So the later command wins: a lock-screen Pause in a tap's double-tap wait is never undone by the
+     * tap's timeout.
+     */
+    fun direct(generation: Int, command: (RecordingPlayer, Int) -> Unit) {
+        taps.otherKey()
+        send(generation, command)
+    }
+
     companion object {
         /** The queue command of a transport key, or null for another key. Each is dropped where the state has none. */
         fun transport(keyCode: Int): ((RecordingPlayer, Int) -> Unit)? = when (keyCode) {

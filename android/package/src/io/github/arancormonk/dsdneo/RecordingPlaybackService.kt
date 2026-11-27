@@ -427,27 +427,31 @@ class RecordingPlaybackService : Service() {
             return taken || super.onMediaButtonEvent(mediaButtonIntent)
         }
 
-        override fun onPlay() = command(target::play)
+        override fun onPlay() = transport(target::play)
 
-        override fun onPause() = command(target::pause)
+        override fun onPause() = transport(target::pause)
 
-        override fun onSkipToNext() = command(target::next)
+        override fun onSkipToNext() = transport(target::next)
 
-        override fun onSkipToPrevious() = command(target::previous)
+        override fun onSkipToPrevious() = transport(target::previous)
 
         override fun onSeekTo(pos: Long) = command { target.seek(it, pos) }
 
         // The system player's dismissal (API 33+) arrives here.
-        override fun onStop() = command(target::stop)
+        override fun onStop() = transport(target::stop)
 
         override fun onCustomAction(action: String, extras: Bundle?) {
             if (action == CUSTOM_STOP) {
-                command(target::stop)
+                transport(target::stop)
             }
         }
 
         private fun command(action: (RecordingPlayer) -> Unit) =
             RecordingPlayback.sessionCommand(target.generation) { player, _ -> action(player) }
+
+        /** A transport command: a waiting headset tap counts first, so this later command wins (R60). */
+        private fun transport(action: (RecordingPlayer) -> Unit) =
+            keys.direct(target.generation) { player, _ -> action(player) }
     }
 
     companion object {
