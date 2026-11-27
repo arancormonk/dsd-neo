@@ -5704,13 +5704,7 @@ test_start_with_no_folder_asks_for_the_listing(void) {
     const QString none = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
     s.store.setSessionRootsHookForTest({});
     expect("no folder: the start gets none", restored.load() && none.isEmpty());
-    QElapsedTimer waited;
-    waited.start();
-    while (!listed_as(s.store, 1, true) && waited.elapsed() < 5000) {
-        QThread::msleep(5);
-    }
-    expect("no folder: the listing it asked for ran",
-           s.store.passCountForTest() > before && listed_as(s.store, 1, true));
+    expect("no folder: the listing it asked for ran", passes_reach(s.store, before + 1) && listed_as(s.store, 1, true));
 }
 
 /* r16t: the owner-folder choice is made only among roots still usable once its checks are done. The card holds two
