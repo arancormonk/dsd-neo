@@ -1461,11 +1461,20 @@ def lag_section(lines: list[str], unique: dict, noise_results: dict) -> None:
 
 
 def sanity_section(lines: list[str], sanity: dict, combos: list[dict], noise_results: dict) -> None:
+    """The ports' sanity checks; the receiver-noise fixture against the synthetic noise of the 48 kHz replay chain's
+    unset NFM plan, when the run (a --chains selection may leave it out) measured that plan."""
     ref = next(
-        c for c in combos if c["runs"] and c["config"] == Config(FM_KIND, 0, "") and c["plan"].name == "replay-48k"
+        (c for c in combos if c["runs"] and c["config"] == Config(FM_KIND, 0, "") and c["plan"].name == "replay-48k"),
+        None,
     )
-    synth = noise_results[ref["fkey"]]["pct"][1]
     fixture = sanity["noise_floor_fixture"]
+    if ref is not None and ref.get("fkey") in noise_results:
+        synth = noise_results[ref["fkey"]]["pct"][1]
+        synth_text = (
+            f"the synthetic noise for that plan: CV2 {fmt_list(synth['cv2'][1:4])}, C {fmt_list(synth['c'][1:4])}."
+        )
+    else:
+        synth_text = "this run's selection leaves that plan out, so its synthetic noise is not compared."
     real = "; ".join(
         f"{name} {sanity[f'{name}_dev_rms_hz']:.0f} Hz RMS / {sanity[f'{name}_dev_p99_9_hz']:.0f} Hz at 99.9 %"
         for name in REAL_FM
@@ -1483,8 +1492,8 @@ def sanity_section(lines: list[str], sanity: dict, combos: list[dict], noise_res
         "",
         (
             f"tests/fixtures/iq/noise_floor.iq (cu8 receiver noise, {fixture['windows']} windows) through the 48 kHz "
-            f"replay chain's unset NFM plan: CV2 1/50/99 % {fmt_list(fixture['cv2'])}, C {fmt_list(fixture['c'])}; the "
-            f"synthetic noise for that plan: CV2 {fmt_list(synth['cv2'][1:4])}, C {fmt_list(synth['c'][1:4])}."
+            f"replay chain's unset NFM plan: CV2 1/50/99 % {fmt_list(fixture['cv2'])}, C {fmt_list(fixture['c'])}; "
+            f"{synth_text}"
         ),
         "",
     ]
@@ -2431,6 +2440,12 @@ def main(argv: list[str] | None = None) -> int:
     model = load_chain_model(args, out_dir)
     if args.chains:
         model["combos"] = [c for c in model["combos"] if args.chains in c["plan"].name]
+    if not any(modelled(c) for c in model["combos"]):
+        names = sorted({c["plan"].name for c in model["combos"]})
+        raise SystemExit(
+            f"--chains {args.chains!r} selects no modelled plan (chains matched: {', '.join(names) or 'none'}; stepped "
+            "chains are scoped out)"
+        )
     if args.frozen:
         return main_frozen(args, model, noise_windows, started, out_dir)
     return main_design(args, model, noise_windows, started, out_dir)
