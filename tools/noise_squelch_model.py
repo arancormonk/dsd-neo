@@ -80,6 +80,7 @@ import argparse
 import json
 import math
 import os
+import subprocess
 import sys
 import time
 from concurrent.futures import ProcessPoolExecutor
@@ -449,6 +450,23 @@ class Plan:
         return out
 
 
+def decoder_refs(decoder_plan: dict | None, plan: Plan, group: str) -> list[float]:
+    """The decoder's p_ref for @p group's band-passes (the K sub-bands, then the staggered set), held to the tool's own
+    band: the same edges and sub-band count, or the run stops."""
+    if not decoder_plan or not decoder_plan["valid"]:
+        raise SystemExit(f"plan {plan.key}: the tool has a band, the decoder's noise plan has none")
+    lo, hi, _ = plan.band
+    same = (
+        abs(decoder_plan["lo_hz"] - lo) <= 1e-6
+        and abs(decoder_plan["hi_hz"] - hi) <= 1e-6
+        and decoder_plan["sub_bands"] == plan.primary[group]
+        and decoder_plan["bands"] == len(plan.filters[group])
+    )
+    if not same:
+        raise SystemExit(f"plan {plan.key}: the decoder's band {decoder_plan} is not the tool's {plan.band}")
+    return [float(v) for v in decoder_plan["p_ref"]]
+
+
 def close_db(n_db: float) -> float:
     return max(n_db - CLOSE_HYSTERESIS_DB, CLOSE_FLOOR_DB)
 
@@ -465,6 +483,9 @@ def run_plan(job: dict) -> dict:
     out = {"key": plan.key, "fs": fs, "width": width, "deviation": deviation, "candidates": {}}
     out["reader"] = plan.reader.key if plan.reader is not None else None
     if plan.band is None:
+        decoder_plan = job.get("decoder_plan")
+        if decoder_plan and decoder_plan["valid"]:
+            raise SystemExit(f"plan {plan.key}: the decoder's noise plan has a band, the tool has none")
         out["edge_hz"] = plan.edge
         if len(plan.taps) <= 1 and plan.stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
             out["why"] = "no channel filter behind the half-band cascade at a Nyquist the widest NFM signal reaches"
@@ -489,6 +510,12 @@ def run_plan(job: dict) -> dict:
     span = int(PREF_SECONDS * fs) + len(plan.taps) + plan.settle
     refs = plan.refs_of(plan.demod(None, span, 0.0, "pref", calibration=True))
     refs_nohb = plan.refs_of(plan.demod(None, span, 0.0, "pref", hb=False))
+    # The shipped candidate scores against the references the decoder holds (its own 2 s calibration, from its own
+    # generator); the tool's own draw stays for the other candidates and for comparison. The measurement windows keep
+    # their independent noise.
+    chosen_group = CHOSEN.split("-")[0]
+    tool_refs = list(refs[chosen_group])
+    refs[chosen_group] = decoder_refs(job.get("decoder_plan"), plan, chosen_group)
 
     # Noise alone, in independent chunks.
     noise_s = NOISE_SECONDS[mode]
@@ -505,11 +532,15 @@ def run_plan(job: dict) -> dict:
         for c, q in plan.window_q(h, refs).items():
             qn[c].append(q)
     long_ref = {name: (long_sum[name] / long_n).tolist() for name in plan.filters}
+
+    def worst_db(a_refs, names) -> float:
+        return max(abs(10.0 * math.log10(a / b)) for name in names for a, b in zip(a_refs[name], long_ref[name]))
+
     out["pref_error_db"] = {
-        "c_2s": max(abs(10.0 * math.log10(a / b)) for name in plan.filters for a, b in zip(refs[name], long_ref[name])),
-        "2s_no_hb": max(
-            abs(10.0 * math.log10(a / b)) for name in plan.filters for a, b in zip(refs_nohb[name], long_ref[name])
-        ),
+        "c_2s": worst_db(refs, [chosen_group]),
+        "tool_2s": worst_db({**refs, chosen_group: tool_refs}, plan.filters),
+        "decoder_vs_tool": max(abs(10.0 * math.log10(a / b)) for a, b in zip(refs[chosen_group], tool_refs)),
+        "2s_no_hb": worst_db(refs_nohb, plan.filters),
     }
     tilt_q = {}
     for t in (1.0, -1.0):
@@ -837,10 +868,12 @@ def modelled_here(plan) -> bool:
     return not plan.stepped
 
 
-def plan_job(plan, hb_taps: dict, key: str, taps, width: float, mode: str) -> dict:
-    """One plan's job: its taps and stages, and on a reader row the chain itself (Plan runs it)."""
+def plan_job(plan, hb_taps: dict, key: str, taps, width: float, mode: str, request: tuple) -> dict:
+    """One plan's job: its taps and stages, on a reader row the chain itself (Plan runs it), and the harness chain
+    request whose channel filter these taps are (decoder_noise_plans() asks it for the decoder's noise plan)."""
     job = {
         "key": key,
+        "request": tuple(request),
         "taps": np.asarray(taps).tolist(),
         "stages": cascade_stages(plan, hb_taps),
         "fs": plan.channel_rate,
@@ -853,13 +886,43 @@ def plan_job(plan, hb_taps: dict, key: str, taps, width: float, mode: str) -> di
     return job
 
 
+HARNESS_PATH_ENCODER = 1  # tools/squelch_model_taps.cpp: the M17 encoder's monitor
+HARNESS_PROFILE_WIDE = 0  # DSD_CH_LPF_PROFILE_WIDE
+
+
+def reader_source(plan) -> int:
+    """The harness request's reader field: the source rate a reader row reads, 0 with no reader."""
+    return plan.reader.source_hz if plan.reader is not None else 0
+
+
+def decoder_noise_plans(exe: Path, jobs: list[dict]) -> None:
+    """The noise plan the decoder designs for each job's chain and taps (squelch_model_taps noise), into
+    job["decoder_plan"]: its band and its calibration references p_ref, which the gate scores the shipped candidate
+    with. Each request's channel taps must be the job's own."""
+    requests = sorted({j["request"] for j in jobs})
+    stdin = "".join(" ".join(str(v) for v in r) + "\n" for r in requests)
+    proc = subprocess.run([str(exe), "noise"], input=stdin, capture_output=True, text=True, check=True)
+    recs = {}
+    for line in proc.stdout.splitlines()[1:]:
+        rec = json.loads(line)
+        key = (rec["rate_out"], rec["width_hz"], rec["kind"], rec["path"], rec["profile"], rec["passes"])
+        recs[key + (rec["reader_source_hz"],)] = rec
+    for job in jobs:
+        rec = recs[job["request"]]
+        taps = np.asarray(rec["taps"] or [1.0], dtype=np.float64)
+        if cm.taps_key(taps) != cm.taps_key(np.asarray(job["taps"], dtype=np.float64)):
+            raise SystemExit(f"harness request {job['request']} designs other taps than plan {job['key']}")
+        job["decoder_plan"] = rec["noise_plan"]
+
+
 def unique_jobs(combos: list[dict], hb_taps: dict, mode: str) -> tuple[list[dict], dict]:
     jobs, members = {}, {}
     for combo in combos:
         plan = combo["plan"]
         key = f"{combo['fkey']}:{combo['protected_hz']}"
         members.setdefault(key, []).append(sm.combo_id(combo))
-        jobs.setdefault(key, plan_job(plan, hb_taps, key, combo["taps"], combo["protected_hz"], mode))
+        request = sm.chain_request(combo["config"], plan, combo)
+        jobs.setdefault(key, plan_job(plan, hb_taps, key, combo["taps"], combo["protected_hz"], mode, request))
     return sorted(jobs.values(), key=lambda j: -j["fs"]), members
 
 
@@ -879,7 +942,8 @@ def custom_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs
             if key in known:
                 continue
             known.add(key)
-            jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode))
+            request = (plan.complex_rate, width, sm.FM_KIND, 0, -1, plan.passes, reader_source(plan))
+            jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode, request))
 
 
 def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, jobs: list, members: dict) -> set:
@@ -900,7 +964,16 @@ def encoder_jobs(plans: list, harness_plans: dict, hb_taps: dict, mode: str, job
             continue
         known.add(key)
         added.add(key)
-        jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode))
+        request = (
+            plan.complex_rate,
+            0,
+            sm.FM_KIND,
+            HARNESS_PATH_ENCODER,
+            HARNESS_PROFILE_WIDE,
+            plan.passes,
+            reader_source(plan),
+        )
+        jobs.append(plan_job(plan, hb_taps, key, rec["taps"], width, mode, request))
     return added
 
 
@@ -961,6 +1034,7 @@ def main(argv: list[str] | None = None) -> int:
         )
         raise SystemExit(f"{picks} selects no plan: nothing would be measured")
     print(f"{len(combos)} NFM combinations and the custom widths: {len(jobs)} distinct plans", flush=True)
+    decoder_noise_plans(exe, jobs)
     sm.real_sources()  # loaded once, before the workers fork
     results = []
     with ProcessPoolExecutor(max_workers=max(1, args.jobs)) as pool:

@@ -26,6 +26,12 @@
  * source through the replay reader's resampler into the cascade (dsd_iq_reader_plan_for(), its squelch model built as
  * a rate plan's commit builds it), so the plan is the one behind the reader.
  *
+ * "squelch_model_taps noise" takes the same chain requests and adds the NFM noise squelch's plan the decoder designs
+ * for that chain (tools/noise_squelch_model.py): squelch_noise_design()'s calls on the channel taps and the half-band
+ * stages, through the reader's model on a reader chain. The line's "noise_plan" holds its band and every band-pass's
+ * calibration reference power (p_ref, the K sub-bands then the staggered set), so the tool scores its windows against
+ * the references the decoder holds.
+ *
  * "squelch_model_taps track" runs the auto squelch's tracker itself instead (tools/squelch_paths_model.py's timing
  * checks): a first stdin line "<margin_db> <rate_hz> <lag> <rho_lag> <beta> <neff> <sqrt_neff> <noise_gain>" sets the
  * plan (one this harness printed, or the tools' model of a chain the decoder's plan does not cover), then interleaved
@@ -39,6 +45,7 @@
 #include <dsd-neo/dsp/demod_state.h>
 #include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
 #include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -157,6 +164,37 @@ print_floor_plan(const dsd_squelch_floor_plan* fp, int installed) {
                 fp->noise_gain);
 }
 
+/* The noise squelch's plan the decoder designs for the chain run_chain_plan() just set up (squelch_noise_design() in
+   src/dsp/demod_pipeline.cpp, no step): the channel taps (none with the LPF off), @p passes half-band stages (hb31
+   first, hb15 after) and, on a reader chain, the reader's model; printed as the line's "noise_plan". */
+static void
+print_noise_plan(demod_state* s, int taps_len, int passes, int rate_hz) {
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = passes < DSD_NOISE_SQUELCH_MAX_STAGES ? passes : DSD_NOISE_SQUELCH_MAX_STAGES;
+    for (int i = 0; i < count; i++) {
+        stages[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        stages[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    const float* taps = taps_len > 0 ? s->channel_lpf_plan_taps : NULL;
+    dsd_noise_squelch_plan plan;
+    DSD_MEMSET(&plan, 0, sizeof(plan));
+    if (s->iq_reader.enabled) {
+        (void)dsd_squelch_reader_model_noise_plan(&s->squelch_reader_model, &plan, taps, taps_len, stages, count,
+                                                  rate_hz);
+    } else {
+        (void)dsd_noise_squelch_plan_design(&plan, taps, taps_len, stages, count, rate_hz);
+    }
+    DSD_FPRINTF(stdout,
+                ",\"noise_plan\":{\"valid\":%d,\"rate_hz\":%d,\"edge_hz\":%.17g,\"lo_hz\":%.17g,\"hi_hz\":%.17g,"
+                "\"sub_bands\":%d,\"bands\":%d,\"p_ref_sum\":%.17g,\"p_ref\":[",
+                plan.valid, plan.rate_hz, plan.edge_hz, plan.lo_hz, plan.hi_hz, plan.sub_bands, plan.bands,
+                plan.p_ref_sum);
+    for (int k = 0; plan.valid && k < plan.bands; k++) {
+        DSD_FPRINTF(stdout, "%s%.17g", k ? "," : "", plan.p_ref[k]);
+    }
+    DSD_FPRINTF(stdout, "]}");
+}
+
 /* The next number of a header, or 0 when there is none. */
 static int
 next_double(char** cur, double* out) {
@@ -256,6 +294,7 @@ main(int argc, char** argv) {
     if (argc > 1 && strcmp(argv[1], "track") == 0) {
         return run_tracker();
     }
+    const int noise_mode = argc > 1 && strcmp(argv[1], "noise") == 0;
     demod_state* s = static_cast<demod_state*>(dsd_neo_aligned_malloc(sizeof(demod_state)));
     if (!s) {
         return 1;
@@ -341,6 +380,9 @@ main(int argc, char** argv) {
                         path, profile, passes, reader_source,
                         profile >= 0 ? dsd_channel_lpf_protected_edge_hz((int)profile) : 0.0);
             print_floor_plan(&s->squelch_floor.plan, s->squelch_auto_ran);
+            if (noise_mode) {
+                print_noise_plan(s, taps_len, (int)passes, (int)rate);
+            }
         }
         DSD_FPRINTF(stdout, "}\n");
     }
