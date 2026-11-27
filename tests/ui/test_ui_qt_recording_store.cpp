@@ -51,6 +51,7 @@
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
+#include <cstdlib>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -116,6 +117,16 @@ expect(const char* what, bool ok) {
     if (!ok) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", what);
         g_failures++;
+    }
+}
+
+/* expect(), fatal: a failure stops the run at once (std::abort()), for a check a test cannot go on past safely (its
+ * worker may still call a hook whose captures would go out of scope). */
+void
+expect_or_stop(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL (fatal): %s\n", what);
+        std::abort();
     }
 }
 
@@ -4569,9 +4580,10 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     });
     t.pass();
     t.pass();
-    // r17f: the listing asked for a follow-up listing; the hooks are cleared only once it has run.
-    expect("recreated, same path: its follow-up listing ran",
-           listedAt.load() > 0 && passes_reach(t.store, listedAt + 2));
+    // r17f: the listing asked for a follow-up listing; the hooks are cleared only once it has run. Timed out, the
+    // worker may still call the root-read hook, so the run stops here rather than tear the hook down under it (r18l).
+    expect_or_stop("recreated, same path: its follow-up listing ran",
+                   listedAt.load() > 0 && passes_reach(t.store, listedAt + 2));
     t.store.setRootReadHookForTest({});
     t.store.setPassEndHookForTest({});
     expect("recreated, same path: seen away and back", seen.load());
