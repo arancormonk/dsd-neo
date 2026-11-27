@@ -10322,17 +10322,19 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   from the stream's start, which the reader and the cascade start over at together: at the open, a replay's RESET and
   rewind, a replay MUTE that marks a gap (a driver overflow), and on an I/Q stream a reconnect or resume and each
   block its full ring drops, which is exact for an isolated drop (fewer than 33 gap marks pending,
-  `INPUT_RING_GAP_SLOTS`). A documented limit where one of the two starts over without the other: the cascade alone
-  at an FM <-> AM switch and at a digital -> analog switch (`rtl_demod_enter_analog_family()`), on an I/Q stream at
-  the blocks a reconnect's or resume's purge takes after the reader's restart, and at a drop whose gap mark the 33rd
-  pending one moved (a congested stream: the reader restarts, the demod misses it); the reader alone at a replay's
-  RETUNE and at a MUTE that marks no gap (a retune_mute or retune_reconfigure span with no RESET at the same sample).
-  After any of them the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the
-  next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune
-  on a replay or I/Q stream before the rigctl or stream landing). Each is a shift of the reader-to-decimator
-  alignment, so its cost is bounded by the worst over every coset: 1.2e-4 of a plan over 9,530 readers the rate plans
-  make with every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel
-  filters, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
+  `INPUT_RING_GAP_SLOTS`). A documented limit where one of the two starts over without the other: the cascade alone at
+  an FM <-> AM switch, at a digital -> analog switch (`rtl_demod_enter_analog_family()`) and at an analog -> digital one
+  (`rtl_demod_enter_digital_family()`, the same `demod_family_switch_reset()`; it costs nothing while the digital chain
+  runs no dynamic squelch, until the 9600 bit/s FSK path or the next analog entry runs on the alignment it left), on an
+  I/Q stream at the blocks a reconnect's or resume's purge takes after the reader's restart, and at a drop whose gap
+  mark the 33rd pending one moved (a congested stream: the reader restarts, the demod misses it); the reader alone at a
+  replay's RETUNE and at a MUTE that marks no gap (a retune_mute or retune_reconfigure span with no RESET at the same
+  sample). After any of them the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until
+  the next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune
+  on a replay or I/Q stream before the rigctl or stream landing). Each is a shift of the reader-to-decimator alignment,
+  so its cost is bounded by the worst over every coset: 1.2e-4 of a plan over 9,530 readers the rate plans make with
+  every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel filters, at 60 kHz
+  read into 48 kHz ahead of two passes) and carried through the cascade phase by
   phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
   pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
   when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,

@@ -22,17 +22,18 @@
  *   reader's output phases lined up on the samples the real decimators keep: each stage's output n is centred on its
  *   input 2n, counted from the stream's start, which the reader and the cascade start over at together. The period
  *   left at the channel filter is P = L / gcd(L, 2^passes) (40 kHz to 32 kHz by 4/5, then one pass: 2 phases).
- *   A limit: where one starts over without the other, the decimators can keep another of the gcd(L, 2^passes) cosets
- *   of the reader's phases until the next common start, which the plan does not follow. The cascade alone: an FM <->
- *   AM switch and a digital -> analog switch on a reader chain; on an I/Q stream, the blocks a reconnect's or resume's
- *   purge takes after the reader's restart, and a drop whose gap mark the 33rd pending one moved (the reader restarts,
- *   the demod does not). The reader alone: a replay's RETUNE, and a MUTE that marks no gap (a retune_mute span with no
- *   RESET at its sample). No external landing reaches a replay or I/Q stream, whose tunes the engine refuses. Each is
- *   a shift of the alignment, so the worst over every coset bounds it: 1.2e-4 of a plan over 9,530 readers the rate
- *   plans make (every pass count, sources at every 1 % of the octave), unfiltered and through the analog channel
- *   filters (60 kHz read into 48 kHz ahead of two passes, unfiltered; 5.4e-5 at 112 kHz into 64 kHz). A block an I/Q
- *   stream's full ring drops restarts the reader with the cascade (rtl_net_iq.cpp): exact for an isolated drop, fewer
- *   than 33 gap marks pending.
+ *   A limit: where one starts over without the other, the decimators can keep another of the gcd(L, 2^passes) cosets of
+ *   the reader's phases until the next common start, which the plan does not follow. The cascade alone: an FM <-> AM
+ *   switch, a digital -> analog switch and an analog -> digital one on a reader chain (the last costs nothing while the
+ *   digital chain runs no dynamic squelch, until the 9600 bit/s FSK path or the next analog entry runs on the alignment
+ *   it left); on an I/Q stream, the blocks a reconnect's or resume's purge takes after the reader's restart, and a drop
+ *   whose gap mark the 33rd pending one moved (the reader restarts, the demod does not). The reader alone: a replay's
+ *   RETUNE, and a MUTE that marks no gap (a retune_mute span with no RESET at its sample). No external landing reaches
+ *   a replay or I/Q stream, whose tunes the engine refuses. Each is a shift of the alignment, so the worst over every
+ *   coset bounds it: 1.2e-4 of a plan over 9,530 readers the rate plans make (every pass count, sources at every 1 % of
+ *   the octave), unfiltered and through the analog channel filters (60 kHz read into 48 kHz ahead of two passes,
+ *   unfiltered; 5.4e-5 at 112 kHz into 64 kHz). A block an I/Q stream's full ring drops restarts the reader with the
+ *   cascade (rtl_net_iq.cpp): exact for an isolated drop, fewer than 33 gap marks pending.
  * - The covariance at every one of those phases (phase_cov), averaged over the period, and the largest distance of any
  *   phase's from the average.
  * - For every output phase in full, two exact routes through the channel taps (dsd_squelch_reader_route): the
