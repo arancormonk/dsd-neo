@@ -5391,6 +5391,54 @@ test_session_seeing_a_listing_root_gone_queues_another(void) {
     expect("listing gone: the other directory's folder is found", listed_as(s.store, 1, true));
 }
 
+/* r14t: a folder's first read is unavailable to every reader until its last slice, as a read again is (R78): between
+ * slices a sheet's read, a playlist's admission and a share's hold all refuse its rows; after the last, they take
+ * them. */
+void
+test_first_read_waits_for_its_last_slice(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    expect("first read: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    QByteArray journal;
+    for (int i = 0; i < 400; i++) {
+        const QString file = QStringLiteral("n%1.wav").arg(i);
+        make_file(owner + QLatin1Char('/') + file, 1000);
+        journal.append(publish_line(QStringLiteral("0000000000000969-%1").arg(100 + i), file, 1754000100 + i, -1));
+    }
+    make_file(owner + QStringLiteral("/k.wav"), 1000);
+    journal.append(publish_line(QStringLiteral("0000000000000969-1"), QStringLiteral("k.wav"), 1754000000, 1));
+    append(journal_of(owner), journal);
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("first read: the folder put in place",
+           QDir().mkpath(QFileInfo(roots.external).absolutePath()) && QDir().rename(staged, roots.external));
+    std::atomic<int> slices{0};
+    std::atomic<int> taken{0};
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != folder) {
+            return;
+        }
+        slices++;
+        const QVariantList sheet = s.store.recordingsForFragments({fragment(1)});
+        const QVariantList listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0);
+        const int hold = s.store.selectPath(folder + QStringLiteral("/n0.wav"));
+        s.store.releaseSelection(hold);
+        const auto available = [](const QVariantList& rows) {
+            return !rows.isEmpty() && rows.value(0).toMap().value(QStringLiteral("available")).toBool();
+        };
+        taken += (available(sheet) ? 1 : 0) + (available(listed) ? 1 : 0) + (hold > 0 ? 1 : 0);
+    });
+    s.pass();
+    s.store.setSliceHookForTest({});
+    expect("first read: read slice by slice", slices.load() >= 2);
+    expect("first read: between slices no reader took a row", taken.load() == 0);
+    expect("first read: after its last slice, the row is available", listed_as(s.store, 1, true));
+    const int after = s.store.selectPath(folder + QStringLiteral("/n0.wav"));
+    expect("first read: after its last slice, a share's hold is taken", after > 0);
+    s.store.releaseSelection(after);
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -6835,6 +6883,7 @@ main(int argc, char** argv) {
     test_directory_gone_during_its_listing_is_remembered_missing();
     test_directory_gone_during_a_folder_read_is_remembered_missing();
     test_session_seeing_a_listing_root_gone_queues_another();
+    test_first_read_waits_for_its_last_slice();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

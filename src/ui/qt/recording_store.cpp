@@ -1064,6 +1064,10 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
         if (replace) {
             holdCommittedFolderLocked(path);
             removeFolderEntriesLocked(path, pass);
+        } else {
+            // A first read holds nothing from before, but its rows wait for its last slice all the same (r14t): an
+            // early record already carries the identity of a file a later one reused the name of (statPublished()).
+            m_committed.insert(path, CommittedFolder());
         }
         folder.offset = consumed;
         folder.starts = starts;
@@ -1092,10 +1096,8 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
         }
     }
     applyRecordsInSlices(folder, records, files, pass);
-    if (replace) {
-        const std::lock_guard<std::mutex> lock(m_mutex);
-        commitFolderLocked(path, pass);
-    }
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    commitFolderLocked(path, pass);
 }
 
 bool
