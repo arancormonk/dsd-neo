@@ -297,7 +297,14 @@ Column {
             // Heard only once read out: one shown under the Delete
             // confirmation is left for the surface that can say it next (the
             // bar a playlist's refusal waits on).
-            var read = say(text, true);
+            var read = false;
+            if (refusal && !appActive) {
+                // Shown, not read: the app is not active (R50).
+                notice = text;
+                noticeProblem = true;
+            } else {
+                read = say(text, true);
+            }
             refusalUnsaid = refusal && !read ? key : "";
             if (read && refusal) {
                 refusalSaid = key;
@@ -538,7 +545,18 @@ Column {
     // opened): a refusal shown under it and not read is read now, once, if
     // it still stands, and only then marked heard; one the bar read
     // meanwhile is shown, not read again (noteFailure()).
-    readonly property bool lineReachable: !!noticeLine && Navigation.allows(noticeLine) && sheetShown
+    readonly property bool lineReachable: !!noticeLine && Navigation.allows(noticeLine) && sheetShown && appActive
+    // The application is in the foreground and active (R50), followed from
+    // the signal's own state as PlaylistStatus follows it: a refusal is read
+    // only then, so one polled while the app is inactive (a notification's
+    // Resume refused, the sheet still visible) waits, as the bar's does.
+    property bool appActive: Qt.application.state === Qt.ApplicationActive
+    Connections {
+        target: Qt.application
+        function onStateChanged(state) {
+            player.appActive = state === Qt.ApplicationActive;
+        }
+    }
     onLineReachableChanged: {
         if (lineReachable && refusalUnsaid.length > 0)
             sayUnsaidLater.restart();

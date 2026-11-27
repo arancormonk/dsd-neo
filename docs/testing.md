@@ -296,14 +296,14 @@ bar (260×145 at 2x text: 58 px), a row placed by Show in list or Back from the 
 flushed a search whose filter change queued the list's return to its top, a refused resume the sheet that follows the
 play read out heard by the bar (one a sheet on another call did not read waiting for the bar) and one the bar read out
 shown by a sheet opened after it without being read again, one shown under the sheet's Delete confirmation read on the
-sheet once the confirmation is cancelled (once, the bar then silent; still pending if the line is covered again before
-the sheet's turn, and read once it is reachable again) or by the bar once both close, the keyboard decided by the host
-first (Android's -1 hidden whatever Qt's input method says, Qt's fallback only with a keyboard of some height), the bar
-hidden for a keyboard whose top is at or below the screen's bottom (a window resized above it), the row marker paused
-while a call opens interrupted, a sheet's own play kept its own after it refused a gone part, and Play all parts playing
-on when its row's last listed part is deleted, against the fake host's queue model in `qml_test_context.h` (which, as
-the real host does, publishes no change for a reading published again as it stands), with `playbackSupported` set by
-each case) and
+sheet once the confirmation is cancelled (once, the bar then silent; still pending while the app is inactive and read
+once it is active, and still pending if the line is covered again before the sheet's turn, and read once it is reachable
+again) or by the bar once both close, the keyboard decided by the host first (Android's -1 hidden whatever Qt's input
+method says, Qt's fallback only with a keyboard of some height), the bar hidden for a keyboard whose top is at or below
+the screen's bottom (a window resized above it), the row marker paused while a call opens interrupted, a sheet's own
+play kept its own after it refused a gone part, and Play all parts playing on when its row's last listed part is
+deleted, against the fake host's queue model in `qml_test_context.h` (which, as the real host does, publishes no change
+for a reading published again as it stands), with `playbackSupported` set by each case) and
 `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
 names and gating). What only
 Android decides (the service's promotion, the media session and notification, the media keys and the session's own
