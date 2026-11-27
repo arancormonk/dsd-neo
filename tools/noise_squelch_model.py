@@ -57,8 +57,9 @@ CASCADE_FIR_TAPS taps, as the C core's calibration models them) and the last sta
 source through the reader's resampler ahead of the passes) runs the shared chain model instead: noise and every signal
 made at the source rate (a wanted signal as a recording carries it, made faster and low-passed to just under the
 source's Nyquist) through the reader and the half-bands as the decoder centres them. Its calibration is the C core's:
-the reader's magnitude folded into the cascade FIR, and its measurement band clipped at the reader's pass edge
-(nsq_design_band()). A wanted signal whose band passes that edge is measured as "edge", outside the gate. With no channel filter the
+the reader's magnitude folded into the cascade FIR, and its measurement band clipped at the reader's pass edge less
+the channel edge's EDGE_GUARD_HZ (nsq_design_band()): the reader's transition truncates a wanted signal's outer FM
+sidebands as a channel filter's edge does. A wanted signal whose band passes that edge is measured as "edge", outside the gate. With no channel filter the
 cascade's roll-off is the channel's edge, and it truncates a signal that reaches the rate's Nyquist into the band: such
 a plan needs the widest NFM signal tested (UNFILTERED_SIGNAL_EDGE_HZ from the carrier) to fit under the Nyquist, and
 has no band otherwise (rtl-12k and rtl-16k with the width unset, an Airspy Mini at 11718 Hz).
@@ -190,13 +191,14 @@ def plan_band(
 ) -> tuple[float, float, float] | None:
     """(lo, hi, edge) of the measurement band, or None when less than MIN_BAND_HZ fits above voice or no channel filter
     (one unit tap) runs behind a cascade at a Nyquist of UNFILTERED_SIGNAL_EDGE_HZ or less. A reader's resampler passes
-    nothing past its pass edge @p reader_edge_hz (0: no reader), so hi stays under it (nsq_design_band())."""
+    nothing past its pass edge @p reader_edge_hz (0: no reader) and truncates a wanted signal's outer sidebands in its
+    transition, so hi stays EDGE_GUARD_HZ under that edge as under the channel's (nsq_design_band())."""
     if len(taps) <= 1 and stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
         return None
     edge = passband_edge_hz(taps, fs)
     hi = min(edge - EDGE_GUARD_HZ, NYQUIST_FRACTION * fs)
     if reader_edge_hz > 0.0:
-        hi = min(hi, reader_edge_hz)
+        hi = min(hi, reader_edge_hz - EDGE_GUARD_HZ)
     if hi - BAND_LO_HZ < MIN_BAND_HZ:
         return None
     return BAND_LO_HZ, hi, edge
@@ -286,7 +288,7 @@ class Plan:
     """One discriminator plan: channel taps, half-band, rate, its band and every candidate's band-passes. A reader row
     (job["chain"] a reader chain) makes its signals at the source rate through the shared chain model (the reader, then
     the half-bands as the decoder centres them) and calibrates as the C core does: the reader's magnitude folded into
-    the cascade FIR, its pass edge clipping the band."""
+    the cascade FIR, its pass edge less EDGE_GUARD_HZ clipping the band."""
 
     def __init__(self, job: dict):
         self.fs = int(job["fs"])
@@ -469,10 +471,10 @@ def run_plan(job: dict) -> dict:
         out["edge_hz"] = plan.edge
         if len(plan.taps) <= 1 and plan.stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
             out["why"] = "no channel filter behind the half-band cascade at a Nyquist the widest NFM signal reaches"
-        elif plan.reader is not None and plan.reader.pass_hz < plan.edge - EDGE_GUARD_HZ:
+        elif plan.reader is not None and plan.reader.pass_hz < plan.edge:
             out["why"] = (
                 f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the reader's pass edge "
-                f"({plan.reader.pass_hz:.0f} Hz)"
+                f"({plan.reader.pass_hz:.0f} Hz) less {EDGE_GUARD_HZ:.0f} Hz"
             )
         else:
             out["why"] = (
@@ -750,9 +752,9 @@ def plan_row(r: dict, v: dict | None) -> str:
 
 
 def reader_section(results: list[dict], members: dict) -> list[str]:
-    """The reader rows: each plan's band (clipped at the reader's pass edge) or why it runs as auto, and for a band the
-    gate's figures, the signals past the source's band (outside the gate) and the calibration's distance from the
-    long-run reference through the real chain."""
+    """The reader rows: each plan's band (clipped at the reader's pass edge less the guard) or why it runs as auto, and
+    for a band the gate's figures, the signals past the source's band (outside the gate) and the calibration's distance
+    from the long-run reference through the real chain."""
     rows = sorted((r for r in results if r.get("reader")), key=lambda r: (r["width"], r["fs"], r["key"]))
     if not rows:
         return []

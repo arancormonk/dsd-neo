@@ -67,8 +67,9 @@ tools/squelch_chain_model.py, which tools/squelch_paths_model.py and tools/noise
     capacity, 16 and 48 kHz recorded through 3 to 5 passes, and post_downsample 2 and 4), reader
     chains (8 kHz upsampled to 16 kHz, 40 kHz to 32 kHz then one pass to 16 kHz, 250 kHz to 192 kHz
     then two passes to 48 kHz, 48,001 Hz at L/M 1/1 to 48 kHz, 112 kHz to 64 kHz then two passes to
-    16 kHz, where the passes keep one of the reader's four phases, and 12 kHz upsampled to 48 kHz,
-    where the reader's pass edge clips the noise squelch's band) and the device rows above.
+    16 kHz, where the passes keep one of the reader's four phases, 12 kHz upsampled to 48 kHz,
+    where the reader's guarded pass edge leaves the noise squelch no band, and 16 kHz upsampled to
+    48 kHz, where it clips the band short of the channel's edge) and the device rows above.
 
 Signals (fixed seeds): channel noise as above; FM carriers (dead carrier, tones 300/1000/3000 Hz,
 real speech taken from the discriminator of tests/fixtures/iq/nfm_*_real.iq) at half and full rated
@@ -227,6 +228,7 @@ READER_CHAINS = (
     ("reader-48001>48k", 48001, 48000),
     ("reader-112k>64k>16k", 112000, 16000),
     ("reader-12k>48k", 12000, 48000),
+    ("reader-16k>48k", 16000, 48000),
 )
 
 TONES_HZ = (300.0, 1000.0, 3000.0)
