@@ -112,7 +112,7 @@ private class Playing(val rig: ServiceRig) {
     val tokens = mutableListOf<Long>()
     val seeks = mutableListOf<Pair<Long, Long>>()
     val ends = mutableListOf<Pair<Int, String>>()
-    val machine = RecordingPlayer(
+    val machine: RecordingPlayer = RecordingPlayer(
         { token ->
             tokens += token
             object : RecordingPlayer.Player {
@@ -123,7 +123,7 @@ private class Playing(val rig: ServiceRig) {
 
                 override fun create() = Unit
                 override fun prepare(source: RecordingPlayer.Source) = Unit
-                override fun start() = Unit
+                override fun start(serial: Long) = machine.onStarted(token, serial)
                 override fun pause() = Unit
                 override fun seekTo(positionMs: Long) {
                     seeks += token to positionMs

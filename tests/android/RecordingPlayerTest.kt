@@ -39,8 +39,17 @@ private class FakePlayer(
     private val log: MutableList<String> = mutableListOf(),
     private val threads: FakeThreads = FakeThreads(),
     private val unmakeable: () -> Boolean = { false },
+    /** What its own thread does with start request [Long] (the rig makes and acknowledges it, holds or fails it). */
+    private val onStart: (FakePlayer, Long) -> Unit = { player, serial -> player.makeStart(serial) },
 ) : RecordingPlayer.Player {
     var path = ""
+
+    /** The start the machine wants made, 0 for none, as MediaItem's: taken back by a pause or the release at once. */
+    var wantedStart = 0L
+
+    /** Every start asked for, by serial, made or not; [made] the ones its own thread made. */
+    val startRequests = mutableListOf<Long>()
+    val made = mutableListOf<Long>()
 
     /** Its platform player was made, on its own thread. */
     var created = false
@@ -86,14 +95,31 @@ private class FakePlayer(
         path = file.path
     }
 
-    override fun start() {
+    override fun start(serial: Long) {
+        check(!released) { "start asked of a released player" }
+        check(wantedStart == 0L) { "a start asked for while start $wantedStart waits" }
+        wantedStart = serial
+        startRequests += serial
+        onStart(this, serial)
+    }
+
+    /** Its own thread makes start [serial] if it is still the one wanted (as MediaItem checks): true when made. */
+    fun makeStart(serial: Long): Boolean {
+        if (released || wantedStart != serial) {
+            return false
+        }
         valid("start", prepared && !started)
         started = true
+        made += serial
+        return true
     }
 
     override fun pause() {
-        valid("pause", started)
-        started = false
+        wantedStart = 0L
+        if (started) {
+            valid("pause", true)
+            started = false
+        }
     }
 
     override fun seekTo(positionMs: Long) {
@@ -109,6 +135,7 @@ private class FakePlayer(
 
     override fun release() {
         check(!released) { "released twice" }
+        wantedStart = 0L
         released = true
         log += "release $token"
     }
@@ -270,12 +297,20 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     var createFails = false
     val opener = FakeOpener()
     val threads = FakeThreads()
+
+    /**
+     * Starts: made and acknowledged at once unless [holdStarts] (they wait in [heldStarts] for [ackStart]) or
+     * [failStarts] (the player's thread throws, which MediaItem reports as the player's failure).
+     */
+    var holdStarts = false
+    var failStarts = false
+    val heldStarts = mutableListOf<Pair<FakePlayer, Long>>()
     val focus = FakeFocus()
     val scheduler = FakeScheduler { nowMs }
     val service = FakeService()
     val recheck = RecordingRecheck()
     val abandoned = AbandonedSetups()
-    val machine = RecordingPlayer(
+    val machine: RecordingPlayer = RecordingPlayer(
         { token ->
             if (factoryFails) {
                 throw RuntimeException("the media server is away")
@@ -284,7 +319,13 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
                 throw OutOfMemoryError("unable to create a native thread")
             }
             log += "build $token"
-            FakePlayer(token, length, damaged, log, threads) { createFails }.also { players += it }
+            FakePlayer(token, length, damaged, log, threads, { createFails }) { player, serial ->
+                when {
+                    failStarts -> machine.onFailed(player.token, RecordingPlayer.REASON_PLAYER)
+                    holdStarts -> heldStarts += player to serial
+                    player.makeStart(serial) -> machine.onStarted(player.token, serial)
+                }
+            }.also { players += it }
         },
         opener,
         focus,
@@ -344,6 +385,19 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     fun complete(player: FakePlayer = current) {
         player.started = false
         machine.onCompleted(player.token)
+    }
+
+    /**
+     * The oldest held start reaches its player's thread, which makes it if it is still wanted, and its acknowledgement
+     * reaches the machine: true when it was made.
+     */
+    fun ackStart(): Boolean {
+        val (player, serial) = heldStarts.removeAt(0)
+        if (!player.makeStart(serial)) {
+            return false
+        }
+        machine.onStarted(player.token, serial)
+        return true
     }
 
     /** Prepare and complete the current part. */
@@ -917,6 +971,109 @@ private fun eachMoveMakesOnlyTheCandidatesItTries() {
     check(skip.status.call == 4 && skip.machine.candidatesMade == before + 4) {
         "Next past three gone calls makes the four it tries (${skip.machine.candidatesMade - before})"
     }
+}
+
+/**
+ * A start is the player's thread's to make and acknowledge (#909, R39): the machine plays from the acknowledgement,
+ * never from the request. Until then the reading stays as it was and the position does not run; a start taken back
+ * (a pause, a focus loss, Stop, a move, a sheet play) is never made, and its late acknowledgement changes nothing.
+ */
+private fun aStartPlaysFromItsAcknowledgement() {
+    // Resume with the acknowledgement held: paused, the position still; the acknowledgement plays it.
+    val held = Rig()
+    held.queue(1, 1)
+    held.prepared()
+    held.elapse(2_000)
+    held.machine.pause()
+    held.holdStarts = true
+    held.machine.resume()
+    check(held.heldStarts.size == 1 && held.current.made.size == 1) { "the start is asked for, not made yet" }
+    held.elapse(5_000)
+    check(held.state == PAUSED && held.position == 2_000L && held.status.speed == 0f) {
+        "not playing before the acknowledgement (${held.state}, ${held.position})"
+    }
+    held.machine.resume()
+    check(held.heldStarts.size == 1) { "never asked for twice" }
+    check(held.ackStart() && held.state == PLAYING) { "the acknowledgement plays it" }
+    held.elapse(1_000)
+    check(held.position == 3_000L) { "the position runs from the acknowledgement: ${held.position}" }
+
+    // A first start held reads opening.
+    val first = Rig()
+    first.holdStarts = true
+    first.queue(1, 1)
+    first.prepared()
+    check(first.state == PREPARING && first.focus.held) { "prepared, its start waits: still opening (${first.state})" }
+    first.ackStart()
+    check(first.state == PLAYING) { "then playing" }
+
+    // Resume 1 s before the deadline, then a transient focus loss before the acknowledgement: the old stretch counts.
+    val late = Rig()
+    late.queue(1, 1)
+    late.prepared()
+    late.machine.pause()
+    late.elapse(RecordingPlayer.PAUSED_LIMIT_MS - 1_000)
+    late.holdStarts = true
+    late.machine.resume()
+    late.machine.onFocusChange(late.focus.epoch, FocusChange.LOST_TRANSIENT)
+    check(late.current.made.size == 1 && late.state != STOPPED) { "taken back before it was made" }
+    check(!late.ackStart()) { "the held start is never made" }
+    late.elapse(999)
+    check(late.state != STOPPED) { "not yet at 9:59.999" }
+    late.elapse(1)
+    check(late.state == STOPPED && late.status.endedReason == RecordingPlayer.ENDED_TIMEOUT) {
+        "the deadline fires at its original time (${late.status.endedReason})"
+    }
+
+    // Stop, Next and a sheet play before the acknowledgement: that start is never made, its late one changes nothing.
+    for (leave in listOf("stop", "next", "sheet")) {
+        val rig = Rig()
+        rig.holdStarts = true
+        val g = rig.queue(1, 1)
+        rig.prepared()
+        val asked = rig.current
+        val (_, serial) = rig.heldStarts.single()
+        when (leave) {
+            "stop" -> rig.machine.stop(g)
+            "next" -> rig.machine.next()
+            else -> rig.play()
+        }
+        val reading = rig.status.record(rig.nowMs)
+        check(!rig.ackStart() && asked.made.isEmpty() && !asked.started) { "$leave: the start is never made" }
+        rig.machine.onStarted(asked.token, serial)
+        check(rig.status.record(rig.nowMs) == reading && rig.state != PLAYING) {
+            "$leave: a late acknowledgement changes nothing"
+        }
+    }
+
+    // A start the player's thread fails is the player's failure.
+    val single = Rig()
+    single.failStarts = true
+    single.play()
+    single.prepared()
+    check(single.state == FAILED && single.status.error == RecordingPlayer.ERROR_FAILED && single.last.released) {
+        "a single play whose start fails is Failed"
+    }
+    val list = Rig()
+    list.failStarts = true
+    list.queue(1, 1)
+    list.prepared()
+    check(list.state == FAILED && list.status.endedReason == RecordingPlayer.ENDED_FAILED && list.status.skipped == 0) {
+        "a playlist whose start fails ends failed, as any player failure (${list.status.endedReason})"
+    }
+
+    // Previous's 3,000 ms rule counts from the acknowledgement, not from the request.
+    val back = Rig()
+    back.queue(1, 1)
+    back.playOut()
+    back.elapse(RecordingPlayer.GAP_MS)
+    back.holdStarts = true
+    back.prepared()
+    back.elapse(2_500)
+    back.ackStart()
+    back.elapse(1_000)
+    back.machine.previous()
+    check(back.status.call == 0) { "1 s played after a 2.5 s wait: Previous goes to the call before (${back.status.call})" }
 }
 
 private fun previousFollowsTheThreeSecondRule() {
@@ -2881,6 +3038,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    aStartPlaysFromItsAcknowledgement()
     eachMoveMakesOnlyTheCandidatesItTries()
     aSkipOpensThePartWithItsOwnReadings()
     movesWhilePausedStayPausedAndKeepTheDeadline()

@@ -194,6 +194,8 @@ class RecordingPlayer(
      * not thread-safe, so the one thread makes it, calls it and receives its callbacks). [setup]'s work runs there and
      * calls [create] and [prepare]; [start], [pause], [seekTo] and [release] are called on the machine's thread and
      * passed to the player's own thread in the order they were called. [durationMs] is read on the machine's thread.
+     * A start is made on the player's thread and acknowledged from there ([onStarted]); anything thrown there by a
+     * start, a pause or a seek is reported as [onFailed] with [REASON_PLAYER].
      */
     interface Player {
         /**
@@ -214,8 +216,14 @@ class RecordingPlayer(
          */
         fun prepare(source: Source)
 
-        fun start()
+        /**
+         * Start playing, as request [serial]: made on the player's own thread only while [serial] is still the start
+         * wanted (a [pause] or [release] called since takes it back at once, on the machine's thread), and then
+         * acknowledged with [onStarted] and the serial. Never called twice for one start.
+         */
+        fun start(serial: Long)
 
+        /** Stop playing: a start not made yet is taken back, and one made is paused. */
         fun pause()
 
         fun seekTo(positionMs: Long)
@@ -604,6 +612,17 @@ class RecordingPlayer(
     private var waiting = 0L
     private var prepared = false
     private var playing = false
+
+    /**
+     * The start asked of the current player and not acknowledged yet ([onStarted]): its serial, 0 with none. Until the
+     * acknowledgement nothing plays as far as the play's readings go: the state, the position and the paused stretch
+     * stay as they were.
+     */
+    private var startPending = 0L
+    private var startSerial = 0L
+
+    /** The current part has played (a start was acknowledged) since it opened: while a start waits it reads paused. */
+    private var partStarted = false
     private var positionMs = 0L
     private var playingSinceMs = -1L
     private var durationMs = 0L
@@ -854,12 +873,34 @@ class RecordingPlayer(
         advance()
     }
 
+    /**
+     * The player's own thread made start [serial] of the part under [token]: it plays from now. A stale one (another
+     * token, a start taken back since, or none wanted) is dropped.
+     */
+    fun onStarted(token: Long, serial: Long) {
+        if (player == null || token != this.token || serial == 0L || serial != startPending || !prepared) {
+            return
+        }
+        startPending = 0L
+        if (expireIfDue()) {
+            return
+        }
+        playing = true
+        partStarted = true
+        playingSinceMs = clock.elapsedMs()
+        // Audio carries on: a resume's hold-off ends, and with it the paused stretch (publish).
+        resumeSuspended = false
+        noteSkips()
+        publish()
+    }
+
     /** It played to its end: the next part at once, the gap after a call, or the end, whatever its duration. */
     fun onCompleted(token: Long) {
         if (player == null || token != this.token || !prepared || expireIfDue()) {
             return
         }
         playing = false
+        startPending = 0L
         playingSinceMs = -1
         positionMs = durationMs
         // Done with: never touched again (a later callback from it carries a token no open has again), and released
@@ -1030,6 +1071,7 @@ class RecordingPlayer(
         // What a gap needs of the part that played is kept apart, in [left].
         positionMs = 0
         durationMs = 0
+        partStarted = false
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a stuck setup to return too.
         val opened = token
@@ -1135,6 +1177,7 @@ class RecordingPlayer(
         dropOpening()
         prepared = false
         playing = false
+        startPending = 0L
         playingSinceMs = -1
         gap = false
         gapSinceMs = -1
@@ -1182,7 +1225,7 @@ class RecordingPlayer(
             return
         }
         val current = player
-        if (current == null || !prepared || playing) {
+        if (current == null || !prepared || playing || startPending != 0L) {
             publish()
             return
         }
@@ -1190,12 +1233,12 @@ class RecordingPlayer(
             return
         }
         if (!interrupted) {
-            current.start()
-            playing = true
-            playingSinceMs = clock.elapsedMs()
-            // Audio carries on: a resume's hold-off ends, and with it the paused stretch (publish).
-            resumeSuspended = false
-            noteSkips()
+            // Asked for, not made: the part plays from its acknowledgement (onStarted), never from here.
+            startPending = ++startSerial
+            current.start(startPending)
+            if (startPending == 0L || playing) {
+                return // acknowledged (or failed) at once, and published there
+            }
         }
         publish()
     }
@@ -1285,6 +1328,12 @@ class RecordingPlayer(
     /** Pause the player if it plays, keeping its position. */
     private fun halt() {
         val current = player ?: return
+        if (startPending != 0L) {
+            // Asked for and not acknowledged: taken back at once (a start the thread made already is paused).
+            startPending = 0L
+            current.pause()
+            return
+        }
         if (!playing) {
             return
         }
@@ -1422,6 +1471,7 @@ class RecordingPlayer(
         move = null
         prepared = false
         playing = false
+        startPending = 0L
         playingSinceMs = -1
         gap = false
         wanted = false
@@ -1447,6 +1497,7 @@ class RecordingPlayer(
         move = null
         prepared = false
         playing = false
+        startPending = 0L
         playingSinceMs = -1
         positionMs = 0
         durationMs = 0
@@ -1548,7 +1599,8 @@ class RecordingPlayer(
             over != null -> over.state
             generation == 0 -> STOPPED
             gap -> if (wanted && !interrupted) PLAYING else PAUSED
-            !promoted || player == null || !prepared -> PREPARING
+            // A first start asked for and not acknowledged still reads opening; a resume's reads paused.
+            !promoted || player == null || !prepared || (startPending != 0L && !partStarted) -> PREPARING
             playing -> PLAYING
             else -> PAUSED
         }

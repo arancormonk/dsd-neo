@@ -583,8 +583,12 @@ object RecordingPlayback {
      * the owner's Looper and are forwarded to the playback looper with the part's token; the duration is read there in
      * onPrepared, before the forward. The playback looper never touches the MediaPlayer. [release] posts the release,
      * and the thread ends from inside it, once the MediaPlayer is released: a setup stuck in a read releases and ends
-     * when the read returns. A media server that died is the player's fault and ends the play; any other error is the
-     * file's.
+     * when the read returns. A start runs on the owner too: it is made only while its request is still the start
+     * wanted ([wantedStart], taken back at once on the looper by a pause or the release), and acknowledged to the
+     * looper ([RecordingPlayer.onStarted]), which plays from then, never from the request. Anything a start, a pause
+     * or a seek throws there is the player's failure ([RecordingPlayer.REASON_PLAYER]); one the release throws is
+     * logged and the thread still ends. A media server that died is the player's fault and ends the play; any other
+     * error is the file's.
      */
     private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val thread = HandlerThread("dsd-neo-playback-player").apply { start() }
@@ -596,6 +600,13 @@ object RecordingPlayback {
         /** Written on the owner in onPrepared, before its forward; read on the looper after it. */
         @Volatile
         private var duration = 0L
+
+        /** The start the looper wants made (its request serial), 0 for none: set and taken back on the looper. */
+        @Volatile
+        private var wantedStart = 0L
+
+        /** The owner's only: MediaPlayer.start() was made and no pause has undone it. */
+        private var started = false
 
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
@@ -638,9 +649,27 @@ object RecordingPlayback {
             made.prepareAsync()
         }
 
-        override fun start() = onOwner { it.start() }
+        override fun start(serial: Long) {
+            wantedStart = serial
+            onOwner {
+                // Checked right before the start: a pause, a release or a move since takes it back.
+                if (wantedStart == serial) {
+                    it.start()
+                    started = true
+                    post { machine -> machine.onStarted(token, serial) }
+                }
+            }
+        }
 
-        override fun pause() = onOwner { it.pause() }
+        override fun pause() {
+            wantedStart = 0L
+            onOwner {
+                if (started) {
+                    started = false
+                    it.pause()
+                }
+            }
+        }
 
         override fun seekTo(positionMs: Long) = onOwner { it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST) }
 
@@ -648,8 +677,13 @@ object RecordingPlayback {
             get() = duration
 
         override fun release() {
+            wantedStart = 0L
             owner.post {
-                media?.release()
+                try {
+                    media?.release()
+                } catch (e: Throwable) {
+                    Log.w(TAG, "could not release a call recording's player", e)
+                }
                 media = null
                 // Only now: until release() returns, the native player may still post an event (one a pause just
                 // before it raised), and a Looper that has quit refuses it ("sending message to a Handler on a dead
@@ -660,9 +694,20 @@ object RecordingPlayback {
             }
         }
 
-        /** [call] on the owner, after everything posted before it; nothing once the player is released. */
+        /**
+         * [call] on the owner, after everything posted before it; nothing once the player is released. Anything it
+         * throws is the player's failure, reported to the looper under this part's token, never a crashed thread.
+         */
         private fun onOwner(call: (MediaPlayer) -> Unit) {
-            owner.post { media?.let(call) }
+            owner.post {
+                val made = media ?: return@post
+                try {
+                    call(made)
+                } catch (e: Throwable) {
+                    Log.w(TAG, "a call recording's player refused a command", e)
+                    post { it.onFailed(token, RecordingPlayer.REASON_PLAYER) }
+                }
+            }
         }
     }
 

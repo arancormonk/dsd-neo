@@ -197,11 +197,14 @@ the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part,
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
 pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
 then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
-good, B all failed, C good), all failed, a player-wide error, each move making only the candidates it tries (N calls or
-N parts played make N, Previous from the last call one; `candidatesMade`), a part opened after one that failed while it
-played reading 0 and unknown (Previous then going to the call before, and the gap naming the part that played), the skip
-notice on the call a part played on after the skips (A skipped, B plays, C opens: none; a call's own parts adding up;
-never the gap after the call the skip happened on), queued items with a negative size refused and only SINGLE opening
+good, B all failed, C good), all failed, a player-wide error, a start played only from its acknowledgement (held: not
+playing, the position still; a resume just before the deadline then a focus loss keeping the old stretch; Stop, Next or
+a sheet play before it leaving the start unmade and its late acknowledgement ignored; a failed start a player failure;
+the 3,000 ms rule from the acknowledgement), each move making only the candidates it tries (N calls or N parts played
+make N, Previous from the last call one; `candidatesMade`), a part opened after one that failed while it played reading
+0 and unknown (Previous then going to the call before, and the gap naming the part that played), the skip notice on the
+call a part played on after the skips (A skipped, B plays, C opens: none; a call's own parts adding up; never the gap
+after the call the skip happened on), queued items with a negative size refused and only SINGLE opening
 unchecked, by its mode, the refusal count moving on each refused focus request, the recheck list across Stop and
 replacement, the state/action table row by row (a command a state forbids is dropped), interruption with a system Play
 and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump, a late task and deep sleep (the
