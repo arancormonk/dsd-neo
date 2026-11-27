@@ -19952,8 +19952,9 @@ Qt Quick frontend (`src/ui/qt`):
       (`MediaItem.wantedStart`); the owner makes `MediaPlayer.start()` only while its serial is still the one wanted,
       then posts `onStarted(token, serial)`, and only that acknowledgement, current by token and serial, makes the
       machine playing (`playingSinceMs`, the hold-off and paused stretch ended, the skip notice). Until then the
-      reading stays as it was (opening for a first start, paused for a resume), the position does not run, the
-      deadline counts the old stretch, and no second start is asked for. Anything a start, pause or seek throws on the
+      reading stays what it was at the request (`startReadsOpening`: opening, with no seek, for a part just prepared;
+      paused, its seek allowed, for a resume, a part opened paused included), the position does not run, the deadline
+      counts the old stretch, and no second start is asked for. Anything a start, pause or seek throws on the
       owner is `onFailed(token, REASON_PLAYER)`; a release that throws is logged and the thread still ends (main ran
       `start()` on the looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner
       in order; the posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since

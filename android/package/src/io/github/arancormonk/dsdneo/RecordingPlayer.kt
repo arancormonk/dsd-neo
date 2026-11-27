@@ -630,8 +630,12 @@ class RecordingPlayer(
     private var startPending = 0L
     private var startSerial = 0L
 
-    /** The current part has played (a start was acknowledged) since it opened: while a start waits it reads paused. */
-    private var partStarted = false
+    /**
+     * The pending start was asked for while the play read opening (a part's first start, just prepared): until its
+     * acknowledgement it still reads opening, with no seek. A resume of a part that read paused (one opened paused,
+     * or after a pause) reads paused meanwhile, its seek allowed.
+     */
+    private var startReadsOpening = false
     private var positionMs = 0L
     private var playingSinceMs = -1L
     private var durationMs = 0L
@@ -903,7 +907,6 @@ class RecordingPlayer(
             return
         }
         playing = true
-        partStarted = true
         playingSinceMs = clock.elapsedMs()
         // Audio carries on: a resume's hold-off ends, and with it the paused stretch (publish).
         resumeSuspended = false
@@ -1120,7 +1123,6 @@ class RecordingPlayer(
         // What a gap needs of the part that played is kept apart, in [left].
         positionMs = 0
         durationMs = 0
-        partStarted = false
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a stuck setup to return too.
         val opened = token
@@ -1276,6 +1278,7 @@ class RecordingPlayer(
         }
         if (!interrupted) {
             // Asked for, not made: the part plays from its acknowledgement (onStarted), never from here.
+            startReadsOpening = status.state == PREPARING
             startPending = ++startSerial
             current.start(startPending)
             if (startPending == 0L || playing) {
@@ -1627,7 +1630,8 @@ class RecordingPlayer(
     private fun hasCallAfter(call: Int): Boolean = (callEnd(call) + 1 until items.size).any { !failed[it] }
 
     private fun canSeek(): Boolean =
-        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0
+        active && promoted && player != null && prepared && !gap && !interrupted && durationMs > 0 &&
+            !(startPending != 0L && startReadsOpening)
 
     private fun actions(): Int {
         if (!active) {
@@ -1652,8 +1656,8 @@ class RecordingPlayer(
             over != null -> over.state
             generation == 0 -> STOPPED
             gap -> if (wanted && !interrupted) PLAYING else PAUSED
-            // A first start asked for and not acknowledged still reads opening; a resume's reads paused.
-            !promoted || player == null || !prepared || (startPending != 0L && !partStarted) -> PREPARING
+            // A start asked for while the play read opening still reads opening; one from paused reads paused.
+            !promoted || player == null || !prepared || (startPending != 0L && startReadsOpening) -> PREPARING
             playing -> PLAYING
             else -> PAUSED
         }

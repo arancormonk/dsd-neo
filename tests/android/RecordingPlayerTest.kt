@@ -1013,14 +1013,32 @@ private fun aStartPlaysFromItsAcknowledgement() {
     held.elapse(1_000)
     check(held.position == 3_000L) { "the position runs from the acknowledgement: ${held.position}" }
 
-    // A first start held reads opening.
+    // A first start held reads opening, with no seek.
     val first = Rig()
     first.holdStarts = true
     first.queue(1, 1)
     first.prepared()
     check(first.state == PREPARING && first.focus.held) { "prepared, its start waits: still opening (${first.state})" }
+    check(!first.status.canSeek && !first.status.allows(ACTION_SEEK)) { "an opening reading offers no seek" }
     first.ackStart()
-    check(first.state == PLAYING) { "then playing" }
+    check(first.state == PLAYING && first.status.canSeek) { "then playing, with its seek" }
+
+    // A part opened paused (Next while paused), then Resume with its start held: the reading stays paused, its seek
+    // allowed, as it read before the request; the acknowledgement plays it.
+    val opened = Rig()
+    opened.queue(1, 1)
+    opened.prepared()
+    opened.machine.pause()
+    opened.machine.next()
+    opened.prepared()
+    check(opened.state == PAUSED && opened.status.call == 1) { "call 1 opened paused (${opened.state})" }
+    opened.holdStarts = true
+    opened.machine.resume()
+    check(opened.heldStarts.size == 1) { "its first start is asked for" }
+    check(opened.state == PAUSED && opened.status.canSeek && opened.status.allows(ACTION_SEEK)) {
+        "until its acknowledgement it reads paused, seek allowed (${opened.state}, ${opened.status.canSeek})"
+    }
+    check(opened.ackStart() && opened.state == PLAYING) { "the acknowledgement plays it" }
 
     // Resume 1 s before the deadline, then a transient focus loss before the acknowledgement: the old stretch counts.
     val late = Rig()
