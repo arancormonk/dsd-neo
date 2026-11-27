@@ -115,6 +115,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(int playbackRefusals READ playbackRefusals NOTIFY playbackChanged)
     Q_PROPERTY(int playbackSkipNoticeCall READ playbackSkipNoticeCall NOTIFY playbackChanged)
     Q_PROPERTY(int playbackSkipNoticeCount READ playbackSkipNoticeCount NOTIFY playbackChanged)
+    Q_PROPERTY(int playbackSeeksLanded READ playbackSeeksLanded NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackHoldPath READ playbackHoldPath NOTIFY playbackChanged)
     Q_PROPERTY(bool recordingExportSupported READ recordingExportSupported CONSTANT)
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
@@ -214,6 +215,7 @@ class DecoderHost : public QObject {
         int refusals = 0;
         int skipNoticeCall = -1;
         int skipNoticeCount = 0;
+        int seeksLanded = 0;
     };
 
     /**
@@ -455,7 +457,10 @@ class DecoderHost : public QObject {
      * a refusal read again (the same paused reading) is still news. playbackSkipNoticeCall and
      * playbackSkipNoticeCount: the call (an index as playbackCallIndex) that played after recordings were skipped and
      * how many, while that call is the one playing (-1 and 0: none); the player keeps it, so it names the right call
-     * whatever was seen in between. playbackHoldPath: the file the recording store holds from deletes while it
+     * whatever was seen in between. playbackSeeksLanded: the seeks this play's player has confirmed landing (#909
+     * R56), which moves only when the latest seek lands, so a position read before a seek reached the player is never
+     * taken for its landing (0 on a host whose seeks have no confirmation). playbackHoldPath: the file the recording
+     * store holds from deletes while it
      * plays; only a single recording's play holds one (empty for parts and playlists, which hold no files).
      */
     virtual bool
@@ -586,6 +591,11 @@ class DecoderHost : public QObject {
     int
     playbackRefusals() const {
         return m_playback.refusals;
+    }
+
+    int
+    playbackSeeksLanded() const {
+        return m_playback.seeksLanded;
     }
 
     int

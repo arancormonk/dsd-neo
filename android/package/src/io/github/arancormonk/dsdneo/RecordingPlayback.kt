@@ -196,7 +196,7 @@ object RecordingPlayback {
     fun resumeFor(token: Long) = post { it.resumeFor(it.status.generation, token) }
 
     /**
-     * The player's status record ([RecordingPlayer.Status.record], 21 fields), which DecoderHostAndroid parses; the
+     * The player's status record ([RecordingPlayer.Status.record], 22 fields), which DecoderHostAndroid parses; the
      * idle record before the first play.
      */
     @JvmStatic
@@ -469,7 +469,7 @@ object RecordingPlayback {
 
     /** The record [status] gives before the first play, as after a host stop. */
     private fun idleRecord(): String =
-        listOf(0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial, 0, -1, 0).joinToString("\t")
+        listOf(0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial, 0, -1, 0, 0).joinToString("\t")
 
     /** Once per state change, coalesced: the service shows the player's current status on the main thread. */
     private fun requestRender() {
@@ -611,6 +611,9 @@ object RecordingPlayback {
         /** The owner's only: MediaPlayer.start() was made and no pause has undone it. */
         private var started = false
 
+        /** The owner's only: the serial of the latest seek passed to the platform player (R56). */
+        private var seeking = 0L
+
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
             deliver: (RecordingPlayer.SetupResult) -> Unit,
@@ -647,6 +650,12 @@ object RecordingPlayback {
                 }
             }
             made.setOnCompletionListener { post { it.onCompleted(token) } }
+            // On the owner: the latest seek passed is the one landed (a platform player may answer a run of seeks
+            // once).
+            made.setOnSeekCompleteListener {
+                val serial = seeking
+                post { machine -> machine.onSeekCompleted(token, serial) }
+            }
             made.setOnErrorListener { _, what, _ ->
                 val reason = if (what == MediaPlayer.MEDIA_ERROR_SERVER_DIED) {
                     RecordingPlayer.REASON_PLAYER
@@ -686,7 +695,10 @@ object RecordingPlayback {
             }
         }
 
-        override fun seekTo(positionMs: Long) = onOwner { it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST) }
+        override fun seekTo(positionMs: Long, serial: Long) = onOwner {
+            seeking = serial
+            it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
+        }
 
         override fun silence() {
             // Behind the move's pause on the owner (and ahead of the release posted after it): silent once it runs.

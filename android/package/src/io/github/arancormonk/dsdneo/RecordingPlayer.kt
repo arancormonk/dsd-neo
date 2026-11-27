@@ -231,7 +231,11 @@ class RecordingPlayer(
         /** Stop playing: a start not made yet is taken back, and one made is paused. */
         fun pause()
 
-        fun seekTo(positionMs: Long)
+        /**
+         * Seek to [positionMs] as seek request [serial]; once the platform player has landed, [onSeekCompleted] is
+         * posted with the serial of the latest seek its own thread passed to it (R56).
+         */
+        fun seekTo(positionMs: Long, serial: Long)
 
         /**
          * Report silence (R52): once this player's own thread has run everything passed to it before (the move's
@@ -371,6 +375,11 @@ class RecordingPlayer(
          */
         val skipNoticeCall: Int,
         val skipNoticeCount: Int,
+        /**
+         * The seeks this play has landed (R56): it moves only when the player confirms the latest seek, so a sheet can
+         * tell a landing from a position read before the seek reached the player.
+         */
+        val seeksLanded: Int,
         /** SESSION_NONE, SESSION_PLAYING, SESSION_PAUSED, SESSION_STOPPED or SESSION_BUFFERING (the playlist table). */
         val sessionState: Int,
         /** The ACTION_* bits the session offers. */
@@ -387,10 +396,10 @@ class RecordingPlayer(
         }
 
         /**
-         * The status record DecoderHostAndroid parses: 21 fields, tab-separated, in this order:
+         * The status record DecoderHostAndroid parses: 22 fields, tab-separated, in this order:
          * generation, state, position ms, duration ms, error, item index, play token, call, calls, part ordinal,
          * part count, gap, interrupted, can seek, paused reason, ended reason, skipped count, recheck serial,
-         * refusals, skip notice call, skip notice count.
+         * refusals, skip notice call, skip notice count, seeks landed.
          *
          * Numbers are decimal (the play token is a 64-bit count from 1; 0 = none). The flags are 0 or 1. With no item
          * (before the first play, after a host stop): item index -1, call -1, calls 0, part ordinal and count 0. Error
@@ -402,7 +411,7 @@ class RecordingPlayer(
         fun record(nowMs: Long): String = listOf(
             generation, state, positionMs(nowMs), durationMs, error, itemIndex, playToken, call, calls, partOrdinal,
             partCount, flag(gap), flag(interrupted), flag(canSeek), pausedReason, endedReason, skipped, recheckSerial,
-            refusals, skipNoticeCall, skipNoticeCount,
+            refusals, skipNoticeCall, skipNoticeCount, seeksLanded,
         ).joinToString("\t")
 
         private fun flag(value: Boolean) = if (value) 1 else 0
@@ -633,6 +642,17 @@ class RecordingPlayer(
     private var skipNoticeCall = -1
     private var skipNoticeCount = 0
     private var refusals = 0
+
+    /**
+     * Seeks (R56): the latest one asked of the current player and not confirmed yet ([seekPending], its serial; 0 with
+     * none) and its target. Until it lands the readings keep the confirmed position, and its clock, so Previous's
+     * 3,000 ms rule and the record never read a target the player has not reached; a superseded seek's landing counts
+     * for nothing. [seeksLanded] counts the landings of the play.
+     */
+    private var seekSerial = 0L
+    private var seekPending = 0L
+    private var seekTargetMs = 0L
+    private var seeksLanded = 0
     private var index = -1
     private var token = 0L
     private var player: Player? = null
@@ -954,6 +974,23 @@ class RecordingPlayer(
         publish()
     }
 
+    /**
+     * The player landed seek [serial] (R56): the latest one asked of the current part becomes its position, and the
+     * clock counts from there. One superseded since, or of a part gone, changes nothing.
+     */
+    fun onSeekCompleted(token: Long, serial: Long) {
+        if (player == null || token != this.token || serial == 0L || serial != seekPending || !prepared) {
+            return
+        }
+        seekPending = 0L
+        positionMs = seekTargetMs
+        if (playing) {
+            playingSinceMs = clock.elapsedMs()
+        }
+        seeksLanded++
+        publish()
+    }
+
     /** It played to its end: the next part at once, the gap after a call, or the end, whatever its duration. */
     fun onCompleted(token: Long) {
         if (player == null || token != this.token || !prepared || expireIfDue()) {
@@ -1167,6 +1204,7 @@ class RecordingPlayer(
         durationMs = 0
         partPlayed = false
         startMade = false
+        seekPending = 0L
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a thread let go to end too.
         val opened = token
@@ -1509,11 +1547,10 @@ class RecordingPlayer(
             withdrawStart()
             current.pause()
         }
-        current.seekTo(clamped)
-        positionMs = clamped
-        if (playing) {
-            playingSinceMs = clock.elapsedMs()
-        }
+        // Asked for, not landed: the readings keep the confirmed position until the player says it is there (R56).
+        seekPending = ++seekSerial
+        seekTargetMs = clamped
+        current.seekTo(clamped, seekPending)
         if (restart) {
             requestStart(current)
             if (startPending == 0L || playing) {
@@ -1683,6 +1720,7 @@ class RecordingPlayer(
         skipNoticeCall = -1
         skipNoticeCount = 0
         refusals = 0
+        seeksLanded = 0
         startRequest = true
         resumeSuspended = false
         ended = null
@@ -1826,6 +1864,7 @@ class RecordingPlayer(
             refusals = refusals,
             skipNoticeCall = skipNoticeCall,
             skipNoticeCount = skipNoticeCount,
+            seeksLanded = seeksLanded,
             sessionState = sessionState(),
             actions = actions(),
         )

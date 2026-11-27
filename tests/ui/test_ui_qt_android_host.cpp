@@ -2616,6 +2616,7 @@ struct StatusFields {
     int refusals = 0;
     int skipCall = -1;
     int skipCount = 0;
+    int seeksLanded = 0;
 
     QString
     text() const {
@@ -2633,7 +2634,7 @@ struct StatusFields {
         f.append(ended);
         f.append(QString::number(skipped));
         f.append(QString::number(serial));
-        for (const int n : {refusals, skipCall, skipCount}) {
+        for (const int n : {refusals, skipCall, skipCount, seeksLanded}) {
             f.append(QString::number(n));
         }
         return f.join(QLatin1Char('\t'));
@@ -3019,6 +3020,18 @@ check_playlist_record() {
           "the skip notice's call and count are published");
     f.skipCall = -1;
     f.skipCount = 0;
+    r.status = f.text();
+    host.refresh();
+    f.seeksLanded = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackSeeksLanded() == 1 && host.property("playbackSeeksLanded").toInt() == 1
+              && seen.changed == refusedChanges + 4,
+          "#909 R56: a landing the player confirmed is counted and published as a change");
+    f.seeksLanded = 0;
+    r.status = f.text() + QStringLiteral("\t0");
+    host.refresh();
+    check(host.playbackSeeksLanded() == 1, "a record with a field too many is no record");
 
     f.item = 3;
     f.paused.clear();

@@ -3702,8 +3702,7 @@ class ReadingMap : public QQmlPropertyMap {
         if (!seekApplied) {
             return;
         }
-        insert(QStringLiteral("playbackPositionMs"), positionMs);
-        Q_EMIT playbackPositionChanged();
+        landSeek(positionMs);
     }
 
     Q_INVOKABLE void
@@ -3713,7 +3712,16 @@ class ReadingMap : public QQmlPropertyMap {
         if (!tokenCurrent(token) || !seekApplied || !value(QStringLiteral("playbackCanSeek")).toBool()) {
             return;
         }
+        landSeek(positionMs);
+    }
+
+    /* A seek applied at once lands at once: at @p positionMs, the landings counted (#909 R56), as the Android
+     * player's record says once it confirms one. With setSeekApplied(false) a test publishes the landing itself. */
+    void
+    landSeek(qint64 positionMs) {
         insert(QStringLiteral("playbackPositionMs"), positionMs);
+        insert(QStringLiteral("playbackSeeksLanded"), value(QStringLiteral("playbackSeeksLanded")).toInt() + 1);
+        Q_EMIT playbackChanged();
         Q_EMIT playbackPositionChanged();
     }
 
@@ -3783,6 +3791,7 @@ class ReadingMap : public QQmlPropertyMap {
                 {QStringLiteral("playbackRefusals"), 0},
                 {QStringLiteral("playbackSkipNoticeCall"), -1},
                 {QStringLiteral("playbackSkipNoticeCount"), 0},
+                {QStringLiteral("playbackSeeksLanded"), 0},
                 {QStringLiteral("playbackHoldPath"), QString()}};
     }
 

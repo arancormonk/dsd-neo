@@ -20089,8 +20089,15 @@ Qt Quick frontend (`src/ui/qt`):
       ended reason, skipped count, recheck serial, refusals (the focus requests this play was refused, so a refusal
       read again with the same reading still moves it), skip notice call and count (the call a part played on after
       recordings were skipped, and how many, kept by the player while that call is current: `noteSkips()` when a part
-      starts, cleared when another call opens; -1 and 0 with none). `run_jvm_tests.py` checks the writers and the parser
-      count the same fields. The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the
+      starts, cleared when another call opens; -1 and 0 with none), seeks landed (R56: the play's seeks the player
+      confirmed, `playbackSeeksLanded`). `run_jvm_tests.py` checks the writers and the parser count the same fields.
+      A seek is a landing only once the player confirms it: each carries a seek serial, the owner forwards
+      `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` with the latest serial it passed, and until the
+      latest seek lands the readings keep the confirmed position and its clock (so Previous's 3,000 ms rule reads it);
+      a superseded seek's completion counts for nothing. The sheet takes a position near its target as the landing
+      only from a record whose landing count moved since it asked, so a position read before the seek reached the
+      player never lands it; its preview, with the 2 s fallback, shows the target meanwhile. The host resolves
+      `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the
       item index of the same record, and publishes everything together; the position alone goes on
       `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once, from Hidden,
       Suspended or Inactive (R51: an app visible but not active, as in split screen, holds the bar's events, so the

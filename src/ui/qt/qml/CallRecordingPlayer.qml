@@ -181,9 +181,22 @@ Column {
     // every tick while it plays: at most every few seconds (SpeechPacer), and
     // at once on play, pause, stop, the end of the part, or a seek once the
     // host reports a position near where it was asked to land (a position
-    // sent before the host applied the seek does not count).
+    // sent before the host applied the seek does not count). Only a record
+    // that counts a landing since the seek was asked (playbackSeeksLanded,
+    // which moves when the player confirms the latest seek: #909 R56) can
+    // land it, so a position read before the seek reached the player is
+    // never its landing, however near the target it is.
     property int seekLanded: 0
     property real seekTargetMs: -1
+    property int seekLandingsBefore: 0
+    function noteSeekLanding() {
+        if (seekTargetMs < 0 || (Number(decoderHost.playbackSeeksLanded) || 0) <= seekLandingsBefore)
+            return;
+        if (Math.abs(decoderHost.playbackPositionMs - seekTargetMs) < 1000) {
+            seekTargetMs = -1;
+            seekLanded++;
+        }
+    }
     // A seek the host never applied (it clamped or dropped it) is forgotten
     // when playback stops or fails, or moves to another part: a later
     // position passing near it is not a landing.
@@ -774,12 +787,10 @@ Column {
         function onPlaybackChanged() {
             player.noteFailure();
             player.noteSkips();
+            player.noteSeekLanding();
         }
         function onPlaybackPositionChanged() {
-            if (player.seekTargetMs >= 0 && Math.abs(decoderHost.playbackPositionMs - player.seekTargetMs) < 1000) {
-                player.seekTargetMs = -1;
-                player.seekLanded++;
-            }
+            player.noteSeekLanding();
         }
         function onRecordingTransferFinished(selection, result, missing) {
             player.saveFinished(selection, result);
@@ -916,8 +927,10 @@ Column {
                     function seekTo(ms, token) {
                         if (seekable && Navigation.allows(seekBar)) {
                             var target = Math.max(0, Math.min(player.durationMs, ms));
-                            if (token > 0 && token === decoderHost.playbackToken)
+                            if (token > 0 && token === decoderHost.playbackToken) {
+                                player.seekLandingsBefore = Number(decoderHost.playbackSeeksLanded) || 0;
                                 player.seekTargetMs = target;
+                            }
                             decoderHost.seekPlaybackFor(token, target);
                         }
                     }

@@ -43,6 +43,8 @@ private class FakePlayer(
     private val unmakeable: () -> Boolean = { false },
     /** What its own thread does with start request [Long] (the rig makes and acknowledges it, holds or fails it). */
     private val onStart: (FakePlayer, Long) -> Unit = { player, serial -> player.makeStart(serial) },
+    /** What its own thread does with seek [Long]: the rig lands it at once, or holds its completion (R56). */
+    private val onSeek: (FakePlayer, Long) -> Unit = { _, _ -> },
     /** What its own thread does with a silence request: the rig reports it at once, or holds it (a delayed owner). */
     private val onSilence: (FakePlayer) -> Unit = {},
     /** What its own thread does with the release: the rig ends the thread at once, or holds it in native code. */
@@ -133,10 +135,11 @@ private class FakePlayer(
         }
     }
 
-    override fun seekTo(positionMs: Long) {
+    override fun seekTo(positionMs: Long, serial: Long) {
         ops += "seek $positionMs"
         valid("seek", prepared)
         seeks += positionMs
+        onSeek(this, serial)
     }
 
     override fun silence() {
@@ -335,6 +338,16 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
      * [ackSilence]). A player whose silence is held still sounds ([audible]); a start made while another sounds fails.
      */
     var holdSilences = false
+
+    /** Seek completions: reported at once unless [holdSeeks] (held in [heldSeeks], by player and serial). */
+    var holdSeeks = false
+    val heldSeeks = mutableListOf<Pair<FakePlayer, Long>>()
+
+    /** Held seek [at] (the oldest by default) lands. */
+    fun landSeek(at: Int = 0) {
+        val (player, serial) = heldSeeks.removeAt(at)
+        machine.onSeekCompleted(player.token, serial)
+    }
     val heldSilences = mutableListOf<FakePlayer>()
 
     fun audible(player: FakePlayer) = (player.started && !player.released && !player.errored) || player in heldSilences
@@ -376,6 +389,9 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
                         holdStarts -> heldStarts += player to serial
                         player.makeStart(serial) -> machine.onStarted(player.token, serial)
                     }
+                },
+                onSeek = { player, serial ->
+                    if (holdSeeks) heldSeeks += player to serial else machine.onSeekCompleted(player.token, serial)
                 },
                 onSilence = { player ->
                     if (holdSilences) heldSilences += player else machine.onSilenced(player.token)
@@ -496,9 +512,9 @@ private fun aPlayStartsOncePreparedAndHoldsTheFocus() {
     rig.nowMs += 1_500
     check(rig.position == 1_500L) { "the position runs while it plays: ${rig.position}" }
     val token = rig.status.playToken
-    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0\t0\t-1\t0"
+    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0\t0\t-1\t0\t0"
     check(rig.status.record(rig.nowMs) == record) { "the record is what the host parses: ${rig.status.record(rig.nowMs)}" }
-    check(rig.status.record(rig.nowMs).split('\t').size == 21) { "the record has its 21 fields" }
+    check(rig.status.record(rig.nowMs).split('\t').size == 22) { "the record has its 22 fields" }
 
     rig.machine.pause()
     check(rig.state == PAUSED && !rig.last.started && !rig.focus.held) { "a pause pauses and gives the focus back" }
@@ -1322,6 +1338,50 @@ private fun anInterruptedOpeningReadsPausedOnTheSession() {
     check(rig.status.sessionState == SESSION_PAUSED) { "interrupted, it reads paused: ${rig.status.sessionState}" }
     rig.machine.onFocusChange(rig.focus.epoch, FocusChange.GAINED)
     check(rig.status.sessionState == SESSION_BUFFERING) { "the focus back: buffering again" }
+}
+
+/**
+ * A seek is published as landed only once the player confirms it (R56): until the latest seek's completion the
+ * readings keep the confirmed position and its clock, Previous's 3,000 ms rule reads it, and a superseded seek's
+ * completion counts for nothing; the landing counts in the record.
+ */
+private fun aSeekLandsOnlyWhenThePlayerConfirmsIt() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    rig.elapse(1_000)
+    rig.holdSeeks = true
+    rig.machine.seek(20_000)
+    check(rig.current.seeks == listOf(20_000L) && rig.position == 1_000L) {
+        "the seek is posted; the position stays the confirmed one: ${rig.position}"
+    }
+    rig.elapse(500)
+    check(rig.position == 1_500L && rig.status.seeksLanded == 0) { "its clock runs on from there: ${rig.position}" }
+    rig.landSeek()
+    check(rig.position == 20_000L && rig.status.seeksLanded == 1) { "landed: the target, counted" }
+    rig.elapse(1_000)
+    check(rig.position == 21_000L) { "and the clock counts from it" }
+
+    // Two seeks, the first completing late: only the second lands.
+    rig.machine.seek(5_000)
+    rig.machine.seek(40_000)
+    rig.landSeek() // the first's completion, late
+    check(rig.position == 21_000L && rig.status.seeksLanded == 1) { "a superseded seek lands nothing: ${rig.position}" }
+    rig.landSeek()
+    check(rig.position == 40_000L && rig.status.seeksLanded == 2) { "the latest lands" }
+
+    // Previous reads the confirmed position: a seek back to 0 not landed yet still restarts the call.
+    val back = Rig()
+    back.queue(1, 1)
+    back.prepared()
+    back.machine.next()
+    back.prepared()
+    back.elapse(5_000)
+    back.holdSeeks = true
+    back.machine.seek(0)
+    back.machine.previous()
+    back.prepared()
+    check(back.status.call == 1) { "past 3 s confirmed: Previous restarts the call, on call ${back.status.call}" }
 }
 
 /**
@@ -3623,6 +3683,7 @@ fun main() {
     aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
     theNextPartStartsOnceTheOutgoingOneIsSilent()
+    aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()
     theQueueIsLetGoAtTheEnd()

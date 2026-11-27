@@ -1595,7 +1595,8 @@ Item {
         }
 
         // The Android host shows no position for a seek (the player may have moved on since the poll its token came
-        // from): the player's next record moves it, and a position there near the target is the landing.
+        // from): only a record that counts a landing since the seek (#909 R56), with a position near the target, lands
+        // it; a position near the target read before the seek reached the player does not.
         function test_seek_lands_on_the_players_record() {
             openWith([rec("t-1", pathA, 60000)]);
             tap("recordingPlayButton");
@@ -1610,8 +1611,19 @@ Item {
             testContext.publishPlaybackReading({playbackPositionMs: 1250});
             compare(player.seekLanded, landed, "a record from before the seek is no landing");
             testContext.publishPlaybackReading({playbackPositionMs: 30100});
-            compare(player.seekLanded, landed + 1, "the record that shows it there is");
+            compare(player.seekLanded, landed, "a position near the target with no landing counted is none either");
+            testContext.publishPlaybackReading({playbackSeeksLanded: 1});
+            compare(player.seekLanded, landed + 1, "the record that counts its landing, there, is");
             compare(player.seekTargetMs, -1);
+
+            // A short seek: the confirmed position already near the target lands nothing until the player says so.
+            testContext.setSeekApplied(false);
+            item("recordingSeekBar").seekTo(30600, 5);
+            testContext.setSeekApplied(true);
+            testContext.publishPlaybackReading({playbackPositionMs: 30400});
+            compare(player.seekTargetMs, 30600, "a stale confirmed position near the target is no landing");
+            testContext.publishPlaybackReading({playbackPositionMs: 30600, playbackSeeksLanded: 2});
+            compare(player.seekLanded, landed + 2, "its own landing is");
         }
 
         // A playlist's part still opening, with no token yet: the sheet offers no pause or resume that would reach
@@ -2059,7 +2071,7 @@ Item {
             compare(item("recordingTime").text, "0:06 / 0:10");
             testContext.publishPlaybackReading({playbackPositionMs: 1000});
             compare(player.positionMs, 6000, "a record from before the seek leaves it");
-            testContext.publishPlaybackReading({playbackPositionMs: 6000});
+            testContext.publishPlaybackReading({playbackPositionMs: 6000, playbackSeeksLanded: 1});
             compare(player.seekTargetMs, -1, "landed");
             compare(player.positionMs, 6000);
             bar.seekTo(9000, 5);

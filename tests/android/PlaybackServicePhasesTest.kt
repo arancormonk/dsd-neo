@@ -131,8 +131,9 @@ private class Playing(val rig: ServiceRig) {
                     if (holdStarts) heldStarts += token to serial else machine.onStarted(token, serial)
                 }
                 override fun pause() = Unit
-                override fun seekTo(positionMs: Long) {
+                override fun seekTo(positionMs: Long, serial: Long) {
                     seeks += token to positionMs
+                    machine.onSeekCompleted(token, serial)
                 }
                 override fun silence() = machine.onSilenced(token)
                 override val durationMs: Long get() = 10_000
