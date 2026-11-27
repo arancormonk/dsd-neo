@@ -48,6 +48,7 @@
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
+#include <limits>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 #include "squelch_cascade_noise.h"
@@ -386,12 +387,13 @@ run_source(demod_state* s, Reader& rd, SourceNoise* src, uint32_t source_hz, lon
     }
 }
 
-/* How far @p got is from @p want: beta and rho absolute, N_eff and the noise gain relative; infinite for another lag
+/* How far @p got is from @p want: beta and rho absolute, N_eff and the noise gain relative; the largest double (a finite sentinel, the
+   fast-math builds reject infinity) for another lag
    or rate, or a plan not valid. */
 double
 plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor_plan& want) {
     if (!got.valid || !want.valid || got.lag != want.lag || got.rate_hz != want.rate_hz) {
-        return INFINITY;
+        return std::numeric_limits<double>::max();
     }
     const double rel =
         std::fmax(std::fabs(got.neff / want.neff - 1.0), std::fabs(got.noise_gain / want.noise_gain - 1.0));
@@ -531,7 +533,7 @@ rows_distance(const double* got, int got_lags, const Oracle& want) {
     for (int n = 0; n < P; n++) {
         power += want.cov[(size_t)n * (size_t)want.lags] / (double)P;
     }
-    double best = INFINITY;
+    double best = std::numeric_limits<double>::max();
     for (int r = 0; r < P; r++) {
         double worst = 0.0;
         for (int n = 0; n < P; n++) {
@@ -543,7 +545,7 @@ rows_distance(const double* got, int got_lags, const Oracle& want) {
         }
         best = std::fmin(best, worst);
     }
-    return power > 0.0 ? best / power : INFINITY;
+    return power > 0.0 ? best / power : std::numeric_limits<double>::max();
 }
 
 /* The reader model against the impulses, unfiltered: every output phase's covariance (its exact plan's table, by each

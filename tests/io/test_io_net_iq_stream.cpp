@@ -1227,11 +1227,13 @@ last_restart_input(dsd_iq_resampler* r, const std::vector<float>& src, size_t in
     size_t fill = 0U;
     uint64_t blocks = 0U;
     size_t restart = 0U;
-    for (size_t i = 0U; i < inputs; i++) {
+    size_t i = 0U;
+    while (i < inputs) {
         const int made = dsd_iq_resampler_process(r, src.data() + 2U * i, 1U, buf.data(), buf.size() / 2U);
         assert(made >= 0);
         if (fill + (size_t)made < block_pairs) {
             fill += (size_t)made;
+            i++;
             continue;
         }
         const size_t surplus = fill + (size_t)made - block_pairs;
@@ -1242,9 +1244,10 @@ last_restart_input(dsd_iq_resampler* r, const std::vector<float>& src, size_t in
             restart = surplus > 0U ? i : i + 1U;
             if (surplus > 0U) {
                 fill = 0U;
-                i--; /* the cleared reader takes this input again */
+                continue; /* the cleared reader takes this input again */
             }
         }
+        i++;
     }
     return restart;
 }

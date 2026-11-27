@@ -44,6 +44,7 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
+#include <limits>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
 #include "squelch_cascade_noise.h"
@@ -508,12 +509,13 @@ installed_plan(int passes, int rate, int width, std::vector<float>* taps) {
     return s->squelch_floor.plan;
 }
 
-/* How far @p got is from the oracle @p want: beta and rho absolute, N_eff and the noise gain relative; infinite for
+/* How far @p got is from the oracle @p want: beta and rho absolute, N_eff and the noise gain relative; the largest double (a finite sentinel, the
+   fast-math builds reject infinity) for
    another lag or rate, or a plan not valid. */
 double
 cascade_plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor_plan& want) {
     if (!got.valid || !want.valid || got.lag != want.lag || got.rate_hz != want.rate_hz) {
-        return INFINITY;
+        return std::numeric_limits<double>::max();
     }
     const double rel =
         std::fmax(std::fabs(got.neff / want.neff - 1.0), std::fabs(got.noise_gain / want.noise_gain - 1.0));
@@ -1071,11 +1073,14 @@ design_chain_plans(demod_state* s, const dsd_live_iq_step_plan* plan, int passes
         (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, np, taps, taps_len, rate);
         return;
     }
-    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES] = {};
     const int count = stages_for(passes, st);
     (void)dsd_noise_squelch_plan_design(np, taps, taps_len, st, count, rate);
     if (passes <= 1) {
-        CHECK(dsd_squelch_floor_plan_design(fp, taps, taps_len, st[0].taps, st[0].len, rate) == 0,
+        /* No pass: no half-band ahead of the channel filter. */
+        CHECK(dsd_squelch_floor_plan_design(fp, taps, taps_len, count > 0 ? st[0].taps : NULL,
+                                            count > 0 ? st[0].len : 0, rate)
+                  == 0,
               "floor plan at %d Hz", rate);
         return;
     }
@@ -1260,7 +1265,7 @@ white_rows(const std::vector<double>& var) {
 double
 cov_distance(const dsd_squelch_floor_periodic_noise& a, const dsd_squelch_floor_periodic_noise& b) {
     if (a.period != b.period || a.lags != b.lags) {
-        return INFINITY;
+        return std::numeric_limits<double>::max();
     }
     double peak = 0.0;
     double off = 0.0;
@@ -1268,7 +1273,7 @@ cov_distance(const dsd_squelch_floor_periodic_noise& a, const dsd_squelch_floor_
         peak = std::fmax(peak, std::fabs(a.cov[i]));
         off = std::fmax(off, std::fabs(a.cov[i] - b.cov[i]));
     }
-    return peak > 0.0 ? off / peak : INFINITY;
+    return peak > 0.0 ? off / peak : std::numeric_limits<double>::max();
 }
 
 /* The shared cascade covariance (src/dsp/squelch_cascade_noise.c, issue #899) on periodic noise, against the formula
