@@ -20511,6 +20511,14 @@ Qt Quick frontend (`src/ui/qt`):
     documented rather than handled:
     - Outside changes to the recordings folders while DSD-neo runs (replacing, swapping or re-permissioning files or
       folders) are not tracked beyond the guards described below.
+    - Storage that vanishes or returns at the same moment as a store pass or a session start (issue #909 r17f, the
+      store-race class, decided as a limit after r16t): the store can start a session in a second folder for an owner
+      whose existing folder, on a card that appeared since the last pass, has another name (the owner's recordings
+      then sit in two folders, both listed); pick an owner folder whose directory was renamed away in that moment, so
+      that session's recording cannot be written there and may not be saved; keep a first read of a card that vanished
+      and came back between two looks (its rows shown as that read found them); and leave a card that returned
+      unlisted until its next pass, about a minute (its recordings missing from History meanwhile). The store's next
+      full pass corrects the index.
     - A file's identity is its kind, size and modification time only: another file with exactly the same size and
       time counts as the recording, and the short window between the check before an unlink and the unlink is open.
     - Windows: the regular-file opener checks the name's attributes and then opens it, so a reparse point made in
