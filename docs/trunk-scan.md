@@ -1442,11 +1442,13 @@ label (or its id when it has none), or `row N` for a `-Y` row, counted from 1:
   checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. A native Airspy at a
   rate its firmware lists beyond those logs `... channels on this native Airspy at 5 Msps, a sample rate it was not
   calibrated for; it checks 2.5, 3, 6 and 10 Msps: set --airspy-sample-rate to 2500000, 3000000, 6000000 or
-  10000000, one the Airspy lists, to have them checked.` An Airspy through
-  SoapySDR logs `... channels on an Airspy through SoapySDR; use the native Airspy input (-i airspy) to have them
+  10000000, one the Airspy lists, to have them checked.` An Airspy through SoapySDR logs `... channels on an Airspy
+  through SoapySDR; use the native Airspy input (-i airspy, in a build with native Airspy support) to have them
   checked.`, and a SoapySDR device that may be an Airspy `... channels on this SoapySDR device: it is reached through a
   proxy, or its driver did not say which device it is, so an Airspy, which it cannot check through SoapySDR, cannot be
-  ruled out. For an Airspy, use the native Airspy input (-i airspy).`
+  ruled out. For an Airspy, use the native Airspy input (-i airspy, in a build with native Airspy support).` A build
+  without native Airspy support (`DSD_ENABLE_AIRSPY=OFF`, or no libairspy found) has no `-i airspy`: an Airspy gets no
+  check there.
 - `width`: `... <channel> <MHz> MHz at NFM 13.5 kHz, a width it was not calibrated for; set --nfm-bandwidth-hz to
   8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000 or 25000 to have it checked.` (on AM: `--am-bandwidth-hz` to
   5000, 6000, 8000, 8333, 10000, 15000 or 20000), `... <channel> <MHz> MHz: it has no NFM width set; set

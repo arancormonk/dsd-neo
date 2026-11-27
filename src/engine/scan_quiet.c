@@ -354,8 +354,8 @@ quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail
     if (detail == SCAN_QUIET_WARN_SOAPY_AIRSPY) {
         return DSD_SNPRINTF(out, out_size,
                             "WARNING: scan: silent channel skip cannot check channels on an Airspy through SoapySDR; "
-                            "use the native Airspy input (-i airspy) to have them checked. Normal scan timing "
-                            "applies.\n");
+                            "use the native Airspy input (-i airspy, in a build with native Airspy support) to have "
+                            "them checked. Normal scan timing applies.\n");
     }
     if (detail == SCAN_QUIET_WARN_AIRSPY_RATE) {
         return DSD_SNPRINTF(
@@ -371,7 +371,8 @@ quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail
                             "WARNING: scan: silent channel skip cannot check channels on this SoapySDR device: it is "
                             "reached through a proxy, or its driver did not say which device it is, so an Airspy, "
                             "which it cannot check through SoapySDR, cannot be ruled out. For an Airspy, use the "
-                            "native Airspy input (-i airspy). Normal scan timing applies.\n");
+                            "native Airspy input (-i airspy, in a build with native Airspy support). Normal scan "
+                            "timing applies.\n");
     }
     return DSD_SNPRINTF(out, out_size,
                         "WARNING: scan: silent channel skip cannot check channels at %s Msps, a sample rate it was "

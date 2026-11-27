@@ -30581,6 +30581,9 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
                          2500000U, NULL, 0U, 0, 0U);
     rc |= qt_expect("the line points to the native input",
                     strstr(g_qt_warn, "-i airspy") != NULL && strstr(g_qt_warn, "soapy:") == NULL);
+    /* A SoapySDR-only build has no native input: the line says what the advice needs. */
+    rc |= qt_expect("the native-input advice names the build it needs",
+                    strstr(g_qt_warn, "-i airspy, in a build with native Airspy support") != NULL);
     rc |= qt_expect("nothing requested", g_tap.requests == 0);
 
     qt_next_target(opts, state, k_qt_hz_b, 0);
@@ -30593,6 +30596,8 @@ test_scan_quiet_trunk_names_the_soapy_receiver(void) {
                          SCAN_QUIET_WARN_SOAPY_UNKNOWN, 2500000U, NULL, 0U, 0, 0U);
     rc |= qt_expect("its line names the proxy and the native input",
                     strstr(g_qt_warn, "proxy") != NULL && strstr(g_qt_warn, "-i airspy") != NULL);
+    rc |= qt_expect("its native-input advice names the build it needs",
+                    strstr(g_qt_warn, "-i airspy, in a build with native Airspy support") != NULL);
 
     qt_next_target(opts, state, k_qt_hz_a, 0);
     qt_shifted_capture(k_qt_hz_a, 1536000U, DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN);
