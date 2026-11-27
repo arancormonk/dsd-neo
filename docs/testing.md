@@ -3448,12 +3448,12 @@ the centring only delays it. Its noise has the same distribution at either phase
 the new centring agrees within 5.4e-15 (rtl-12k, -16k, -24k and -48k, filtered and not). The deterministic carriers and
 the real captures shift by one input sample against the output grid, which is not a whole-output delay. Two targeted
 full reruns measured that effect on the chains whose accepted plans sit closest to their bounds. `--frozen --chains
-rtl-8k`: all 4 plans meet every target, and the forced legacy filter's 6 dB miss reads 1.62 % (9 / 555; 2.16 % before),
-inside its 3.8 % allowance and its only miss. The EDACS/M17 gate's `--chains rtl-12k`: PROVOICE `LPF=1` holds 600 ms,
-inside its 620 ms, and WIDE `LPF=1` reads 360 ms (its entry below). Neither plan misses a second bound, and the others
-move within sampling error. So the full run's verdicts on the rows without a reader stand. `--noise-windows` splits the
-requested 40 ms decisions over the `--segments` streams by quotient and remainder and leaves the empty streams out, so a
-run measures the windows it reports.
+rtl-8k`: 3 of the 4 plans meet every target, and the fourth, the forced legacy filter, is accepted as before: its 6 dB
+miss reads 1.62 % (9 / 555; 2.16 % before), inside its 3.8 % allowance and its only miss. The EDACS/M17 gate's `--chains
+rtl-12k`: PROVOICE `LPF=1` holds 600 ms, inside its 620 ms, and WIDE `LPF=1` reads 360 ms (its entry below). Neither
+plan misses a second bound, and the others move within sampling error. So the full run's verdicts on the rows without a
+reader stand. `--noise-windows` splits the requested 40 ms decisions over the `--segments` streams by quotient and
+remainder and leaves the empty streams out, so a run measures the windows it reports.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 

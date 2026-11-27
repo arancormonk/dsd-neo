@@ -2078,10 +2078,7 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         "",
         "## Verdict",
         "",
-        (
-            f"{len(unique) - len(failing)} of {len(unique)} distinct plans meet every target"
-            + (f"; failing: {len(failing)}." if failing else ".")
-        ),
+        f"{verdict_counts(verdicts)} (of {len(unique)} distinct plans).",
         "",
     ]
     for ck in failing:
@@ -2343,6 +2340,15 @@ def run_pool(jobs: list[dict], workers: int, started: float) -> list[dict]:
     return results
 
 
+def verdict_counts(verdicts: dict) -> str:
+    """The plans that meet every target, those an ACCEPTED_MARGINAL entry accepts (they miss a bound, within its
+    allowance; the gate still exits 0 on them, per D7) and those that fail, counted apart."""
+    accepted = sum(1 for v in verdicts.values() if v["accepted"])
+    failing = sum(1 for v in verdicts.values() if not v["pass"])
+    strict = len(verdicts) - accepted - failing
+    return f"{strict} meet every target, {accepted} accepted as known marginals, {failing} fail"
+
+
 def plan_ids(combos: list[dict]) -> dict:
     """Every physical plan's (ckey) members as (configuration label, chain name), for ACCEPTED_MARGINAL: taken over
     every combination before a --chains selection, so a scoped run of one member (replay-48k/pd2) finds the entry of
@@ -2394,10 +2400,7 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
             print(f"  accepted-marginal entry {'; '.join(members(runnable, ck))}: {state}")
     for ck in failing:
         print(f"  FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
-    print(
-        f"verdict: the shipped classifier meets every target on {len(unique) - len(failing)} of {len(unique)} plans"
-        + (f"; {len(failing)} FAIL" if failing else "")
-    )
+    print(f"verdict: of {len(unique)} plans, {verdict_counts(verdicts)}")
     print(f"report: {md}\n        {js}")
     return 0 if not failing else 1
 
