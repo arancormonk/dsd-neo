@@ -1572,24 +1572,47 @@ Item {
         }
 
         // R57: the call counter, the part counter and the time are each kept whole, and the line may break between
-        // them: on a narrow bar at 2x text a call in parts wraps between its counters, never inside one.
+        // them: on a narrow bar at 2x text a call in parts (its length not known yet, so the time is short) breaks
+        // between its counters, never inside one, and shows whole on its two lines.
         function test_bar_counters_wrap_between_each_other() {
             var calls = logCalls(3);
             var screen = idle();
             only(screen);
-            root.width = 360;
-            idleLoader.width = 360;
+            root.width = 340;
+            idleLoader.width = 340;
             Ui.Theme.fontScale = 2.0;
             try {
                 playAll(screen, calls, [1, 3, 1]);
-                testContext.publishPlaybackReading({item: 2, playbackState: 2, playbackDurationMs: 60000, playbackPositionMs: 1000});
+                testContext.publishPlaybackReading({item: 2, playbackState: 2, playbackDurationMs: 0, playbackPositionMs: 1000});
                 var lineItem = part(screen, "nowPlayingLine");
                 verify(waitForPolish(lineItem));
-                var shown = lineItem.text;
-                compare(shown.split(" "), ["Call\u00a02\u00a0of\u00a03\u00a0·", "part\u00a02\u00a0of\u00a03\u00a0·", "0:01\u00a0/\u00a01:00"],
+                compare(lineItem.text.split(" "), ["Call\u00a02\u00a0of\u00a03\u00a0·", "part\u00a02\u00a0of\u00a03\u00a0·", "0:01"],
                         "a wrap point between the counters and before the time, none inside them");
-                compare(lineItem.lineCount, 2, "the narrow bar breaks the line");
+                // Where it breaks: the first line laid out is the call counter alone, as wide as its segment and
+                // narrower than the call counter with the part counter's first word (M5).
+                var laid = [];
+                var note = function (laidLine) {
+                    laid.push({number: laidLine.number, width: laidLine.implicitWidth});
+                };
+                lineItem.lineLaidOut.connect(note);
+                testContext.publishPlaybackReading({playbackPositionMs: 2000});
+                verify(waitForPolish(lineItem));
+                lineItem.lineLaidOut.disconnect(note);
+                compare(lineItem.lineCount, 2, "the narrow bar breaks the line once");
                 verify(!lineItem.truncated, "and shows it whole: " + line(screen));
+                var first = laid.filter(function (l) {
+                    return l.number === 0;
+                }).pop();
+                verify(first !== undefined, "the line was laid out again");
+                var probe = Qt.createQmlObject("import QtQuick; TextMetrics {}", lineItem);
+                probe.font = lineItem.font;
+                probe.text = "Call\u00a02\u00a0of\u00a03\u00a0·";
+                var callWidth = probe.advanceWidth;
+                probe.text = "Call\u00a02\u00a0of\u00a03\u00a0· part";
+                var withPart = probe.advanceWidth;
+                probe.destroy();
+                verify(Math.abs(first.width - callWidth) <= 1 && first.width < withPart,
+                       "the first line is the call counter: " + first.width + " (call " + callWidth + ", with part " + withPart + ")");
             } finally {
                 Ui.Theme.fontScale = 1.0;
                 root.width = 360;

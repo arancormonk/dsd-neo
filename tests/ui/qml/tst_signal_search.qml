@@ -87,6 +87,15 @@ Item {
         readonly property var firstDay: ({startMs: new Date(2026, 10, 9).getTime(), revision: 1})
         property var localDay: firstDay
     }
+    // R58: History's now-playing bar and the playlist's status, made for the case that checks the bar stays silent.
+    Component {
+        id: playlistStatusComponent
+        Ui.PlaylistStatus {}
+    }
+    Component {
+        id: nowPlayingBarComponent
+        Ui.NowPlayingBar {}
+    }
     TestCase {
         name: "SignalSearch"
         when: windowShown
@@ -2053,10 +2062,13 @@ Item {
         }
 
         // R58: a History playlist's Resume refused before the sheet opens on that file is read as the sheet opens,
-        // once (it takes the shared refusal key, so the bar does not read it again), and not again after it closes.
+        // once, and not again after it closes: History's bar, shown once the sheet has closed, stays silent.
         function test_sheet_reads_a_standing_refusal_on_open() {
             var a = rec("a", 1700000100, 2000);
-            testContext.publishPlaybackReading({playbackGeneration: 7, playbackMode: 2, playbackState: 3, playbackToken: 4, playbackPath: a.path,
+            testContext.setPlaybackSupported(true);
+            var status = playlistStatusComponent.createObject(loader.item);
+            var bar = nowPlayingBarComponent.createObject(loader.item, {status: status, visible: false, width: 360});
+            testContext.publishPlaybackReading({playbackGeneration: 7, playbackOrigin: "history", playbackMode: 2, playbackState: 3, playbackToken: 4, playbackPath: a.path,
                                                 playbackSize: a.identitySize, playbackMtimeSec: a.mtimeSec, playbackMtimeNanos: 0,
                                                 playbackDurationMs: 2000, playbackPausedReason: "unavailable", playbackRefusals: 1});
             var player = findChild(recordingsSheet(), "detectionRecordingPlayer");
@@ -2066,10 +2078,17 @@ Item {
                        "the standing refusal is said as the sheet opens");
             compare(player.announcements, said + 1, "and read out once");
             compare(Ui.Navigation.refusalSaid, Ui.Navigation.refusalKey(7, 1), "heard: the bar will not read it again");
+            verify(status.live && !status.eventHeard && status.eventRefusal, "the bar's status holds the refusal unread");
             sheet.visible = false;
+            bar.visible = true;
+            tryVerify(function () { return status.eventHeard; }, 2000, "the bar takes the refusal as heard");
             wait(50);
             compare(player.announcements, said + 1, "closing reads nothing more");
+            compare(bar.announcements, 0, "and the bar stays silent");
+            bar.destroy();
+            status.destroy();
             testContext.resetHostPlayback();
+            testContext.setPlaybackSupported(false);
         }
 
         // A row that kept recordings says how many under its details, and reads
