@@ -1204,6 +1204,52 @@ private fun theQueueIsLetGoAtTheEnd() {
  * A move keeps its direction until its candidate plays (R46): a candidate that prepared but failed before its first
  * start was acknowledged is a candidate that failed, so the search goes on the way the move was going, with no gap.
  */
+/**
+ * The emulator's Previous burst (D1, evidence emu-r10): five Previous from Call 6 of 7 (two parts, the first 1.44 s
+ * long). While its first part plays, each press moves one call and the burst ends on Call 1. In the failing runs that
+ * part had completed just as the burst arrived (its player released unpaused), so the first press found the second
+ * part current and restarted the call (D7: a playable part of the call before the current one), and the burst ended on
+ * Call 2. No press is lost in either order: the opening part or its start pending changes nothing.
+ */
+private fun aPreviousBurstAtAPartBoundaryRestartsTheCallFirst() {
+    for (boundary in listOf(false, true)) {
+        for (heldStart in listOf(false, true)) {
+            val rig = Rig()
+            rig.queue(12, 1, 1, 1, 1, 2, 1)
+            repeat(5) { rig.machine.next() }
+            rig.prepared()
+            rig.elapse(1_440)
+            check(rig.status.call == 5 && rig.status.partOrdinal == 1) { "Call 6's first part plays" }
+            if (boundary) {
+                rig.complete()
+                check(rig.status.call == 5 && rig.status.partOrdinal == 2) { "its second part opens" }
+            }
+            rig.holdStarts = heldStart
+            rig.machine.previous()
+            if (boundary) {
+                check(rig.status.call == 5 && rig.status.partOrdinal == 1) { "from part 2, Previous restarts Call 6" }
+            } else {
+                check(rig.status.call == 4) { "from the first part, Previous moves to Call 5" }
+            }
+            // The first press's candidate plays, as in the failing run 4, before the other four.
+            rig.prepared()
+            if (heldStart) {
+                rig.ackStart()
+            }
+            check(rig.state == PLAYING) { "the first press's candidate plays" }
+            repeat(4) { rig.machine.previous() }
+            rig.prepared()
+            if (heldStart) {
+                rig.ackStart()
+            }
+            val ends = if (boundary) 1 else 0
+            check(rig.status.call == ends && rig.state == PLAYING) {
+                "boundary $boundary, start held $heldStart: on call ${rig.status.call}, not $ends"
+            }
+        }
+    }
+}
+
 private fun aMoveKeepsItsWayUntilItsCandidatePlays() {
     // Previous from C: B prepares, then fails before its start is acknowledged: A plays, not C again.
     val back = Rig()
@@ -3409,6 +3455,7 @@ fun main() {
     aPendingStartHasAWatchdog()
     aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
+    aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()
     eachMoveMakesOnlyTheCandidatesItTries()
