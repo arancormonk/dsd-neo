@@ -232,8 +232,9 @@ class RecordingPlayer(
         fun pause()
 
         /**
-         * Seek to [positionMs] as seek request [serial]; once the platform player has landed, [onSeekCompleted] is
-         * posted with the serial of the latest seek its own thread passed to it (R56).
+         * Seek to [positionMs] as seek request [serial]; once the platform player has landed it, [onSeekCompleted] is
+         * posted with that request's own serial (R56, R59: its owner keeps one platform seek in flight and holds the
+         * newest, so a completion for a superseded serial is not this one's landing).
          */
         fun seekTo(positionMs: Long, serial: Long)
 

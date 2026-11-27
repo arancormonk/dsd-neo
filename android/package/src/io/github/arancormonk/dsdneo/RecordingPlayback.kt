@@ -619,8 +619,14 @@ object RecordingPlayback {
         /** The owner's only: MediaPlayer.start() was made and no pause has undone it. */
         private var started = false
 
-        /** The owner's only: the serial of the latest seek passed to the platform player (R56). */
-        private var seeking = 0L
+        /** The owner's only: its seeks, one platform seek in flight and the newest held (R59). */
+        private val state = PlayerOwnerState(
+            object : PlayerOwnerState.Platform {
+                override fun seekTo(positionMs: Long) {
+                    media?.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
+                }
+            },
+        ) { serial -> post { machine -> machine.onSeekCompleted(token, serial) } }
 
         override fun setup(
             work: () -> RecordingPlayer.SetupResult,
@@ -658,11 +664,15 @@ object RecordingPlayback {
                 }
             }
             made.setOnCompletionListener { post { it.onCompleted(token) } }
-            // On the owner: the latest seek passed is the one landed (a platform player may answer a run of seeks
-            // once).
+            // On the owner: the seek in flight landed, and names its own request (R59). The held seek it then passes on
+            // may throw, outside onOwner's guard: the player's failure, never the app's.
             made.setOnSeekCompleteListener {
-                val serial = seeking
-                post { machine -> machine.onSeekCompleted(token, serial) }
+                try {
+                    state.seekCompleted()
+                } catch (e: Throwable) {
+                    Log.w(TAG, "a call recording's player refused a seek", e)
+                    post { machine -> machine.onFailed(token, RecordingPlayer.REASON_PLAYER) }
+                }
             }
             made.setOnErrorListener { _, what, _ ->
                 val reason = if (what == MediaPlayer.MEDIA_ERROR_SERVER_DIED) {
@@ -703,10 +713,7 @@ object RecordingPlayback {
             }
         }
 
-        override fun seekTo(positionMs: Long, serial: Long) = onOwner {
-            seeking = serial
-            it.seekTo(positionMs, MediaPlayer.SEEK_CLOSEST)
-        }
+        override fun seekTo(positionMs: Long, serial: Long) = onOwner { state.seek(positionMs, serial) }
 
         override fun silence() {
             // Behind the move's pause on the owner (and ahead of the release posted after it): silent once it runs.
@@ -728,6 +735,7 @@ object RecordingPlayback {
                     Log.w(TAG, "could not release a call recording's player", e)
                 }
                 media = null
+                state.released()
                 // Only now: until release() returns, the native player may still post an event (one a pause just
                 // before it raised), and a Looper that has quit refuses it ("sending message to a Handler on a dead
                 // thread"). Release clears the native listener, so no new event is posted after it (a callback already

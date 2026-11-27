@@ -1658,6 +1658,8 @@ SUITES = {
             ),
             # The media keys the Activity hands past Qt to the playlist's media session (#909).
             Build(sources=("MediaKeys.kt",), tests=("MediaKeysTest.kt",)),
+            # A player's owner thread: one platform seek in flight (R59), and silence only once the audio stopped (R62).
+            Build(sources=("PlayerOwnerState.kt",), tests=("PlayerOwnerStateTest.kt",)),
         ),
     ),
     # Call recording export and save (#708): the ZIP writer and the transfer into a document, through DocumentCopies'

@@ -266,7 +266,10 @@ and repeats ignored; each key its command on the player's state). A third build 
 `MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the playlist's own media session
 while it is open, the same keys left with Qt while none is, every other key (Back, volume, typing, the
 microphone mute) left with Qt either way, and `ActiveSession` (not before the owner's session is rendered active, nor
-for another playlist, nor after its end, an inactive render or the release).
+for another playlist, nor after its end, an inactive render or the release). A fourth build runs
+`PlayerOwnerState.kt` with `PlayerOwnerStateTest.kt` against a fake platform player: one platform seek in flight, two
+seeks before the first completes each landing under its own serial, five quick seeks reaching the platform as the
+first and the newest, and a seek that throws holding nothing (R59).
 `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
 `RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
 against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
