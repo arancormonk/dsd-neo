@@ -3761,28 +3761,31 @@ recording carries it, faster and low-passed to just under the source's Nyquist. 
 reader's magnitude is folded into the cascade FIR, and the measurement band ends 800 Hz under the reader's pass edge,
 the same guard as under the channel's edge (the reader's transition truncates a wanted signal's outer FM sidebands as a
 channel filter's edge does). A wanted signal whose band (offset, deviation and highest audio frequency) passes the
-reader's pass edge is measured as "edge", outside the gate. `DSP_SQUELCH_READER`
-(`tests/dsp/test_dsp_squelch_reader.cpp`) checks the reader's noise plan in C, on the 16 and 12 to 48 kHz chains below
-among others. `--chains TEXT` runs only the plans of the chains whose name holds the text.
+reader's pass edge is measured as "edge", outside the gate. Where that edge is narrower than the channel, each tone's
+offsets are taken against it too (its edge and half way, either side), so a passing plan covers wanted signals up to the
+reader's edge as well as the channel's. `DSP_SQUELCH_READER` (`tests/dsp/test_dsp_squelch_reader.cpp`) checks the
+reader's noise plan in C, on the 16 and 12 to 48 kHz chains below among others. `--chains TEXT` runs only the plans of
+the chains whose name holds the text.
 
-The reader rows' full run (`--chains reader`, 143 plans, 16 minutes on 8 workers):
+The reader rows' full run (`--chains reader`, 143 plans, 17 minutes on 8 workers):
 
 | Reader chain | Plans | With a band | Worst wanted p1 | Worst noise false-open at N = 3 | Calibration |
 | --- | --- | --- | --- | --- | --- |
 | 8 to 16 kHz (reader edge 3.6 kHz) | 5 | none: all run as auto | | | |
 | 12 to 48 kHz (edge 5.4 kHz, band at most 3.8-4.6 kHz) | 32 | none: all run as auto | | | |
-| 16 to 48 kHz (edge 7.2 kHz, band at most 3.8-6.4 kHz) | 32 | 28, all pass | 37.2 dB | 3.3e-5 | 0.42 dB |
+| 16 to 48 kHz (edge 7.2 kHz, band at most 3.8-6.4 kHz) | 32 | 28, all pass | 36.5 dB | 3.3e-5 | 0.42 dB |
 | 40 to 32 kHz, one pass | 5 | 2, both pass | 42.8 dB | 0 | 0.34 dB |
 | 112 to 64 kHz, two passes | 5 | 2, both pass | 41.2 dB | 0 | 0.28 dB |
 | 250 to 192 kHz, two passes | 32 | 28, all pass | 38.3 dB | 3.3e-5 | 0.56 dB |
 | 48,001 Hz at L/M 1/1 to 48 kHz | 32 | 28, all pass | 37.1 dB | 6.7e-5 | 0.59 dB |
 
-All 88 reader plans with a band pass the gate. At 16 to 48 kHz the guarded reader edge, not the channel's, ends the band
-for NFM 16 kHz and wider and with no channel filter (3800-6400 Hz). NFM 12.5 kHz keeps its own channel guard
-(3800-5650 Hz). At 12 to 48 kHz NFM 12.5 kHz and no channel filter run as auto, as every 12 kHz row does. The
-calibration column is the 2 s calibration's largest distance from the long-run reference through the real chain, in any
-band-pass. Noise's loudest window is 3.51 dB. Before the guard, the band ended at the reader's edge, and 12 to 48 kHz
-kept a 3800-5400 Hz band on 28 plans. Twelve of them held a wanted tone to 33.1-35.7 dB: tones whose band fits the
+All 88 reader plans with a band pass the gate. The worst at 16 to 48 kHz, 36.5 dB, is a 480 Hz tone 2220 Hz off centre
+on a 15 kHz channel, an offset taken against the reader's edge. At 16 to 48 kHz the guarded reader edge, not the
+channel's, ends the band for NFM 16 kHz and wider and with no channel filter (3800-6400 Hz). NFM 12.5 kHz keeps its own
+channel guard (3800-5650 Hz). At 12 to 48 kHz NFM 12.5 kHz and no channel filter run as auto, as every 12 kHz row does.
+The calibration column is the 2 s calibration's largest distance from the long-run reference through the real chain, in
+any band-pass. Noise's loudest window is 3.51 dB. Before the guard, the band ended at the reader's edge, and 12 to 48
+kHz kept a 3800-5400 Hz band on 28 plans. Twelve of them held a wanted tone to 33.1-35.7 dB: tones whose band fits the
 source's 5400 Hz still have outer sidebands that the reader's 5400-6600 Hz transition cuts.
 
 Each chain's decimation runs ahead of its channel filter: a cascade of half-band stages, the 31-tap one first and

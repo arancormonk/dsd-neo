@@ -561,10 +561,16 @@ def run_plan(job: dict) -> dict:
         return lambda t, n, rate: dev * np.sin(2.0 * math.pi * f * t)
 
     half = width / 2.0
+    # The edges a tone's offsets are taken against: the channel's, and on a reader row the source band's too when it is
+    # narrower, so a passing reader plan covers wanted signals up to the reader's edge as well as the channel's.
+    edges = [half] + ([source_half] if source_half < half else [])
     for f in TONES_HZ:
-        # Every offset the tone's Carson bandwidth leaves inside the channel: its edge, half way there, and centred.
-        room = half - deviation - f
-        offsets = [0.0] + ([room, -room, room / 2.0, -room / 2.0] if room > 1.0 else [])
+        # Every offset the tone's Carson bandwidth leaves inside each edge: that edge, half way there, and centred.
+        offsets = [0.0]
+        for edge in edges:
+            room = edge - deviation - f
+            if room > 1.0:
+                offsets += [o for o in (room, -room, room / 2.0, -room / 2.0) if o not in offsets]
         for off in offsets:
             sig = fm(tone(f, deviation), off)
             measure(
