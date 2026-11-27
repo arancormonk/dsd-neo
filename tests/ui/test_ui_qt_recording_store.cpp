@@ -287,6 +287,16 @@ fragment(qint64 row, int slot = 0) {
     return dsd_qt::call_history_fragment_key(kRing, slot, static_cast<qulonglong>(row));
 }
 
+/* Whether @p store's passes reach @p count within 5 s, asking for none (a bounded wait on the realtime clock). */
+bool
+passes_reach(const RecordingStore& store, quint64 count) {
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (store.passCountForTest() < count && dsd_realtime_mono_ms() < deadline) {
+        QThread::msleep(5);
+    }
+    return store.passCountForTest() >= count;
+}
+
 /* One recording of row @p row listed, available or not as @p available says. */
 bool
 listed_as(const RecordingStore& store, qint64 row, bool available) {
@@ -4540,6 +4550,7 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     std::atomic<bool> seen{false};
     std::atomic<bool> oldGone{false};
     QString remade;
+    std::atomic<quint64> listedAt{0};
     t.store.setPassEndHookForTest([&]() {
         const int end = ends++;
         if (end == 0 && QDir().rename(ext2, away2)) {
@@ -4552,11 +4563,15 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     });
     t.store.setRootReadHookForTest([&](const QString& root) {
         if (root == again.external && remade.isEmpty() && QDir().rename(again.external, aside)) {
+            listedAt = t.store.passCountForTest(); // the passes done before this listing's
             remade = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
         }
     });
     t.pass();
     t.pass();
+    // r17f: the listing asked for a follow-up listing; the hooks are cleared only once it has run.
+    expect("recreated, same path: its follow-up listing ran",
+           listedAt.load() > 0 && passes_reach(t.store, listedAt + 2));
     t.store.setRootReadHookForTest({});
     t.store.setPassEndHookForTest({});
     expect("recreated, same path: seen away and back", seen.load());
