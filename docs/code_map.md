@@ -20429,27 +20429,30 @@ Qt Quick frontend (`src/ui/qt`):
     of `m_rootsSeenAway`), its recordings read as unavailable to every reader (`rootSeenAwayLocked()` in the entry map's
     `available`, R74), so Play all and Play from here admit none of them and answer `none` or `rowNone`, a sheet shows
     them as storage not available, and the unlink and compaction checks hold for the same window
-    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). Play all
-    and Play from here also look at each root they would admit from as it is now (`recordingsForFragmentLists()`, R77):
-    the roots are taken under the store's lock, each is looked at with no lock held (one look per root,
-    `rootPlayableNow()`: an existing directory that can be read, not `rootAvailableNow()`'s root that can be made, which
-    stays a session start's rule), and the store is looked at again; changed meanwhile, the admission runs again from
-    the top once, and changed again it is refused (an empty answer, so `none`). A root found gone is noted seen away, so
-    the press is refused with what plays left playing (a renamed `Call recordings` folder too), and one back while seen
-    away or marked away asks for its read again at once, its recordings ineligible until that read is done
-    (`test_playlist_admission_checks_roots_live`). The probe is one stat per root on the GUI thread; main's delete
-    requests already stat each root under the lock there (`checkRootsLocked()`). A loss the admission sees while the
-    root's listing in full is in flight or done (not merely asked for) is noted again, so another listing runs after it:
-    the storage there at the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`). A
-    recheck a transfer asked for that finds the file the index knows but cannot open it (no read access) marks it
-    unreadable, so the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`);
-    the mark is kept by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read
-    alone never bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read
-    (loaded false) offers no recording path for save and share once its read is done, and a refreshed History row shows
-    it as away with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues
-    after a session start between its slices marked the folder unread, a share can still take a path from the committed
-    view, and a History call's part buttons play by path (limits below). A journal is compacted only in a folder read
-    and on storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
+    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). The rows
+    a folder's read again holds from before it (`m_committed`) are unavailable too until `commitFolderLocked()` replaces
+    them, so between its slices they are listed but not played or admitted (R78; main read them as available from the
+    moment the folder was marked loaded, before its slices). Play all and Play from here also look at each root they
+    would admit from as it is now (`recordingsForFragmentLists()`, R77): the roots are taken under the store's lock,
+    each is looked at with no lock held (one look per root, `rootPlayableNow()`: an existing directory that can be read,
+    not `rootAvailableNow()`'s root that can be made, which stays a session start's rule), and the store is looked at
+    again; changed meanwhile, the admission runs again from the top once, and changed again it is refused (an empty
+    answer, so `none`). A root found gone is noted seen away, so the press is refused with what plays left playing (a
+    renamed `Call recordings` folder too), and one back while seen away or marked away asks for its read again at once,
+    its recordings ineligible until that read is done (`test_playlist_admission_checks_roots_live`). The probe is one
+    stat per root on the GUI thread; main's delete requests already stat each root under the lock there
+    (`checkRootsLocked()`). A loss the admission sees while the root's listing in full is in flight or done (not merely
+    asked for) is noted again, so another listing runs after it: the storage there at the listing's end may be another
+    card (R79, `test_loss_during_a_listing_asks_for_another`). A recheck a transfer asked for that finds the file the
+    index knows but cannot open it (no read access) marks it unreadable, so the next export takes the others
+    (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through
+    later reads of its folder until an open succeeds, a metadata read alone never bringing it back
+    (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no
+    recording path for save and share once its read is done, and a refreshed History row shows it as away with Play
+    refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session start
+    between its slices marked the folder unread, a share can still take a path from the committed view, and a History
+    call's part buttons play by path (limits below). A journal is compacted only in a folder read and on storage not
+    seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
     `test_compaction_waits_for_a_rescan`). A journal tail is applied only while its folder is still read with the
     session-start count its cursor was taken with, so an owner lookup that failed meanwhile ends it
     (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck that finds a link, a folder or a FIFO at a

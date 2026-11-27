@@ -6057,9 +6057,27 @@ test_seen_away_root_is_not_admitted(void) {
             duringRead = admitted();
         }
     });
+    // R78: through the folder's read again too, slice by slice, until its rows replace the ones held from before: those
+    // stay listed, and unavailable, to a sheet and to a playlist's admission alike.
+    std::atomic<int> slices{0};
+    std::atomic<bool> listedHeld{true};
+    std::atomic<bool> admittedHeld{false};
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != a) {
+            return;
+        }
+        slices++;
+        const QVariantList single = s.store.recordingsForFragments({fragment(1)});
+        const QVariantList listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0);
+        listedHeld = listedHeld && single.size() == 1 && listed.size() == 1;
+        admittedHeld = admittedHeld || admitted();
+    });
     const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&] { beforePass = admitted(); });
     s.store.setRootReadHookForTest({});
+    s.store.setSliceHookForTest({});
     expect("seen away: the delete found the storage missing", seen);
+    expect("seen away: between the read again's slices, the rows are listed", slices.load() >= 1 && listedHeld.load());
+    expect("seen away: between the read again's slices, not admitted", !admittedHeld.load());
     expect("seen away: before the worker's pass marks it, the recording is not admitted", !beforePass.load());
     expect("seen away: back, while the pass reads it again, still not admitted",
            readHooked.load() && !duringRead.load());

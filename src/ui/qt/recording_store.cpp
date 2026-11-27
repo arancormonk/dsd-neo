@@ -2794,8 +2794,11 @@ RecordingStore::entryMap(const Entry& entry) const {
         {QStringLiteral("mtimeNanos"), static_cast<int>(entry.identity.mtime_ns)},
         {QStringLiteral("failed"), entry.failed},
         // Not while its root is seen away (R74: found missing, or back unread, from the first look through its read
-        // again): a playlist then admits none of it, and a sheet shows it as storage not available.
+        // again), nor while its folder's read again is still applying (R78: the rows readers get are the ones held from
+        // before it, m_committed, until commitFolderLocked() replaces them): a playlist then admits none of it, and a
+        // sheet shows it as storage not available.
         {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)
+                                          && !m_committed.contains(entry.folder)
                                           && !rootSeenAwayLocked(m_folders.value(entry.folder).root)},
     };
 }
