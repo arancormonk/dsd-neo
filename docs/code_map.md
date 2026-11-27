@@ -20265,20 +20265,21 @@ Qt Quick frontend (`src/ui/qt`):
       room (`barHeight > 0`): with no bar the list keeps the 40% share it has without the playlist (`listMinHeight`),
       however tall the header.
     - Documented limits: a Pause in a part's last few hundred ms does not keep that tail (the platform plays out what it
-      had buffered and then reports completion; the completion is held while paused, the part current at its end, and
-      Resume moves on as if it had just completed: the next part, the gap, or the end; Stop, Next and Previous act as
-      from any paused part, Previous reading the end position, and the paused deadline counts on); calls recorded after
-      the press are not added; the limit or a delete can take a queued recording, which is skipped; a gone file found
-      after a host-asked Stop waits in the recheck list until the next play or foreground return; a start redelivered
-      after the process died may flash the notification; while the app is in the background Qt does not update the bar
-      or the rows (the notification does); after the end a media key no longer restarts it; interrupted, the lock screen
-      shows Play, which changes nothing; a lock-screen or system seek applies to the part current when the looper runs
-      it, so one sent in the instant a part changes lands on the new part; a play whose start waited for an old player's
-      silence (R52, a move or a replacement) and failed at its 10 s watchdog forgets that wait as it ends, so a later
-      play does not wait for the stuck player again and may start over it if it ever sounds, while its thread stays
-      counted until it ends (R40); a seek given up at its 2 s bound (M1) still lands when its late completion comes if
-      no newer seek was issued since (m1), but one that arrives after a newer seek has been issued is matched to the
-      newer one, which can land that seek early.
+      had buffered and then reports completion; the completion is held while paused or interrupted, in every mode (a
+      sheet's SINGLE and PARTS plays too), the part current at its end, which cannot be scrubbed (no seek, and a seek
+      landing after the completion moves nothing), and Resume moves on as if it had just completed: the next part, the
+      gap, or the end; Stop, Next and Previous act as from any paused part, Previous reading the end position, and the
+      paused deadline counts on); calls recorded after the press are not added; the limit or a delete can take a queued
+      recording, which is skipped; a gone file found after a host-asked Stop waits in the recheck list until the next
+      play or foreground return; a start redelivered after the process died may flash the notification; while the app is
+      in the background Qt does not update the bar or the rows (the notification does); after the end a media key no
+      longer restarts it; interrupted, the lock screen shows Play, which changes nothing; a lock-screen or system seek
+      applies to the part current when the looper runs it, so one sent in the instant a part changes lands on the new
+      part; a play whose start waited for an old player's silence (R52, a move or a replacement) and failed at its 10 s
+      watchdog forgets that wait as it ends, so a later play does not wait for the stuck player again and may start over
+      it if it ever sounds, while its thread stays counted until it ends (R40); a seek given up at its 2 s bound (M1)
+      still lands when its late completion comes if no newer seek was issued since (m1), but one that arrives after a
+      newer seek has been issued is matched to the newer one, which can land that seek early.
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,

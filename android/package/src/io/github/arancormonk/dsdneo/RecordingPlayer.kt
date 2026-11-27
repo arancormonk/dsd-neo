@@ -1029,6 +1029,9 @@ class RecordingPlayer(
             return
         }
         seekPending = 0L
+        if (completionHeld) {
+            return // a held part stays at its end: a seek landing after its completion moves nothing
+        }
         positionMs = seekTargetMs
         if (playing) {
             playingSinceMs = clock.elapsedMs()

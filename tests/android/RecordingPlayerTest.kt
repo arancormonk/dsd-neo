@@ -1551,17 +1551,76 @@ private fun aCompletionWhilePausedIsHeld() {
     rig.machine.resume()
     check(rig.status.gap && rig.state == PLAYING) { "Resume: the gap before the next call" }
 
-    // Previous from a held completion reads the end position: past 3,000 ms it restarts the call.
-    val back = Rig()
-    back.queue(1, 1)
-    back.prepared()
-    back.machine.next()
-    back.prepared()
-    back.elapse(9_000)
-    back.machine.pause()
-    back.complete()
-    back.machine.previous()
-    check(back.status.call == 1) { "Previous at the end position restarts the call, on call ${back.status.call}" }
+    // Previous from a held completion reads the end position, not the one at the Pause: paused 1 s into a 5 s part
+    // (1 s alone would move back), held at its 5 s end, it restarts the call; held at the end of a 2 s part, it
+    // moves back to the call before.
+    for ((length, expected) in listOf(5_000L to 1, 2_000L to 0)) {
+        val back = Rig(length = length)
+        back.queue(1, 1)
+        back.prepared()
+        back.machine.next()
+        back.prepared()
+        back.elapse(1_000)
+        back.machine.pause()
+        back.complete()
+        check(back.position == length) { "$length ms: held at its end, ${back.position}" }
+        back.machine.previous()
+        check(back.status.call == expected) { "$length ms: Previous on call ${back.status.call}, not $expected" }
+    }
+
+    // A seek landing after the completion is held moves nothing: the part stays at its end.
+    val seeking = Rig()
+    seeking.queue(1, 1)
+    seeking.prepared()
+    seeking.elapse(1_000)
+    seeking.holdSeeks = true
+    seeking.machine.seek(20_000)
+    seeking.machine.pause()
+    seeking.complete()
+    seeking.landSeek()
+    check(seeking.position == seeking.status.durationMs && seeking.state == PAUSED) {
+        "a seek landing after the hold leaves the end position: ${seeking.position}"
+    }
+
+    // An interrupted part (focus lost for a while) that completes is held, and moves on when the focus returns: at a
+    // part joint to the next part, at a call joint to the gap.
+    for (joint in listOf("part", "call")) {
+        val lost = Rig()
+        if (joint == "part") lost.queue(2, 1) else lost.queue(1, 1)
+        lost.prepared()
+        lost.machine.onFocusChange(lost.focus.epoch, FocusChange.LOST_TRANSIENT)
+        lost.complete()
+        check(lost.status.call == 0 && lost.status.partOrdinal == 1 && lost.status.interrupted && !lost.status.gap) {
+            "$joint joint: held on part 1 while interrupted"
+        }
+        check(lost.position == lost.status.durationMs) { "$joint joint: at its end" }
+        lost.machine.onFocusChange(lost.focus.epoch, FocusChange.GAINED)
+        if (joint == "part") {
+            check(lost.status.partOrdinal == 2) { "part joint: the focus back, on to part 2" }
+        } else {
+            check(lost.status.gap && lost.state == PLAYING) { "call joint: the focus back, the gap before call 2" }
+        }
+    }
+
+    // A sheet's play paused at its end is held too: SINGLE finishes on Resume, PARTS opens its next part.
+    val single = Rig()
+    single.play()
+    single.prepared()
+    single.machine.pause()
+    single.complete()
+    check(single.state == PAUSED && single.position == single.status.durationMs) { "single: held paused at its end" }
+    single.machine.resume()
+    check(single.state == STOPPED && single.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "single: Resume finishes it (${single.state})"
+    }
+    val parts = Rig()
+    parts.queue(2, mode = MODE_PARTS)
+    parts.prepared()
+    parts.machine.pause()
+    parts.complete()
+    check(parts.state == PAUSED && parts.status.partOrdinal == 1) { "parts: held on part 1" }
+    parts.machine.resume()
+    check(parts.status.partOrdinal == 2) { "parts: Resume opens part 2" }
 
     // The paused deadline counts on through a held completion.
     val late = Rig()

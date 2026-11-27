@@ -877,7 +877,9 @@ the media controls are current all along. After a playlist ends, a media button 
 - A seek on the lock screen or in the media controls moves the call part playing when it arrives: one made in the
   instant a part ends lands on the next part.
 - A Pause in the last fraction of a second of a part can let that part play to its end: the phone had already handed
-  that audio on. The playlist stays paused on that part, at its end, and Resume goes on to what follows it.
+  that audio on. The playlist stays paused on that part, at its end, and Resume goes on to what follows it; the same
+  holds while another app has the audio (the part goes on once it is back), and for a recording played from its sheet.
+  A part held at its end cannot be scrubbed from the bar or the sheet.
 - If the phone's player takes more than 2 seconds to confirm a seek, the bar and sheet go on showing where the call
   was; the seek still shows once the player confirms it, unless you seek again before then, when the newer seek can
   show as done a moment before it is.
