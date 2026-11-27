@@ -867,6 +867,10 @@ the media controls are current all along. After a playlist ends, a media button 
 
 ### Playlist limits
 
+- **Play all** and **Play from here** go by what DSD-neo knows of its storage. Pressed in the moment after the storage
+  goes away (an SD card removed, the recordings folder renamed), before DSD-neo has noticed, a playlist can replace
+  what plays and then end with "Couldn't play these recordings", as when files vanish just after a press. Storage that
+  comes back is picked up within about a minute.
 - A playlist holds no files, so the storage limit can delete calls that have not played yet: with Record calls on near
   the limit while an old backlog plays, the limit (oldest first) can take the next calls, which are then skipped.
 - A recording found gone after you stopped the playlist from DSD-neo is checked again when you next play or come back

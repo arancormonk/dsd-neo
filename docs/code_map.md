@@ -20435,27 +20435,23 @@ Qt Quick frontend (`src/ui/qt`):
     (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). The rows
     a folder's read again holds from before it (`m_committed`) are unavailable too until `commitFolderLocked()` replaces
     them, so between its slices they are listed but not played or admitted (R78; main read them as available from the
-    moment the folder was marked loaded, before its slices). Play all and Play from here also look at each root they
-    would admit from as it is now (`recordingsForFragmentLists()`, R77): the roots are taken under the store's lock,
-    each is looked at with no lock held (one look per root, `rootPlayableNow()`: an existing directory that can be read,
-    not `rootAvailableNow()`'s root that can be made, which stays a session start's rule), and the store is looked at
-    again; changed meanwhile, the admission runs again from the top once, and changed again it is refused (an empty
-    answer, so `none`). A root found gone is noted seen away, so the press is refused with what plays left playing (a
-    renamed `Call recordings` folder too), and one back while seen away or marked away asks for its read again at once,
-    its recordings ineligible until that read is done (`test_playlist_admission_checks_roots_live`). The probe is one
-    stat per root on the GUI thread; main's delete requests already stat each root under the lock there
-    (`checkRootsLocked()`). A loss the admission sees while the root's listing in full is in flight or done (not merely
-    asked for) is noted again, so another listing runs after it: the storage there at the listing's end may be another
-    card (R79, `test_loss_during_a_listing_asks_for_another`). A recheck a transfer asked for that finds the file the
-    index knows but cannot open it (no read access) marks it unreadable, so the next export takes the others
-    (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through
-    later reads of its folder until an open succeeds, a metadata read alone never bringing it back
-    (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no
-    recording path for save and share once its read is done, and a refreshed History row shows it as away with Play
-    refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session start
-    between its slices marked the folder unread, a share can still take a path from the committed view, and a History
-    call's part buttons play by path (limits below). A journal is compacted only in a folder read and on storage not
-    seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
+    moment the folder was marked loaded, before its slices). Play all and Play from here look at no storage: they admit
+    from what the store knows, as every reader does (`recordingsForFragmentLists()`, one `ReaderLock`, the entry map's
+    `available`). Decided limit: a press in the moment after storage goes away, before the store has noticed (its next
+    pass, or a delete or session start that looks), can replace the current play, which then ends "Couldn't play these
+    recordings", as when files vanish just after a press (D9); storage that returns is picked up by the store's next
+    pass, within about a minute (`test_playlist_missing_folder_keeps_its_rows_away`). A loss a session start sees while
+    the root's listing in full is in flight or done (not merely asked for) is noted again, so another listing runs after
+    it: the storage there at the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`).
+    A recheck a transfer asked for that finds the file the index knows but cannot open it (no read access) marks it
+    unreadable, so the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`);
+    the mark is kept by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read
+    alone never bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read
+    (loaded false) offers no recording path for save and share once its read is done, and a refreshed History row shows
+    it as away with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues
+    after a session start between its slices marked the folder unread, a share can still take a path from the committed
+    view, and a History call's part buttons play by path (limits below). A journal is compacted only in a folder read
+    and on storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
     `test_compaction_waits_for_a_rescan`). A journal tail is applied only while its folder is still read with the
     session-start count its cursor was taken with, so an owner lookup that failed meanwhile ends it
     (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck that finds a link, a folder or a FIFO at a
@@ -20476,9 +20472,9 @@ Qt Quick frontend (`src/ui/qt`):
     refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
     preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
     a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
-    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do.
-    A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
-    file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
+    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do. A recheck
+    keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording file (a link,
+    a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
 
     Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
     documented rather than handled:
@@ -20652,14 +20648,15 @@ Qt Quick frontend (`src/ui/qt`):
     `rootAvailableNow()` calling a root that can be made there) and, renamed back, never read them again until a
     restart. `rootAvailableNow()`'s rule that a root that can be made is there stays for a session start alone
     (`usableRootsLocked()`), which also records into a root held away only because its directory is missing; its next
-    read again finds the folder made anew, and the old rows go then (`test_playlist_admission_checks_roots_live`). A
-    root whose directory is missing at a cold start holds nothing and reads as there and empty, so a fresh install's
-    screens never say its storage is away; it is remembered as missing (`m_rootDirMissing`), looked at each pass and by
-    the look an export, a save or a bulk delete takes at away roots (`awayRootsBackLocked()`; a single recording's
-    delete goes through `checkRootsLocked()`, which does not look at the flag) and by a playlist's admission, which asks
-    for its read at once when it finds the folder there (item 5, `test_playlist_asks_for_a_missing_folder_back`), and
-    listed in full once it is a readable directory (I1, `test_folder_missing_at_a_cold_start`). A pass reads the flag at
-    the root's turn and writes it, under the lock, only from a look no session start overtook (a per-root count of
+    read again finds the folder made anew, and the old rows go then
+    (`test_playlist_missing_folder_keeps_its_rows_away`). A root whose directory is missing at a cold start holds
+    nothing and reads as there and empty, so a fresh install's screens never say its storage is away; it is remembered
+    as missing (`m_rootDirMissing`), looked at each pass and by the look an export, a save or a bulk delete takes at
+    away roots (`awayRootsBackLocked()`; a single recording's delete goes through `checkRootsLocked()`, which does not
+    look at the flag), and listed in full once it is a readable directory (I1, `test_folder_missing_at_a_cold_start`); a
+    directory that goes during the root's listing, before its final check, is remembered as missing the same way
+    (`rebuildRoot()`, `test_directory_gone_during_its_listing_is_remembered_missing`). A pass reads the flag at the
+    root's turn and writes it, under the lock, only from a look no session start overtook (a per-root count of
     directories a start made), and its listing of a root takes any seen-away note made since the pass's top, so neither
     a session start nor an export during the pass costs a second listing (m1, `listRootNow()`,
     `test_session_made_root_during_a_pass_is_not_listed`, `test_export_note_during_a_pass_is_taken_by_its_listing`). A
