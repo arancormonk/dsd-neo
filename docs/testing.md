@@ -193,9 +193,8 @@ Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (
 `RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player, opener, focus, clock and
 scheduler: an invalid request refused leaving the play running untouched (R63; R70: every rule the host checks, an
 empty path, two SINGLE items, PARTS of two calls, a hole in the calls, calls going back, the path-only play), a pause or
-the background while
-preparing, focus denied or lost, completion, seeks before the player is
-ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
+the background while preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's
+late callbacks, and for the History playlist (issue #909) the order across calls and parts,
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
 pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
