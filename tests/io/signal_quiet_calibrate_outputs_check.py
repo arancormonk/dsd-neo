@@ -28,6 +28,13 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   platform has them) closes the run with a digest that matches what its reader got, instead of hanging.
 - --threshold and --estimator are refused outside validation (selection judges both estimators at no threshold, the
   snr phase at none), so no run attests a parameter it did not use; selection's attestation stays as it was.
+- The snr phase renders at the scene's scale and fails on a render that clips, as the trials do: the 90 dB scene fails
+  at --scene-ceiling 1000 and measures its S/N at the default ceiling; --seed-salt gives it fresh seeds (0 the shipped
+  ones).
+- A trial the detector did not measure (an analog width it refuses) fails the run with no completion record; a
+  reading the guard or the occupancy check voided is a measurement and still completes (the selection run above).
+- Two outputs naming one file (the same path, another spelling of it, a hard link) are refused before any is opened.
+- --depression and --adc-noise-db must be whole tenths of a dB, the precision the CSV records them at.
 """
 import argparse
 import csv
@@ -291,6 +298,75 @@ def check_validation_only_options(driver, root):
     return rc
 
 
+def snr_rows(driver, root, extra, modes="modes-loud.tsv"):
+    out = root / "snr.csv"
+    if out.exists():
+        out.unlink()
+    done = run(driver, root, out, extra, ["--phase", "snr"], modes)
+    rows = list(csv.DictReader(out.open(newline=""))) if out.exists() else []
+    return done, rows
+
+
+def check_snr_phase(driver, root):
+    """The snr phase: clipping fails it at the raised ceiling; the default ceiling's scale keeps the S/N; the salt."""
+    rc = 0
+    done, _ = snr_rows(driver, root, ["--scene-ceiling", "1000"])
+    if done.returncode == 0 or "condition analog/ana/1536k/grid0:" not in done.stderr or "clip" not in done.stderr:
+        rc |= fail(f"snr, a clipping scene: exit {done.returncode}, {done.stderr!r}")
+    done, rows = snr_rows(driver, root, [])
+    if done.returncode != 0 or len(rows) != 1 or abs(float(rows[0]["measured_snr_db"]) -
+                                                     float(rows[0]["target_snr_db"])) > 1.0:
+        rc |= fail(f"snr, the scene scaled under the ceiling: exit {done.returncode}, {rows}, {done.stderr!r}")
+    measured = {}
+    for salt in (None, "0", "5"):
+        done, rows = snr_rows(driver, root, [] if salt is None else ["--seed-salt", salt], "modes.tsv")
+        measured[salt] = [r["measured_snr_db"] for r in rows] if done.returncode == 0 else None
+    if measured[None] is None or measured["0"] != measured[None] or measured["5"] == measured[None]:
+        rc |= fail(f"snr seed salt: {measured}")
+    return rc
+
+
+def check_unmeasured(driver, root):
+    """An analog width the detector refuses: every such trial unmeasured, the run fails, no completion record."""
+    (root / "modes-wide.tsv").write_text((root / "modes.tsv").read_text().replace(
+        "ana\tnfm_12k5\tana\t8.0\t12500\tanalog\t1", "ana\tnfm_30k\tana\t8.0\t30000\tanalog\t1"))
+    done = run(driver, root, root / "wide.csv", [], None, "modes-wide.tsv")
+    want = f"condition analog/ana/1536k/grid0: trials not measured: {TRIALS} refused, 0 unfinished, 0 failed"
+    if done.returncode == 0 or want not in done.stderr or "complete:" in done.stderr:
+        return fail(f"a refused width: exit {done.returncode}, {done.stderr!r}")
+    return 0
+
+
+def check_aliased_outputs(driver, root):
+    """Two outputs naming one file are refused before any output is opened: the file keeps what it held."""
+    rc = 0
+    keep = root / "keep.bin"
+    keep.write_bytes(b"keep")
+    os.link(keep, root / "keep-link.bin")
+    spelled = f"{root}/./keep.bin"
+    for extra in (["--trial-log", str(keep)], ["--dump", str(keep), "--trial-log", spelled],
+                  ["--dump", str(root / "keep-link.bin"), "--trial-log", str(keep)], ["--bounds", str(keep)]):
+        out = keep if extra[0] in ("--trial-log", "--bounds") else root / "alias.csv"
+        done = run(driver, root, out, extra)
+        if done.returncode == 0 or "name one file" not in done.stderr or keep.read_bytes() != b"keep":
+            rc |= fail(f"aliased outputs {extra}: exit {done.returncode}, {done.stderr!r}, {keep.read_bytes()!r}")
+    return rc
+
+
+def check_response_grid(driver, root):
+    """--depression and --adc-noise-db off the 0.1 dB grid are refused; on it they run."""
+    rc = 0
+    base = ["--response", "nominal", "--rates", "2500000", "--filter", "NO-SUCH"]
+    for extra, ok in ((["--depression", "1.96"], False), (["--depression", "2"], True),
+                      (["--adc-noise-db", "0.05"], False), (["--adc-noise-db", "-10"], True)):
+        args = [driver, "--phase", "select", "--sources", str(root), "--modes-file", str(root / "modes.tsv"), "--out",
+                str(root / "grid.csv"), "--trials", "1", "--jobs", "1"] + base + extra
+        done = subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
+        if (done.returncode == 0) != ok:
+            rc |= fail(f"{extra}: exit {done.returncode}, {done.stderr[-300:]!r}")
+    return rc
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("driver")
@@ -307,6 +383,10 @@ def main():
         rc |= check_clipping(driver, root)
         rc |= check_fifo_output(driver, root)
         rc |= check_validation_only_options(driver, root)
+        rc |= check_snr_phase(driver, root)
+        rc |= check_unmeasured(driver, root)
+        rc |= check_aliased_outputs(driver, root)
+        rc |= check_response_grid(driver, root)
     return rc
 
 

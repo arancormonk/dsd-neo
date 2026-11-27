@@ -42,7 +42,8 @@
  * validate  every condition at one threshold, estimator and guard, fresh seeds: quiet and busy verdicts (an invalid
  *           result is busy)
  * snr       the rendered S/N of every chosen active condition's wanted signal (all its carriers but neighbours),
- *           measured back from the samples after the response, against the target
+ *           measured back from the samples after the response, at the scene's scale (which keeps the S/N), against
+ *           the target; a render whose wanted signal and floor reach the clip level fails the run
  * cost      CPU per quiet request on noise (shipped parameters), and per request of the floor guard's reference alone
  *           (the same bin selection and quartile over the geometry's policy, nine times)
  *
@@ -67,6 +68,7 @@
  *   mirrored   nominal with its sides swapped
  * --depression DB lowers the response by DB over 3 channel widths centred on the channel (taper 0.25 widths).
  * --adc-noise-db DB adds flat ADC noise after the response, DB over the tuner noise's peak density (a mixture).
+ * Both take whole tenths of a dB, the precision the CSVs record them at.
  * A response's conditions keep their names (and seeds); the CSVs end with geometry, response, depression_db and
  * adc_noise_db columns.
  * --modes-file FILE takes the modes, their source rows, reception thresholds, widths and classes from the reception
@@ -89,7 +91,8 @@
  * raised the raised-sideband scenes, 80 to 99% of the span raised 1.5 to 10 dB with only the channel clear
  * (informational: a documented limit, Builder::raised()). Every group comes after the shipped matrix (the late ones
  * after everything else), so earlier conditions keep their order, names and seeds.
- * --seed-salt N gives every trial a fresh seed (0, the default, keeps the shipped calibration's); --occupancy-veto SHARE
+ * --seed-salt N gives every trial a fresh seed, the snr phase's renders too (0, the default, keeps the shipped
+ * calibration's); --occupancy-veto SHARE
  * judges with the occupancy check (dsd_signal_quiet_params.occupancy_max_share; default 0, off), in selection as in
  * validation, as --guard does: a trial it voids is invalid, and selection's statistics leave it out (noise alone
  * counts it busy). --trial-log reports the share whether or not the check is on.
@@ -102,7 +105,10 @@
  * Every trial is rendered under the clip level the detector reads (issue #834 B8): a trial with a sample component at
  * or over it fails the run, whatever --trial-log says, the CSV, dump and trial log written but no completion record
  * printed. --scene-ceiling BOUND (default 0.9) moves the bound a scene is scaled under; only a check of that refusal
- * raises it, and the run and completion records then name it.
+ * raises it, and the run and completion records then name it. So does a trial the detector did not measure (refused,
+ * failed or unfinished: an analog width it does not admit, for one), which would read busy with nothing behind it; a
+ * reading the guard or the occupancy check voids is a measurement and reads busy as it should. Two outputs (--out,
+ * --dump, --trial-log, --bounds) that name one file are refused before any is opened.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs or the batches. */
@@ -2358,6 +2364,35 @@ clipped_conditions(const Options& o, const Inputs& in, const std::vector<size_t>
     return clipped;
 }
 
+/* The chosen conditions with a trial the detector did not measure (TRIAL_REFUSED, _FAILED or _UNFINISHED), each said
+   with its counts: such a trial reads busy in the CSV without any reading behind it, so any one fails the run. A
+   completed reading that the guard or the occupancy check voided is a measurement, and counts busy as it should. */
+size_t
+unmeasured_conditions(const Options& o, const Inputs& in, const std::vector<size_t>& chosen,
+                      const std::vector<Outcome>& outcomes) {
+    size_t unmeasured = 0;
+    for (size_t i : chosen) {
+        long counts[4] = {0, 0, 0, 0};
+        for (int e = 0; e < 2; ++e) {
+            if (o.phase != "select" && e != o.estimator) {
+                continue;
+            }
+            for (const Verdict& t : outcomes[i].trials[e]) {
+                const uint32_t kind =
+                    t.done ? (uint32_t)TRIAL_DONE
+                           : std::max<uint32_t>(TRIAL_REFUSED, std::min<uint32_t>(t.status & 0xFFu, TRIAL_FAILED));
+                counts[kind]++;
+            }
+        }
+        if (counts[TRIAL_REFUSED] + counts[TRIAL_UNFINISHED] + counts[TRIAL_FAILED] != 0) {
+            DSD_FPRINTF(stderr, "condition %s: trials not measured: %ld refused, %ld unfinished, %ld failed\n",
+                        in.all[i].name.c_str(), counts[TRIAL_REFUSED], counts[TRIAL_UNFINISHED], counts[TRIAL_FAILED]);
+            ++unmeasured;
+        }
+    }
+    return unmeasured;
+}
+
 /* Write every chosen condition's rows, dump and trial log, then close the outputs; false when a write or close fails. */
 bool
 write_outputs(const Options& o, const Inputs& in, const std::vector<size_t>& chosen,
@@ -2385,7 +2420,7 @@ write_outputs(const Options& o, const Inputs& in, const std::vector<size_t>& cho
 
 /* Run the chosen conditions and write the CSV, --dump and --trial-log. Every output opens before the run, so a path it
    cannot write stops it at once; 1 when any output fails to open, write or close, or any trial clips
-   (clipped_conditions()), with no completion record then. */
+   (clipped_conditions()) or was not measured (unmeasured_conditions()), with no completion record then. */
 int
 run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
     bool ok = true;
@@ -2414,8 +2449,10 @@ run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen
         return 1;
     }
     const size_t clipped = clipped_conditions(o, in, chosen, outcomes);
-    if (clipped) {
-        DSD_FPRINTF(stderr, "%zu condition(s) clip: the run is no calibration\n", clipped);
+    const size_t unmeasured = unmeasured_conditions(o, in, chosen, outcomes);
+    if (clipped || unmeasured) {
+        DSD_FPRINTF(stderr, "%zu condition(s) clip, %zu with trials not measured: the run is no calibration\n", clipped,
+                    unmeasured);
         return 1;
     }
     /* The completion record: what ran, how much, and the digests of the bytes this run wrote to its three outputs, so
@@ -2477,10 +2514,17 @@ render_wanted(const Condition& c, const Scene& s, const RecordBins* rb, Rng& rng
     return first;
 }
 
+/* One condition's measured S/N, and its renders whose wanted signal and floor together reach the clip level. */
+struct SnrMeasure {
+    double db = 0;
+    long clipped = 0;
+};
+
 /* One condition's wanted S/N measured back from @p o.trials renders: its in-width power (a burst train's as
  * band_power(): its in-width share times its power during the bursts) over the in-width power of the floor rendered
- * alone, both after the response. */
-double
+ * alone, both after the response and both at the scene's scale (Condition.scale, which leaves the S/N as it was), with
+ * the renders whose two together reach the clip level counted. --seed-salt gives fresh seeds, 0 the shipped ones. */
+SnrMeasure
 measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
     c.span = transform_points(c.rate);
     c.record = c.record ? record_points(c) : 0;
@@ -2490,9 +2534,15 @@ measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
     double signal = 0, noise = 0, total = 0;
     dsd_io::FftSetupCache fft;
     const RecordBins* rb = c.record ? &condition_bins(c, s.response, w) : nullptr;
+    const uint64_t phase = 3U + 16U * (uint64_t)o.seed_salt;
+    const float scale = (float)c.scale;
+    const auto scaled = [scale](cf v) { return v * scale; };
+    SnrMeasure out;
     for (long t = 0; t < o.trials; ++t) {
-        Rng rng(trial_seed(c, 3, t));
+        Rng rng(trial_seed(c, phase, t));
         const int64_t start = render_wanted(c, s, rb, rng, w);
+        std::transform(w.trial.begin(), w.trial.end(), w.trial.begin(), scaled);
+        const std::vector<cf> wanted = w.trial;
         const double in = in_width_power(fft, w.trial, c.rate, centre, c.snr_width, &total);
         double on = 0;
         long count = 0;
@@ -2514,15 +2564,20 @@ measured_snr_db(Condition c, const Options& o, const Scene& s, Worker& w) {
         } else {
             render_noise(c, rng, w);
         }
+        std::transform(w.trial.begin(), w.trial.end(), w.trial.begin(), scaled);
+        std::vector<cf> both(wanted.size());
+        std::transform(wanted.begin(), wanted.end(), w.trial.begin(), both.begin(), std::plus<cf>());
+        out.clipped += clip_crossings(both.data(), (int)both.size()) != 0;
         noise += in_width_power(fft, w.trial, c.rate, centre, c.snr_width, &total);
     }
     fft.release();
     w.bins_for = nullptr;
-    return 10 * std::log10(signal / noise);
+    out.db = 10 * std::log10(signal / noise);
+    return out;
 }
 
 /* The S/N cross-check: each chosen condition's wanted signal (choose() keeps only active ones), rendered as the
- * trials are. */
+ * trials are. 1 when the CSV fails to land or any render clips (each such condition said). */
 int
 run_snr(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
     FILE* f = dsd_fopen_private(o.out.c_str(), "w");
@@ -2530,7 +2585,7 @@ run_snr(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
         return 1;
     }
     DSD_FPRINTF(f, "condition,target_snr_db,measured_snr_db,trials,geometry,response,depression_db,adc_noise_db\n");
-    std::vector<double> snr(in.all.size());
+    std::vector<SnrMeasure> snr(in.all.size());
     for (uint32_t rate : chosen_rates(in, chosen)) {
         const std::vector<size_t> here = at_rate(rate, in, chosen);
         for (const std::vector<size_t>& batch : rate_batches(rate, o, in, here)) {
@@ -2541,11 +2596,25 @@ run_snr(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
             });
         }
         for (size_t i : here) {
-            DSD_FPRINTF(f, "%s,%.2f,%.3f,%ld,%s\n", in.all[i].name.c_str(), in.all[i].snr_db, snr[i], o.trials,
+            DSD_FPRINTF(f, "%s,%.2f,%.3f,%ld,%s\n", in.all[i].name.c_str(), in.all[i].snr_db, snr[i].db, o.trials,
                         run_columns(o).c_str());
         }
     }
-    return close_output(f, o.out) ? 0 : 1;
+    size_t clipped = 0;
+    for (size_t i : chosen) {
+        if (snr[i].clipped) {
+            DSD_FPRINTF(stderr, "condition %s: %ld render(s) clip\n", in.all[i].name.c_str(), snr[i].clipped);
+            ++clipped;
+        }
+    }
+    if (!close_output(f, o.out)) {
+        return 1;
+    }
+    if (clipped) {
+        DSD_FPRINTF(stderr, "%zu condition(s) clip: the run is no calibration\n", clipped);
+        return 1;
+    }
+    return 0;
 }
 
 /* The capture-wide reference's span for @p c's policy and rate (signal_measure.cpp quiet_reference_span()). */
@@ -2730,6 +2799,13 @@ parse_run_option(const std::string& key, const char* value, Options* o) {
     return false;
 }
 
+/* Whether @p db is a whole number of tenths of a dB: the CSV's response columns record --depression and --adc-noise-db
+   to 0.1 dB (run_columns()), so a value between them would render one condition and record another. */
+bool
+on_tenth_grid(double db) {
+    return std::fabs(db * 10.0 - std::round(db * 10.0)) <= 1e-9;
+}
+
 /* One option of the run's geometry or receiver response into @p o; false when it does not parse. */
 bool
 parse_scene_option(const std::string& key, const char* value, Options* o) {
@@ -2747,11 +2823,12 @@ parse_scene_option(const std::string& key, const char* value, Options* o) {
     }
     if (key == "--depression") {
         return parse_double(value, &o->response.depression_db) && o->response.depression_db > 0
-               && o->response.depression_db <= 20;
+               && o->response.depression_db <= 20 && on_tenth_grid(o->response.depression_db);
     }
     if (key == "--adc-noise-db") {
         o->response.adc = true;
-        return parse_double(value, &o->response.adc_db) && std::fabs(o->response.adc_db) <= 40;
+        return parse_double(value, &o->response.adc_db) && std::fabs(o->response.adc_db) <= 40
+               && on_tenth_grid(o->response.adc_db);
     }
     if (key == "--memory-mb") {
         return parse_count(value, 64, 1L << 22, &o->memory_mb);
@@ -3047,6 +3124,49 @@ write_bounds(const std::string& path, const std::vector<Condition>& all, const O
     return 0;
 }
 
+/* Where @p path writes: an existing file's canonical path, else its folder's and its name (a file the run creates);
+   "" when neither resolves (the open then says why). */
+std::string
+output_location(const std::string& path) {
+    char resolved[4096];
+    if (dsd_path_canonical(path.c_str(), resolved, sizeof(resolved)) == 0) {
+        return resolved;
+    }
+    const size_t cut = path.find_last_of("/\\");
+    const std::string folder = cut == std::string::npos ? "." : cut == 0 ? path.substr(0, 1) : path.substr(0, cut);
+    if (dsd_path_canonical(folder.c_str(), resolved, sizeof(resolved)) != 0) {
+        return std::string();
+    }
+    return std::string(resolved) + "/" + path.substr(cut == std::string::npos ? 0 : cut + 1);
+}
+
+/* False, with the two options named, when two of the run's outputs (--out, --dump, --trial-log, --bounds) are one file:
+   the same path however spelled, or two names of one existing file (a hard link). Their writers would overwrite each
+   other and the completion record's digests would describe neither; checked before any output is opened. */
+bool
+outputs_distinct(const Options& o) {
+    const std::pair<const char*, const std::string*> outputs[] = {
+        {"--out", &o.out}, {"--dump", &o.dump}, {"--trial-log", &o.trial_log}, {"--bounds", &o.bounds}};
+    const size_t count = sizeof(outputs) / sizeof(outputs[0]);
+    for (size_t a = 0; a < count; ++a) {
+        for (size_t b = a + 1; b < count; ++b) {
+            const std::string &pa = *outputs[a].second, &pb = *outputs[b].second;
+            if (pa.empty() || pb.empty()) {
+                continue;
+            }
+            const std::string la = output_location(pa), lb = output_location(pb);
+            int same = 0;
+            if (pa == pb || (!la.empty() && la == lb)
+                || (dsd_path_same_file(pa.c_str(), pb.c_str(), &same) == 0 && same)) {
+                DSD_FPRINTF(stderr, "%s and %s name one file (%s): give each output its own\n", outputs[a].first,
+                            outputs[b].first, pa.c_str());
+                return false;
+            }
+        }
+    }
+    return true;
+}
+
 constexpr const char* kUsage =
     "--phase select|validate|snr|cost --out FILE [--sources DIR] [--trials N] [--jobs N] "
     "[--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE] "
@@ -3069,6 +3189,9 @@ main(int argc, char** argv) {
     Options o;
     if (!parse_options(argc, argv, &o)) {
         DSD_FPRINTF(stderr, "usage: %s %s", argv[0], kUsage);
+        return 2;
+    }
+    if (!outputs_distinct(o)) {
         return 2;
     }
     if (o.phase == "cost") {
