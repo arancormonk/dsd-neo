@@ -564,6 +564,18 @@ object RecordingPlayback {
     }
 
     /**
+     * The Handler of a player's owner [thread], just started. One that cannot be made (an Error, memory tight after the
+     * thread started) quits the thread before the failure goes on to the factory's guard, so no owner thread is left
+     * looping on an empty queue with nothing to quit it.
+     */
+    private fun handlerOf(thread: HandlerThread): Handler = try {
+        Handler(thread.looper)
+    } catch (failure: Throwable) {
+        thread.quit()
+        throw failure
+    }
+
+    /**
      * One recording's MediaPlayer on a thread of its own, its owner (#909). "MediaPlayer is not thread-safe. Creation
      * of and all access to player instances should be on the same thread. If registering callbacks, the thread must
      * have a Looper." So the owner does everything for this player: it runs the setup (the file opened and checked,
@@ -576,7 +588,7 @@ object RecordingPlayback {
      */
     private class MediaItem(private val token: Long) : RecordingPlayer.Player {
         private val thread = HandlerThread("dsd-neo-playback-player").apply { start() }
-        private val owner = Handler(thread.looper)
+        private val owner = handlerOf(thread)
 
         /** The owner's only. */
         private var media: MediaPlayer? = null

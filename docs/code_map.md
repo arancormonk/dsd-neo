@@ -19940,8 +19940,10 @@ Qt Quick frontend (`src/ui/qt`):
       and `prepareAsync()`, closes what it opened and posts its result (done, or failed with the reason) to the looper
       with the part's token. The work never throws (anything thrown, an Error included, is a failed setup, `player`, as
       is a `MediaPlayer` that cannot be made, a thread that cannot start and a hand-off the owner refuses because it
-      has quit), so a result is posted on every path. The player's callbacks arrive on the owner's Looper and are
-      forwarded to the looper with the token; the duration is read on the owner in `onPrepared`, before the forward.
+      has quit), so a result is posted on every path; a thread whose `Handler` cannot be made is quit before the
+      failure goes on (`handlerOf()`), so no owner thread is left running. The player's callbacks arrive on the owner's
+      Looper and are forwarded to the looper with the token; the duration is read on the owner in `onPrepared`, before
+      the forward.
       Start, pause, seek and release are posted to the owner in order; the posted release quits the owner's Looper
       (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit earlier refuses the native events
       still in flight from a pause just before ("sending message to a Handler on a dead thread"); release clears the
