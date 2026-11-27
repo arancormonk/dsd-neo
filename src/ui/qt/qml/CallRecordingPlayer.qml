@@ -75,6 +75,9 @@ Column {
     property string failureNotice: ""
     // The refused resume read out last (its playlist and refusal count).
     property string refusalSaid: ""
+    // A refused resume shown while the line could not be read (under the
+    // Delete confirmation): read once the line can be, if it still stands.
+    property string refusalUnsaid: ""
     // The skips said last (this block's play and how many), so each is said once.
     property int skipSaidGeneration: 0
     property int skipSaidCount: 0
@@ -292,7 +295,9 @@ Column {
             // Heard only once read out: one shown under the Delete
             // confirmation is left for the surface that can say it next (the
             // bar a playlist's refusal waits on).
-            if (say(text, true) && refusal) {
+            var read = say(text, true);
+            refusalUnsaid = refusal && !read ? key : "";
+            if (read && refusal) {
                 refusalSaid = key;
                 Navigation.refusalSaid = heard;
             }
@@ -520,11 +525,34 @@ Column {
         failureKey = "";
         failureNotice = "";
         refusalSaid = "";
+        refusalUnsaid = "";
         skipSaidGeneration = 0;
         skipSaidCount = 0;
         missingAway = "";
         notice = "";
         noticeProblem = false;
+    }
+    // The line can be read again (a dialog of the sheet closed, or its gate
+    // opened): a refusal shown under it and not read is read now, once, if
+    // it still stands, and only then marked heard; one the bar read
+    // meanwhile is shown, not read again (noteFailure()).
+    readonly property bool lineReachable: !!noticeLine && Navigation.allows(noticeLine) && sheetShown
+    onLineReachableChanged: {
+        if (lineReachable && refusalUnsaid.length > 0)
+            sayUnsaidLater.restart();
+    }
+    Timer {
+        id: sayUnsaidLater
+        interval: 0
+        onTriggered: player.sayUnsaidRefusal()
+    }
+    function sayUnsaidRefusal() {
+        var pending = refusalUnsaid;
+        refusalUnsaid = "";
+        if (pending.length === 0 || pending !== failureKey || !lineReachable)
+            return;
+        failureKey = "";
+        noteFailure();
     }
     // A problem is read out once each time it is said, a repeat included, and
     // so is a result that is the only place a fact is given (@p readOut: where
