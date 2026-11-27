@@ -14287,7 +14287,25 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->input_ring_capacity_floats = input_ring.capacity;
     out->centered_iq = dongle.centered_iq;
     out->new_stream_mark = demod.squelch_new_stream;
-    out->signal_receiver = rtl_device_signal_receiver(rtl_device_handle);
+}
+
+/* The receiver a block of the programmed capture from @p device carries into the shared tap, stamped as the demod
+   thread stamps every block (demod_feed_signal_search()), read back from the tap (rtl_signal_capture_get()); the tap
+   is reset around it. -1 when the tap holds no capture after the block. */
+static int
+test_capture_tap_receiver(const struct rtl_device* device) {
+    static struct demod_state block_demod;
+    static float block[512];
+    DSD_MEMSET(&block_demod, 0, sizeof(block_demod));
+    DSD_MEMSET(block, 0, sizeof(block));
+    block_demod.lowpassed = block;
+    block_demod.lp_len = (int)(sizeof(block) / sizeof(block[0]));
+    rtl_signal_measure_reset();
+    demod_feed_signal_search(&block_demod, device);
+    dsd_signal_capture capture{};
+    const int got = rtl_signal_capture_get(&capture);
+    rtl_signal_measure_reset();
+    return got ? (int)capture.receiver : -1;
 }
 
 static void
@@ -14390,6 +14408,7 @@ rtl_stream_test_open_radio_capture(int source_kind, struct rtl_device* dev, dsd_
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     test_capture_program_result(rc, out);
+    out->tap_receiver = rc == 0 ? test_capture_tap_receiver(dev) : -1;
     input_ring_destroy(&input_ring);
     test_capture_program_leave(&saved);
     return 0;

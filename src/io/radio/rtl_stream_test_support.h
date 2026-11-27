@@ -641,8 +641,10 @@ typedef struct {
     /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), which a session's start sets as a
        stream open does (issue #899): a retune to another centre drops it, one on the same centre keeps it. */
     int new_stream_mark;
-    /* The receiver the open device names for its captures (rtl_device_signal_receiver()), as the tap stamps them. */
-    int signal_receiver;
+    /* rtl_stream_test_open_radio_capture() only: the receiver a block of the programmed capture carries into the shared
+       tap, stamped by the demod's own path (demod_feed_signal_search()) and read back (rtl_signal_capture_get()); -1
+       when the programming failed or the tap holds no capture. */
+    int tap_receiver;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the

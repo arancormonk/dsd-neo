@@ -378,7 +378,8 @@ test_open_capture_and_ring(void) {
 }
 
 /* The receiver an opened SoapySDR device names for its captures, through the open (its keys read from the driver), the
- * configure (which reads them again) and the stream's open programming, which stamps the captures. The device is what
+ * configure (which reads them again) and the stream's open programming, after which a block of the capture, stamped
+ * as the demod thread stamps every block, carries it into the shared tap. The device is what
  * SoapySDR selected: the factory of the enumeration record it opened (the record's "driver", which SoapySDR writes), or
  * with no record the SDK's own parse of the arguments (case-sensitive keys, the last duplicate winning). A remote
  * factory, or one dsd-neo does not know, is unknown whatever keys its device forwards; a known local factory is not an
@@ -469,10 +470,10 @@ test_receiver_identity_through_open(void) {
         expect_true(label, rtl_device_configure_soapy(dev, &cfg) == 0);
         expect_true(c.label, rtl_device_signal_receiver(dev) == c.want);
         rtl_stream_test_capture_result got{};
-        got.signal_receiver = -1;
+        got.tap_receiver = -2;
         const int opened = rtl_stream_test_open_radio_capture(RTL_STREAM_TEST_SOURCE_SOAPY, dev, opts, kCenterHz, &got);
-        DSD_SNPRINTF(label, sizeof label, "%s: the stream's captures name it", c.label);
-        expect_true(label, opened == 0 && got.signal_receiver == c.want);
+        DSD_SNPRINTF(label, sizeof label, "%s: a block of the stream's capture carries it into the tap", c.label);
+        expect_true(label, opened == 0 && got.tap_receiver == c.want);
         free(opts);
         rtl_device_test_soapy_gain_device_free(dev);
     }
