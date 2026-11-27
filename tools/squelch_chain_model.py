@@ -297,9 +297,9 @@ def white_noise(rng: np.random.Generator, count: int) -> np.ndarray:
 class FirStream:
     """A streaming FIR with rational rate change, as the chain's stages run: output n = sum_j h[j] x_up[n down +
     advance - j], x_up the input with up - 1 zeros after each sample (upfirdn's convention, the reader's phase walk).
-    The stream starts on silence and keeps its history across pushes. Without a rate change up (up 1), output n is made
-    once input n down + advance is in, so a push of any length returns the outputs it completes; with one (the reader),
-    advance is 0 and a push holds a whole number of `down` samples."""
+    The stream starts on silence and keeps its history across pushes. With up == 1 (no interpolation: the half-bands
+    and the channel FIR), output n is made once input n down + advance is in, so a push of any length returns the
+    outputs it completes; with up > 1 (the reader), advance is 0 and a push holds a whole number of `down` samples."""
 
     def __init__(self, h: np.ndarray, up: int = 1, down: int = 1, advance: int = 0):
         self.h = np.asarray(h, dtype=np.float64)
