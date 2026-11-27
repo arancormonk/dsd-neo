@@ -21981,17 +21981,31 @@ if(DSD_HAS_RADIO)
         dsd-neo_test_io_net_iq_stream
         PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     )
-    target_link_libraries(
-        dsd-neo_test_io_net_iq_stream
-        PRIVATE
-            "-Wl,--start-group"
-            dsd-neo_io_radio_private_test_support
-            dsd-neo_dsp_private_test_support
-            dsd-neo_io_iq
-            "-Wl,--end-group"
-            dsd-neo_core
-            ${LIBS}
-    )
+    # The radio and DSP test archives reach into each other (the post-step tap): GNU-style linkers take them as one
+    # group, Apple's and MSVC's linkers search every archive again on their own.
+    if(NOT APPLE AND NOT MSVC AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_core
+                ${LIBS}
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                ${LIBS}
+        )
+    endif()
     add_test(NAME IO_NET_IQ_STREAM COMMAND dsd-neo_test_io_net_iq_stream)
     set_tests_properties(IO_NET_IQ_STREAM PROPERTIES TIMEOUT 180)
 
