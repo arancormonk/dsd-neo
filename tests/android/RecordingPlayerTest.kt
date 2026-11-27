@@ -1603,6 +1603,23 @@ private fun aCompletionWhilePausedIsHeld() {
     heldLost.machine.onFocusChange(heldLost.focus.epoch, FocusChange.GAINED)
     check(heldLost.status.partOrdinal == 1 && heldLost.state == PAUSED) { "interrupted: paused, nothing moves" }
 
+    // M1: a move from a held part leaves it the same way, so the end reading names the part that played. Held at the
+    // end of call 2, Next finds call 3 gone and ends: the terminal reading is call 2's part at its end.
+    val named = Rig()
+    named.fail(path(2, 1), RecordingPlayer.REASON_GONE)
+    named.queue(1, 1, 1)
+    named.prepared()
+    named.machine.next()
+    named.prepared()
+    named.elapse(1_000)
+    named.machine.pause()
+    named.complete()
+    named.machine.next()
+    named.turn()
+    check(named.state == STOPPED && named.status.call == 1 && named.position == named.length) {
+        "the end names the held part: call ${named.status.call}, ${named.position} (${named.state})"
+    }
+
     // R72: the hold lets its player go, counted until its thread ends; nothing later from that player reaches the play.
     val freed = Rig()
     freed.queue(2, 1)

@@ -1168,7 +1168,8 @@ class RecordingPlayer(
         halt()
         dropOpening()
         askSilence()
-        if (player != null && prepared) {
+        // A held part (its player let go, R72) is left the same way: the end reading names the part that played (M1).
+        if ((player != null && prepared) || completionHeld) {
             leave()
         }
         releasePlayer()
