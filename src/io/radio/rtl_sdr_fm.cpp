@@ -5831,6 +5831,8 @@ demod_feed_signal_search(const demod_state* d, const struct rtl_device* device) 
     const int fs4_shift = capture_fs4_shift_active();
     search_capture.rotation_hz = rtl_device_signal_rotation_hz(device, fs4_shift, search_capture.rate_hz);
     search_capture.clip_level = rtl_device_signal_clip_level(device, fs4_shift);
+    search_capture.geometry = (uint8_t)rtl_device_signal_geometry(device);
+    search_capture.receiver = (uint8_t)rtl_device_signal_receiver(device);
     search_capture.capture_offset_hz =
         (int64_t)search_capture.capture_hz - controller.last_applied_freq_hz.load(std::memory_order_acquire);
     search_capture.drops = input_ring.producer_drops.load(std::memory_order_acquire);
@@ -14575,6 +14577,25 @@ test_capture_program_result(int rc, rtl_stream_test_capture_result* out) {
     out->new_stream_mark = demod.squelch_new_stream;
 }
 
+/* The receiver a block of the programmed capture from @p device carries into the shared tap, stamped as the demod
+   thread stamps every block (demod_feed_signal_search()), read back from the tap (rtl_signal_capture_get()); the tap
+   is reset around it. -1 when the tap holds no capture after the block. */
+static int
+test_capture_tap_receiver(const struct rtl_device* device) {
+    static struct demod_state block_demod;
+    static float block[512];
+    DSD_MEMSET(&block_demod, 0, sizeof(block_demod));
+    DSD_MEMSET(block, 0, sizeof(block));
+    block_demod.lowpassed = block;
+    block_demod.lp_len = (int)(sizeof(block) / sizeof(block[0]));
+    rtl_signal_measure_reset();
+    demod_feed_signal_search(&block_demod, device);
+    dsd_signal_capture capture{};
+    const int got = rtl_signal_capture_get(&capture);
+    rtl_signal_measure_reset();
+    return got ? (int)capture.receiver : -1;
+}
+
 static void
 test_capture_program_leave(const TestCaptureProgramState* saved) {
     capture_writes_forget();
@@ -14675,6 +14696,7 @@ rtl_stream_test_open_radio_capture(int source_kind, struct rtl_device* dev, dsd_
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     test_capture_program_result(rc, out);
+    out->tap_receiver = rc == 0 ? test_capture_tap_receiver(dev) : -1;
     input_ring_destroy(&input_ring);
     test_capture_program_leave(&saved);
     return 0;
@@ -15604,6 +15626,11 @@ rtl_stream_backend_name(void) {
             return "soapy";
         }
     }
+    /* The device's own backend (RTL_BACKEND_AIRSPY), the one its measurement geometry reads
+       (rtl_device_signal_geometry()). */
+    if (rtl_device_rate_plan_backend(rtl_device_handle) == DSD_RATE_PLAN_BACKEND_AIRSPY) {
+        return "airspy";
+    }
     return "rtl";
 }
 
@@ -16263,6 +16290,10 @@ extern "C" int
 rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
                                              int buffered_backend) {
     struct rtl_device* const outer = rtl_device_handle;
+    if (dev == outer) {
+        /* A running stream's own device: read in place, never writing the handle its threads read. */
+        return retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
+    }
     rtl_device_handle = dev;
     const int bytes = retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
     rtl_device_handle = outer;

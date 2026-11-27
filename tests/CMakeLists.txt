@@ -29844,6 +29844,50 @@ if(DSD_HAS_AIRSPY)
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
 
+    # A live native Airspy stream on the same SDK double, at the desktop default rate (the highest listed) and at
+    # Android's (the lowest listed): what reaches the Signal search and quiet tap, and the retune warning's backend.
+    foreach(_policy IN ITEMS desktop prefer_lowest)
+        if(_policy STREQUAL "desktop")
+            set(_target dsd-neo_test_io_airspy_signal_tap)
+            set(_test IO_AIRSPY_SIGNAL_TAP)
+            set(_lowest 0)
+        else()
+            set(_target dsd-neo_test_io_airspy_signal_tap_prefer_lowest)
+            set(_test IO_AIRSPY_SIGNAL_TAP_PREFER_LOWEST)
+            set(_lowest 1)
+        endif()
+        add_executable(
+            ${_target}
+            io/test_io_airspy_signal_tap.cpp
+            io/airspy_sdk_double.cpp
+            ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            ${_target}
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            ${_target}
+            PRIVATE USE_AIRSPY AIRSPY_SOURCE_PREFER_LOWEST_RATE=${_lowest}
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_core
+                dsd-neo_test_support
+                dsd-neo_warnings
+        )
+        if(DSD_HAS_RTLSDR)
+            target_link_libraries(
+                ${_target}
+                PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+            )
+        endif()
+        add_test(NAME ${_test} COMMAND ${_target})
+        set_tests_properties(${_test} PROPERTIES TIMEOUT 60)
+    endforeach()
+
     # Issue #806: live decode at the rates an Airspy forces. The real engine runs a live Airspy session on the SDK
     # double (its stream workers and the native adapter, as IO_RTL_STREAM_START_FAILURE), fed committed fixtures
     # upsampled to the device rate, paced by the stream's own acknowledgements; then it replays the session's capture
@@ -30304,6 +30348,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
+        io/signal_quiet_scene.cpp
     )
     target_include_directories(
         dsd-neo_test_signal_quiet_calibrate
@@ -30333,6 +30378,40 @@ if(DSD_HAS_RADIO)
         set_tests_properties(
             IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
             PROPERTIES TIMEOUT 120
+        )
+    endif()
+    # The calibration's receiver responses and capture coordinates, against fixtures of their own.
+    add_executable(
+        dsd-neo_test_io_signal_quiet_scene
+        io/test_io_signal_quiet_scene.cpp
+        io/signal_quiet_scene.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SIGNAL_QUIET_SCENE
+        COMMAND dsd-neo_test_io_signal_quiet_scene
+    )
+    # The calibration driver's outputs: every record lands with the detector's decision, and an output it cannot
+    # open or write fails the run (io/signal_quiet_calibrate_outputs_check.py).
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_outputs_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            PROPERTIES TIMEOUT 300
         )
     endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.

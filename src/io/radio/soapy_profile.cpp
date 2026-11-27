@@ -326,6 +326,43 @@ soapy_select_profile_id(const SoapyProfileSelection& selection) {
     return SoapyProfileId::Generic;
 }
 
+uint8_t
+soapy_identity_evidence(const std::string& factory, const std::string& driver_key, const std::string& hardware_key) {
+    /* The local modules' factory names as each registers them (SoapySDR::Registry): LimeSuite's "lime" and
+       LimeSuiteNG's "limesuiteng" both open LimeSDRs. */
+    static const char* const k_local[] = {"hackrf", "rtlsdr",      "sdrplay", "plutosdr", "bladerf",
+                                          "lime",   "limesuiteng", "uhd",     "SDDC"};
+    uint8_t bits = 0U;
+    if (factory == "airspy") {
+        bits |= SOAPY_IDENTITY_AIRSPY;
+    } else if (factory == "airspyhf") {
+        bits |= SOAPY_IDENTITY_AIRSPY_HF;
+    } else if (factory == "remote") {
+        bits |= SOAPY_IDENTITY_PROXY;
+    } else if (std::any_of(std::begin(k_local), std::end(k_local), [&](const char* k) { return factory == k; })) {
+        bits |= SOAPY_IDENTITY_OTHER;
+    }
+    const std::string driver = lower_copy(driver_key), hardware = lower_copy(hardware_key);
+    if (driver == "airspy" || hardware == "airspy" || hardware == "airspy mini" || hardware == "airspy r2") {
+        bits |= SOAPY_IDENTITY_AIRSPY;
+    }
+    return bits;
+}
+
+SoapyReceiver
+soapy_receiver_from_evidence(uint8_t evidence) {
+    if (evidence & SOAPY_IDENTITY_PROXY) {
+        return SoapyReceiver::Unknown;
+    }
+    if (evidence & SOAPY_IDENTITY_AIRSPY) {
+        return SoapyReceiver::Airspy;
+    }
+    if (evidence & (SOAPY_IDENTITY_AIRSPY_HF | SOAPY_IDENTITY_OTHER)) {
+        return SoapyReceiver::NotAirspy;
+    }
+    return SoapyReceiver::Unknown;
+}
+
 bool
 soapy_stream_format_parse_name(const std::string& value, SoapyStreamFormat* out_format) {
     if (!out_format) {

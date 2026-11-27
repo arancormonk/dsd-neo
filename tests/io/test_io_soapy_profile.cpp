@@ -139,6 +139,56 @@ expect_antenna(const char* label, const dsdneo::SoapyAntennaChoice& got, const c
     return 0;
 }
 
+/* The identity of an opened SoapySDR device: the factory SoapySDR selected (compared exactly, as SoapySDR registers
+   it), and the keys its device reported only as evidence of an Airspy. A remote factory is unknown whatever its device
+   forwards; the airspy factory, or keys naming an Airspy on any other factory, is an Airspy; a known local factory is
+   not one (LimeSDR and UHD included, whose keys name a connection or a device type); anything else is unknown. */
+static int
+test_airspy_identity(void) {
+    using dsdneo::SoapyReceiver;
+    const auto of = [](const char* factory, const char* driver, const char* hardware) {
+        return dsdneo::soapy_receiver_from_evidence(dsdneo::soapy_identity_evidence(factory, driver, hardware));
+    };
+
+    struct Case {
+        const char *label, *factory, *driver, *hardware;
+        SoapyReceiver want;
+    };
+
+    static const Case cases[] = {
+        {"the airspy factory", "airspy", "Airspy", "Airspy", SoapyReceiver::Airspy},
+        {"the airspy factory, its keys failing", "airspy", "", "", SoapyReceiver::Airspy},
+        {"a local factory whose keys name an Airspy", "rtlsdr", "rtlsdr", "AirSpy Mini", SoapyReceiver::Airspy},
+        {"an HF+ factory with an Airspy hardware key", "airspyhf", "AirspyHF", "Airspy", SoapyReceiver::Airspy},
+        {"an Airspy HF+", "airspyhf", "AirspyHF", "AirspyHF+", SoapyReceiver::NotAirspy},
+        {"a HackRF", "hackrf", "HackRF", "HackRF One", SoapyReceiver::NotAirspy},
+        {"a HackRF, its keys failing", "hackrf", "", "", SoapyReceiver::NotAirspy},
+        {"an RTL-SDR", "rtlsdr", "RTLSDR", "R820T", SoapyReceiver::NotAirspy},
+        {"a LimeSDR-USB", "lime", "FX3", "LimeSDR-USB", SoapyReceiver::NotAirspy},
+        /* LimeSuiteNG registers its module as "limesuiteng" (plugins/soapysdr/Registration.cpp), its driver key the
+           same and its hardware key the board's name. */
+        {"a LimeSDR opened by LimeSuiteNG", "limesuiteng", "limesuiteng", "LimeSDR-USB", SoapyReceiver::NotAirspy},
+        {"a LimeSDR Mini opened by LimeSuiteNG", "limesuiteng", "limesuiteng", "LimeSDR Mini",
+         SoapyReceiver::NotAirspy},
+        {"LimeSuiteNG's factory compares exactly", "LimeSuiteNG", "limesuiteng", "LimeSDR-USB", SoapyReceiver::Unknown},
+        {"a UHD B210", "uhd", "b200", "B210", SoapyReceiver::NotAirspy},
+        {"an SDDC", "SDDC", "SDDC", "RX888", SoapyReceiver::NotAirspy},
+        {"SDRplay, Pluto, bladeRF", "sdrplay", "SDRplay", "RSP1A", SoapyReceiver::NotAirspy},
+        {"a proxy forwarding a HackRF", "remote", "HackRF", "HackRF One", SoapyReceiver::Unknown},
+        {"a proxy forwarding an Airspy", "remote", "Airspy", "Airspy", SoapyReceiver::Unknown},
+        {"an unknown factory", "customsdr", "HackRF", "HackRF One", SoapyReceiver::Unknown},
+        {"factories compare exactly", "Hackrf", "HackRF", "HackRF One", SoapyReceiver::Unknown},
+        {"no factory, HackRF keys", "", "HackRF", "HackRF One", SoapyReceiver::Unknown},
+        {"no factory, Airspy keys", "", "Airspy", "Airspy", SoapyReceiver::Airspy},
+        {"nothing at all", "", "", "", SoapyReceiver::Unknown},
+    };
+    int rc = 0;
+    for (const Case& c : cases) {
+        rc |= expect_true(c.label, of(c.factory, c.driver, c.hardware) == c.want);
+    }
+    return rc;
+}
+
 static int
 test_antenna_selection(void) {
     int rc = 0;
@@ -735,6 +785,7 @@ int
 main(void) {
     int rc = 0;
     rc |= test_profile_selection();
+    rc |= test_airspy_identity();
     rc |= test_antenna_selection();
     rc |= test_sddc_rate_grid();
     rc |= test_bandwidth_selection();

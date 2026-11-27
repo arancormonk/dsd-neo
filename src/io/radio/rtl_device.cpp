@@ -125,6 +125,7 @@ enum RtlUsbRecoveryRequest : int {
 #include <SoapySDR/Formats.h>
 #include <SoapySDR/Types.hpp>
 #include <exception>
+#include <map> /* SoapySDR::Kwargs */
 #ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
 #include <utility> /* the stream-argument seam walks the arguments' pairs */
 #endif
@@ -506,6 +507,12 @@ struct rtl_device {
     char soapy_args_string[1024] = {};
     char soapy_driver_key[64] = {};
     char soapy_hardware_key[128] = {};
+    /* The factory SoapySDR selected to open the device (soapy_selected_factory()), fixed at the open. */
+    char soapy_factory[64] = {};
+    /* Every identity bit the opened device's lookups gave (dsdneo::soapy_identity_evidence()), latched for the handle:
+       a later lookup that throws or comes back empty adds nothing and takes nothing away. Atomic: configure ors bits in
+       under soapy_lock while rtl_device_signal_receiver() reads it from any thread. */
+    std::atomic<uint8_t> soapy_identity_evidence{0U};
     char soapy_native_stream_format[16] = {};
     char soapy_requested_profile[32] = {};
     char soapy_requested_antenna[64] = {};
@@ -881,6 +888,34 @@ rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active
         return 0;
     }
     return fs4_shift_active ? (int32_t)(rate_hz / 4U) : 0;
+}
+
+#if defined(USE_SOAPYSDR) || defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+/* Latch what the cached keys and the device arguments' selectors say about the device (rtl_device_signal_receiver()).
+   SDK-independent, so a build without SoapySDR whose test seam calls it has it too. */
+static void
+soapy_note_identity_locked(struct rtl_device* dev) {
+    dev->soapy_identity_evidence.fetch_or(
+        dsdneo::soapy_identity_evidence(dev->soapy_factory, dev->soapy_driver_key, dev->soapy_hardware_key),
+        std::memory_order_acq_rel);
+}
+#endif
+
+int
+rtl_device_signal_receiver(const struct rtl_device* dev) {
+    if (!dev || dev->backend != RTL_BACKEND_SOAPY) {
+        return DSD_SIGNAL_RECEIVER_OTHER;
+    }
+    switch (dsdneo::soapy_receiver_from_evidence(dev->soapy_identity_evidence.load(std::memory_order_acquire))) {
+        case dsdneo::SoapyReceiver::Airspy: return DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY;
+        case dsdneo::SoapyReceiver::NotAirspy: return DSD_SIGNAL_RECEIVER_OTHER;
+        default: return DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN;
+    }
+}
+
+int
+rtl_device_signal_geometry(const struct rtl_device* dev) {
+    return dev && dev->backend == RTL_BACKEND_AIRSPY ? DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED : DSD_SIGNAL_GEOMETRY_DEFAULT;
 }
 
 /* Persisted IQ metadata and the live transform policy may select the two-pass
@@ -3289,6 +3324,30 @@ rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requ
 }
 
 extern "C" int
+rtl_device_test_signal_receiver(int backend, const char* factory, const char* driver_key, const char* hardware_key,
+                                const char* requested_profile) {
+    rtl_device dev{};
+    dev.backend = backend;
+    DSD_SNPRINTF(dev.soapy_factory, sizeof(dev.soapy_factory), "%s", factory ? factory : "");
+    DSD_SNPRINTF(dev.soapy_driver_key, sizeof(dev.soapy_driver_key), "%s", driver_key ? driver_key : "");
+    DSD_SNPRINTF(dev.soapy_hardware_key, sizeof(dev.soapy_hardware_key), "%s", hardware_key ? hardware_key : "");
+    DSD_SNPRINTF(dev.soapy_requested_profile, sizeof(dev.soapy_requested_profile), "%s",
+                 requested_profile ? requested_profile : "");
+    soapy_note_identity_locked(&dev);
+    return rtl_device_signal_receiver(&dev);
+}
+
+extern "C" int
+rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion) {
+    if (!conversion) {
+        return rtl_device_signal_geometry(NULL);
+    }
+    rtl_device dev{};
+    rtl_device_test_conversion_apply(conversion, &dev);
+    return rtl_device_signal_geometry(&dev);
+}
+
+extern "C" int
 rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
                           const unsigned char* bytes, size_t len, float* out) {
     unsigned char copy[64];
@@ -4756,23 +4815,91 @@ soapy_select_profile_locked(struct rtl_device* dev) {
     dev->soapy_profile_id = (int)dsdneo::soapy_select_profile_id(selection);
 }
 
+/* The factory SoapySDR selects for @p args, given what enumerating them found: the first record's "driver" (SoapySDR
+   writes the factory into every record, so an auto-discovered proxy is "remote" with no remote= argument), as
+   Device::make() opens the first record; with no record, the "driver" of the arguments as the SDK parses them
+   (case-sensitive keys, the last duplicate winning), which make() then needs; "" when neither names one. */
+static std::string
+soapy_selected_factory(const SoapySDR::KwargsList& found, const std::string& args) {
+    const SoapySDR::Kwargs parsed = found.empty() ? SoapySDR::KwargsFromString(args) : found.front();
+    const auto it = parsed.find("driver");
+    return it == parsed.end() ? std::string() : it->second;
+}
+
+/* @p record filled with the arguments' other keys, as Device::make() fills the record it opens (the record's value
+   kept for a key both name). */
+static SoapySDR::Kwargs
+soapy_qualified_record(const SoapySDR::Kwargs& record, const std::string& args) {
+    SoapySDR::Kwargs selected = record;
+    for (const auto& kv : SoapySDR::KwargsFromString(args)) {
+        selected.insert(kv);
+    }
+    return selected;
+}
+
+/* Open the device SoapySDR selects for @p args and keep, in @p factory, the module that opened it
+   (soapy_selected_factory()): the first record discovery finds, opened by its record, so its factory is the record's.
+   With no record, make() of the arguments, which needs their "driver" (its factory) or finds a device by its own
+   discovery. A device it finds that way appeared after this open's discovery (plugged in, or answering, in between),
+   from a module this open never saw, and nothing ties it to a record a later discovery finds (a module that lists only
+   free devices leaves out the one make() holds, and another record can match the arguments): it stays open, the
+   handle make() returned, with no factory, unknown, so it gets no silent-channel check. @p enumerate, @p make_args and
+   @p make_record stand for SoapySDR's (a test supplies its own). Throws what make() throws. */
+template <typename Enumerate, typename MakeArgs, typename MakeRecord>
+static auto
+soapy_open_selected(const std::string& args, std::string* factory, Enumerate enumerate, MakeArgs make_args,
+                    MakeRecord make_record) -> decltype(make_args(args)) {
+    const SoapySDR::KwargsList found = enumerate(args);
+    *factory = soapy_selected_factory(found, args);
+    if (found.empty()) {
+        DSD_FPRINTF(stderr, "SoapySDR: enumerate found no devices for args '%s'.\n", args.c_str());
+        return make_args(args);
+    }
+    return make_record(soapy_qualified_record(found.front(), args));
+}
+
+/* Open @p dev's SoapySDR device for @p args (soapy_open_selected() with SoapySDR's own discovery and make()) and keep
+   the factory that opened it; soapy_dev stays NULL when make() throws. */
+static void
+soapy_open_device_locked(struct rtl_device* dev, const std::string& args) {
+    try {
+        std::string factory;
+        dev->soapy_dev = soapy_open_selected(
+            args, &factory, [](const std::string& a) { return SoapySDR::Device::enumerate(a); },
+            [](const std::string& a) { return SoapySDR::Device::make(a); },
+            [](const SoapySDR::Kwargs& record) { return SoapySDR::Device::make(record); });
+        rtl_device_copy_cstr(dev->soapy_factory, sizeof(dev->soapy_factory), factory.c_str());
+    } catch (const std::exception& e) {
+        DSD_FPRINTF(stderr, "SoapySDR: exception in Device::make: %s\n", e.what());
+        dev->soapy_dev = NULL;
+    }
+}
+
+/* Read the opened device's keys. A lookup that throws keeps the key read before (the open's): a refresh at configure
+   never turns a known device into an unknown one, and its identity bits are latched either way. */
+/* Copy the key @p read returns into @p out; a lookup that throws leaves @p out as it was. Returns whether it read. */
+template <typename Read>
+static bool
+soapy_read_key(Read read, char* out, size_t out_size) {
+    try {
+        const std::string key = read();
+        rtl_device_copy_cstr(out, out_size, key.c_str());
+        return true;
+    } catch (const std::exception&) {
+        return false;
+    }
+}
+
 static void
 soapy_cache_identity_locked(struct rtl_device* dev) {
     if (!dev || !dev->soapy_dev) {
         return;
     }
-    try {
-        rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key),
-                             dev->soapy_dev->getDriverKey().c_str());
-    } catch (const std::exception&) {
-        dev->soapy_driver_key[0] = '\0';
-    }
-    try {
-        rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key),
-                             dev->soapy_dev->getHardwareKey().c_str());
-    } catch (const std::exception&) {
-        dev->soapy_hardware_key[0] = '\0';
-    }
+    SoapySDR::Device* const sdr = dev->soapy_dev;
+    (void)soapy_read_key([sdr]() { return sdr->getDriverKey(); }, dev->soapy_driver_key, sizeof(dev->soapy_driver_key));
+    (void)soapy_read_key([sdr]() { return sdr->getHardwareKey(); }, dev->soapy_hardware_key,
+                         sizeof(dev->soapy_hardware_key));
+    soapy_note_identity_locked(dev);
     try {
         double full_scale = 0.0;
         std::string native_format = dev->soapy_dev->getNativeStreamFormat(SOAPY_SDR_RX, 0, full_scale);
@@ -9094,6 +9221,8 @@ rtl_device_init_common_state(struct rtl_device* dev) {
     dev->soapy_args_string[0] = '\0';
     dev->soapy_driver_key[0] = '\0';
     dev->soapy_hardware_key[0] = '\0';
+    dev->soapy_factory[0] = '\0';
+    dev->soapy_identity_evidence.store(0U, std::memory_order_release);
     dev->soapy_native_stream_format[0] = '\0';
     dev->soapy_native_full_scale = 0.0;
     dev->soapy_cs16_full_scale = dsdneo::kSoapyCs16DefaultFullScale;
@@ -10154,16 +10283,7 @@ rtl_device_create_soapy(const char* soapy_args, struct input_ring_state* input_r
         free(dev);
         return NULL;
     }
-    try {
-        SoapySDR::KwargsList found = SoapySDR::Device::enumerate(args_string);
-        if (found.empty()) {
-            DSD_FPRINTF(stderr, "SoapySDR: enumerate found no devices for args '%s'.\n", args_cstr);
-        }
-        dev->soapy_dev = SoapySDR::Device::make(args_string);
-    } catch (const std::exception& e) {
-        DSD_FPRINTF(stderr, "SoapySDR: exception in Device::make: %s\n", e.what());
-        dev->soapy_dev = NULL;
-    }
+    soapy_open_device_locked(dev, args_string);
     (void)dsd_mutex_unlock(&dev->soapy_lock);
 
     if (!dev->soapy_dev) {
@@ -13442,7 +13562,28 @@ class RtlTestSoapyGainDevice : public SoapySDR::Device {
 
     std::string
     getHardwareKey(void) const override {
+        if (fake_->hardware_key_throws > 0) {
+            fake_->hardware_key_throws--;
+            throw std::runtime_error("hardware key lookup failed");
+        }
         return fake_->hardware_key ? fake_->hardware_key : "";
+    }
+
+    std::vector<std::string>
+    getStreamFormats(const int direction, const size_t channel) const override {
+        (void)direction;
+        (void)channel;
+        return fake_->stream_formats ? std::vector<std::string>{SOAPY_SDR_CS16, SOAPY_SDR_CF32}
+                                     : std::vector<std::string>{};
+    }
+
+    std::string
+    getDriverKey(void) const override {
+        if (fake_->driver_key_throws > 0) {
+            fake_->driver_key_throws--;
+            throw std::runtime_error("driver key lookup failed");
+        }
+        return fake_->driver_key ? fake_->driver_key : "";
     }
 
   private:
@@ -13485,11 +13626,24 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
         dev->soapy_format = SOAPY_FMT_CF32;
     }
     dev->soapy_requested_bandwidth_hz = fake->bandwidth_request_hz;
-    if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
+    rtl_device_copy_cstr(dev->soapy_args_string, sizeof(dev->soapy_args_string), fake->args ? fake->args : "");
+    /* The factory the open would keep: the selected record's (fake->factory), else the arguments' as the SDK parses
+       them (no record). */
+    rtl_device_copy_cstr(dev->soapy_factory, sizeof(dev->soapy_factory),
+                         fake->factory
+                             ? fake->factory
+                             : soapy_selected_factory(SoapySDR::KwargsList{}, fake->args ? fake->args : "").c_str());
+    if (fake->identity_from_device) {
+        /* As the open does: the keys read from the driver, its getters' failures included. */
+        rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
+                             fake->requested_profile);
+        soapy_cache_identity_locked(dev);
+    } else if (fake->driver_key || fake->hardware_key || fake->requested_profile) {
         rtl_device_copy_cstr(dev->soapy_driver_key, sizeof(dev->soapy_driver_key), fake->driver_key);
         rtl_device_copy_cstr(dev->soapy_hardware_key, sizeof(dev->soapy_hardware_key), fake->hardware_key);
         rtl_device_copy_cstr(dev->soapy_requested_profile, sizeof(dev->soapy_requested_profile),
                              fake->requested_profile);
+        soapy_note_identity_locked(dev);
         soapy_select_profile_locked(dev);
     }
     return dev;
@@ -13497,6 +13651,83 @@ rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int nam
     (void)fake;
     (void)named_override;
     return nullptr;
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_selected_factory(const char* const* records, size_t count, const char* args, char* out,
+                                       size_t out_size) {
+    if (!out || out_size == 0U || (count && !records)) {
+        return -1;
+    }
+#ifdef USE_SOAPYSDR
+    SoapySDR::KwargsList found;
+    for (size_t i = 0; i < count; i++) {
+        found.push_back(SoapySDR::KwargsFromString(records[i] ? records[i] : ""));
+    }
+    rtl_device_copy_cstr(out, out_size, soapy_selected_factory(found, args ? args : "").c_str());
+    return 0;
+#else
+    (void)args;
+    out[0] = '\0';
+    return -1;
+#endif
+}
+
+extern "C" int
+rtl_device_test_soapy_open_selection(const char* args, const char* const* first, size_t first_count,
+                                     const char* const* second, size_t second_count, int make_args_opens,
+                                     int record_make_throws, rtl_device_test_soapy_open_result* out) {
+    if (!out || (first_count && !first) || (second_count && !second)) {
+        return -1;
+    }
+    *out = rtl_device_test_soapy_open_result{};
+#ifdef USE_SOAPYSDR
+    static int device = 0; /* the stand-in device: never dereferenced */
+    const auto records = [](const char* const* list, size_t count) {
+        SoapySDR::KwargsList found;
+        for (size_t i = 0; i < count; i++) {
+            found.push_back(SoapySDR::KwargsFromString(list[i] ? list[i] : ""));
+        }
+        return found;
+    };
+    std::string factory;
+    const int* opened = nullptr;
+    try {
+        opened = soapy_open_selected(
+            args ? args : "", &factory,
+            [&](const std::string&) {
+                out->discoveries++;
+                return out->discoveries == 1 ? records(first, first_count) : records(second, second_count);
+            },
+            [&](const std::string& a) -> int* {
+                if (!make_args_opens) {
+                    throw std::runtime_error("no match");
+                }
+                DSD_SNPRINTF(out->opened, sizeof out->opened, "args:%s", a.c_str());
+                return &device;
+            },
+            [&](const SoapySDR::Kwargs& record) -> int* {
+                if (record_make_throws) {
+                    throw std::runtime_error("open failed");
+                }
+                DSD_SNPRINTF(out->opened, sizeof out->opened, "record:%s", SoapySDR::KwargsToString(record).c_str());
+                return &device;
+            });
+    } catch (const std::exception&) {
+        out->failed = 1;
+        out->opened[0] = '\0';
+    }
+    if (!opened) {
+        out->failed = 1;
+    }
+    rtl_device_copy_cstr(out->factory, sizeof out->factory, factory.c_str());
+    return 0;
+#else
+    (void)args;
+    (void)make_args_opens;
+    (void)record_make_throws;
+    return -1;
 #endif
 }
 

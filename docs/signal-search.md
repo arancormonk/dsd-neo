@@ -1223,15 +1223,20 @@ Longer independent real RF captures remain useful acceptance evidence.
 
 The scan skip-silent check (issue #834) calls a landed conventional channel quiet only when every one of nine
 back-to-back sub-windows (each the smallest whole number of transforms of at least 10 ms) reads a channel power over
-the capture-wide noise reference across the same bins, (S+N)/N, below one fixed threshold in every judged width class,
-and no class's sideband floor stands over the floor guard. It shares Signal search's channel measurement.
+the lower of the capture-wide noise reference and its own sideband floor across the same bins, (S+N)/N, below one
+fixed threshold in every judged width class, no class's sideband floor stands over the floor guard, and the reference
+span is not occupied (below). It shares Signal search's channel measurement.
 `DSD_SIGNAL_QUIET_THRESHOLD_DB`, `DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR` and `DSD_SIGNAL_QUIET_GUARD_DB`
 (`src/io/radio/signal_measure.cpp`) and the domain `dsd_signal_quiet_rate_supported()` /
 `dsd_signal_quiet_analog_supported()` come from the calibration below; changing the measurement means running it
 again. The figures below are from the run that added NFM 10, 12 and 15 kHz and AM 8.333 kHz and measured every NFM
-width with both transmitters, in the RTL tap's geometry; it left the measurement as it was.
+width with both transmitters, in the RTL tap's geometry; it left the measurement as it was. That run judged every
+ratio against the capture-wide reference alone. The shipped rule judges it against the lower of the reference and the
+sideband floor, which can only raise a ratio, so its active figures are lower bounds of what the shipped rule reads; its
+noise-only figures are not, and were measured again under the shipped rule (the end of "Selection and validation").
 
-Only that nine-sub-window reading is calibrated. `--scan-skip-silent-ms` (an expert setting, see
+Only that nine-sub-window reading is calibrated, here and in the native Airspy's calibration below alike.
+`--scan-skip-silent-ms` (an expert setting, see
 [Reading length (experts)](trunk-scan.md#reading-length-experts)) asks the detector for another count of sub-windows
 of the same length, and the same threshold and guard judge it uncalibrated. The driver takes `--windows N` for a short
 check of such a count (`dsd_signal_quiet_request::windows`); a run of it is not a calibration. Since issue #834's
@@ -1302,10 +1307,19 @@ The check runs only where the calibration rendered and validated it, matched exa
   10 MS/s, and the common RTL-SDR rates a SoapySDR device may be given, which picks its own nearest rate: 0.96, 1.2,
   1.28, 1.44, 1.6, 1.8, 1.92, 2.048 and 2.4 Msps. A SoapySDR device that runs any other rate gets no check. A HackRF
   through SoapySDR normally runs 10 MS/s and is checked there, on the 10 MS/s calibration, which used a flat noise floor; an
-  Airspy HF+ runs its own rates below 1 MS/s and gets no check. The
-  Airspy rates apply to an Airspy through SoapySDR: a native Airspy input delivers centred I/Q with no quarter-rate
-  shift, which the measurement's geometry needs, so it gets no check at any rate; neither does an RTL-SDR with offset
-  tuning on, or any capture with the shift turned off.
+  Airspy HF+ runs its own rates below 1 MS/s and gets no check. An Airspy through SoapySDR gets no check at any rate:
+  its passband leaves the reference under or over the channel's noise by an amount nobody has measured. Nor does a
+  SoapySDR device that cannot be ruled out as an Airspy, at any rate: one reached through SoapyRemote (the `remote`
+  module, whether named or found by discovery), which can deliver any device at any rate, or one opened by a module
+  dsd-neo does not know. The device is identified by the module SoapySDR selected to open it (airspy, airspyhf, hackrf,
+  rtlsdr, sdrplay, plutosdr, bladerf, lime and limesuiteng for LimeSuite and LimeSuiteNG, uhd, SDDC); its reported
+  keys count only when they name an Airspy, and the argument text (hostnames, labels, serials) never counts.
+- A native Airspy input (`-i airspy`) delivers centred I/Q with no quarter-rate shift, tuned on the channel. It is
+  checked under its own policy at 2.5, 3, 6 and 10 MS/s (`dsd_signal_quiet_airspy_centred_rate_supported()`), with
+  the reference span narrowed to the flat part of its passband (±0.25 of the rate at 2.5 and 3 MS/s, ±0.375 at 6 and
+  10 MS/s) and the channel judged at 3.2 dB instead of 5 dB. An RTL-SDR with offset tuning on, or a receiver on the
+  default geometry (RTL-SDR, rtl_tcp, SoapySDR) with the shift turned off, gets no check; a native Airspy has no shift
+  to turn off, and `DSD_NEO_DISABLE_FS4_SHIFT=1` leaves its check as it is.
 - Analog widths (`dsd_signal_quiet_analog_supported()`, given the kind as `dsd_opts.analog_demod` carries it): NFM 8,
   10, 11.25, 12, 12.5, 15, 16, 20 and 25 kHz and AM 5, 6, 8, 8.333 (8333 Hz), 10, 15 and 20 kHz, each rendered as
   that kind at every admitted rate. These are the Radio sheet's steps (`src/ui/qt/qml/Util.js`) and, for NFM 10, 12
@@ -1316,7 +1330,8 @@ The check runs only where the calibration rendered and validated it, matched exa
 ### Driver and conditions
 
 `dsd-neo_test_signal_quiet_calibrate` (`tests/io/signal_quiet_calibrate.cpp`, built with the tests) runs the
-stand-alone quiet detector, the one the shared tap runs. CTest never runs a calibration with it:
+stand-alone quiet detector, the one the shared tap runs. CTest never runs a calibration with it, only two short checks
+of the driver itself: `IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS` checks its outputs on rendered tones, and
 `IO_SIGNAL_QUIET_CALIBRATE_CHOOSE` runs one condition at a time on a tiny source set, to check that the driver refuses
 a source too short for a condition it renders (one `--filter` selects for the phase, `--phase snr` included) and no
 other. Its signals are the reception tool's own clean sources (`--export-sources DIR`), interpolated to the capture
@@ -1359,17 +1374,48 @@ Each sub-window takes a capture-wide noise reference from the same transforms: t
 powers whose hardware offset (the bin's frequency less the ingest rotation, folded into ±half the rate) clears the
 hardware DC guard, stays inside 0.45 of the rate and lies outside the channel's widest class, scaled to the mean that
 quartile implies for Gaussian noise averaged over the sub-window's transforms (a chi-square of twice as many degrees
-of freedom, by the Wilson-Hilferty approximation). A low quartile of the whole span stays on the noise while
-transmitters fill up to three quarters of it, and the scaling makes noise alone read about 0 dB at every rate and
-width. The ratio is the channel's power over that reference across the channel's bins.
+of freedom, by the Wilson-Hilferty approximation). The scaling makes noise alone read about 0 dB at every rate and
+width. The ratio is the channel's power across the channel's bins over the lower of that reference and the channel's
+sideband floor (Signal search's trimmed mean of the eight sideband blocks 1.5 to 3 widths out), on every receiver.
+The lower one can only raise the ratio, so it never adds a quiet verdict.
+
+That scaling holds only while the span's bins are noise. When transmitters or a raised floor fill a share of the span,
+the lower quartile lands higher up the noise that is left, and the reference reads high: about 0.1 dB at a tenth of
+the span, 0.4 to 0.6 dB at a third and 0.8 to 1.1 dB at a half. Where the channel's sidebands stand on its own noise,
+the sideband floor is then the lower and the ratio is judged against it, so the channel reads what it reads on clean
+noise: with 70% of the span raised only 1.5 dB at 1.6 Msps, judging against the reference alone let a weak M17 signal
+read 4.88 dB, under the threshold, while the lower of the two kept every reading at 5.85 dB or more over 200 trials
+(over 3,000 fresh trials of every occupied capture the lowest reading the check kept was 5.54 dB; the end of "Selection
+and validation"). When the raise covers the sidebands too, both noises read high; each sub-window therefore also counts
+the share of the span's bins over the 98th percentile the reference implies for noise, and when that share is more than
+5% over the 2% noise alone puts there, the request is invalid and that visit gets no skip
+(`DSD_SIGNAL_QUIET_OCCUPANCY_SHARE`). A reference the check keeps can still read high: about 0.3 dB in simulation when
+2.6 to 3 dB is raised over part of the span, but a broad, low raise moves few bins over the percentile, and with 70%
+of the span raised 1.5 dB (six transforms a sub-window, 2,000 bins) the check kept every reading and the reference
+read 0.95 dB high on average. Noise alone typically stays under 1.5% over the 2% in simulation, but not always: the
+RTL-SDR validation below voided 8 of its 3,408,000 noise-only trials, so a silent channel now and then keeps its
+normal timing. A floor with a lower part inside the span trips it too: a speed cost, never a missed signal.
+
+The check counts bins over a level it takes from the span itself, so it needs part of the span left on the noise.
+When a raise fills much of the span and reaches the channel's sidebands, while the channel itself stays clear, the
+lower quartile and the sideband floor both stand on the raised floor, few bins stand over the level they imply, and
+the check does not see it: the channel reads lower by about the raise, on every receiver. Three quarters of the span
+is roughly where that sets in, not a boundary below which the check protects: on a native Airspy with a 2 dB dip at
+the channel, 70% of the span raised 1.5 dB already let 2 of 100 readings of an M17 signal at 5.0 dB S/N read quiet
+at 3.2 dB. In rendered captures with 95% of the span raised, an M17 signal at 6.0 dB S/N read 3.96 dB on the RTL
+capture geometry with a 3 dB raise (100 of 100 readings quiet at 5.0 dB) and 2.03 dB on the native Airspy with the
+dip (99 of 100 quiet at 3.2 dB); raised 10 dB it read under 0 dB on both. A raise of 1.5 dB is enough: the same
+signal at 5.0 dB S/N, 1 dB under its reception threshold, read quiet in 6 of 20 readings on the RTL geometry at
+1.536 Msps and 13 of 20 on the native Airspy with the dip (95% raised on both sides). Such a channel can be skipped
+while it carries a weak signal. See Limits.
 
 The first calibration judged the ratio against the local floor instead, Signal search's trimmed mean of the eight
 sideband blocks 1.5 to 3 widths out. Neighbours on both sides 25 kHz away at +10 to +25 dB lifted that floor by 3 to
 8.7 dB, the wanted signal's ratio fell by as much, and a signal dsd-neo still receives read quiet: 4,771 of 3,564,000
-such trials at the 4.1 dB threshold it used then. Judged against the reference, the ratio does not move when
-neighbours raise the floor beside the channel.
+such trials at the 4.1 dB threshold it used then. Judged against the lower of the reference and that floor, the ratio
+does not move when neighbours raise the floor beside the channel: the reference is then the lower.
 
-The sideband floor (the trimmed mean) now serves only as a guard. When a class's floor stands more than
+The sideband floor (the trimmed mean) also serves as a guard. When a class's floor stands more than
 `DSD_SIGNAL_QUIET_GUARD_DB` (8.7 dB) over the reference, the reference does not stand for the noise round the channel
 (a front end whose floor is far from flat, a strong broad interferer, strong transmitters crowding the sidebands), so
 the request is invalid and the channel is never skipped. The guard was set under the first calibration, 0.5 dB under
@@ -1441,6 +1487,17 @@ calibration's validation (the same names, so the same seeds), the voided, quiet 
 ratios agree within 0.01 dB, except in the DMR rows (up to 0.5 dB): the DMR test signal generator changed after that
 run, so the DMR figures here are this run's.
 
+Issue #834's follow-up measured the RTL-SDR path again under the shipped rule and the occupancy check, at all 16 rates
+and with fresh validation seeds, before the detector's FFT library changed (which moves no verdict, and no reading by
+more than 0.002 dB). The noise-only conditions (1,136, 2,000 selection trials each) read an N95 of 2.42 dB (noise,
+AM 5 kHz, 1.6 Msps), so the interval is (2.42, 5.08] dB and still holds 5.0 dB. In validation (3,000 trials) no
+noise-only trial the check kept read busy, the highest reading 4.30 dB; the check voided 8 of the 3,408,000 trials,
+which count busy, at most 2 of 3,000 in one condition. The occupied captures (3,840 active conditions) lost 73% of their
+validation readings to the check, and 2,555 of them kept none; no kept reading was quiet, the lowest 5.63 dB in
+selection (M17, 10% occupied +1.5 dB, one side, 1.6 Msps) and 5.54 dB in validation (M17, 70% occupied +1.5 dB, both
+sides, 1.6 Msps). The `-8` masks and the cross group on this path are in the mask table under [Native Airspy
+calibration](#native-airspy-calibration).
+
 ### Neighbour sweep
 
 A C4FM transmitter 12.5 or 25 kHz away, above, below or on both sides, at +5 to +30 dB over the wanted signal in
@@ -1460,10 +1517,228 @@ is 5.74 to 5.87 dB, as with no neighbour. With neighbours 12.5 kHz away on both 
 and 6 kHz are voided at every level (dPMR at 96% or more), and NFM 8 kHz and AM 8 and 8.333 kHz at the higher
 levels: their sideband blocks hold the neighbours.
 
+### Native Airspy calibration
+
+The native Airspy's centred policy has its own calibration, run with the same driver on the Airspy's centred capture
+(`--geometry centred`) at 2.5, 3, 6 and 10 MS/s. Its signals pass through modelled receiver responses, fixed in
+hardware coordinates: the nominal Airspy passband, a steeper one, the nominal mirrored, a flat one, the nominal with a
+2 dB dip over three channel widths at the channel, and the nominal with flat ADC noise 10 dB under, level with and
+10 dB over the tuner noise's peak density. These are computed shapes, not measured devices, and every capture is
+rendered, not received. The release takes a rate only when every response passes there, since the check cannot tell
+one receiver's response from another's. Each cell also carries the `-8` masks (a digital class beside each analog
+width, and noise alone under each pair), busy neighbours at every native rate, occupied captures for the occupancy
+check, and raised-band captures reported for information only. Like the RTL-SDR's, it covers only the calibrated
+nine-sub-window reading: a shorter `--scan-skip-silent-ms` reading on a native Airspy is judged at the same 3.2 dB,
+uncalibrated, and logs the same warning.
+
+The threshold is 3.2 dB, with the 0.5 dB margin over it held at selection everywhere but in the 2 dB dip's occupied
+captures, one unit a rate, where a kept reading from 3.2 up to 3.7 dB is reported rather than failed and that pairing
+rests on its cell's fresh validation at 3.2 dB; a kept reading under 3.2 dB there fails the rate.
+
+The calibration ran in two parts on one build host. The first rendered, in each cell (one response at one rate), the
+6,298 conditions of the RTL-SDR calibration's kinds: 6,101 active, 71 noise-only judged against the 5% allowed and 126
+noise-only reported (on a sloped floor or a broad interferer). The second added 1,694: the `-8` masks (420 active, 32
+noise-only judged), the occupied captures (240 active, 540 noise-only reported) and the cross group (462 active, below),
+and, reported apart, 256 raised scenes. So each cell validates 7,992 conditions: 7,223 active, 103 noise-only judged and
+666 reported. Selection ran 2,000 trials per condition in the nominal cells and 300 in the others, validation 3,000 and
+600 with fresh seeds. The first part's selection ran without the guard and the occupancy check: the 8.7 dB guard is
+applied to its readings, and since the check only removes readings, its lowest readings stand as lower bounds of what
+the check keeps. The second part selected its added conditions and every noise-only condition again with both on, and
+every condition of the ADC +10 dB cells, whose strongest scenes are now scaled to stay clear of the clip level. Two runs
+first repeated the first part's M17 and NFM 12 kHz (25 kHz channel's tone) rows of the nominal 2.5 MS/s cell with its
+settings: all 206 and 202 records came out identical, CSV line and reading for reading, so the first part's selection
+carries into the second. The figures were measured before the detector's FFT library changed; the rebuilt detector moves
+no verdict, and no reading by more than 0.002 dB.
+
+With the guard at 8.7 dB, `A` is the lowest kept active reading over both parts' selection, and `N95` the highest
+per-condition 95th percentile of the second part's noise-only selection, a voided trial counting as busy. A threshold
+`T` in `(N95, A − 0.5 dB]` misses no active selection trial with 0.5 dB to spare and leaves at most 5% of noise-only
+channels busy.
+
+| Response | Rate | Selection trials | A | at | N95 | at | Interval |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Nominal | 2.5 MS/s | 2,000 | 5.64 dB | NFM 20 kHz, 25 kHz channel's tone, +15 dB, 25 kHz both sides | 2.21 dB | noise, AM 5 kHz | (2.21, 5.14] dB |
+| Nominal | 3 MS/s | 2,000 | 5.83 dB | M17 with `-8` NFM 15 kHz | 2.41 dB | noise, 6.25 kHz and AM 5 kHz | (2.41, 5.33] dB |
+| Nominal | 6 MS/s | 2,000 | 5.85 dB | M17, +12.5 dB, 25 kHz both sides | 2.37 dB | noise, 6.25 kHz and AM 5 kHz | (2.37, 5.35] dB |
+| Nominal | 10 MS/s | 2,000 | 5.71 dB | NFM 20 kHz, 25 kHz channel's tone, +12.5 dB, 25 kHz below | 2.22 dB | noise, 6.25 kHz and AM 5 kHz | (2.22, 5.21] dB |
+| Steeper | 2.5 MS/s | 300 | 5.78 dB | NFM 20 kHz, 25 kHz channel's tone, +7.5 dB, 25 kHz both sides | 2.19 dB | noise, 6.25 kHz and AM 5 kHz | (2.19, 5.28] dB |
+| Steeper | 3 MS/s | 300 | 5.93 dB | M17, +5 dB, 25 kHz both sides | 2.47 dB | noise, 6.25 kHz and AM 5 kHz | (2.47, 5.43] dB |
+| Steeper | 6 MS/s | 300 | 5.94 dB | M17, +15 dB, 12.5 kHz below | 2.50 dB | noise, AM 5 kHz | (2.50, 5.44] dB |
+| Steeper | 10 MS/s | 300 | 5.78 dB | NFM 20 kHz, 25 kHz channel's tone, +30 dB, 25 kHz below | 2.28 dB | noise, 6.25 kHz and AM 5 kHz | (2.28, 5.28] dB |
+| Mirrored | 2.5 MS/s | 300 | 5.76 dB | NFM 20 kHz, 25 kHz channel's tone, +7.5 dB, 25 kHz both sides | 2.18 dB | noise, 6.25 kHz and AM 5 kHz | (2.18, 5.26] dB |
+| Mirrored | 3 MS/s | 300 | 5.91 dB | M17, +5 dB, 25 kHz both sides | 2.47 dB | noise, 6.25 kHz and AM 5 kHz | (2.47, 5.41] dB |
+| Mirrored | 6 MS/s | 300 | 5.94 dB | M17, +15 dB, 12.5 kHz below | 2.50 dB | noise, AM 5 kHz | (2.50, 5.44] dB |
+| Mirrored | 10 MS/s | 300 | 5.78 dB | NFM 20 kHz, 25 kHz channel's tone, +30 dB, 25 kHz below | 2.28 dB | noise, 6.25 kHz and AM 5 kHz | (2.28, 5.28] dB |
+| Flat | 2.5 MS/s | 300 | 5.74 dB | NFM 20 kHz, 25 kHz channel's tone, +22.5 dB, 25 kHz below | 2.29 dB | noise, 6.25 kHz and AM 6 kHz | (2.29, 5.24] dB |
+| Flat | 3 MS/s | 300 | 5.86 dB | M17 with `-8` NFM 25 kHz, −1 kHz | 2.34 dB | noise, 12.5 kHz, 6.25 kHz and AM 5 kHz | (2.34, 5.36] dB |
+| Flat | 6 MS/s | 300 | 5.82 dB | M17, +27.5 dB, 25 kHz below | 2.39 dB | noise, 6.25 kHz and AM 5 kHz | (2.39, 5.32] dB |
+| Flat | 10 MS/s | 300 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, +12.5 dB, 25 kHz both sides | 2.39 dB | noise, 6.25 kHz and AM 5 kHz | (2.39, 5.27] dB |
+| 2 dB dip | 2.5 MS/s | 300 | 3.82 dB | NFM 20 kHz, 25 kHz channel's tone, +7.5 dB, 25 kHz both sides | 2.04 dB | noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz | (2.04, 3.32] dB |
+| 2 dB dip | 3 MS/s | 300 | 3.97 dB | M17, +5 dB, 25 kHz both sides | 2.12 dB | noise, 12.5 kHz, 6.25 kHz and NFM 20 kHz | (2.12, 3.47] dB |
+| 2 dB dip | 6 MS/s | 300 | 3.95 dB | M17, +12.5 dB, 25 kHz both sides | 2.09 dB | noise, 12.5 kHz, 6.25 kHz and NFM 20 kHz | (2.09, 3.45] dB |
+| 2 dB dip | 10 MS/s | 300 | 3.79 dB | NFM 20 kHz, 25 kHz channel's tone, +30 dB, 25 kHz below | 2.02 dB | noise, 6.25 kHz and AM 20 kHz | (2.02, 3.29] dB |
+| ADC −10 dB | 2.5 MS/s | 300 | 5.76 dB | NFM 20 kHz, 25 kHz channel's tone, +7.5 dB, 25 kHz both sides | 2.18 dB | noise, 6.25 kHz and AM 5 kHz | (2.18, 5.26] dB |
+| ADC −10 dB | 3 MS/s | 300 | 5.91 dB | M17, +5 dB, 25 kHz both sides | 2.47 dB | noise, 6.25 kHz and AM 5 kHz | (2.47, 5.41] dB |
+| ADC −10 dB | 6 MS/s | 300 | 5.94 dB | M17, +15 dB, 12.5 kHz below | 2.50 dB | noise, AM 5 kHz | (2.50, 5.44] dB |
+| ADC −10 dB | 10 MS/s | 300 | 5.78 dB | NFM 20 kHz, 25 kHz channel's tone, +30 dB, 25 kHz below | 2.28 dB | noise, 6.25 kHz and AM 5 kHz | (2.28, 5.28] dB |
+| ADC 0 dB | 2.5 MS/s | 300 | 5.76 dB | NFM 20 kHz, 25 kHz channel's tone, +7.5 dB, 25 kHz both sides | 2.18 dB | noise, 6.25 kHz and AM 5 kHz | (2.18, 5.26] dB |
+| ADC 0 dB | 3 MS/s | 300 | 5.91 dB | M17, +5 dB, 25 kHz both sides | 2.47 dB | noise, 6.25 kHz and AM 5 kHz | (2.47, 5.41] dB |
+| ADC 0 dB | 6 MS/s | 300 | 5.94 dB | M17, +15 dB, 12.5 kHz below | 2.50 dB | noise, AM 5 kHz | (2.50, 5.44] dB |
+| ADC 0 dB | 10 MS/s | 300 | 5.78 dB | NFM 20 kHz, 25 kHz channel's tone, +30 dB, 25 kHz below | 2.28 dB | noise, 6.25 kHz and AM 5 kHz | (2.28, 5.28] dB |
+| ADC +10 dB | 2.5 MS/s | 300 | 5.52 dB | M17, floor sloping −0.3 dB/kHz | 2.18 dB | noise, 6.25 kHz and AM 5 kHz | (2.18, 5.02] dB |
+| ADC +10 dB | 3 MS/s | 300 | 5.63 dB | M17, floor sloping +0.3 dB/kHz | 2.47 dB | noise, 6.25 kHz and AM 5 kHz | (2.47, 5.13] dB |
+| ADC +10 dB | 6 MS/s | 300 | 5.60 dB | M17, floor sloping +0.3 dB/kHz | 2.50 dB | noise, AM 5 kHz | (2.50, 5.10] dB |
+| ADC +10 dB | 10 MS/s | 300 | 5.56 dB | M17, floor sloping +0.3 dB/kHz | 2.28 dB | noise, 6.25 kHz and AM 5 kHz | (2.28, 5.06] dB |
+
+Every cell's interval holds 3.2 dB. The 2 dB dip's are the narrowest, down to (2.02, 3.29] dB at 10 MS/s; every other
+cell's A is 5.52 dB or more. In the ADC +10 dB cells A comes from the first part's sloped floors, which the occupancy
+check now voids in every reading (below); the second part's selection of those cells reads 5.76 dB or more.
+
+The dip's occupied captures are judged apart (above). Of their 72,000 readings a rate the check kept 16,074 to 20,958,
+and 161 to 168 of the 240 conditions kept none. No kept reading fell from 3.2 to 3.7 dB, so the 0.5 dB margin held there
+too:
+
+| Rate | Lowest kept | at | Readings kept | Conditions with none kept | Kept from 3.2 to 3.7 dB |
+| --- | --- | --- | --- | --- | --- |
+| 2.5 MS/s | 3.89 dB | M17, 20% occupied +1.5 dB, one side | 16,340 of 72,000 | 168 of 240 | 0 |
+| 3 MS/s | 4.12 dB | M17, 70% occupied +1.5 dB, one side | 16,074 of 72,000 | 166 of 240 | 0 |
+| 6 MS/s | 4.07 dB | M17, 50% occupied +1.5 dB, one side | 20,168 of 72,000 | 161 of 240 | 0 |
+| 10 MS/s | 3.89 dB | M17, 70% occupied +1.5 dB, one side | 20,958 of 72,000 | 168 of 240 | 0 |
+
+Validation at 3.2 dB and the 8.7 dB guard, with the occupancy check and fresh seeds: no quiet verdict in any active
+condition of any cell, over 208,022,400 attempted readings (175,152,813 kept). With no miss in n readings of a
+condition, the one-sided 95% bound on its miss rate is about 3/n per attempted reading: 1.0e-3 in the nominal cells and
+5.0e-3 in the others. A bound on the readings kept is weaker: 822 to 1,087 of a cell's 7,223 active conditions kept none
+(every sloped floor and, depending on the cell, broad interferers, occupied captures and neighbour scenes), and some
+kept a single one; a condition with no kept reading is never skipped. Gated noise-only conditions read busy in 287 of
+2,966,400 trials (the 2 dB dip cells' 6.25 kHz noise-only rows re-measured with the dip at its corrected width, three
+6.25 kHz channel widths), at most 3 of 600 in one condition (0.50%), against the 5% allowed; the highest noise-only
+reading was 4.14 dB. Identically named conditions draw the same seeds in every cell, and where a response leaves
+everything a reading takes in flat, the readings agree: the ADC −10, 0 and +10 dB cells repeat the mirrored cell's kept
+count and lowest reading (within 0.00001 dB) in 6,619 to 6,966 of its 7,223 active conditions. The cells are not
+independent samples, and their trials do not add up to a smaller bound.
+
+| Response | Rate | Trials | Lowest kept | at | Noise-only busy, worst condition | Bound per condition |
+| --- | --- | --- | --- | --- | --- | --- |
+| Nominal | 2.5 MS/s | 3,000 | 5.67 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 5 of 3,000 (noise, 12.5 kHz, 6.25 kHz and AM 5 kHz) | 1.0e-3 |
+| Nominal | 3 MS/s | 3,000 | 5.83 dB | M17, +5 dB, 25 kHz both sides | 6 of 3,000 (noise, 12.5 kHz, 6.25 kHz and AM 5 kHz) | 1.0e-3 |
+| Nominal | 6 MS/s | 3,000 | 5.79 dB | M17 with `-8` AM 15 kHz | 6 of 3,000 (noise, 12.5 kHz, 6.25 kHz and AM 5 kHz) | 1.0e-3 |
+| Nominal | 10 MS/s | 3,000 | 5.71 dB | M17, 33% occupied +1.5 dB, both sides | 3 of 3,000 (noise, AM 5 kHz) | 1.0e-3 |
+| Steeper | 2.5 MS/s | 600 | 5.80 dB | NFM 20 kHz, 25 kHz channel's tone, +40 dB, 25 kHz below | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| Steeper | 3 MS/s | 600 | 5.83 dB | M17, 70% occupied +1.5 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| Steeper | 6 MS/s | 600 | 5.83 dB | M17, +27.5 dB, 25 kHz above | 2 of 600 (noise, 12.5 kHz and AM 5 kHz) | 5.0e-3 |
+| Steeper | 10 MS/s | 600 | 5.81 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 2 of 600 (noise, AM 6 kHz) | 5.0e-3 |
+| Mirrored | 2.5 MS/s | 600 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, +40 dB, 25 kHz below | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| Mirrored | 3 MS/s | 600 | 5.83 dB | M17, 70% occupied +1.5 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| Mirrored | 6 MS/s | 600 | 5.83 dB | M17, +27.5 dB, 25 kHz above | 2 of 600 (noise, 12.5 kHz and AM 5 kHz) | 5.0e-3 |
+| Mirrored | 10 MS/s | 600 | 5.81 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 2 of 600 (noise, AM 6 kHz) | 5.0e-3 |
+| Flat | 2.5 MS/s | 600 | 5.76 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz below | 1 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| Flat | 3 MS/s | 600 | 5.82 dB | M17, 70% occupied +1.5 dB, one side | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| Flat | 6 MS/s | 600 | 5.87 dB | M17, 20% occupied +1.5 dB, one side | 3 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| Flat | 10 MS/s | 600 | 5.81 dB | M17, 20% occupied +1.5 dB, one side | 2 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 16 kHz) | 5.0e-3 |
+| 2 dB dip | 2.5 MS/s | 600 | 3.81 dB | NFM 20 kHz, 25 kHz channel's tone, +22.5 dB, 25 kHz both sides | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| 2 dB dip | 3 MS/s | 600 | 3.88 dB | M17, 70% occupied +1.5 dB, both sides | 1 of 600 (noise, 12.5 kHz and 6.25 kHz) | 5.0e-3 |
+| 2 dB dip | 6 MS/s | 600 | 3.87 dB | M17, +27.5 dB, 25 kHz above | 1 of 600 (noise, 6.25 kHz and NFM 20 kHz) | 5.0e-3 |
+| 2 dB dip | 10 MS/s | 600 | 3.82 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and AM 15 kHz) | 5.0e-3 |
+| ADC −10 dB | 2.5 MS/s | 600 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, +40 dB, 25 kHz below | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| ADC −10 dB | 3 MS/s | 600 | 5.83 dB | M17, 70% occupied +1.5 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| ADC −10 dB | 6 MS/s | 600 | 5.83 dB | M17, +27.5 dB, 25 kHz above | 2 of 600 (noise, 12.5 kHz and AM 5 kHz) | 5.0e-3 |
+| ADC −10 dB | 10 MS/s | 600 | 5.81 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 2 of 600 (noise, AM 6 kHz) | 5.0e-3 |
+| ADC 0 dB | 2.5 MS/s | 600 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, +40 dB, 25 kHz below | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| ADC 0 dB | 3 MS/s | 600 | 5.83 dB | M17, 70% occupied +1.5 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| ADC 0 dB | 6 MS/s | 600 | 5.83 dB | M17, +27.5 dB, 25 kHz above | 2 of 600 (noise, 12.5 kHz and AM 5 kHz) | 5.0e-3 |
+| ADC 0 dB | 10 MS/s | 600 | 5.72 dB | NFM 20 kHz, 25 kHz channel's tone, 50% occupied +1.5 dB, one side | 2 of 600 (noise, AM 6 kHz) | 5.0e-3 |
+| ADC +10 dB | 2.5 MS/s | 600 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, 33% occupied +3 dB, one side | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
+| ADC +10 dB | 3 MS/s | 600 | 5.88 dB | M17, 70% occupied +3 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
+| ADC +10 dB | 6 MS/s | 600 | 5.83 dB | M17, +27.5 dB, 25 kHz above | 2 of 600 (noise, 12.5 kHz and AM 5 kHz) | 5.0e-3 |
+| ADC +10 dB | 10 MS/s | 600 | 5.80 dB | NFM 20 kHz, 25 kHz channel's tone, 70% occupied +3 dB, one side | 2 of 600 (noise, AM 6 kHz) | 5.0e-3 |
+
+In validation the occupancy check voided this share of the occupied captures' active readings (of their noise-only
+readings in brackets):
+
+| Response | 2.5 MS/s | 3 MS/s | 6 MS/s | 10 MS/s |
+| --- | --- | --- | --- | --- |
+| Nominal | 75% (77%) | 76% (75%) | 71% (71%) | 71% (70%) |
+| Steeper | 76% (78%) | 76% (76%) | 71% (71%) | 71% (70%) |
+| Mirrored | 75% (77%) | 76% (75%) | 71% (71%) | 71% (70%) |
+| Flat | 75% (77%) | 76% (75%) | 71% (71%) | 71% (70%) |
+| 2 dB dip | 77% (80%) | 78% (78%) | 72% (72%) | 71% (71%) |
+| ADC −10 dB | 72% (72%) | 71% (71%) | 67% (66%) | 70% (69%) |
+| ADC 0 dB | 48% (52%) | 49% (49%) | 47% (47%) | 45% (46%) |
+| ADC +10 dB | 30% (31%) | 28% (29%) | 27% (29%) | 30% (31%) |
+
+It voided every reading of the sloped floors in every cell, signal and noise alike, and of the broad interferer at 2.5
+and 3 MS/s. At 6 and 10 MS/s it voided at most 0.14% of the broad interferer's readings, while the guard voided 140 of
+its 180 conditions entirely (90 at ADC 0 dB, 21 at ADC +10 dB). Of the neighbour scenes it voided 0.2 to 1.1% at 2.5 and
+3 MS/s and none at 6 and 10 MS/s, of the cross group at most 0.06%, of the analog and AM offset-carrier rows at most two
+readings a cell, and none of the plain digital rows, the masks or the noise-only conditions on a flat floor. A void
+withholds a skip and never adds one. With more ADC noise a raise stands out less, so the check voids less of the
+occupied captures (27 to 30% at ADC +10 dB), and none of the readings it keeps there reads quiet.
+
+Under the `-8` masks each digital mode was judged in its class beside every analog width and each analog row beside a
+digital class; the cross group judged each digital mode beside AM 5 kHz and NFM 25 kHz with neighbours 12.5 and 25 kHz
+away at +10, +30 and +50 dB, at the digital offsets and with a DMR mobile's droop (its neighbours at 1.536 Msps on the
+RTL-SDR path). Lowest kept reading per path, the RTL-SDR path at all 16 rates judged at 5.0 dB, a native Airspy at
+3.2 dB:
+
+| Path | Masks, lowest kept: selection | at | validation | Cross group, lowest kept: selection | at | validation |
+| --- | --- | --- | --- | --- | --- | --- |
+| RTL-SDR, 16 rates | 5.77 dB | M17 with `-8` NFM 12.5 kHz, 1.6 Msps | 5.77 dB | 5.81 dB | M17 with `-8` NFM 25 kHz, +1 kHz, 1.6 Msps | 5.79 dB |
+| 2.5 MS/s, 2 dB dip | 4.05 dB | M17 with `-8` NFM 20 kHz | 4.02 dB | 3.92 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz below | 3.95 dB |
+| 2.5 MS/s, other responses | 5.83 dB | M17 with `-8` NFM 25 kHz | 5.94 dB | 5.86 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz both sides | 5.85 dB |
+| 3 MS/s, 2 dB dip | 4.00 dB | M17 with `-8` NFM 15 kHz | 4.02 dB | 4.03 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz both sides | 3.93 dB |
+| 3 MS/s, other responses | 5.83 dB | M17 with `-8` NFM 15 kHz | 5.91 dB | 5.85 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz below | 5.91 dB |
+| 6 MS/s, 2 dB dip | 4.16 dB | M17 with `-8` NFM 12.5 kHz | 4.09 dB | 4.01 dB | M17 with `-8` NFM 25 kHz, +30 dB, 25 kHz below | 3.99 dB |
+| 6 MS/s, other responses | 5.89 dB | M17 with `-8` NFM 16 kHz | 5.79 dB | 5.92 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz below | 5.90 dB |
+| 10 MS/s, 2 dB dip | 4.02 dB | M17 with `-8` NFM 12.5 kHz | 4.04 dB | 3.90 dB | M17 with `-8` NFM 25 kHz, +10 dB, 25 kHz both sides | 3.87 dB |
+| 10 MS/s, other responses | 5.90 dB | M17 with `-8` NFM 20 kHz | 5.81 dB | 5.86 dB | M17 with `-8` NFM 25 kHz, +50 dB, 25 kHz below | 5.82 dB |
+
+None read quiet in validation on either path: 3,000 trials a condition on the RTL-SDR path and in the native nominal
+cells (a bound of about 1.0e-3 per condition), 600 in the other native cells (5.0e-3). Noise alone under a mask read an
+N95 of 2.39 dB on the RTL-SDR path and at most 2.47 dB natively, and no RTL-SDR trial of it read busy. The guard voids
+14.6 to 15.0% of the cross group's native readings and 67 of its 462 conditions entirely (3.4% of its readings on the
+RTL-SDR path), all of them in its scenes with neighbours.
+
+The raised scenes (each occupancy row with 80, 90, 95 or 99% of the span raised by 1.5, 3, 6 or 10 dB, on one side or
+both, the raise reaching the sidebands and leaving only the channel clear; 256 conditions a cell and 4,096 on the
+RTL-SDR path, 300 trials each) are reported only: nothing bounds them (see Limits). Quiet readings out of those kept on
+the RTL-SDR path (16 rates, judged at 5.0 dB), by the share of the reference bins the raise reached (79.4 to 99.1%):
+
+| Raised share reached | +1.5 dB | +3 dB | +6 dB | +10 dB |
+| --- | --- | --- | --- | --- |
+| Under 85% | 584 / 70,676 | 2 / 22,250 | all void | all void |
+| 85–90% | 4,299 / 75,495 | 26,449 / 74,176 | 45,530 / 73,002 | 63,330 / 72,805 |
+| 90–95% | 4,967 / 68,970 | 23,131 / 68,782 | 43,407 / 68,748 | 59,114 / 68,714 |
+| 95% and over | 11,654 / 85,795 | 38,102 / 85,783 | 61,429 / 85,768 | 76,183 / 85,783 |
+
+On a native Airspy (judged at 3.2 dB, the four rates together; where the ADC noise leaves the raise less contrast, that
+contrast in brackets):
+
+| Response | +1.5 dB | +3 dB | +6 dB | +10 dB |
+| --- | --- | --- | --- | --- |
+| Nominal | 0 / 75,616 | 276 / 62,067 | 35,559 / 57,330 | 50,170 / 57,365 |
+| Steeper | 0 / 75,461 | 261 / 61,813 | 35,555 / 57,327 | 50,159 / 57,354 |
+| Mirrored | 0 / 75,616 | 276 / 62,067 | 35,559 / 57,330 | 50,170 / 57,365 |
+| Flat | 0 / 75,650 | 274 / 62,075 | 35,593 / 57,370 | 50,165 / 57,359 |
+| 2 dB dip | 12,969 / 74,877 | 24,446 / 61,555 | 40,575 / 57,198 | 50,037 / 57,229 |
+| ADC −10 dB | 0 / 76,191 (+1.38 dB) | 3 / 65,129 (+2.8 dB) | 34,734 / 57,332 (+5.69 dB) | 50,145 / 57,366 (+9.63 dB) |
+| ADC 0 dB | 0 / 76,797 (+0.81 dB) | 0 / 73,821 (+1.75 dB) | 20,061 / 57,477 (+3.96 dB) | 36,067 / 57,371 (+7.4 dB) |
+| ADC +10 dB | 0 / 76,800 (+0.16 dB) | 0 / 76,800 (+0.38 dB) | 0 / 76,753 (+1.04 dB) | 0 / 66,624 (+2.6 dB) |
+
+Natively a raise of 1.5 dB read quiet only with the dip. Under the nominal, steeper, mirrored, flat and ADC −10 dB
+responses quiet readings start at 3 dB, at ADC 0 dB at 6 dB, and at ADC +10 dB, where the ADC noise leaves a 10 dB raise
+2.6 dB of contrast, none read quiet.
+
 ### Limits
 
 - The conditions are steady signals, with the deterministic power droop inside a DMR burst; propagation fading was
   not simulated, so a signal that fades through a whole reading can read silent.
+- A channel whose capture is raised over much of the reference span (about three quarters or more, though less can
+  do it: 70% on a native Airspy with a dip at the channel) and over its own sidebands, with the channel itself clear
+  (for example, dense weak transmitters on every channel round it but this one), reads lower by about the raise, and
+  the occupancy check does not see it; a raise of 1.5 dB is enough. On the RTL-SDR path, on SoapySDR
+  devices and on a native Airspy alike, a weak signal on that channel can then read quiet and be skipped. The
+  calibration measures this case only for information (its raised scenes); nothing bounds it.
 - A channel whose sideband floor stands more than 8.7 dB over the capture's noise is never skipped, whatever it
   carries: one between transmitters that crowd its sidebands, or on a floor that stands that far over the rest of the
   capture (a strong broad interferer, a sloped floor). That is a speed cost only.
@@ -1473,9 +1748,17 @@ levels: their sideband blocks hold the neighbours.
   by at most 0.3 dB, and the floor at the channel's place stood 0.7 dB over the reference, which reads a channel
   busier, not quieter. No real 2.4 Msps or Airspy noise capture was available, so those rates were validated on
   rendered noise only. A front end whose floor at the channel sits lower than across the rest of the band reads the
-  channel that much quieter; the threshold leaves 0.67 dB between it and the weakest signal validated. One whose floor
+  channel that much quieter; the threshold leaves 0.54 dB between it and the weakest reading validated (5.54 dB, an
+  occupied capture in the follow-up's validation; 0.67 dB to the weakest on clean noise). One whose floor
   varies by more than about 8.7 dB across the span voids requests on its high parts.
 - Neighbour scenes were rendered at 1.536 Msps only (the driver renders its neighbour, slope and broad-interferer
-  scenes at that rate) and with a C4FM neighbour only.
+  scenes at that rate) and with a C4FM neighbour only, on the RTL path; the native Airspy's cells carry neighbours at
+  each of its four rates.
+- A native Airspy's figures rest on modelled responses, not measured devices: a front end whose passband dips at the
+  channel by more than the modelled 2 dB, or whose ADC noise share lies outside the modelled range, is not covered.
+- With the `-8` monitor on, a digital class is judged beside the monitor's analog width. The masks were rendered on a
+  plain noise floor at every width, with busy neighbours only beside AM 5 kHz and NFM 25 kHz, and with no sloped
+  floor, broad interferer or occupied capture under a mask.
+- The calibration covers the nine-window reading only.
 - The DMR bound covers an ongoing burst train; a transmission starting late in the measurement, isolated single
   bursts and short data bursts are not covered.

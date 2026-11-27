@@ -150,8 +150,11 @@ without de-emphasis and without the I/Q DC blocker or I/Q balance.
   (centred I/Q, offset tuning), where the blocker would notch it out. The
   configured setting is kept and applies again to FM; the first time it is
   bypassed, per process, a note is logged (`rtl_demod_note_am_iq_dc_bypass()`).
-  The DC spike of a centred-I/Q device (Airspy, offset tuning) then adds to the
-  carrier: a hardware check is open below.
+  The DC spike of a centred-I/Q device with offset tuning then adds to the
+  carrier: a hardware check is open below. A native Airspy has none there:
+  libairspy removes the ADC's DC from the real samples and its quarter-rate
+  real-to-I/Q translation puts what is left of the IF's DC (the ADC offset, the
+  tuner's LO feed-through) at half the rate, the edge of the I/Q it delivers.
 - I/Q balance (`full_demod_apply_iq_balance()`) never runs under the AM detector
   either (`dsd_demod_iq_balance_active()`): its image estimate is the block's
   second moment over its power, which a carrier at 0 Hz, a fixed phasor, drives
@@ -775,5 +778,6 @@ ctest --preset dev-debug --output-on-failure
   values. The replay A/B above holds the fixtures and the `am_airband_real`
   excerpt flat from 25 to 100 ms, so it cannot choose between them, and
   they need an on-air listen check. So do the 100 ms squelch hold that starts the
-  estimate over, and the DC spike of a centred-I/Q device (Airspy, offset
-  tuning), which the bypassed I/Q DC blocker leaves on the AM carrier.
+  estimate over, and the DC spike of a centred-I/Q device with offset tuning,
+  which the bypassed I/Q DC blocker leaves on the AM carrier (a native Airspy
+  puts its DC at the band edge, not on the carrier).

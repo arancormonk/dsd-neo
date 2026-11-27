@@ -96,6 +96,31 @@ const SoapyProfile& soapy_profile_by_id(SoapyProfileId id);
 bool soapy_profile_parse_name(const std::string& value, SoapyProfileId* out_id);
 SoapyProfileId soapy_select_profile_id(const SoapyProfileSelection& selection);
 
+/* What an opened SoapySDR handle says about the device, as bits. The factory is the module SoapySDR selected to open it,
+   as SoapySDR registers it and compared exactly (the enumeration record's "driver", or with no record the "driver" of
+   the arguments as the SDK parses them): airspy, an Airspy; remote, a proxy (it forwards whatever its server's device
+   reports, so its keys establish nothing); one of the local factories dsd-neo knows (airspyhf, hackrf, rtlsdr,
+   sdrplay, plutosdr, bladerf, lime, limesuiteng, uhd, SDDC), not an Airspy. The driver key and hardware key the
+   device reported count only as evidence of an Airspy (driver key airspy, hardware key airspy, airspy mini or
+   airspy r2, without case), since modules report other things there (LimeSDR its connection, UHD its device type). SOAPY_IDENTITY_AIRSPY_HF is
+   kept for the factory. */
+enum : uint8_t {
+    SOAPY_IDENTITY_AIRSPY = 1,
+    SOAPY_IDENTITY_AIRSPY_HF = 2,
+    SOAPY_IDENTITY_OTHER = 4,
+    SOAPY_IDENTITY_PROXY = 8,
+};
+
+uint8_t soapy_identity_evidence(const std::string& factory, const std::string& driver_key,
+                                const std::string& hardware_key);
+
+/* The device an opened SoapySDR handle is, from every identity bit (or-ed over the open and every configure, so a
+   later failed or empty lookup takes nothing away): unknown for a proxy, whatever it forwards; else an Airspy as soon
+   as anything named one (a local factory whose keys name an Airspy included); else not an Airspy for a known local
+   factory; else unknown. */
+enum class SoapyReceiver : uint8_t { NotAirspy = 0, Airspy = 1, Unknown = 2 };
+SoapyReceiver soapy_receiver_from_evidence(uint8_t evidence);
+
 bool soapy_stream_format_parse_name(const std::string& value, SoapyStreamFormat* out_format);
 const char* soapy_stream_format_name(SoapyStreamFormat format);
 std::string soapy_choose_stream_format(const std::vector<std::string>& supported_formats,

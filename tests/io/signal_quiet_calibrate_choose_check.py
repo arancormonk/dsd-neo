@@ -6,6 +6,10 @@ place its trial. It checks the conditions --filter selects for the phase it runs
 condition uses does not stop the run, and one that a selected condition uses does. The source set here is tiny and
 made on the spot: P25 Phase 1 and NFM rows long enough for every condition, and a DMR MS burst train of 0.5 s, too
 short for a 50-slice reading (--windows 50). Each run renders at most one condition, so the whole check takes seconds.
+
+The snr phase renders a condition's wanted carriers only, so a neighbour condition runs there without the source its
+neighbours take (the p25p1 row): on a second source set without that row it renders, places and batches the wanted
+carriers alone, never the absent neighbour's (an index before the source list, which a sanitizer build reports).
 """
 import array
 import math
@@ -58,6 +62,19 @@ def make_sources(folder):
     return modes
 
 
+def make_sources_without_neighbour(folder):
+    """The NFM row alone (no p25p1 row for a neighbour), and the modes file naming it."""
+    lines = ["row\tmode\twidth_hz\trate_hz\tsamples\tband_power\tburst\tsource\n"]
+    lines.append(write_row(folder, "nfm_12k5", LONG_S, 1000.0, False))
+    with open(os.path.join(folder, "sources.tsv"), "w", encoding="ascii") as handle:
+        handle.writelines(lines)
+    modes = os.path.join(folder, "modes.tsv")
+    with open(modes, "w", encoding="ascii") as handle:
+        handle.write("name\ttag\trow\treception_db\twidth_hz\tclass\tanalog\n")
+        handle.write("nfm_12k5\tnfm_12k5\tnfm_12k5\t9.5\t12500\tanalog\t1\n")
+    return modes
+
+
 def run(driver, folder, modes, phase, condition):
     """The driver's exit code, its stderr and its output's lines (None when it wrote none), for one condition."""
     out = os.path.join(folder, f"{phase}-{condition.replace('/', '_')}.csv")
@@ -99,6 +116,15 @@ def main():
                 rows = [line.split(",")[0] for line in (lines or [])[1:]]
                 only = bool(rows) and set(rows) == {condition}
                 expect(only, f"{phase} {condition}: only that condition is written: {rows}")
+    with tempfile.TemporaryDirectory(prefix="quiet-calibrate-") as folder:
+        modes = make_sources_without_neighbour(folder)
+        condition = "neighbour/nfm_12k5/1536k/12.5k/+50dB/both"
+        code, err, lines = run(driver, folder, modes, "snr", condition)
+        expect(code == 0, f"snr {condition} with no p25p1 row: runs (exit {code}): {err!r}")
+        rows = [line.split(",")[0] for line in (lines or [])[1:]]
+        expect(rows == [condition], f"snr {condition} with no p25p1 row: its row is written: {rows}")
+        code, err, lines = run(driver, folder, modes, "select", condition)
+        expect(code != 0 and "missing source" in err, f"select {condition} with no p25p1 row: refused (exit {code})")
     if failures:
         print(f"{len(failures)} check(s) failed")
         return 1

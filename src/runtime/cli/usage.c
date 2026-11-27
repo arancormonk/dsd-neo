@@ -556,7 +556,9 @@ dsd_cli_usage_section_trunking_and_tools(void) {
     printf("                 Analog rows and targets ignore it and hold on carrier.\n");
     printf("      --no-scan-voice-only  Turn --scan-voice-only off (also over a config file value).\n");
     printf("      --scan-skip-silent  Skip a silent conventional scan channel after a quick RF check; applies to\n");
-    printf("                 -Y and --trunk-scan conventional targets, never a row option.\n");
+    printf("                 -Y and --trunk-scan conventional targets, never a row option. Radio inputs only\n");
+    printf("                 (rtl, rtltcp, soapy, airspy); an Airspy is checked on -i airspy, not through\n");
+    printf("                 SoapySDR. See docs/trunk-scan.md for the receivers, rates and widths it checks.\n");
     printf("      --no-scan-skip-silent  Turn --scan-skip-silent off (also over a config file value).\n");
     printf("      --scan-skip-silent-ms <ms>  Expert: length of the skip-silent reading, rounded up to 10 ms slices\n");
     printf("                 (10..500; default the calibrated nine slices). Fewer than nine slices (10..80 ms)\n");
