@@ -1444,10 +1444,23 @@ class RecordingPlayer(
     private fun applySeek(target: Long) {
         val current = player ?: return
         val clamped = target.coerceIn(0, durationMs.coerceAtLeast(0))
+        // A start still pending is taken back before the seek is posted, so the old request can never sound from the
+        // old position; the wish to play is unchanged, so a new start is asked for behind the seek (R45).
+        val restart = startPending != 0L
+        if (restart) {
+            withdrawStart()
+            current.pause()
+        }
         current.seekTo(clamped)
         positionMs = clamped
         if (playing) {
             playingSinceMs = clock.elapsedMs()
+        }
+        if (restart) {
+            requestStart(current)
+            if (playing) {
+                return // acknowledged at once, and published there
+            }
         }
         publish()
     }

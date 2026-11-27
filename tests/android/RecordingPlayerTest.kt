@@ -1270,6 +1270,33 @@ private fun aPendingStartHasAWatchdog() {
     }
 }
 
+/**
+ * A seek while a start is pending takes that start back before the seek, then asks again behind it (R45): the old
+ * request's acknowledgement is stale, and the new one plays from the seek's target.
+ */
+private fun aSeekTakesAPendingStartBack() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    rig.elapse(2_000)
+    rig.machine.pause()
+    rig.holdStarts = true
+    rig.machine.resume()
+    val player = rig.current
+    val (_, old) = rig.heldStarts.single()
+    rig.machine.seekFor(rig.status.generation, rig.status.playToken, 20_000)
+    check(player.wantedStart != old && player.startRequests.size == 3) {
+        "the old start is taken back, a new one asked for behind the seek (${player.startRequests})"
+    }
+    check(player.seeks == listOf(20_000L)) { "the seek is posted" }
+    rig.machine.onStarted(player.token, old)
+    check(rig.state != PLAYING) { "the old start's acknowledgement is stale" }
+    rig.heldStarts.removeAt(0)
+    check(rig.ackStart() && rig.state == PLAYING) { "the new start's plays" }
+    rig.elapse(1_000)
+    check(rig.position == 21_000L) { "from the seek's target: ${rig.position}" }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -3332,6 +3359,7 @@ fun main() {
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
     aPendingStartHasAWatchdog()
+    aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
     theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()
