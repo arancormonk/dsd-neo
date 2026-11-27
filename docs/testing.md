@@ -309,38 +309,35 @@ reading unchanged), the recheck paths on a serial change, on a foreground return
 polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative
 one, no mtime or one that is no number, nanoseconds outside 0 to 999,999,999, an integer past 32 bits as a number or
 text, a fraction, or text with junk, R80) or a part outside its count refused with the play open left playing while a
-single item needs none and is sent as part 1 of 1 of call 0 (R63), keys holding no
-value read as absent by the check and the request alike (M4), a legacy single play reading part 1 of 1 (M5), token
-commands (a stale token's dropped, and no position shown for any seek: only the player's record moves it), the
-replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right after its
-one check (`decoder_host_test_hooks.h`) stopping nothing, and no status reads while idle or on position-only ticks); and
-`UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and
-the playlist cases in `tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a
-press acting only on the target it began on (the bar's ✕, Previous and Next held across a new playlist, Show in list
-held while the playlist moves on, an ended result's ✕, the sheet's Play across a reread of the same path with another
-size, a part chip held across a reread that put another recording at its place or across storage turning its select into
-a play, and a keyboard activation during a held press, each followed by a fresh press that acts), a sheet's Play all
-parts waiting for its first token, a pending delete ended with its sheet (and with History hidden), History's header
-keeping a 48 px control row with its top row's controls whole at 360×240 and 2x text and the list its 40% share with no
-bar (260×145 at 2x text: 58 px), a row placed by Show in list or Back from the map staying in view when the press
-flushed a search whose filter change queued the list's return to its top, a refused resume the sheet that follows the
-play read out heard by the bar (one a sheet on another call did not read waiting for the bar) and one the bar read out
-shown by a sheet opened after it without being read again, one shown under the sheet's Delete confirmation read on the
-sheet once the confirmation is cancelled (once, the bar then silent; still pending while the app is inactive and read
-once it is active, and still pending if the line is covered again before the sheet's turn, and read once it is reachable
-again) or by the bar once both close, the keyboard decided by the host first (Android's -1 hidden whatever Qt's input
-method says, Qt's fallback only with a keyboard of some height), the bar hidden for a keyboard whose top is at or below
-the screen's bottom (a window resized above it), the row marker paused while a call opens interrupted, a sheet's own
-play kept its own after it refused a gone part, and Play all parts playing on when its row's last listed part is
-deleted, against the fake host's queue model in `qml_test_context.h` (which, as the real host does, publishes no change
-for a reading published again as it stands), with `playbackSupported` set by each case) and
-`UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's reach,
-names and gating). What only
-Android decides (the service's promotion, the media session and notification, the media keys and the session's own
-handling of a headset's taps (`onMediaButtonEvent`), the noisy and screen-on receivers, the lock screen, the 10-minute
-pause with the real clock and the release APK's R8 keeps) is checked on emulators; `ANDROID_R8` checks the keep rules
-against the native upcalls, and
-`tools/check_android_r8.py` the release APK.
+single item needs none and is sent as part 1 of 1 of call 0 (R63), keys holding no value read as absent by the check and
+the request alike (M4), a legacy single play reading part 1 of 1 (M5), token commands (a stale token's dropped, and no
+position shown for any seek: only the player's record moves it), the replacement point, the legacy `playRecording()`
+missing-file reading, a sheet's own play whose file goes right after its one check (`decoder_host_test_hooks.h`)
+stopping nothing, and no status reads while idle or on position-only ticks); and `UI_QT_QML_CALL_LISTS`
+(`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and the playlist cases in
+`tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a press acting only on
+the target it began on (the bar's ✕, Previous and Next held across a new playlist, Show in list held while the playlist
+moves on, an ended result's ✕, the sheet's Play across a reread of the same path with another size, a part chip held
+across a reread that put another recording at its place or across storage turning its select into a play, and a keyboard
+activation during a held press, each followed by a fresh press that acts), a sheet's Play all parts waiting for its
+first token, a pending delete ended with its sheet (and with History hidden), History's header keeping a 48 px control
+row with its top row's controls whole at 360×240 and 2x text and the list its 40% share with no bar (260×145 at 2x text:
+58 px), a row placed by Show in list or Back from the map staying in view when the press flushed a search whose filter
+change queued the list's return to its top, a refused resume the sheet that follows the play read out heard by the bar
+(one a sheet on another call did not read waiting for the bar) and one the bar read out shown by a sheet opened after it
+without being read again, one shown under the sheet's Delete confirmation read on the sheet once the confirmation is
+cancelled (once, the bar then silent; still pending while the app is inactive and read once it is active, and still
+pending if the line is covered again before the sheet's turn, and read once it is reachable again) or by the bar once
+both close, the keyboard decided by the host first (Android's -1 hidden whatever Qt's input method says, Qt's fallback
+only with a keyboard of some height), the bar hidden for a keyboard whose top is at or below the screen's bottom (a
+window resized above it), the row marker paused while a call opens interrupted, a sheet's own play kept its own after it
+refused a gone part, and Play all parts playing on when its row's last listed part is deleted, against the fake host's
+queue model in `qml_test_context.h` (which, as the real host does, publishes no change for a reading published again as
+it stands), with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's
+reach, names and gating). What only Android decides (the service's promotion, the media session and notification, the
+media keys and the session's own handling of a headset's taps (`onMediaButtonEvent`), the noisy and screen-on receivers,
+the lock screen, the 10-minute pause with the real clock and the release APK's R8 keeps) is checked on emulators;
+`ANDROID_R8` checks the keep rules against the native upcalls, and `tools/check_android_r8.py` the release APK.
 `ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
 activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,
 then the GET_CONTENT fallback straight to the one app that takes documents or through a chooser without the media-only
