@@ -210,7 +210,8 @@ clock until its completion, a superseded seek's completion landing nothing, and 
 position; a seek taking a pending start back and asking again,
 the old acknowledgement stale and the new one playing from the target; the next part's start posted only once the
 outgoing player's held silence comes, the watchdog ending a play whose silence never comes, five Next with the silence
-late starting only the last candidate once, a player never started asked for none, and Stop not waiting), each move
+late starting only the last candidate once, a player never started asked for none, a sheet play replacing a sounding
+playlist starting on its silence or failing at 10 s without it, and Stop not waiting), each move
 making only the candidates it tries (N calls or N parts played make N, Previous from the last call one;
 `candidatesMade`), a candidate that prepared and failed
 before it played continuing its move (Previous from C with B failing: A plays; Next from A: C opens with no gap), a part

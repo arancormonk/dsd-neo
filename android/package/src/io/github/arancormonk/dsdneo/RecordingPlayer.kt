@@ -690,9 +690,11 @@ class RecordingPlayer(
     private var startMade = false
 
     /**
-     * The players a move let go while they may have been sounding, by token, whose silence ([onSilenced]) has not
-     * come yet (R52). A start asked for meanwhile waits ([startDeferred]) under its watchdog; the play's end and a
-     * replacement forget them, since nothing new starts.
+     * The players a move or a replacement let go while they may have been sounding, by token, whose silence
+     * ([onSilenced]) has not come yet (R52). A start asked for meanwhile, also the replacing play's first, waits
+     * ([startDeferred]) under its watchdog. Each silence is fenced by its own token, so it counts only for the wait it
+     * belongs to. The play's end (Stop, the host's own stop) forgets them: nothing new starts. At most one is
+     * outstanding today, since no start is posted while one is; the set keeps that true for any later path.
      */
     private val silencing = HashSet<Long>()
     private var startDeferred = false
@@ -762,7 +764,7 @@ class RecordingPlayer(
      */
     fun play(generation: Int, mode: Int, items: List<Item>, start: Int = 0) {
         val replaced = if (active && this.mode == MODE_PLAYLIST && !endNotified) this.generation else 0
-        close()
+        close(replacing = true)
         if (replaced != 0) {
             endNotified = true
             service.ended(replaced, ENDED_REPLACED)
@@ -1424,7 +1426,7 @@ class RecordingPlayer(
         }
     }
 
-    /** The current player, let go by a move while it may sound, is asked for its silence (R52). */
+    /** The current player, let go by a move or a replacement while it may sound, is asked for its silence (R52). */
     private fun askSilence() {
         val current = player ?: return
         if (startMade) {
@@ -1673,7 +1675,7 @@ class RecordingPlayer(
     private fun end(state: Int, error: String, reason: String) {
         positionMs = currentPositionMs()
         cancelAll()
-        silencing.clear() // nothing new starts after Stop or a replacement: no wait (R52)
+        silencing.clear() // nothing new starts after the end: no wait (R52)
         releasePlayer()
         dropOpening()
         left = null
@@ -1702,9 +1704,15 @@ class RecordingPlayer(
     }
 
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
-    private fun close() {
+    private fun close(replacing: Boolean = false) {
         cancelAll()
-        silencing.clear() // nothing new starts after Stop or a replacement: no wait (R52)
+        if (replacing) {
+            // The replacing play's first start waits for this play's sounding player to fall silent (R52, M3).
+            halt()
+            askSilence()
+        } else {
+            silencing.clear() // the host's own stop: nothing new starts, no wait
+        }
         releasePlayer()
         dropOpening()
         left = null

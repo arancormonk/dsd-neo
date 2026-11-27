@@ -1385,6 +1385,35 @@ private fun aSeekLandsOnlyWhenThePlayerConfirmsIt() {
 }
 
 /**
+ * The silence wait covers a replacement too (R52, the M3 ruling): a sheet play replacing a playlist whose player A
+ * sounds waits for A's silence before its first start, under its own watchdog; A's silence counts only for that wait.
+ */
+private fun aReplacementStartsOnceTheOldPlayIsSilent() {
+    for (silent in listOf(true, false)) {
+        val rig = Rig()
+        rig.queue(1, 1)
+        rig.prepared()
+        val a = rig.current
+        check(rig.state == PLAYING) { "the playlist plays A" }
+        rig.holdSilences = true
+        rig.machine.play(++rig.generation, "/r/x.wav") // a sheet's play of X
+        check(rig.heldSilences == listOf(a) && a.ops.takeLast(2) == listOf("pause", "silence")) {
+            "the replacement pauses A, then asks for its silence: ${a.ops}"
+        }
+        rig.prepared()
+        val x = rig.current
+        check(x !== a && x.startRequests.isEmpty() && rig.state == STARTING) { "X prepared: its start waits" }
+        if (silent) {
+            rig.ackSilence()
+            check(x.startRequests.size == 1 && rig.state == PLAYING) { "A silent: X starts" }
+        } else {
+            rig.elapse(RecordingPlayer.START_TIMEOUT_MS)
+            check(rig.state == FAILED && x.startRequests.isEmpty()) { "A's silence never comes: X's watchdog ends it" }
+        }
+    }
+}
+
+/**
  * The next part starts only once the outgoing one is silent (R52): a move lets go of a player that may sound and asks
  * its owner for its silence; the next part opens and prepares meanwhile, and its start, asked for under its watchdog,
  * is posted only once every such player is silent. A player that never sounded needs none; Stop and a replacement
@@ -3683,6 +3712,7 @@ fun main() {
     aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
     theNextPartStartsOnceTheOutgoingOneIsSilent()
+    aReplacementStartsOnceTheOldPlayIsSilent()
     aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()
