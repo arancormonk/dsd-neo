@@ -622,13 +622,20 @@ def carrier_variants(
     return variants
 
 
+_RATE_CACHE: dict = {}
+
+
 def source_at_rate(name: str, field: str, fs: int) -> np.ndarray:
-    """A real capture's channel ("iq") or audio ("audio") resampled to fs. Cached per process."""
+    """A real capture's channel ("iq") or audio ("audio") resampled to fs. Cached per process for the last rate asked
+    only: a worker's jobs run one chain at a time, and the captures at a MHz source rate take hundreds of MB, so a
+    cache of every rate would grow by that much with each one."""
     key = (name, field, fs)
-    if key not in _SOURCE_CACHE:
+    if key not in _RATE_CACHE:
+        if any(k[2] != fs for k in _RATE_CACHE):
+            _RATE_CACHE.clear()
         src = real_sources()[name]
-        _SOURCE_CACHE[key] = resample(src[field], src["fs"], fs)
-    return _SOURCE_CACHE[key]
+        _RATE_CACHE[key] = resample(src[field], src["fs"], fs)
+    return _RATE_CACHE[key]
 
 
 def synth_carrier(variant: dict, fs: int, count: int, rng: np.random.Generator) -> np.ndarray:
