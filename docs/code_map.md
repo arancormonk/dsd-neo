@@ -20241,7 +20241,9 @@ Qt Quick frontend (`src/ui/qt`):
       in the background Qt does not update the bar or the rows (the notification does); after the end a media key no
       longer restarts it; interrupted, the lock screen shows Play, which changes nothing; a lock-screen or system seek
       applies to the part current when the looper runs it, so one sent in the instant a part changes lands on the new
-      part.
+      part; a play whose start waited for an old player's silence (R52, a move or a replacement) and failed at its
+      10 s watchdog forgets that wait as it ends, so a later play does not wait for the stuck player again and may
+      start over it if it ever sounds, while its thread stays counted until it ends (R40).
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
