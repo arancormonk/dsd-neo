@@ -3376,27 +3376,27 @@ passes, so the tool now takes each chain's production identity (issue #899): the
 reader's resampler (a port of `iq_resampler.c`'s design) and the complex rate the plan and the tracker run at. RTL-SDR
 rows use the planner's capture rate and passes for each DSP bandwidth. I/Q replay rows use the recorded base
 decimation's passes, and reader rows the general plan (8 to 16 kHz, 40 to 32 kHz then one pass, 250 to 192 kHz then two,
-48,001 to 48,000 Hz, 112 to 64 kHz then two, 12 to 48 kHz). A post-decimated row is its base row's chain. Noise and
-carriers are made at the chain's source rate and run through ports of its stages. Each half-band stage is centred as
+48,001 to 48,000 Hz, 112 to 64 kHz then two, 12 and 16 to 48 kHz). A post-decimated row is its base row's chain. Noise
+and carriers are made at the chain's source rate and run through ports of its stages. Each half-band stage is centred as
 `simd_hb_decim2_complex()` centres it: output q on input 2q, made once the look-ahead is in. Behind a periodic reader
-the centring decides which of the reader's phases the passes keep; the earlier causal port kept another phase at
-112 to 64 kHz then two passes (unfiltered noise gain 0.19805232 against the decoder's 0.19804155). Every stage keeps
-its history, and the reader's phase and the windows' fractional boundaries carry across chunks. A reader row's noise
+the centring decides which of the reader's phases the passes keep; the earlier causal port kept another phase at 112 to
+64 kHz then two passes (unfiltered noise gain 0.19805232 against the decoder's 0.19804155). Every stage keeps its
+history, and the reader's phase and the windows' fractional boundaries carry across chunks. A reader row's noise
 covariance comes from impulses streamed through the ported chain in pushes of 2^20 source samples. Its workspace stays
 bounded, about 250 MB: 864,058 Hz read at 576 kHz to 72 kHz (32,752 input phases, 201 taps) takes 8 s. The largest
-supported period, 3,199,970 Hz read at 2,048 kHz to 4 kHz (2,093,568 input phases), takes about 2 to 3.5 hours at
-under 400 MB. CNR is set at the channel output. Wanted variants on a reader row must also
-fit the band the source carries. Every row is classified with the plan `full_demod()` installs (the tap harness prints
-it per chain, a reader row's through the reader and its C model). The tool's own plan matches it within 4.2e-9 on all
-146 plans without a reader, from the half-band recursion. On the 63 reader plans it matches within 3.6e-9, from its
-port of the reader, choosing the averaged or the full periodic design on the C model's bound. At 8 to 16 kHz
-unfiltered both give beta 0.5418 and N_eff 317.8, where a plan without the reader has 0 and 640 (Y bias 13.7). The
-full run below classified the reader rows with the tool's plan, before the decoder had one, and through the causal
-half-band port; the reader rows were rerun after both changes (below). Fixed-grid device rows (Airspy, Airspy Mini,
-RX-888/SDDC) step after their passes. The tool has no port of the live step, so they stay out of this gate and of the
-EDACS and M17 encoder gate below, listed as scoped out. What covers them is `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped
-rows: the real step through `full_demod()` at the post-half-band rates of 2.5 and 3 MS/s at every selectable DSP
-bandwidth, held to the floor, noise squelch and window-statistics bounds.
+supported period, 3,199,970 Hz read at 2,048 kHz to 4 kHz (2,093,568 input phases), takes about 2 to 3.5 hours at under
+400 MB. CNR is set at the channel output. Wanted variants on a reader row must also fit the band the source carries.
+Every row is classified with the plan `full_demod()` installs (the tap harness prints it per chain, a reader row's
+through the reader and its C model). The tool's own plan matches it within 4.2e-9 on all 146 plans without a reader,
+from the half-band recursion. On the 75 reader plans it matches within 3.6e-9, from its port of the reader, choosing the
+averaged or the full periodic design on the C model's bound. At 8 to 16 kHz unfiltered both give beta 0.5418 and N_eff
+317.8, where a plan without the reader has 0 and 640 (Y bias 13.7). The full run below classified the reader rows with
+the tool's plan, before the decoder had one, and through the causal half-band port; the reader rows were rerun after
+both changes (below). Fixed-grid device rows (Airspy, Airspy Mini, RX-888/SDDC) step after their passes. The tool has no
+port of the live step, so they stay out of this gate and of the EDACS and M17 encoder gate below, listed as scoped out.
+What covers them is `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows: the real step through `full_demod()` at the
+post-half-band rates of 2.5 and 3 MS/s at every selectable DSP bandwidth, held to the floor, noise squelch and
+window-statistics bounds.
 
 **Frozen-threshold confirmation (issue #899).** `python3 tools/squelch_model.py --frozen` keeps the shipped thresholds
 and decides every 40 ms window as `src/dsp/squelch_floor.c` does before anything is counted: two 20 ms sub-windows
@@ -3428,17 +3428,17 @@ Outside the real captures no family (dead carrier, FM and AM tones, FM and AM sp
 window; the real captures miss 34 of 167,300 pooled. The reader rows pass every target. `--quick` (5,000 noise
 windows, short carriers) runs in about 2 minutes; the full report is `build/squelch_model_frozen/report.md`.
 
-**Reader rows rerun.** The decoder's half-band centring changes which reader phases the passes keep, so the reader
-rows were rerun alone with the same seeds (`--frozen --chains reader`, 9 minutes on 8 workers), the two new reader
-chains with them: 63 distinct plans on 6 reader chains, 100,000 noise windows each. All 63 meet every target. The
-worst are noise read as carrier 7e-5 (7 / 100,000, unset NFM with `DSD_NEO_CHANNEL_LPF=0` at 250 to 192 kHz), a 6 dB
-carrier missed 0.12 % (2 / 1,710, the same unfiltered plan at 12 to 48 kHz), noise undecided 3.3 % and no carrier read
-as noise. The rows with no pass (8 to 16 kHz and 48,001 Hz) reproduce the full run's counts exactly. The rows with
-passes moved within sampling error: noise read as carrier 6 to 10 events in 900,000 windows at 40 kHz, and 5 to 9 in
-1,200,000 at 250 kHz. A chain without a reader is stationary at every stage, so the centring only delays it. Its noise
-has the same distribution at either phase, so the full run's verdicts on those rows stand. `--noise-windows` splits
-the requested 40 ms decisions over the `--segments` streams by quotient and remainder and leaves the empty streams
-out, so a run measures the windows it reports.
+**Reader rows rerun.** The decoder's half-band centring changes which reader phases the passes keep, so the reader rows
+were rerun alone with the same seeds (`--frozen --chains reader`, 9 minutes on 8 workers), the new reader chains with
+them (16 to 48 kHz in a run of its own: 12 plans, all pass): 75 distinct plans on 7 reader chains, 100,000 noise windows
+each. All 75 meet every target. The worst are noise read as carrier 7e-5 (7 / 100,000, unset NFM with
+`DSD_NEO_CHANNEL_LPF=0` at 250 to 192 kHz), a 6 dB carrier missed 0.12 % (2 / 1,710, the same unfiltered plan at 12 to
+48 kHz), noise undecided 3.3 % and no carrier read as noise. The rows with no pass (8 to 16 kHz and 48,001 Hz) reproduce
+the full run's counts exactly. The rows with passes moved within sampling error: noise read as carrier 6 to 10 events in
+900,000 windows at 40 kHz, and 5 to 9 in 1,200,000 at 250 kHz. A chain without a reader is stationary at every stage, so
+the centring only delays it. Its noise has the same distribution at either phase, so the full run's verdicts on those
+rows stand. `--noise-windows` splits the requested 40 ms decisions over the `--segments` streams by quotient and
+remainder and leaves the empty streams out, so a run measures the windows it reports.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 
@@ -3535,14 +3535,14 @@ them.
 (all 91 plans pass, 6 accepted). `--quick` takes about 10 minutes, mostly in the C tracker
 of the timing checks.
 
-**Reader rows rerun.** After the half-band centring fix the reader rows were rerun alone with the same seeds
-(`--chains reader`, 15 minutes on 8 workers), the two new reader chains with them: 18 EDACS and 12 encoder plans on 6
-reader chains. All 30 pass, none through an accepted entry. Every decoder plan matches the model's within 2.5e-9. The
-worst figures are noise read as carrier 6e-5, a 6 dB carrier missed 0.23 %, no carrier read as noise, and noise
-undecided 3.2 %. The longest closed run in a call is 40 ms learning and 40 ms known, and the closing delay 78 / 39 ms.
-The rows with no pass reproduce the full run's counts. The rows with passes moved within sampling error: noise read as
-carrier 1 to 3 events in 100,000 at 40 kHz, where the full run had 3 to 5, and 6 at 250 kHz with no filter, where it
-had 2.
+**Reader rows rerun.** After the half-band centring fix the reader rows were rerun alone with the same seeds (`--chains
+reader`, 15 minutes on 8 workers), the new reader chains with them (16 to 48 kHz in a run of its own): 21 EDACS and 14
+encoder plans on 7 reader chains. All 35 pass, none through an accepted entry. Every decoder plan matches the model's
+within 2.5e-9. The worst figures are noise read as carrier 6e-5, a 6 dB carrier missed 0.23 %, no carrier read as noise,
+and noise undecided 3.2 %. The longest closed run in a call is 40 ms learning and 40 ms known, and the closing delay 78
+/ 39 ms. The rows with no pass reproduce the full run's counts. The rows with passes moved within sampling error: noise
+read as carrier 1 to 3 events in 100,000 at 40 kHz, where the full run had 3 to 5, and 6 at 250 kHz with no filter,
+where it had 2.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (regression cases)
 
@@ -3733,20 +3733,42 @@ exactly. The design run whose results follow covered 365 distinct plans on the o
 - 246 plans at custom widths: 11.0-12.4 kHz in 100 Hz steps and 13-25 kHz in 1 kHz steps, on every chain at 24 kHz or
   above.
 
-Since issue #899 its chains are the shared chain identities, and the tool now enumerates 342 distinct plans:
+Since issue #899 its chains are the shared chain identities, and the tool now enumerates 374 distinct plans:
 
 - 231 on the chains without a reader: the 128 NFM combinations collapse to 85 plans, and 146 more at the custom widths.
-- 111 on the six reader chains (a replay or network source through the reader's resampler): the 45 NFM combinations
-  collapse to 36 plans, and 75 more at the custom widths on the three 48 kHz reader chains.
+- 143 on the seven reader chains (a replay or network source through the reader's resampler): the 54 NFM combinations
+  collapse to 43 plans, and 100 more at the custom widths on the four 48 kHz reader chains.
 
-It leaves out the stepped chains: it does not port the live step, and `DSP_SQUELCH_STEP_MODEL` holds their noise
-plans. A reader row runs the shared chain model (`tools/squelch_chain_model.py`): the noise and every signal are made
-at the source rate and run through the reader and the half-bands as the decoder centres them. A wanted signal is made
-as a recording carries it, faster and low-passed to just under the source's Nyquist. The calibration is the C core's:
-the reader's magnitude is folded into the cascade FIR, and the measurement band is clipped at the reader's pass edge.
-A wanted signal whose band (offset, deviation and highest audio frequency) passes that edge is measured as "edge",
-outside the gate. `DSP_SQUELCH_READER`'s "NOISE on a reader chain" case in `tests/dsp/test_dsp_squelch_reader.cpp`
-checks the reader's noise plan in C. `--chains TEXT` runs only the plans of the chains whose name holds the text.
+It leaves out the stepped chains: it does not port the live step, and `DSP_SQUELCH_STEP_MODEL` holds their noise plans.
+A reader row runs the shared chain model (`tools/squelch_chain_model.py`): the noise and every signal are made at the
+source rate and run through the reader and the half-bands as the decoder centres them. A wanted signal is made as a
+recording carries it, faster and low-passed to just under the source's Nyquist. The calibration is the C core's: the
+reader's magnitude is folded into the cascade FIR, and the measurement band ends 800 Hz under the reader's pass edge,
+the same guard as under the channel's edge (the reader's transition truncates a wanted signal's outer FM sidebands as a
+channel filter's edge does). A wanted signal whose band (offset, deviation and highest audio frequency) passes the
+reader's pass edge is measured as "edge", outside the gate. `DSP_SQUELCH_READER`
+(`tests/dsp/test_dsp_squelch_reader.cpp`) checks the reader's noise plan in C, on the 16 and 12 to 48 kHz chains below
+among others. `--chains TEXT` runs only the plans of the chains whose name holds the text.
+
+The reader rows' full run (`--chains reader`, 143 plans, 16 minutes on 8 workers):
+
+| Reader chain | Plans | With a band | Worst wanted p1 | Worst noise false-open at N = 3 | Calibration |
+| --- | --- | --- | --- | --- | --- |
+| 8 to 16 kHz (reader edge 3.6 kHz) | 5 | none: all run as auto | | | |
+| 12 to 48 kHz (edge 5.4 kHz, band at most 3.8-4.6 kHz) | 32 | none: all run as auto | | | |
+| 16 to 48 kHz (edge 7.2 kHz, band at most 3.8-6.4 kHz) | 32 | 28, all pass | 37.2 dB | 3.3e-5 | 0.42 dB |
+| 40 to 32 kHz, one pass | 5 | 2, both pass | 42.8 dB | 0 | 0.34 dB |
+| 112 to 64 kHz, two passes | 5 | 2, both pass | 41.2 dB | 0 | 0.28 dB |
+| 250 to 192 kHz, two passes | 32 | 28, all pass | 38.3 dB | 3.3e-5 | 0.56 dB |
+| 48,001 Hz at L/M 1/1 to 48 kHz | 32 | 28, all pass | 37.1 dB | 6.7e-5 | 0.59 dB |
+
+All 88 reader plans with a band pass the gate. At 16 to 48 kHz the guarded reader edge, not the channel's, ends the band
+for NFM 16 kHz and wider and with no channel filter (3800-6400 Hz). NFM 12.5 kHz keeps its own channel guard
+(3800-5650 Hz). At 12 to 48 kHz NFM 12.5 kHz and no channel filter run as auto, as every 12 kHz row does. The
+calibration column is the 2 s calibration's largest distance from the long-run reference through the real chain, in any
+band-pass. Noise's loudest window is 3.51 dB. Before the guard, the band ended at the reader's edge, and 12 to 48 kHz
+kept a 3800-5400 Hz band on 28 plans. Twelve of them held a wanted tone to 33.1-35.7 dB: tones whose band fits the
+source's 5400 Hz still have outer sidebands that the reader's 5400-6600 Hz transition cuts.
 
 Each chain's decimation runs ahead of its channel filter: a cascade of half-band stages, the 31-tap one first and
 15-tap ones after, and the 15-tap stage droops inside the band. The model runs everything through the cascade as the
