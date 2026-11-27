@@ -745,8 +745,9 @@ time, system, talkgroup and radio, and an analog FM call's with the date, time, 
   deleted; Settings and **Call recordings** say the storage is not available. A delete that includes any of them (one
   recording, a system's, **Delete all** or **Delete unfinished**) deletes nothing and says "That storage isn't
   connected. Delete again once it's back." The same goes for a recordings folder renamed or removed while its storage
-  is connected: its recordings stay listed and can't be played or deleted (their files aren't there to delete) until
-  the folder is back, a new recording makes the folder again, or DSD-neo restarts.
+  is connected: its recordings stay listed and can't be played or deleted (their files aren't there to delete). They
+  play again once the folder is back. A new recording, which makes the folder again, or a restart of DSD-neo takes
+  them off the list instead; after a restart, the folder's return lists them again.
 - DSD-neo manages only the recordings it made. A file you copy into these folders is never listed, counted or deleted,
   unless it is named like an unfinished recording (`TEMP_…`, below). A recording you delete from a computer leaves the
   app's list the next time DSD-neo starts or tries to play, share or export it. DSD-neo doesn't watch for other changes
