@@ -20653,9 +20653,13 @@ Qt Quick frontend (`src/ui/qt`):
     root whose directory is missing at a cold start holds nothing and reads as there and empty, so a fresh install's
     screens never say its storage is away; it is remembered as missing (`m_rootDirMissing`), looked at each pass and by
     an export's or delete's look at away roots (`awayRootsBackLocked()`), and listed in full once it is a readable
-    directory (I1, `test_folder_missing_at_a_cold_start`). A session start that makes a root's directory over rows the
-    index holds on it (renamed away before any pass marked the root away) notes the root seen away, so its old rows are
-    unavailable at once and the pass the start asks for lists it in full, dropping them and reading the session's
+    directory (I1, `test_folder_missing_at_a_cold_start`). A pass reads the flag at the root's turn and writes it, under
+    the lock, only from a look no session start overtook (a per-root count of directories a start made), and its listing
+    of a root takes any seen-away note made since the pass's top, so neither a session start nor an export during the
+    pass costs a second listing (m1, `listRootNow()`, `test_session_made_root_during_a_pass_is_not_listed`,
+    `test_export_note_during_a_pass_is_taken_by_its_listing`). A session start that makes a root's directory over rows
+    the index holds on it (renamed away before any pass marked the root away) notes the root seen away, so its old rows
+    are unavailable at once and the pass the start asks for lists it in full, dropping them and reading the session's
     journal; one that makes it over nothing indexed lists nothing (`noteRootMadeLocked()`, I2,
     `test_session_making_the_folder_reads_its_root_again`). Decided limit (M3): while a root that holds rows has its
     directory missing, Delete all and an owner's or a recording's delete that name any of its rows are refused as

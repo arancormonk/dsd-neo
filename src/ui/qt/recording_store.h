@@ -595,6 +595,14 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * rows indexed holds them away, never dropped. Takes the lock only when the directory is missing; the Locked form
      * is for a caller holding it. */
     bool rootThereForIndex(int root, const QString& path) const;
+    /* rootThereForIndex() for a root whose directory is not a readable one: one a session could make, with no row
+     * indexed on it. Takes the lock for the row look. */
+    bool rootMissingTakenAsThere(int root, const QString& path) const;
+    /* refreshRoots()'s look at @p root (at @p path): @p there whether it is there for the index, and true when this
+     * pass lists it in full (the first pass, back from away, seen away, or its missing directory there now, I1). The
+     * missing flag is written under the lock from a look no session start overtook, and a seen-away note made since
+     * the pass's top is taken into this listing (m1). */
+    bool listRootNow(int root, const QString& path, bool first, bool was, QSet<int>* seenAway, bool* there);
     bool rootThereForIndexLocked(int root) const;
     /* Whether the index holds a row on @p root: an entry in a folder on it (m_rowsInFolder), or one a folder's read
      * again holds from before it (m_committed). Lock held. */
@@ -884,6 +892,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* How many entries each folder holds (insertEntryLocked(), removeEntryLocked()): whether a root holds rows without
      * a walk of every entry. */
     QHash<QString, int> m_rowsInFolder;
+    /* How many times a session start made each root's directory (noteRootMadeLocked()): a pass's look at a root, taken
+     * without the lock, writes its missing flag only if no start made the directory meanwhile (m1). */
+    QList<quint64> m_rootMade;
     QHash<QString, Folder> m_folders;
     QHash<QString, Entry> m_entries;
     QHash<QString, QStringList> m_byFragment;

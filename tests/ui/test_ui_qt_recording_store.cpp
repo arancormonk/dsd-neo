@@ -5159,6 +5159,75 @@ test_folder_missing_at_a_cold_start(void) {
     }
 }
 
+/* m1: a pass looks at each root's missing flag as it is at that root's turn. A session start during the pass (here,
+ * while the storage before it is listed) that makes a flagged root's directory clears the flag, and the pass then
+ * lists nothing there: its folder is the store's own, new and read. */
+void
+test_session_made_root_during_a_pass_is_not_listed(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("made in a pass: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/Call recordings/County (1a2b3c4d)");
+    expect("made in a pass: a folder made elsewhere",
+           write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000964-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    std::atomic<int> internalListings{0};
+    QString made;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            internalListings++;
+        } else if (root.startsWith(ext + QLatin1Char('/')) && made.isEmpty()) {
+            made = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+        }
+    });
+    expect("made in a pass: the external storage back", QDir().rename(staged, ext));
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("made in a pass: the session made the internal folder", made.startsWith(roots.internal + QLatin1Char('/')));
+    expect("made in a pass: the internal root was not listed", internalListings.load() == 0);
+    expect("made in a pass: the external recording is indexed", listed_as(s.store, 1, true));
+}
+
+/* m1: an export pressed during a pass, before a flagged root's turn, that finds its folder there notes it seen away;
+ * the pass's listing of it (its folder appeared) takes that note, so the next pass does not list it again. */
+void
+test_export_note_during_a_pass_is_taken_by_its_listing(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("note in a pass: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    expect("note in a pass: a parent made elsewhere", QDir().mkpath(staged + QStringLiteral("/Call recordings")));
+    const QString inbound = roots.dir.path() + QStringLiteral("/inbound");
+    const QString owner = inbound + QStringLiteral("/County (1a2b3c4d)");
+    expect("note in a pass: a folder made elsewhere",
+           write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000965-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    std::atomic<int> internalListings{0};
+    std::atomic<bool> pressed{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            internalListings++;
+        } else if (root.startsWith(ext + QLatin1Char('/')) && !pressed.exchange(true)) {
+            // Before the internal root's turn: its folder appears, and an export finds it there.
+            (void)QDir().rename(inbound, roots.internal);
+            const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+            s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+        }
+    });
+    expect("note in a pass: the external storage back", QDir().rename(staged, ext));
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("note in a pass: the export was pressed during the pass", pressed.load());
+    expect("note in a pass: the internal root was listed once", internalListings.load() == 1);
+    expect("note in a pass: its recording is indexed", listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -6621,6 +6690,8 @@ main(int argc, char** argv) {
     test_session_start_remembers_storage_away();
     test_folder_missing_at_a_cold_start();
     test_root_without_rows_is_not_held_away();
+    test_session_made_root_during_a_pass_is_not_listed();
+    test_export_note_during_a_pass_is_taken_by_its_listing();
     test_session_making_the_folder_reads_its_root_again();
     test_delete_held_when_its_root_was_seen_away();
     test_owner_lookup_failure_ends_a_tail_in_flight();

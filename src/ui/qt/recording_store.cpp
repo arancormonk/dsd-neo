@@ -397,6 +397,7 @@ RecordingStore::setRoots(const QStringList& roots) {
     }
     m_rootAvailable = QList<bool>(m_roots.size(), false);
     m_rootDirMissing = QList<bool>(m_roots.size(), false);
+    m_rootMade = QList<quint64>(m_roots.size(), 0U);
 }
 
 void
@@ -692,9 +693,11 @@ RecordingStore::rootAvailableNow(const QString& root) {
 
 bool
 RecordingStore::rootThereForIndex(int root, const QString& path) const {
-    if (rootPlayableNow(path)) {
-        return true;
-    }
+    return rootPlayableNow(path) || rootMissingTakenAsThere(root, path);
+}
+
+bool
+RecordingStore::rootMissingTakenAsThere(int root, const QString& path) const {
     if (!rootAvailableNow(path)) {
         return false;
     }
@@ -711,6 +714,7 @@ RecordingStore::rootThereForIndexLocked(int root) const {
 void
 RecordingStore::noteRootMadeLocked(int root) {
     m_rootDirMissing[root] = false; // made here: nothing appeared that a listing must find
+    m_rootMade[root]++;
     if (rootHoldsRowsLocked(root)) {
         // Rows indexed on a directory that was missing (renamed or removed, perhaps before any pass marked the root
         // away): what is there now is read in full, and their rows are unavailable until then (R74, R78).
@@ -741,30 +745,21 @@ void
 RecordingStore::refreshRoots(bool first, Pass* pass) {
     QStringList roots;
     QList<bool> was;
-    QList<bool> dirMissing;
     QSet<int> seenAway;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         roots = m_roots;
         was = m_rootAvailable;
-        dirMissing = m_rootDirMissing;
         seenAway.swap(m_rootsSeenAway);
         m_rootsRereading = seenAway; // still seen away to the readers until this read is done (R74)
     }
     for (int i = 0; i < roots.size(); i++) {
         // Its directory missing while it holds rows is away (R83): the rows stay, unavailable, until it is back.
         // Missing with nothing indexed on it (I1: a cold start) it is there and empty, and remembered as missing, so
-        // its directory found since is listed in full, as a root back from away is.
-        const bool playable = rootPlayableNow(roots.at(i));
-        const bool now = playable || rootThereForIndex(i, roots.at(i));
-        const bool appeared = playable && dirMissing.value(i);
-        {
-            const std::lock_guard<std::mutex> lock(m_mutex);
-            m_rootDirMissing[i] = now && !playable;
-        }
-        // A root a delete request found missing is listed again in full, even when it is back before this pass: it
-        // may have come back changed (two owners' folders swapped) with journals as long as the ones read.
-        if (now && (first || !was.at(i) || seenAway.contains(i) || appeared)) {
+        // its directory found since is listed in full, as a root back from away is. A seen-away note made since the
+        // pass's top is taken into this listing, not left for another (m1).
+        bool now = false;
+        if (listRootNow(i, roots.at(i), first, was.at(i), &seenAway, &now)) {
             if (!rebuildRoot(i, pass) && was.at(i)) {
                 // Gone again as it was listed: away, so its return is read in full too.
                 const std::lock_guard<std::mutex> lock(m_mutex);
@@ -780,6 +775,36 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
             m_rootsRereading.remove(i); // read as it is now: the index says what is there
         }
     }
+}
+
+bool
+RecordingStore::listRootNow(int root, const QString& path, bool first, bool was, QSet<int>* seenAway, bool* there) {
+    bool missingBefore = false;
+    quint64 made = 0U;
+    {
+        // The flag as it is at this root's turn, not at the pass's top: a session start may have made the directory.
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        missingBefore = m_rootDirMissing.value(root);
+        made = m_rootMade.value(root);
+    }
+    const bool playable = rootPlayableNow(path);
+    const bool now = playable || rootMissingTakenAsThere(root, path);
+    *there = now;
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    // Written only from a look no session start overtook (m1): a directory made meanwhile was made by the store, and
+    // its flag is already clear.
+    const bool current = m_rootMade.value(root) == made;
+    if (current) {
+        m_rootDirMissing[root] = now && !playable;
+    }
+    const bool appeared = current && playable && missingBefore;
+    const bool list = now && (first || !was || seenAway->contains(root) || appeared);
+    if (list && m_rootsSeenAway.remove(root)) {
+        // Noted seen away since the pass's top (an export's look at the flag, say): this listing covers it (m1).
+        seenAway->insert(root);
+        m_rootsRereading.insert(root);
+    }
+    return list;
 }
 
 void
