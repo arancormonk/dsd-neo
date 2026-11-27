@@ -24,7 +24,8 @@ package io.github.arancormonk.dsdneo
  * Completion (R66): the owner marks a player completed ([completed]) before the completion goes on to the machine.
  * Completed, it never starts again: a start queued or held behind a seek does nothing (starting a completed platform
  * player would play its recording again), and the machine's completion answers the start it asked for. A seek after
- * it is dropped too. A completed player is silent: asked for its silence, it answers at once.
+ * it is dropped too. A completed player is silent: asked for its silence, it answers at once, and a silence asked
+ * before that waited for the release is answered at completion.
  *
  * Silence (R62): a start the platform made ([started]) is undone only by a pause that returned. Asked for its silence,
  * the owner reports it ([silent]) at once when nothing sounds; when a start stands (its pause threw, or none ran), the
@@ -93,6 +94,11 @@ class PlayerOwnerState(
         started = false
         heldStart = null
         heldSerial = 0L
+        // A silence asked before (its pause threw, so it waited for the release) is answered now: completed is silent.
+        if (silenceAtRelease) {
+            silenceAtRelease = false
+            silent()
+        }
     }
 
     /** Pause the platform player if a start stands; [started] clears only once the pause has returned. */

@@ -219,6 +219,16 @@ private fun aCompletedPlayerNeverStartsAgain() {
     silent.state.onCompleted()
     silent.state.silence()
     check(silent.silences == 1) { "a completed player is silent at once" }
+
+    // A silence asked while a start stood (it waits for the release), then the completion: answered at completion.
+    val waiting = Owner()
+    waiting.state.onStarted()
+    waiting.state.silence()
+    check(waiting.silences == 0) { "a start stands: the silence waits" }
+    waiting.state.onCompleted()
+    check(waiting.silences == 1) { "completed: the waiting silence is answered at once" }
+    waiting.state.released(returned = true)
+    check(waiting.silences == 1) { "and once" }
 }
 
 fun main() {
