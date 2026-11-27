@@ -3073,6 +3073,10 @@ private fun invalidItemsAreRefusedLeavingThePlayRunning() {
             (MODE_PARTS to listOf(RecordingPlayer.Item("/r/a.wav", 1), RecordingPlayer.Item("/r/b.wav", 1, call = 1))),
         "calls with a hole" to (MODE_PLAYLIST to listOf(item(0), item(2))),
         "calls going back" to (MODE_PLAYLIST to listOf(item(0), item(1), item(0))),
+        // R75: nanoseconds a file identity cannot have.
+        "nanoseconds below 0" to (MODE_PLAYLIST to listOf(RecordingPlayer.Item("/r/a.wav", 1, 1, -1))),
+        "nanoseconds of a whole second" to
+            (MODE_PARTS to listOf(RecordingPlayer.Item("/r/a.wav", 1, 1, 1_000_000_000))),
     )
     for ((name, request) in refused) {
         check(!RecordingPlayer.validRequest(request.first, request.second, 0)) { "$name: not a request" }
@@ -3090,6 +3094,8 @@ private fun invalidItemsAreRefusedLeavingThePlayRunning() {
     check(RecordingPlayer.validRequest(RecordingPlayer.MODE_SINGLE, listOf(RecordingPlayer.Item("/r/a.wav")), 0)) {
         "a path alone is part 1 of 1: a request"
     }
+    val oddNanos = RecordingPlayer.Item("/r/a.wav", -1, 0, -1)
+    check(RecordingPlayer.validRequest(RecordingPlayer.MODE_SINGLE, listOf(oddNanos), 0)) { "SINGLE needs no identity" }
     check(!rig.machine.play(generation + 1, "") && rig.status.generation == generation && !running.released) {
         "the path-only play of an empty path is refused, the play running untouched"
     }

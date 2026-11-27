@@ -530,6 +530,9 @@ class RecordingPlayer(
         /** A PLAYLIST whose service is not promoted in this time ends "start". */
         const val PROMOTION_MS = 5_000L
 
+        /** The largest nanoseconds a file identity's modification time has (dsd_file_identity_t). */
+        private const val MAX_NANOS = 999_999_999
+
         /**
          * A part whose player has not prepared this long after its open has failed, as a player error on it would
          * have: a MediaPlayer that never answers would otherwise leave the play opening, its service up, for good.
@@ -569,6 +572,9 @@ class RecordingPlayer(
             return items.indices.all { i -> validItem(mode, items, i) }
         }
 
+        /** A queued item's identity names a file (R75): a size from 0, and nanoseconds within a second. */
+        private fun identifies(item: Item): Boolean = item.size >= 0 && item.mtimeNanos in 0..MAX_NANOS
+
         /**
          * Item [i] of a request as DecoderHost::playbackItemsValid() takes it (R70): a path, its call the one before's
          * or the next (0 for every part of PARTS), its part within its call's count, and, but for SINGLE, its identity.
@@ -577,7 +583,7 @@ class RecordingPlayer(
             val item = items[i]
             val step = if (i == 0) 0 else item.call - items[i - 1].call
             return item.path.isNotEmpty() && step in 0..1 && (mode != MODE_PARTS || item.call == 0) &&
-                item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
+                item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || identifies(item))
         }
 
         /**

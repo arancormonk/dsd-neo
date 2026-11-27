@@ -347,8 +347,9 @@ playback_item_identified(const QVariantMap& item) {
     bool nanosOk = false;
     const qint64 size = item.value(QStringLiteral("size")).toLongLong(&sizeOk);
     (void)item.value(QStringLiteral("mtimeSec")).toLongLong(&secOk);
-    (void)item.value(QStringLiteral("mtimeNanos")).toInt(&nanosOk);
-    return sizeOk && size >= 0 && secOk && nanosOk;
+    const int nanos = item.value(QStringLiteral("mtimeNanos")).toInt(&nanosOk);
+    // A file identity's nanoseconds lie in 0..999,999,999 (dsd_file_identity_t, R75): any other names no file.
+    return sizeOk && size >= 0 && secOk && nanosOk && nanos >= 0 && nanos <= 999999999;
 }
 
 /* @p key of @p item as a number into @p out, 1 when it is absent (issue #909 R63: an item with no numbering is one

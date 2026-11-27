@@ -2938,6 +2938,12 @@ check_playlist_arrays() {
         QVariantMap word = items.at(1).toMap();
         word.insert(QStringLiteral("mtimeSec"), QStringLiteral("soon"));
         refused({items.at(0), word}, mode, "a queued item whose identity is no number is refused");
+        // R75: nanoseconds no file identity has.
+        for (const int nanos : {-1, 1000000000}) {
+            QVariantMap impossible = items.at(1).toMap();
+            impossible.insert(QStringLiteral("mtimeNanos"), nanos);
+            refused({items.at(0), impossible}, mode, "a queued item with impossible nanoseconds is refused");
+        }
     }
     r.nextGeneration = 22;
     check(host.playRecordings({items.at(0), items.at(1)}, DecoderHost::PlaybackParts, QString()) == 22,

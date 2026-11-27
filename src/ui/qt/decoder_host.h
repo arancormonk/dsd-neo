@@ -652,8 +652,8 @@ class DecoderHost : public QObject {
      * calls run from 0 up without a hole (each item's call the one before's or the next), @p mode is a PlaybackMode, a
      * Parts play is one call and a Single play one item, every item's part numbering is within its count (`partOrdinal`
      * from 1 up to `partCount`, each 1 when absent or holding no value), and every item of a Parts or Playlist play
-     * names its identity (`size` a number from 0, `mtimeSec` and `mtimeNanos` numbers, as the store lists them)
-     * (playbackItemsValid()).
+     * names its identity (`size` a number from 0, `mtimeSec` a number, `mtimeNanos` one from 0 to 999,999,999, as the
+     * store lists them) (playbackItemsValid()).
      * The play is accepted once the platform takes it: from then on it has replaced what played, and every later
      * failure, even one at its start, is its own (published under its generation).
      *
