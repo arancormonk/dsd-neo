@@ -2009,6 +2009,34 @@ def fmt_entry(e: dict, digits: int = 2) -> str:
     return f"{text} ({e['k']}/{e['n']}; {e['hi']:.1e})"
 
 
+NOISE_TARGETS = ("false_carrier", "noise_undecided")
+
+
+def pooled_text(key: str, unique: dict, verdicts: dict) -> str:
+    """A target's windows pooled over the plans. A noise target counts each filter (fkey) once: plans that share their
+    taps (AM and NFM at one width on one chain) read the same noise decisions. Its pooled rate has no interval: every
+    filter on a chain reads the same source noise, so the windows of different filters are not independent trials. A
+    carrier target pools every plan's own streams (each carrier plan draws its signals and noise from its own seed),
+    with its Clopper-Pearson interval."""
+    if key in NOISE_TARGETS:
+        by_filter = {}
+        for ck, combo in unique.items():
+            e = verdicts[ck][key]
+            if e["n"]:
+                by_filter.setdefault(combo["fkey"], (e["k"], e["n"]))
+        k = sum(v[0] for v in by_filter.values())
+        n = sum(v[1] for v in by_filter.values())
+        if not n:
+            return "-"
+        rate = k / n
+        text = "0" if rate == 0.0 else (f"{rate:.2e}" if rate < 0.01 else f"{100.0 * rate:.2f} %")
+        return f"{text} ({k}/{n} over {len(by_filter)} filters; no interval: shared source noise)"
+    entries = [verdicts[ck][key] for ck in unique if verdicts[ck][key]["n"]]
+    if not entries:
+        return "-"
+    return fmt_entry(rate_entry(sum(e["k"] for e in entries), sum(e["n"] for e in entries), entries[0]["bound"]))
+
+
 def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict, carrier_results: dict) -> tuple:
     unique = {}
     for c in combos:
@@ -2052,7 +2080,10 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         lines.append("")
     targets = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
     lines += [
-        "Each target's 95 % interval against its bound, plan by plan, and every plan's windows pooled:",
+        (
+            "Each target's 95 % interval against its bound, plan by plan, and every plan's windows pooled (a noise "
+            "target once per filter, with no interval: the filters on one chain read the same source noise):"
+        ),
         "",
         (
             "| target | resolved under the bound | unresolved, no event (too few windows) | unresolved, with events | "
@@ -2066,8 +2097,7 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         zero = sum(1 for e in entries if e["k"] == 0 and e["hi"] > e["bound"])
         events = sum(1 for e in entries if e["k"] > 0 and e["pass"] and e["hi"] > e["bound"])
         over = sum(1 for e in entries if not e["pass"])
-        pooled = rate_entry(sum(e["k"] for e in entries), sum(e["n"] for e in entries), entries[0]["bound"])
-        lines.append(f"| {key} | {resolved} | {zero} | {events} | {over} | {fmt_entry(pooled)} |")
+        lines.append(f"| {key} | {resolved} | {zero} | {events} | {over} | {pooled_text(key, unique, verdicts)} |")
     lines += ["", "Plans with events whose interval holds the bound:", ""]
     held = [
         f"- {key}: {fmt_entry(verdicts[ck][key])} at {combo_id(unique[ck])}"

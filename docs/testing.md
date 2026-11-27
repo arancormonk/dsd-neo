@@ -3407,12 +3407,18 @@ accepts. The run covered 188
 distinct plans on 21 chains (8 RTL-SDR, 9 replay, 4 reader). Each plan had 100,000 noise windows (200,000 sub-windows in
 four streams) and the carrier set above; it took 103 minutes on 8 workers.
 
-| Target (bound) | Plans over the bound | Worst plan | All 188 plans pooled |
+| Target (bound) | Plans over the bound | Worst plan | Pooled |
 | --- | --- | --- | --- |
-| Noise read as carrier (1e-4) | 2 | 1.3e-4 (13 / 100,000; 95 % upper 2.2e-4): unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 6.8e-6 (127 / 18,800,000) |
+| Noise read as carrier (1e-4) | 2 | 1.3e-4 (13 / 100,000; 95 % upper 2.2e-4): unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 7.6e-6 (109 / 14,400,000 over the 144 distinct filters) |
 | 6 dB carrier missed (1 %) | 1 | 2.16 % (12 / 555): unset NFM, `DSD_NEO_CHANNEL_LPF=1`, rtl-8k | 6.3e-5 (34 / 537,875) |
 | Carrier of 6 dB or more read as noise (1e-4) | 0 | none in any plan (at most 15,075 windows a plan, so no plan alone resolves 1e-4) | 0 (0 / 1,613,625; 95 % upper 2.3e-6) |
-| Noise left undecided (25 %) | 0 | 3.65 %: unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 1.27 % |
+| Noise left undecided (25 %) | 0 | 3.65 %: unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 1.29 % (over the 144 filters) |
+
+The noise rows pool each filter once: plans that share their taps (AM and NFM at one width on one chain) read the same
+noise decisions. They carry no interval, because every filter on a chain reads the same source noise, so the windows of
+different filters are not independent trials. The carrier rows pool every plan, each from its own seeded signals and
+noise, with their 95 % interval. (Pooling by plan had counted the shared filters twice: 6.8e-6, 127 / 18,800,000, and
+1.27 %.)
 
 Three plans miss a bound. The thresholds stay as shipped, and these plans are accepted as known marginals. Each entry
 in the tool covers one plan and one bound. Its allowance sits just above the 95 % interval's upper end, so another
