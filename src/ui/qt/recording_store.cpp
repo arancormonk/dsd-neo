@@ -692,6 +692,26 @@ RecordingStore::rootAvailableNow(const QString& root) {
 }
 
 bool
+RecordingStore::firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass) {
+    // A first read with something in it whose directory is missing now (there and empty only for holding no rows,
+    // r16t) is not committed: what it read named files no longer there. The folder stays unread and the next pass is
+    // asked for (it finds the folder gone, or reads it whole); the root, remembered missing, is listed once back.
+    if (rows == 0 || rootPlayableNow(rootPathOf(root))) {
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    scheduleFolderReadLocked(path, pass);
+    m_passRequested = true;
+    return true;
+}
+
+QString
+RecordingStore::rootPathOf(int root) const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return root >= 0 && root < m_roots.size() ? m_roots.at(root) : QString();
+}
+
+bool
 RecordingStore::rootThereForIndex(int root, const QString& path) const {
     return rootPlayableNow(path) || rootMissingTakenAsThere(root, path);
 }
@@ -1048,9 +1068,15 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
     QList<RecordingJournalRecord> records;
     const qint64 lines = parseLines(data.left(consumed), &records);
     statPublished(path, records, &files);
+#ifdef DSD_NEO_TEST_HOOKS
+    journalReadForTest(path);
+#endif
     // What was read stands only with the root still there: one that went away while the folder was read took its
     // files and journal with it, and the folder stays as the index held it.
     if (!rootStillAvailable(root, pass)) {
+        return;
+    }
+    if (!replace && firstReadDropped(path, root, records.size() + unfinished.size(), pass)) {
         return;
     }
 
@@ -3667,6 +3693,30 @@ void
 RecordingStore::setRootLookHookForTest(std::function<void(const QString& root)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_rootLookHook = std::move(hook);
+}
+
+void
+RecordingStore::setJournalReadHookForTest(std::function<void(const QString& folder)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_journalReadHook = std::move(hook);
+}
+
+void
+RecordingStore::journalReadForTest(const QString& folder) const {
+    std::function<void(const QString&)> hook;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        hook = m_journalReadHook;
+    }
+    if (hook) {
+        hook(folder);
+    }
+}
+
+QString
+RecordingStore::folderNameForTest(const QString& path) const {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return m_folders.value(path).name;
 }
 
 void

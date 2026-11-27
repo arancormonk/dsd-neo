@@ -372,6 +372,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook in a session start after it has looked at the roots and before it makes or takes a folder,
      * under the store's lock (the hook must not call the store). Test hook. */
     void setSessionRootsHookForTest(std::function<void()> hook);
+    /** @brief Call @p hook on the worker in a folder's read once its journal and files are read, before the read's
+     * last look at its root, with the lock released. Test hook. */
+    void setJournalReadHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief The label the index holds for the folder at @p path ("" when none). Test hook. */
+    QString folderNameForTest(const QString& path) const;
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
     /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
@@ -600,6 +605,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* rootThereForIndex() for a root whose directory is not a readable one: one a session could make, with no row
      * indexed on it. Takes the lock for the row look. */
     bool rootMissingTakenAsThere(int root, const QString& path) const;
+    /* A first read of @p path that read @p rows rows, dropped (true) when @p root's directory is missing now (r16t): the
+     * folder stays unread and the next pass is asked for. Takes the lock. */
+    bool firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass);
+    /* @p root's path ("" for no root). Takes the lock. */
+    QString rootPathOf(int root) const;
     /* refreshRoots()'s look at @p root (at @p path): @p there whether it is there for the index, and true when this
      * pass lists it in full (the first pass, back from away, seen away, or its missing directory there now, I1). The
      * missing flag is written under the lock from a look no session start overtook, and a seen-away note made since
@@ -866,6 +876,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_rootLookHook;
     /* setSessionRootsHookForTest(); called under m_mutex. */
     std::function<void()> m_sessionRootsHook;
+    /* setJournalReadHookForTest(); under m_mutex, called with it released. */
+    std::function<void(const QString&)> m_journalReadHook;
+    void journalReadForTest(const QString& folder) const;
     /* Call m_rootLookHook, if set, for @p root; the lock not held. */
     void rootLookedForTest(const QString& root) const;
 #endif

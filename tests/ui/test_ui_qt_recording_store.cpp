@@ -5556,6 +5556,38 @@ test_session_never_records_onto_a_root_back_unlisted(void) {
     expect("back unlisted: no second folder made on the card", onCard == 1);
 }
 
+/* r16t: a first read that read recordings, whose recordings directory goes before the read's last look at its root,
+ * is not committed: none of its rows is offered while the directory is missing; once it is back, a listing reads it
+ * and they are available. */
+void
+test_first_read_of_a_vanished_directory_is_not_committed(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString aside = roots.dir.path() + QStringLiteral("/aside");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    expect("vanished read: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000972-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    std::atomic<bool> taken{false};
+    s.store.setJournalReadHookForTest([&](const QString& path) {
+        if (path == folder && !taken.exchange(true)) {
+            (void)QDir().rename(roots.external, aside); // read: the directory goes before the read's last look
+        }
+    });
+    expect("vanished read: the folder put in place", QDir().rename(staged, roots.external));
+    s.pass();
+    s.store.setJournalReadHookForTest({});
+    expect("vanished read: it went during the read", taken.load() && !QFileInfo::exists(roots.external));
+    s.pass(); // the pass the discarded read asked for
+    expect("vanished read: none of its rows is offered",
+           s.store.recordingsForFragments({fragment(1)}).isEmpty()
+               && s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).isEmpty());
+    expect("vanished read: the directory back", QDir().rename(aside, roots.external));
+    s.pass();
+    expect("vanished read: back and listed, its row is available", listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -7003,6 +7035,7 @@ main(int argc, char** argv) {
     test_first_read_waits_for_its_last_slice();
     test_session_on_another_root_notes_a_missing_indexed_root();
     test_session_never_records_onto_a_root_back_unlisted();
+    test_first_read_of_a_vanished_directory_is_not_committed();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

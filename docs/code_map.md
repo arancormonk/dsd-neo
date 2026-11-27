@@ -20446,14 +20446,17 @@ Qt Quick frontend (`src/ui/qt`):
     a folder's read again holds from before it (`m_committed`) are unavailable too until `commitFolderLocked()` replaces
     them, so between its slices they are listed but not played or admitted (R78; main read them as available from the
     moment the folder was marked loaded, before its slices). A folder's first read waits for its last slice the same way
-    (an empty hold, `loadFolder()`, r14t, `test_first_read_waits_for_its_last_slice`): its rows, an early one already
-    carrying the identity of a file a later record reused the name of, are neither listed, admitted nor shared before
-    then (main listed them as each slice applied, available, so a sheet's single play could play the newer file under
-    the older call). Play all and Play from here look at no storage: they admit from what the store knows, as every
-    reader does (`recordingsForFragmentLists()`, one `ReaderLock`, the entry map's `available`). Decided limit: a press
-    in the moment after storage goes away, before the store has noticed (its next pass, or a delete or session start
-    that looks), can replace the current play, which then ends "Couldn't play these recordings", as when files vanish
-    just after a press (D9); storage that returns is picked up by the store's next pass, within about a minute
+    (an empty hold, `loadFolder()`, r14t, `test_first_read_waits_for_its_last_slice`); one that read recordings, whose
+    directory is missing at its last look at the root (there and empty only for holding no rows), is not committed at
+    all: the folder stays unread and the next pass is asked for (r16t,
+    `test_first_read_of_a_vanished_directory_is_not_committed`): its rows, an early one already carrying the identity of
+    a file a later record reused the name of, are neither listed, admitted nor shared before then (main listed them as
+    each slice applied, available, so a sheet's single play could play the newer file under the older call). Play all
+    and Play from here look at no storage: they admit from what the store knows, as every reader does
+    (`recordingsForFragmentLists()`, one `ReaderLock`, the entry map's `available`). Decided limit: a press in the
+    moment after storage goes away, before the store has noticed (its next pass, or a delete or session start that
+    looks), can replace the current play, which then ends "Couldn't play these recordings", as when files vanish just
+    after a press (D9); storage that returns is picked up by the store's next pass, within about a minute
     (`test_playlist_missing_folder_keeps_its_rows_away`). A loss a session start sees while the root's listing in full
     is in flight or done (not merely asked for) is noted again, so another listing runs after it: the storage there at
     the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`); so does a session start
