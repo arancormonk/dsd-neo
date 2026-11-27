@@ -12967,6 +12967,13 @@ static int g_profile_req_levels = 0;
 static int g_profile_req_chan = -1;
 static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
 static int g_profile_req_ted_sps_is_override = 0;
+/* The demod profile the demod thread took and has not finished applying (rtl_stream_take_demod_profile_request() to
+   the end of rtl_stream_consume_demod_profile_request()): what the stream will run before the published profile says
+   so, which a request queued meanwhile may leave in force (rtl_stream_profile_may_land_fsk9600()). */
+static int g_profile_taken_in_flight = 0;
+static int g_profile_taken_cqpsk = -1;
+static int g_profile_taken_sym_rate = 0;
+static int g_profile_taken_levels = 0;
 static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's number */
 /* The number of the first analog request the queued one replaced in turn, each while the one before it was still queued
  * (its own number when it replaced none): the demod thread took none of the requests numbered from there on. */
@@ -13342,18 +13349,27 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
 
 static void rtl_stream_prepare_reader_model(void);
 
-/* Whether a queued demod profile can land the 9600 bit/s FSK path, which runs a dynamic squelch
-   (dsd_demod_fsk9600_active()), judged on the profile it leaves in force: a symbol rate of 0 keeps the rate and levels
-   the stream publishes (a newer request replaces a queued one whole), and a CQPSK state left as it is (-1) keeps the
-   requested one. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path. */
+/* Whether a demod profile request can land the 9600 bit/s FSK path, which runs a dynamic squelch
+   (dsd_demod_fsk9600_active()), judged on every profile it can leave in force. What it leaves out (a symbol rate of 0,
+   a CQPSK state of -1) the demod keeps as it runs when it applies the request: the published profile, or one it took
+   and has not finished applying (g_profile_taken_*). A request still queued is replaced whole, so its values never
+   apply. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so does a hunt step (-1, 9600, 2) over a
+   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. */
 static int
-rtl_stream_profile_is_fsk9600(int cqpsk_enable, int symbol_rate_hz, int levels) {
-    const int rate = symbol_rate_hz > 0 ? symbol_rate_hz : g_pub_symbol_rate.load(std::memory_order_relaxed);
-    const int lv = symbol_rate_hz > 0 ? levels : g_pub_symbol_levels.load(std::memory_order_relaxed);
-    if (rate != 9600 || lv != 2) {
-        return 0;
+rtl_stream_profile_may_land_fsk9600(int cqpsk_enable, int symbol_rate_hz, int levels) {
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    const int taken = g_profile_taken_in_flight;
+    int rate_9600 = symbol_rate_hz == 9600 && levels == 2;
+    if (symbol_rate_hz <= 0) {
+        rate_9600 = (g_pub_symbol_rate.load(std::memory_order_relaxed) == 9600
+                     && g_pub_symbol_levels.load(std::memory_order_relaxed) == 2)
+                    || (taken && g_profile_taken_sym_rate == 9600 && g_profile_taken_levels == 2);
     }
-    return (cqpsk_enable >= 0 ? cqpsk_enable : rtl_stream_requested_cqpsk()) != 1;
+    int cqpsk_off = cqpsk_enable == 0;
+    if (cqpsk_enable < 0) {
+        cqpsk_off = g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0 || (taken && g_profile_taken_cqpsk == 0);
+    }
+    return rate_9600 && cqpsk_off;
 }
 
 static int
@@ -13382,7 +13398,7 @@ rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
         rtl_stream_settle_all_requests();
         return 0;
     }
-    if (rtl_stream_profile_is_fsk9600(cqpsk_enable, symbol_rate_hz, levels)) {
+    if (rtl_stream_profile_may_land_fsk9600(cqpsk_enable, symbol_rate_hz, levels)) {
         rtl_stream_prepare_reader_model();
     }
     std::lock_guard<std::mutex> lock(g_profile_req_m);
@@ -13900,6 +13916,10 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     out->ted_sps_is_override = g_profile_req_ted_sps_is_override;
     out->taken_seq = g_rx_req_seq.load(std::memory_order_relaxed);
     out->analog_seq = g_profile_req_analog_seq;
+    g_profile_taken_in_flight = 1;
+    g_profile_taken_cqpsk = g_profile_req_has_demod ? g_profile_req_cqpsk : -1;
+    g_profile_taken_sym_rate = g_profile_req_has_demod ? g_profile_req_sym_rate : 0;
+    g_profile_taken_levels = g_profile_req_has_demod ? g_profile_req_levels : 0;
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
     g_profile_req_digital_landing = 0;
@@ -13964,6 +13984,8 @@ rtl_stream_consume_demod_profile_request(void) {
     }
     rtl_stream_family_request_boundary(req.analog_family, req.has_demod, was_monitor, kind_before);
     rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_taken_in_flight = 0;
 }
 
 /* Drop the queued request no demod thread will take, and settle every request numbered so far (g_profile_req_m held):
@@ -13971,6 +13993,7 @@ rtl_stream_consume_demod_profile_request(void) {
 static void
 rtl_stream_retire_demod_profile_request_locked(void) {
     g_profile_req_pending.store(0, std::memory_order_relaxed);
+    g_profile_taken_in_flight = 0;
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
     g_profile_req_digital_landing = 0;
