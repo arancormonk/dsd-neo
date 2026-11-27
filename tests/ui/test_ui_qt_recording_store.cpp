@@ -6122,7 +6122,8 @@ test_seen_away_root_is_not_admitted(void) {
     // stay listed, and unavailable, to a sheet and to a playlist's admission alike.
     std::atomic<int> slices{0};
     std::atomic<bool> listedHeld{true};
-    std::atomic<bool> admittedHeld{false};
+    std::atomic<bool> sheetAvailable{false};
+    std::atomic<bool> admissionAvailable{false};
     s.store.setSliceHookForTest([&](const QString& path) {
         if (path != a) {
             return;
@@ -6131,14 +6132,21 @@ test_seen_away_root_is_not_admitted(void) {
         const QVariantList single = s.store.recordingsForFragments({fragment(1)});
         const QVariantList listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0);
         listedHeld = listedHeld && single.size() == 1 && listed.size() == 1;
-        admittedHeld = admittedHeld || admitted();
+        // Each read on its own (M2): the sheet's and the admission's.
+        const auto available = [](const QVariantList& rows) {
+            return rows.value(0).toMap().value(QStringLiteral("available")).toBool();
+        };
+        sheetAvailable = sheetAvailable || available(single);
+        admissionAvailable = admissionAvailable || available(listed);
     });
     const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&] { beforePass = admitted(); });
     s.store.setRootReadHookForTest({});
     s.store.setSliceHookForTest({});
     expect("seen away: the delete found the storage missing", seen);
     expect("seen away: between the read again's slices, the rows are listed", slices.load() >= 1 && listedHeld.load());
-    expect("seen away: between the read again's slices, not admitted", !admittedHeld.load());
+    expect("seen away: between the read again's slices, the sheet read sees them unavailable", !sheetAvailable.load());
+    expect("seen away: between the read again's slices, the admission sees them unavailable",
+           !admissionAvailable.load());
     expect("seen away: before the worker's pass marks it, the recording is not admitted", !beforePass.load());
     expect("seen away: back, while the pass reads it again, still not admitted",
            readHooked.load() && !duringRead.load());
