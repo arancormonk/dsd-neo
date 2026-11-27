@@ -351,6 +351,18 @@ playback_item_identified(const QVariantMap& item) {
     return sizeOk && size >= 0 && secOk && nanosOk;
 }
 
+/* Whether item @p index of a queued request is well formed (issue #909): it names a path, and its call is 0 for a part
+ * of one call, else the call before's (@p previous) or the next, from 0 with no hole. A part or playlist item (@p queued)
+ * also names its identity. Writes the item's call to @p call. */
+bool
+playback_item_valid(const QVariantMap& item, qsizetype index, int previous, bool parts, bool queued, int* call) {
+    if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, call)) {
+        return false;
+    }
+    const bool inOrder = *call == previous || (index > 0 && *call == previous + 1);
+    return inOrder && (!parts || *call == 0) && (!queued || playback_item_identified(item));
+}
+
 /* The readings a change of which is news on playbackChanged: all but the position. */
 auto
 playback_shown(const DecoderHost::PlaybackReading& r) {
@@ -372,11 +384,9 @@ DecoderHost::playbackItemsValid(const QVariantList& items, int mode) {
     // Parts and a playlist check each file at its turn, so every item names its identity; a single play names a path.
     int previous = 0;
     for (qsizetype i = 0; i < items.size(); ++i) {
-        const QVariantMap item = items.at(i).toMap();
         int call = 0;
-        if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, &call)
-            || (call != previous && (i == 0 || call != previous + 1)) || (mode == PlaybackParts && call != 0)
-            || (mode != PlaybackSingle && !playback_item_identified(item))) {
+        if (!playback_item_valid(items.at(i).toMap(), i, previous, mode == PlaybackParts, mode != PlaybackSingle,
+                                 &call)) {
             return false;
         }
         previous = call;
