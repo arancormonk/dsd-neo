@@ -252,10 +252,10 @@ Previous while a part opens opening it again (deleted meanwhile: skipped), no pl
 Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
 in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
 one is released; Previous on a recording deleted while it played skipping it for the call before, also from the last
-call), a resume from the paused gap or the focus back while the next part opens keeping the paused stretch until a
-part plays (paused again 600.05 s from the first pause: "timeout"),
-and `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build
-of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
+call; the last played part named at the end after a gap and the skips that followed it, R81), a resume from the paused
+gap or the focus back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s
+from the first pause: "timeout"), and `FocusRequests` (only a granted focus request kept; a refused one given back at
+once, every time). A second build of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
 outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
 the retire check after every delivery, `onDestroy` fenced to its generation (a late destroy leaving the next

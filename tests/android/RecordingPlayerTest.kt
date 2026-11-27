@@ -847,6 +847,31 @@ private fun partsPlayThroughHoldingOneTransientFocus() {
  * A restart that fails keeps searching backward (R55): with A, B and C, B deleted while it plays and Previous after
  * 3 s, B's reopen fails and A plays, not C; with B the last call, A plays and the playlist does not finish.
  */
+/**
+ * The last played part survives a gap after skipped parts (R81): A's part 1 plays, A's part 2 is gone, B's only part is
+ * gone. The gap names A; then the search finds nothing more and the play ends finished, still naming A, at its played
+ * position, not B at 0.
+ */
+private fun theLastPlayedPartSurvivesAGap() {
+    val rig = Rig()
+    rig.fail(path(0, 2), RecordingPlayer.REASON_GONE)
+    rig.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+    rig.queue(2, 1)
+    rig.prepared()
+    rig.elapse(5_000)
+    rig.complete()
+    rig.turn()
+    check(rig.status.gap && rig.status.call == 0 && rig.status.partOrdinal == 1) { "the gap names A's part 1" }
+    rig.elapse(RecordingPlayer.GAP_MS)
+    rig.turn()
+    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "the search finds nothing more: finished (${rig.state}, ${rig.status.endedReason})"
+    }
+    check(rig.status.call == 0 && rig.status.partOrdinal == 1 && rig.position == rig.length) {
+        "the end names A's part 1 at its played position: call ${rig.status.call}, ${rig.position}"
+    }
+}
+
 private fun aFailedRestartKeepsSearchingBackward() {
     for (last in listOf(false, true)) {
         val rig = Rig()
@@ -4086,6 +4111,7 @@ fun main() {
     partsPlayThroughHoldingOneTransientFocus()
     aFailedPartEndsPlayAllParts()
     aFailedRestartKeepsSearchingBackward()
+    theLastPlayedPartSurvivesAGap()
     aPlaylistPlaysCallsAndPartsInOrderWithAGapBetweenCalls()
     theGapReadsFrozenAndPausesWithIt()
     nextOpensTheNextCallAtOnceAlsoFromTheGap()

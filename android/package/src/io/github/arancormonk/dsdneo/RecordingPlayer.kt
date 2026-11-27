@@ -1282,8 +1282,9 @@ class RecordingPlayer(
 
     /** The readings of the part that played last, for the gap or the end; it has no player. */
     private fun showLeft() {
+        // Kept (R81): showing it for a gap does not clear it, so a search that then finds nothing more still ends on
+        // the part that played; it goes when another part starts or the play ends.
         val last = left ?: return
-        left = null
         index = last.index
         token = last.token
         durationMs = last.durationMs
