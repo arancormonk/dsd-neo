@@ -990,6 +990,20 @@ fun aScopedCommandChecksItsTokenBeforeTheTap() {
                 "the tap was kept: its timeout pauses B (${t.toggles})"
             }
         }
+        // C1: a held part's token is current: with a tap waiting, the sheet's Resume for it cancels the tap and acts.
+        val held = Playing(ServiceRig())
+        val hg = held.playlist()
+        held.deliver()
+        held.machine.onPrepared(held.tokens.last())
+        held.machine.pause(hg)
+        held.machine.onCompleted(held.tokens.last())
+        val ht = Taps(held)
+        val heldToken = held.machine.status.playToken
+        ht.taps.keyDown(hg, 0)
+        PlayPauseTaps.scoped(ht.taps, held.machine, hg, heldToken) { player, gen -> player.resumeFor(gen, heldToken) }
+        check(held.machine.status.gap) { "the held part's Resume is taken: the gap before call 2" }
+        ht.elapse(Taps.TAP_TIMEOUT_MS)
+        check(ht.toggles.isEmpty()) { "and cancelled the tap" }
         val stale = Playing(ServiceRig())
         val sg = stale.playlist()
         stale.deliver()

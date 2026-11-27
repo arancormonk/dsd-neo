@@ -1568,6 +1568,41 @@ private fun aCompletionWhilePausedIsHeld() {
         check(back.status.call == expected) { "$length ms: Previous on call ${back.status.call}, not $expected" }
     }
 
+    // C1: a held part is current. The sheet's Resume for its token finishes a SINGLE and opens a PARTS play's next
+    // part; held while interrupted, the sheet's Pause for it is taken (the focus back then moves nothing); a seek for
+    // it is still dropped.
+    val heldSingle = Rig()
+    heldSingle.play()
+    heldSingle.prepared()
+    heldSingle.machine.pause()
+    heldSingle.complete()
+    val singleToken = heldSingle.status.playToken
+    check(heldSingle.machine.accepts(heldSingle.generation, singleToken)) { "single: the held token is current" }
+    heldSingle.machine.resumeFor(heldSingle.generation, singleToken)
+    check(heldSingle.state == STOPPED && heldSingle.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "single: Resume for its token finishes it (${heldSingle.state})"
+    }
+    val heldParts = Rig()
+    heldParts.queue(2, mode = MODE_PARTS)
+    heldParts.prepared()
+    heldParts.machine.pause()
+    heldParts.complete()
+    heldParts.machine.seekFor(heldParts.generation, heldParts.status.playToken, 1_000)
+    check(heldParts.state == PAUSED && heldParts.status.partOrdinal == 1) { "parts: a seek for it is dropped" }
+    heldParts.machine.resumeFor(heldParts.generation, heldParts.status.playToken)
+    check(heldParts.status.partOrdinal == 2) { "parts: Resume for its token opens part 2" }
+    val heldLost = Rig()
+    heldLost.queue(2, 1)
+    heldLost.prepared()
+    heldLost.machine.onFocusChange(heldLost.focus.epoch, FocusChange.LOST_TRANSIENT)
+    heldLost.complete()
+    heldLost.machine.pauseFor(heldLost.generation, heldLost.status.playToken)
+    check(heldLost.state == PAUSED && heldLost.status.pausedReason == RecordingPlayer.PAUSED_USER) {
+        "interrupted: Pause for the held part is taken, no error (${heldLost.state}, ${heldLost.status.pausedReason})"
+    }
+    heldLost.machine.onFocusChange(heldLost.focus.epoch, FocusChange.GAINED)
+    check(heldLost.status.partOrdinal == 1 && heldLost.state == PAUSED) { "interrupted: paused, nothing moves" }
+
     // R72: the hold lets its player go, counted until its thread ends; nothing later from that player reaches the play.
     val freed = Rig()
     freed.queue(2, 1)

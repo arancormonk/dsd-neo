@@ -882,11 +882,6 @@ class RecordingPlayer(
     }
 
     /**
-     * [pause] for the item whose play token the host captured; dropped when that item is not current. The item is
-     * current while its player is open, and in the gap after its call even with none (its call's last part failed
-     * while it played): the status names it there, and Pause and Resume act on the play.
-     */
-    /**
      * Whether a command scoped to play [generation] (and to the item whose play [token] it captured, 0 for the play
      * alone) would act now (R73): checked on the looper before an explicit command cancels a waiting tap, so a stale
      * one changes nothing, the tap included.
@@ -897,6 +892,12 @@ class RecordingPlayer(
         generation != 0 && generation == this.generation && active
     }
 
+    /**
+     * [pause] for the item whose play token the host captured; dropped when that item is not current. The item is
+     * current while its player is open, in the gap after its call even with none (its call's last part failed while
+     * it played), and while its completion is held (C1: its player let go, R72): the status names it there, and Pause
+     * and Resume act on the play.
+     */
     fun pauseFor(generation: Int, token: Long) {
         if (isCurrent(generation, token)) {
             pause(generation)
@@ -1901,7 +1902,7 @@ class RecordingPlayer(
 
     private fun isCurrent(generation: Int, token: Long) =
         token != 0L && generation == this.generation && token == this.token &&
-            (player != null || opening != null || waiting != 0L || gap)
+            (player != null || opening != null || waiting != 0L || gap || completionHeld)
 
     private fun currentCall(): Int = items[index].call
 

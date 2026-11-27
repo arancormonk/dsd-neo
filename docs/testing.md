@@ -280,8 +280,9 @@ by a queued or held start, a seek after it dropped, its silence at once, one wai
 completion (R66); a completion while paused held, the part current at its end until Resume moves on to the next part
 or the gap, Previous reading the end (a 5 s part restarts, a 2 s part moves back, a part of unknown length how far it
 played), a late seek landing moving nothing, the held player let go and counted until its thread ends with its later
-failure and completion reaching nothing, an interrupted part held until the focus returns at a part and a call joint, a
-sheet's SINGLE and PARTS held too, the deadline counting on; silence at once with nothing started or
+failure and completion reaching nothing, the held token current to the sheet's Resume and Pause (a SINGLE finished, a
+PARTS play's next part opened, a seek still dropped), an interrupted part held until the focus returns at a part and a
+call joint, a sheet's SINGLE and PARTS held too, the deadline counting on; silence at once with nothing started or
 after a pause that returned, after a pause that threw only once the release has returned, never for a release that threw
 (its ended thread counts as silent instead, M3), and none unasked (R62).
 `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
