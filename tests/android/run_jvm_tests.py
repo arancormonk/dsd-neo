@@ -310,6 +310,29 @@ def playback_requests_checked_before_begin():
     return None
 
 
+def playback_scoped_commands_check_first():
+    """#909 R73: RecordingPlayback's token- and generation-scoped commands (pauseFor, resumeFor, stopGeneration) go
+    through PlayPauseTaps.scoped() (itemCommand() for the item ones), which checks the command before it cancels a
+    waiting headset tap; never through explicit(), which cancels first. RecordingPlayback cannot run in the JVM suites,
+    so its source is checked here."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    for name in ("pauseFor", "resumeFor", "stopGeneration"):
+        body = re.search(rf"fun {name}\(.*?(?=\n    @JvmStatic|\n    private fun |\n    /\*\*)", source, re.S)
+        if not body:
+            return f"{playback.relative_to(REPO)}: {name} not found"
+        text = body.group(0)
+        if "explicit" in text or ("itemCommand(" not in text and "PlayPauseTaps.scoped(" not in text):
+            return f"{playback.relative_to(REPO)}: {name} must go through PlayPauseTaps.scoped(), not explicit()"
+    item = re.search(r"private fun itemCommand\(.*?\n\n", source, re.S)
+    if not item or "PlayPauseTaps.scoped(" not in item.group(0):
+        return f"{playback.relative_to(REPO)}: itemCommand() must go through PlayPauseTaps.scoped()"
+    return None
+
+
 def playback_record_fields_match():
     """#909: the status record's fields are read by position, so Status.record() and the idle record in
     RecordingPlayback.kt must list as many as playback_status_record.h's kPlaybackStatusFields."""
@@ -1680,6 +1703,7 @@ SUITES = {
             playback_codes_match,
             playback_record_fields_match,
             playback_requests_checked_before_begin,
+            playback_scoped_commands_check_first,
         ),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
