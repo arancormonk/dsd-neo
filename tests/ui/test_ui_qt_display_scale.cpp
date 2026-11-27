@@ -364,8 +364,13 @@ class FakePlatform final : public PresentationScale::Platform {
     }
 
     bool
+    keyboardAvailable() override {
+        return keyboard_available;
+    }
+
+    bool
     keyboardTopPixels(int* pixels) override {
-        if (!keyboard_readable) {
+        if (!keyboard_available || !keyboard_readable) {
             return false;
         }
         *pixels = keyboard;
@@ -405,6 +410,7 @@ class FakePlatform final : public PresentationScale::Platform {
     bool table_unreadable = false;
     qreal zero_at_sp = -1;
     bool keyboard_readable = true;
+    bool keyboard_available = true;
     int keyboard = -1;
     int resyncs = 0;
     int pushes = 0;
@@ -687,6 +693,33 @@ test_keyboard_inset() {
     assert(scale.tick(platform).keyboard && near(scale.keyboardTop(), -1));
 }
 
+/* Issue #909: the host has the keyboard's word only while it can read it at all; otherwise Qt's input method has it. */
+void
+test_keyboard_reported_only_while_readable() {
+    PresentationScale scale;
+    FakePlatform platform;
+    assert(!scale.reportsKeyboard()); // before any reading
+    assert(scale.tick(platform).keyboard && scale.reportsKeyboard() && near(scale.keyboardTop(), -1));
+    assert(!scale.tick(platform).keyboard);
+    // A reading that fails once leaves the word with the host, the inset kept.
+    platform.keyboard = 1050;
+    (void)scale.tick(platform);
+    platform.keyboard_readable = false;
+    assert(!scale.tick(platform).keyboard && scale.reportsKeyboard() && near(scale.keyboardTop(), 400));
+    // The reader reported unavailable (AppSupport.keyboardTopPixels() gone): no word, and the change is news.
+    PresentationScale none;
+    FakePlatform missing;
+    missing.keyboard_available = false;
+    missing.keyboard = 1050;
+    (void)none.tick(missing);
+    assert(!none.reportsKeyboard() && near(none.keyboardTop(), -1));
+    assert(!none.tick(missing).keyboard);
+    missing.keyboard_available = true;
+    assert(none.tick(missing).keyboard && none.reportsKeyboard() && near(none.keyboardTop(), 400));
+    missing.keyboard_available = false;
+    assert(none.tick(missing).keyboard && !none.reportsKeyboard());
+}
+
 void
 test_font_lookup_bounds() {
     PresentationScale scale;
@@ -753,6 +786,7 @@ main(int argc, char** argv) {
     test_first_table_unreadable();
     test_key_moves_during_table_read();
     test_keyboard_inset();
+    test_keyboard_reported_only_while_readable();
     test_font_lookup_bounds();
     test_non_finite_values();
 

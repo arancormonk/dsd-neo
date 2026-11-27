@@ -20140,8 +20140,10 @@ Qt Quick frontend (`src/ui/qt`):
       too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up,
       decided by the host first, `Theme.keyboardShown()`: a `decoderHost.keyboardTop` of 0 or more is the answer, a
       host that reports the keyboard itself (`DecoderHost::reportsKeyboard()`, Android, whose
-      `AppSupport.updateKeyboardBounds()` uses the IME inset) saying -1 means hidden, and only a host with no word of
-      its own falls back to `Qt.inputMethod.visible` with a keyboard of some height; never by overlap, which a window
+      `AppSupport.updateKeyboardBounds()` uses the IME inset, while `keyboardTopPixels()` can be called:
+      `PresentationScale::reportsKeyboard()`, the platform's `keyboardAvailable()` at the last tick) saying -1 means
+      hidden, and only a host with no word of its own (the base host, or Android without its reader) falls back to
+      `Qt.inputMethod.visible` with a keyboard of some height; never by overlap, which a window
       resized above the keyboard does not have) shows it,
       says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call playing: the
       player names the call that followed the skips, so a call Qt sees first after a stretch away never takes an earlier

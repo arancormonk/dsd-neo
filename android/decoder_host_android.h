@@ -71,10 +71,11 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
         return m_scale.keyboardTop();
     }
 
-    /* AppSupport.updateKeyboardBounds() reports the IME's inset: Qt's own tracking is not trusted here. */
+    /* AppSupport.updateKeyboardBounds() reports the IME's inset (Qt's own tracking is not trusted here), while its
+       keyboardTopPixels() can be called: the same check each read makes. */
     bool
     reportsKeyboard() const override {
-        return true;
+        return m_scale.reportsKeyboard();
     }
 
     void setDarkAppearance(bool dark) override;

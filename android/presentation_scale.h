@@ -68,6 +68,11 @@ class PresentationScale {
          * False while it cannot be read whole (Android part-way through updating its resources, or a failed call).
          */
         virtual bool fontTable(FontKey* key, QVector<qreal>* pixels) = 0;
+        /**
+         * @brief Whether the platform can read the keyboard at all (issue #909): the check keyboardTopPixels() makes
+         * before each read. False: the host has no word on the keyboard, and the UI falls back to Qt's input method.
+         */
+        virtual bool keyboardAvailable() = 0;
         /** @brief The keyboard's top edge in physical pixels (negative while hidden); false when unreadable. */
         virtual bool keyboardTopPixels(int* pixels) = 0;
         /** @brief One host diagnostic line. */
@@ -108,6 +113,12 @@ class PresentationScale {
         return m_keyboard_top;
     }
 
+    /** @brief Whether keyboardTop() is the platform's reading (keyboardAvailable() at the last tick); false before. */
+    bool
+    reportsKeyboard() const {
+        return m_keyboard_reported;
+    }
+
     bool
     pushInFlight() const {
         return m_push_in_flight;
@@ -136,6 +147,7 @@ class PresentationScale {
     qreal m_font_ratio = 0;
     int m_font_revision = 0;
     qreal m_keyboard_top = -1;
+    bool m_keyboard_reported = false;
 };
 
 } // namespace dsd_android

@@ -2702,7 +2702,9 @@ check_recording_playback() {
     reset_recordings();
     PlatformRecordings& r = recordings();
     check(host.playbackSupported() && host.property("playbackSupported").toBool(), "the Android host plays");
-    check(host.property("reportsKeyboard").toBool(), "#909: Android's keyboard top is the platform's own word");
+    // #909: Android's keyboard top is the platform's own word only once a reading says it can read the keyboard; this
+    // host reads none, so Qt's input method stays the fallback (UI_QT_DISPLAY_SCALE covers the reading).
+    check(!host.property("reportsKeyboard").toBool(), "#909: no keyboard reading yet: no word of the host's own");
 
     r.nextGeneration = 7;
     check(host.playRecordingOwned(a) == 7, "a sheet's play answers its generation");

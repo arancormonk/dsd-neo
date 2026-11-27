@@ -494,10 +494,15 @@ class AndroidPresentationPlatform final : public PresentationScale::Platform {
     }
 
     bool
+    keyboardAvailable() override {
+        static const bool available = static_method_available(kSupportClass, "keyboardTopPixels", "()I");
+        return available;
+    }
+
+    bool
     keyboardTopPixels(int* pixels) override {
         // A failed primitive call reads 0, a keyboard covering the whole window; never take that for a reading.
-        static const bool available = static_method_available(kSupportClass, "keyboardTopPixels", "()I");
-        if (!available) {
+        if (!keyboardAvailable()) {
             return false;
         }
         *pixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
