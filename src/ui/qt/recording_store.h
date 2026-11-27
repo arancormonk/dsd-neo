@@ -608,6 +608,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* A first read of @p path that read @p rows rows, dropped (true) when @p root's directory is missing now (r16t): the
      * folder stays unread and the next pass is asked for. Takes the lock. */
     bool firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass);
+    /* Whether a new folder may go on @p root (@p usable, or @p makeOnly with its directory still absent, then made);
+     * one only to be made that is back since the start's look is passed over and its listing asked for. Lock held. */
+    bool rootTakenForFolderLocked(int root, bool usable, bool makeOnly);
     /* @p root's path ("" for no root). Takes the lock. */
     QString rootPathOf(int root) const;
     /* refreshRoots()'s look at @p root (at @p path): @p there whether it is there for the index, and true when this

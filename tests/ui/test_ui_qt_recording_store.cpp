@@ -21,6 +21,7 @@
 #include <QCoreApplication>
 #include <QDate>
 #include <QDir>
+#include <QElapsedTimer>
 #include <QFile>
 #include <QFileInfo>
 #include <QGuiApplication>
@@ -39,6 +40,7 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
+#include <QThread>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
@@ -5588,6 +5590,40 @@ test_first_read_of_a_vanished_directory_is_not_committed(void) {
     expect("vanished read: back and listed, its row is available", listed_as(s.store, 1, true));
 }
 
+/* r16t: a start that passes over a root back but not listed asks for its listing even when it finds no folder. One
+ * root, held away; it comes back between the start's look and its choice of folder: the start gets no folder, and the
+ * listing runs with no other request (no endSession(), no pass() asked for here). */
+void
+test_start_with_no_folder_asks_for_the_listing(void) {
+    const Roots roots;
+    const QString moved = roots.dir.path() + QStringLiteral("/ext/moved");
+    Store s({roots.external});
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000973-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("no folder: the card's folder moved away", QDir().rename(roots.external, moved));
+    s.pass(); // held away
+    expect("no folder: held away", listed_as(s.store, 1, false));
+    std::atomic<bool> restored{false};
+    s.store.setSessionRootsHookForTest([&]() {
+        if (!restored.exchange(true)) {
+            (void)QDir().rename(moved, roots.external);
+        }
+    });
+    const quint64 before = s.store.passCountForTest();
+    const QString none = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.setSessionRootsHookForTest({});
+    expect("no folder: the start gets none", restored.load() && none.isEmpty());
+    QElapsedTimer waited;
+    waited.start();
+    while (!listed_as(s.store, 1, true) && waited.elapsed() < 5000) {
+        QThread::msleep(5);
+    }
+    expect("no folder: the listing it asked for ran",
+           s.store.passCountForTest() > before && listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -7036,6 +7072,7 @@ main(int argc, char** argv) {
     test_session_on_another_root_notes_a_missing_indexed_root();
     test_session_never_records_onto_a_root_back_unlisted();
     test_first_read_of_a_vanished_directory_is_not_committed();
+    test_start_with_no_folder_asks_for_the_listing();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

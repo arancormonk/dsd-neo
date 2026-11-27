@@ -705,6 +705,25 @@ RecordingStore::firstReadDropped(const QString& path, int root, qsizetype rows, 
     return true;
 }
 
+bool
+RecordingStore::rootTakenForFolderLocked(int root, bool usable, bool makeOnly) {
+    // Never a parent: an available root's parent is there, and one gone since is not made again in its place. A root
+    // only to be made (r15t) is passed over when its directory is there by now: it waits for its listing, which is
+    // asked for whether or not the start finds a folder elsewhere (r16t).
+    const bool missing = !QFileInfo(m_roots.at(root)).isDir();
+    if (makeOnly && !missing) {
+        m_passRequested = true;
+        return false;
+    }
+    if (!(usable || makeOnly) || (missing && !QDir().mkdir(m_roots.at(root)))) {
+        return false;
+    }
+    if (missing) {
+        noteRootMadeLocked(root); // I2: a directory made over indexed folders is read again in full
+    }
+    return true;
+}
+
 QString
 RecordingStore::rootPathOf(int root) const {
     const std::lock_guard<std::mutex> lock(m_mutex);
@@ -2679,6 +2698,8 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
         if (!m_rootAvailable.value(i) || rootSeenAwayLocked(i)) {
             (*makeOnly)[i] = missing && creatable;
             usable[i] = false;
+            // Back and passed over: its listing is asked for, whether or not this start finds a folder (r16t).
+            m_passRequested = m_passRequested || !missing;
         }
     }
     return usable;
@@ -2852,14 +2873,8 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
                                 const QList<bool>& makeOnly) {
     const QString base = recording_folder_base_name(kind, uid, name);
     for (int i = 0; i < m_roots.size(); i++) {
-        // Never a parent: an available root's parent is there, and one gone since is not made again in its place. A
-        // root only to be made (r15t) is passed over when its directory is there by now: it waits for its listing.
-        const bool missing = !QFileInfo(m_roots.at(i)).isDir();
-        if (!(usable.at(i) || (makeOnly.value(i) && missing)) || (missing && !QDir().mkdir(m_roots.at(i)))) {
+        if (!rootTakenForFolderLocked(i, usable.at(i), makeOnly.value(i))) {
             continue;
-        }
-        if (missing) {
-            noteRootMadeLocked(i); // I2: a directory made over indexed folders is read again in full
         }
         for (int n = 1; n <= kMaxFolderCandidates; n++) {
             const QString dirName = n == 1 ? base : QStringLiteral("%1 %2").arg(base, QString::number(n));

@@ -20485,23 +20485,25 @@ Qt Quick frontend (`src/ui/qt`):
     (`test_unread_journal_retry_publishes`). A session start never records onto a root held or seen away (a delete
     request saw it missing, back before the pass, or a pass marked it away) until a full listing has read it, whatever
     its looks see now: a card back unread may hold the owner's folder under another name, so the start records on the
-    fallback and the pass it asks for lists the card (r15t, `test_session_never_records_onto_a_root_back_unlisted`; the
-    one exception, a start that finds the directory absent and makes it anew, is read again in full after, I2). A root
-    listed while it is not away (its directory there again, I1) keeps a folder a session start made or took on it during
-    the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one the listing
-    has keeps the start's owner and label; one it has not was made new, and what the index held at that path before, a
-    folder removed while the storage was away, goes with its recordings;
-    `test_rescan_keeps_a_session_folder_made_meanwhile`, `test_rescan_drops_a_recreated_folders_old_recordings`,
-    `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
-    its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
-    does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
-    `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
-    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
-    preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
-    a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
-    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do. A recheck
-    keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording file (a link,
-    a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
+    fallback and the pass it asks for lists the card (r15t, `test_session_never_records_onto_a_root_back_unlisted`; a
+    root passed over so has its listing asked for whether or not the start finds a folder elsewhere, r16t,
+    `test_start_with_no_folder_asks_for_the_listing`; the one exception, a start that finds the directory absent and
+    makes it anew, is read again in full after, I2). A root listed while it is not away (its directory there again, I1)
+    keeps a folder a session start made or took on it during the listing, or relabelled (`m_listing`,
+    `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one the listing has keeps the start's owner and label; one
+    it has not was made new, and what the index held at that path before, a folder removed while the storage was away,
+    goes with its recordings; `test_rescan_keeps_a_session_folder_made_meanwhile`,
+    `test_rescan_drops_a_recreated_folders_old_recordings`, `test_rescan_keeps_a_relabel_made_meanwhile`). Storage
+    plugged in again after a pass marked it away wakes no pass on its own, so an export or a save probes every root held
+    as away first (`awayRootsBackLocked()`, as a delete request does through `checkRootsLocked()`): one back asks for
+    the pass that reads it, and the request is refused as `loading` meanwhile (`test_export_probes_a_root_back`); so do
+    Delete all, Delete unfinished and an owner's delete, refused the same way (`requestDeletes()`,
+    `test_bulk_deletes_probe_a_root_back`). A session start that finds the preferred storage missing remembers it as a
+    delete request's probe does (`m_rootsSeenAway`), so storage back before a pass samples it is listed in full
+    (`test_session_start_remembers_storage_away`). On Windows the no-follow type probe (`dsd_path_type_nofollow()`)
+    takes a long absolute name in extended-length form, as the openers do. A recheck keeps a recording whose name cannot
+    be read: only a name confirmed missing, or confirmed no recording file (a link, a folder, a FIFO), leaves the index
+    (`test_recheck_keeps_an_unreadable_name`).
 
     Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
     documented rather than handled:
