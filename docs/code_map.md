@@ -20192,28 +20192,33 @@ Qt Quick frontend (`src/ui/qt`):
       ignored. The direct transport callbacks (`onPlay`, `onPause`, `onStop`, `onSkipToNext`, `onSkipToPrevious`, the
       Stop custom action: the lock screen, a Bluetooth controller) cancel the playlist's waiting tap without counting it
       (`SessionKeys.direct()`, R60, M7), so the command acts alone: a tap's timeout never undoes an explicit Pause, and
-      a paused playlist's tap never resumes it, taking another app's audio, before the Pause. Every other key goes to
-      the framework, after a waiting tap counts as single; metadata (title the call name, subtitle the line and "Call 3
-      of 41", the part's duration) and a PlaybackState with exactly the table's action bits plus a Stop custom action
-      (`onCustomAction`); the session goes inactive when its play ends and is released in `onDestroy`. Channel
-      `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen
-      visibility, tap opens the launcher intent. The session follows every render at once; the notification is posted at
-      most once per 500 ms (`NotificationPace`, plain Kotlin), the first of a burst at once and the rest as one trailing
-      post of the latest status, shown only if its playlist still owns the service when it fires, dropped when a start's
-      foreground notification shows the owner's current status, and cancelled at the retire and in `onDestroy`: Android
-      sheds an app's updates over its enqueue rate (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per package,
-      shared with the decoder's notification, which posts at most once a second), and a shed last update left a paused
-      playlist's notification offering Pause on 29-32. On 29-32 the compact Previous / Play-Pause / Next and Stop are
-      immutable `getService` PendingIntents (a request code per generation and action; `deleteIntent` → Stop); on 33+
-      SystemUI builds them from the PlaybackState. A partial wake lock (`dsd-neo:playback`) is held while a playlist
-      wants audio (opening, playing, the gap); the `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered
-      with no export flag) while any play is open, which drops the service's waiting headset tap on the looper before
-      the noisy pause (R54: `PlayPauseTaps.disconnected()`, so the tap's timeout cannot resume through the speaker), and
-      the `SCREEN_ON` one (the same way) while a playlist is open. While the media session is active for the playlist
-      that owns the service (`RecordingPlayback.playlistSession()`, the session's token: `ActiveSession` in
-      `MediaKeys.kt`, published by the service's `render()` once it has made the owner's session active, cleared at that
-      playlist's end, at a render with the session inactive and when the session is released, and not the owner's until
-      its own render after a replacement; the owner alone is set at promotion, before the looper starts the play),
+      a paused playlist's tap never resumes it, taking another app's audio, before the Pause. Every other explicit
+      command does the same, on the looper (R67, `PlayPauseTaps.explicit()`): the 29-32 notification buttons
+      (`ACTION_TRANSPORT`, for their own generation, the process and owner checks kept) and the app's own Pause, Resume,
+      Next, Previous and Stop (any waiting tap); a media-button key still settles a waiting tap first, as AOSP's
+      `MediaSession.Callback` does. The Activity's foreground change, the content intent and the screen-on receiver
+      apply no transport command; the noisy receiver drops the tap (R54). Every other key goes to the framework, after a
+      waiting tap counts as single; metadata (title the call name, subtitle the line and "Call 3 of 41", the part's
+      duration) and a PlaybackState with exactly the table's action bits plus a Stop custom action (`onCustomAction`);
+      the session goes inactive when its play ends and is released in `onDestroy`. Channel `dsdneo_playback` ("Call
+      recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen visibility, tap opens the
+      launcher intent. The session follows every render at once; the notification is posted at most once per 500 ms
+      (`NotificationPace`, plain Kotlin), the first of a burst at once and the rest as one trailing post of the latest
+      status, shown only if its playlist still owns the service when it fires, dropped when a start's foreground
+      notification shows the owner's current status, and cancelled at the retire and in `onDestroy`: Android sheds an
+      app's updates over its enqueue rate (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per package, shared with
+      the decoder's notification, which posts at most once a second), and a shed last update left a paused playlist's
+      notification offering Pause on 29-32. On 29-32 the compact Previous / Play-Pause / Next and Stop are immutable
+      `getService` PendingIntents (a request code per generation and action; `deleteIntent` → Stop); on 33+ SystemUI
+      builds them from the PlaybackState. A partial wake lock (`dsd-neo:playback`) is held while a playlist wants audio
+      (opening, playing, the gap); the `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered with no export
+      flag) while any play is open, which drops the service's waiting headset tap on the looper before the noisy pause
+      (R54: `PlayPauseTaps.disconnected()`, so the tap's timeout cannot resume through the speaker), and the `SCREEN_ON`
+      one (the same way) while a playlist is open. While the media session is active for the playlist that owns the
+      service (`RecordingPlayback.playlistSession()`, the session's token: `ActiveSession` in `MediaKeys.kt`, published
+      by the service's `render()` once it has made the owner's session active, cleared at that playlist's end, at a
+      render with the session inactive and when the session is released, and not the owner's until its own render after
+      a replacement; the owner alone is set at promotion, before the looper starts the play),
       `DsdNeoActivity.dispatchKeyEvent()` takes the media keys (`MediaKeys.sessionFor()`: headset hook, play, pause,
       play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) from Qt, whose activity
       consumes every key, and hands each to the playlist's own session (`MediaController(token)

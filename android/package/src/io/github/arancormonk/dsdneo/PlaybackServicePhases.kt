@@ -485,6 +485,27 @@ class PlayPauseTaps(
         }
 
         /**
+         * An explicit transport command, on the looper (R67): a notification button for playlist [generation] (API
+         * 29-32), or the app's own Pause, Resume, Next, Previous or Stop (generation 0: whatever plays). The waiting
+         * tap ([taps], the service instance's, null with none) is cancelled, not counted, then [command] runs, so it
+         * acts alone and the tap's timeout never undoes it. A media-button key settles a waiting tap first instead, as
+         * AOSP's MediaSession.Callback does ([SessionKeys.onKey]).
+         */
+        fun explicit(
+            taps: PlayPauseTaps?,
+            generation: Int,
+            player: RecordingPlayer,
+            command: (RecordingPlayer, Int) -> Unit,
+        ) {
+            if (generation != 0) {
+                taps?.ended(generation)
+            } else {
+                taps?.drop()
+            }
+            command(player, generation)
+        }
+
+        /**
          * The headphones were disconnected (AUDIO_BECOMING_NOISY), on the looper: the instance's waiting tap ([taps],
          * null with no service) is dropped first, then the player pauses for the noise (R54). Left armed, the tap's
          * timeout would find the play paused and resume it through the speaker.

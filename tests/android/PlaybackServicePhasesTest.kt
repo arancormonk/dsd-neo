@@ -927,6 +927,33 @@ fun aDirectPauseCancelsAWaitingTap() {
 }
 
 /**
+ * An explicit command cancels a waiting tap (R67): playing, a tap waits, then the notification's Pause (API 29-32,
+ * ACTION_TRANSPORT) or the app's own Pause arrives: paused, the tap never counted, and its timeout changes nothing.
+ */
+fun anExplicitCommandCancelsAWaitingTap() {
+    for (generationNamed in listOf(true, false)) {
+        val playing = Playing(ServiceRig())
+        val machine = playing.machine
+        val t = Taps(playing)
+        val g = playing.playlist()
+        playing.deliver()
+        machine.onPrepared(playing.tokens.last())
+        check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "it plays" }
+        t.taps.keyDown(g, 0)
+        PlayPauseTaps.explicit(t.taps, if (generationNamed) g else 0, machine) { player, generation ->
+            player.pause(generation)
+        }
+        check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED && t.toggles.isEmpty()) {
+            "named $generationNamed: the Pause pauses, the tap never counted"
+        }
+        t.elapse(Taps.TAP_TIMEOUT_MS)
+        check(t.toggles.isEmpty() && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+            "named $generationNamed: the tap's timeout changes nothing: still paused"
+        }
+    }
+}
+
+/**
  * The transport keys are the session's own queue commands against the player's state on the looper (#909): paused, a
  * headset tap and then a dedicated Pause within the double-tap wait: the tap plays first, then the Pause pauses.
  */
@@ -1012,5 +1039,6 @@ fun main() {
     aDisconnectDropsAWaitingTap()
     transportKeysFollowAWaitingTapOnThePlayersState()
     aDirectPauseCancelsAWaitingTap()
+    anExplicitCommandCancelsAWaitingTap()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }

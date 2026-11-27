@@ -83,6 +83,10 @@ object RecordingPlayback {
     /** The playback service instance alive; on the main thread only. */
     private var service: RecordingPlaybackService? = null
 
+    /** The service instance's headset taps, for the explicit commands on the looper (R67); null with none. */
+    @Volatile
+    private var serviceTaps: PlayPauseTaps? = null
+
     /** The playlist whose media session the service last rendered active (#909): the Activity's media key handoff. */
     private val activeSession = ActiveSession<MediaSession.Token>()
 
@@ -177,36 +181,42 @@ object RecordingPlayback {
         return begin(context, mode) { machine, generation -> machine.play(generation, mode, items, start) }
     }
 
-    /** Queue-wide commands: the current play, whatever its item. */
+    /**
+     * Queue-wide commands: the current play, whatever its item. Each is explicit (R67): a waiting headset tap is
+     * cancelled first, so the command acts alone.
+     */
     @JvmStatic
-    fun next() = post { it.next() }
+    fun next() = explicit { it.next() }
 
     @JvmStatic
-    fun previous() = post { it.previous() }
+    fun previous() = explicit { it.previous() }
 
     @JvmStatic
-    fun pause() = post { it.pause() }
+    fun pause() = explicit { it.pause() }
 
     @JvmStatic
-    fun resume() = post { it.resume() }
+    fun resume() = explicit { it.resume() }
 
     /** The host's own stop: whatever plays stops, and the next status has no generation. */
     @JvmStatic
-    fun stop() = post { it.stop() }
+    fun stop() = explicit { it.stop() }
 
     /** Stop play [generation] only (the bar's Stop names its playlist); it keeps its terminal reading. */
     @JvmStatic
-    fun stopGeneration(generation: Int) = post { it.stop(generation) }
+    fun stopGeneration(generation: Int) = explicit { it.stop(generation) }
+
+    private fun explicit(command: (RecordingPlayer) -> Unit) =
+        post { machine -> PlayPauseTaps.explicit(serviceTaps, 0, machine) { player, _ -> command(player) } }
 
     /** Item commands: dropped on the looper unless the item whose play [token] the host captured is still current. */
     @JvmStatic
     fun seekFor(token: Long, positionMs: Long) = post { it.seekFor(it.status.generation, token, positionMs) }
 
     @JvmStatic
-    fun pauseFor(token: Long) = post { it.pauseFor(it.status.generation, token) }
+    fun pauseFor(token: Long) = explicit { it.pauseFor(it.status.generation, token) }
 
     @JvmStatic
-    fun resumeFor(token: Long) = post { it.resumeFor(it.status.generation, token) }
+    fun resumeFor(token: Long) = explicit { it.resumeFor(it.status.generation, token) }
 
     /**
      * The player's status record ([RecordingPlayer.Status.record], 22 fields), which DecoderHostAndroid parses; the
@@ -271,6 +281,7 @@ object RecordingPlayback {
 
     internal fun serviceCreated(instance: RecordingPlaybackService): Int {
         service = instance
+        serviceTaps = instance.taps
         return phases.created()
     }
 
@@ -281,6 +292,7 @@ object RecordingPlayback {
     internal fun serviceDestroyed(instance: RecordingPlaybackService, serial: Int): Boolean {
         if (service === instance) {
             service = null
+            serviceTaps = null
         }
         val destroyed = phases.destroyed(serial)
         if (destroyed.served != 0) {
@@ -310,7 +322,9 @@ object RecordingPlayback {
     internal fun transport(token: Long, generation: Int, command: (RecordingPlayer, Int) -> Unit) {
         val target = phases.transport(token, generation)
         if (target != 0) {
-            post { if (phases.isOwner(target)) command(it, target) }
+            // Explicit (R67): that playlist's waiting headset tap is cancelled first, on the looper, as a session
+            // callback's is (SessionKeys.direct()).
+            post { if (phases.isOwner(target)) PlayPauseTaps.explicit(serviceTaps, target, it, command) }
         }
     }
 
