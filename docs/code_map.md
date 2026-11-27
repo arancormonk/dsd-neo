@@ -20302,10 +20302,11 @@ Qt Quick frontend (`src/ui/qt`):
       watchdog bounding the wait (R44, r13); and a recording whose storage stops answering after its start was
       acknowledged (a card that stalls mid-read) can leave the playlist waiting on it, the partial wake lock held and
       the device kept awake, until Stop: the 10 s watchdog bounds only a start, and no timer watches a part that has
-      started (r18l).
+      started (r18l); and the sheet compares a seek's landing count with the one read at the last poll, so two seeks
+      made between two polls can show the first one's landing for a moment before the second lands (r19).
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
-      `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
-      `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
+      `MediaKeysTest.kt`, `PlayerOwnerStateTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`,
+      `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
       `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml`, `tst_call_recording_player.qml`),
       `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`), `ANDROID_R8` (the new JNI keeps).
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
