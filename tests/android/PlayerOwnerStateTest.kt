@@ -192,9 +192,39 @@ private fun aStartWaitsForAHeldSeek() {
     check(paused.platform.ops == listOf("seek 10000", "seek 30000")) { "a pause drops the start that waited" }
 }
 
+/**
+ * R66: a completed player never starts again. Completion, then a start queued behind it, then the release: no platform
+ * start. A start held behind a seek and a seek after completion do nothing either, and its silence is at once.
+ */
+private fun aCompletedPlayerNeverStartsAgain() {
+    val o = Owner()
+    o.state.onStarted()
+    o.state.onCompleted()
+    o.state.start { o.platform.ops += "start" }
+    o.state.released(returned = true)
+    check("start" !in o.platform.ops && !o.state.started) { "no platform start after completion: ${o.platform.ops}" }
+
+    val held = Owner()
+    held.state.seek(10_000, 1)
+    held.state.seek(30_000, 2)
+    held.state.start { held.platform.ops += "start" }
+    held.state.onCompleted()
+    held.state.seekCompleted()
+    check(held.platform.ops == listOf("seek 10000")) { "the held seek and start go nowhere: ${held.platform.ops}" }
+    held.state.seek(5_000, 3)
+    check(held.platform.ops == listOf("seek 10000")) { "a seek after completion is dropped" }
+
+    val silent = Owner()
+    silent.state.onStarted()
+    silent.state.onCompleted()
+    silent.state.silence()
+    check(silent.silences == 1) { "a completed player is silent at once" }
+}
+
 fun main() {
     aSeekInFlightIsGivenUpAfterItsBound()
     aStartWaitsForAHeldSeek()
+    aCompletedPlayerNeverStartsAgain()
     eachCompletionNamesTheSeekThatLanded()
     quickSeeksKeepOnlyTheNewest()
     aSeekThatThrowsHoldsNothing()

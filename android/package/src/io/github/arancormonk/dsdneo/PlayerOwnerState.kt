@@ -21,6 +21,11 @@ package io.github.arancormonk.dsdneo
  * early. A start asked for while a seek is held waits until that seek has gone to the platform (M2), so the platform
  * sees seek, then start (R45).
  *
+ * Completion (R66): the owner marks a player completed ([completed]) before the completion goes on to the machine.
+ * Completed, it never starts again: a start queued or held behind a seek does nothing (starting a completed platform
+ * player would play its recording again), and the machine's completion answers the start it asked for. A seek after
+ * it is dropped too. A completed player is silent: asked for its silence, it answers at once.
+ *
  * Silence (R62): a start the platform made ([started]) is undone only by a pause that returned. Asked for its silence,
  * the owner reports it ([silent]) at once when nothing sounds; when a start stands (its pause threw, or none ran), the
  * release, once it has returned, reports it instead. After a release that threw, the machine takes the player's
@@ -48,6 +53,10 @@ class PlayerOwnerState(
     var started = false
         private set
 
+    /** The platform player played to its end (R66): no start or seek reaches it again. */
+    var completed = false
+        private set
+
     private var inFlight = 0L
     private var giveUp: (() -> Unit)? = null
 
@@ -63,6 +72,9 @@ class PlayerOwnerState(
      * (M2). Only the newest waits; a pause or the release drops it.
      */
     fun start(make: () -> Unit) {
+        if (completed) {
+            return // R66: a completed player never starts again
+        }
         if (heldSerial != 0L) {
             heldStart = make
         } else {
@@ -73,6 +85,14 @@ class PlayerOwnerState(
     /** The platform start was made. */
     fun onStarted() {
         started = true
+    }
+
+    /** The platform player completed, before its completion is forwarded: terminal, and silent (R66). */
+    fun onCompleted() {
+        completed = true
+        started = false
+        heldStart = null
+        heldSerial = 0L
     }
 
     /** Pause the platform player if a start stands; [started] clears only once the pause has returned. */
@@ -86,6 +106,9 @@ class PlayerOwnerState(
 
     /** Seek request [serial] to [positionMs]: to the platform now, or held while another is in flight. */
     fun seek(positionMs: Long, serial: Long) {
+        if (completed) {
+            return // R66: nothing seeks a completed player; its part is over
+        }
         if (inFlight != 0L) {
             heldSerial = serial
             heldMs = positionMs
@@ -140,7 +163,9 @@ class PlayerOwnerState(
         }
         val waiting = heldStart
         heldStart = null
-        waiting?.invoke()
+        if (!completed) {
+            waiting?.invoke()
+        }
     }
 
     /** Silence asked for, behind the move's pause: now if nothing sounds, else once the release has returned. */

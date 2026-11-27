@@ -683,7 +683,11 @@ object RecordingPlayback {
                     post { it.onPrepared(token) }
                 }
             }
-            made.setOnCompletionListener { post { it.onCompleted(token) } }
+            // Marked on the owner first (R66): a start queued behind the completion never plays the recording again.
+            made.setOnCompletionListener {
+                state.onCompleted()
+                post { it.onCompleted(token) }
+            }
             // On the owner: the seek in flight landed, and names its own request (R59). The held seek it then passes on
             // may throw, outside onOwner's guard: the player's failure, never the app's.
             made.setOnSeekCompleteListener { guarded { state.seekCompleted() } }

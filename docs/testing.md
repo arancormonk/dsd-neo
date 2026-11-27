@@ -275,9 +275,10 @@ for another playlist, nor after its end, an inactive render or the release). A f
 seeks before the first completes each landing under its own serial, five quick seeks reaching the platform as the
 first and the newest, and a seek that throws holding nothing (R59); a seek given up at its 2 s bound not landing then,
 the held seek matched to the next completion, and a lone slow seek landing on its late completion (M1, m1); a start
-behind a held seek reaching the platform after it, and a pause dropping it (M2); silence at once with nothing started or
-after a pause that returned, after a pause that threw only once the release has returned, never for a release that
-threw (its ended thread counts as silent instead, M3), and none unasked (R62).
+behind a held seek reaching the platform after it, and a pause dropping it (M2); a completed player never started again
+by a queued or held start, a seek after it dropped, its silence at once (R66); silence at once with nothing started or
+after a pause that returned, after a pause that threw only once the release has returned, never for a release that threw
+(its ended thread counts as silent instead, M3), and none unasked (R62).
 `ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
 `RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
 against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
