@@ -613,8 +613,8 @@ Item {
             compare(block.announced, full);
             verify(!status.eventHeard && status.eventRefusal, "the bar's event is noted");
             sheet.visible = false;
-            wait(30);
-            verify(status.eventHeard, "heard: the sheet said it");
+            // The close schedules the bar's turn to say its event; it marks it heard there, saying nothing.
+            tryCompare(status, "eventHeard", true, 2000, "heard: the sheet said it");
             compare(barItem.announcements, 1, "the bar says nothing for it");
 
             // A sheet on another call reads nothing of the next refusal: the bar reads it once the sheet closes.
@@ -663,7 +663,7 @@ Item {
             compare(block.announcements, said + 1, "a new refusal is read");
             compare(block.announced, full);
             sheet.visible = false;
-            wait(30);
+            tryCompare(status, "eventHeard", true, 2000, "the bar takes the sheet's refusal as heard");
             compare(barItem.announcements, 2, "and not again by the bar");
         }
 
