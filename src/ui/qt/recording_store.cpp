@@ -2954,6 +2954,7 @@ RecordingStore::admissionRootsLocked(const QList<QList<const Entry*>>& found) co
             look.known = m_rootAvailable.value(root);
             look.pending = m_rootsSeenAway.contains(root);
             look.rereading = m_rootsRereading.contains(root);
+            look.listing = m_listing.contains(root);
             roots.insert(root, look);
         }
     }
@@ -2970,21 +2971,24 @@ RecordingStore::rootPlayableNow(const QString& root) {
 bool
 RecordingStore::admissionLookRecordedLocked(const QHash<int, AdmissionRoot>& roots,
                                             const QHash<int, bool>& playable) const {
-    // Gone: noted seen away (R74), so none of its recordings is admitted. Back while marked away: its read again is
-    // asked at once; seen away, it has one asked or under way. Either way its recordings stay ineligible until that
-    // read is done.
+    // Gone: noted seen away (R74), so none of its recordings is admitted and a pass lists it in full. Back while
+    // marked away: its read again is asked for at once. Either way its recordings stay ineligible until that read is
+    // done. A root whose listing in full is asked for and not begun (pending) needs nothing more; one whose listing is
+    // in flight or done is another matter (R79): what that listing found may be from before this loss, and the
+    // storage there at its end another card, so a loss seen now asks for another listing after it.
     bool wake = false;
     for (auto it = roots.cbegin(); it != roots.cend(); ++it) {
         const AdmissionRoot& look = it.value();
-        const bool seen = look.pending || look.rereading;
+        if (look.pending) {
+            continue;
+        }
         if (!playable.value(it.key())) {
-            if (look.known && !seen) {
+            if (look.known || look.listing) {
                 noteRootSeenAwayLocked(it.key());
                 wake = true;
             }
-        } else if (!look.known) {
-            // Back while marked away: its read again is asked for at once. A root seen away needs none here: its
-            // pass was asked for when it was noted, or is reading it now (m4).
+        } else if (!look.known && !look.listing) {
+            // Back while marked away: its read again is asked for at once (a listing of it under way needs none).
             m_passRequested = true;
             wake = true;
         }

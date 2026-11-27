@@ -680,11 +680,12 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         bool known = false;     // m_rootAvailable
         bool pending = false;   // in m_rootsSeenAway: a listing in full asked for, not begun
         bool rereading = false; // in m_rootsRereading
+        bool listing = false;   // in m_listing: rebuildRoot() is listing it now
 
         bool
         operator==(const AdmissionRoot& other) const {
             return path == other.path && known == other.known && pending == other.pending
-                   && rereading == other.rereading;
+                   && rereading == other.rereading && listing == other.listing;
         }
     };
 

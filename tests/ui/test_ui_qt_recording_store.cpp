@@ -6066,6 +6066,39 @@ test_seen_away_root_is_not_admitted(void) {
     expect("seen away: read again, it is admitted again", admitted());
 }
 
+/* R79: a loss a playlist's admission sees while the root's listing in full is in flight (after its folders were
+ * listed, before the table is installed) is not dropped as already seen: the storage there at the listing's end may be
+ * another card, so another listing in full runs after it. */
+void
+test_loss_during_a_listing_asks_for_another(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000937-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    std::atomic<int> listings{0};
+    std::atomic<bool> lossSeen{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (!root.startsWith(ext + QLatin1Char('/')) || listings++ != 0) {
+            return;
+        }
+        // Listed: the storage goes, the admission sees it gone, and storage is back before the listing's last look.
+        if (QDir().rename(ext, away)) {
+            const QVariantMap listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
+            lossSeen = !listed.value(QStringLiteral("available")).toBool();
+            (void)QDir().rename(away, ext);
+        }
+    });
+    expect("listing loss: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
+    expect("listing loss: the admission saw the loss during the listing", lossSeen.load());
+    s.pass(); // the listing asked for has run by now, at once or in this pass
+    s.store.setRootReadHookForTest({});
+    expect("listing loss: another listing in full ran after it", listings.load() == 2);
+}
+
 /* A host that plays: what History's playlist hands it is counted, the play running named by its generation. */
 class PlayingHost : public dsd_qt::DecoderHost {
   public:
@@ -6467,6 +6500,7 @@ main(int argc, char** argv) {
     test_checked_delete_refuses_another_path();
     test_seen_away_root_is_not_admitted();
     test_playlist_admission_checks_roots_live();
+    test_loss_during_a_listing_asks_for_another();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();
