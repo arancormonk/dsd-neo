@@ -2936,6 +2936,7 @@ private fun theTerminalRecordStaysUntilTheNextPlay() {
  * focus and service as they were, and nothing is opened for the refused one. A path alone is part 1 of 1.
  */
 private fun invalidItemsAreRefusedLeavingThePlayRunning() {
+    fun item(call: Int) = RecordingPlayer.Item("/r/c$call.wav", 1, call = call)
     val rig = Rig()
     rig.queue(1, 1)
     rig.prepared()
@@ -2948,6 +2949,15 @@ private fun invalidItemsAreRefusedLeavingThePlayRunning() {
         "a part outside its count (0 of 0)" to
             (RecordingPlayer.MODE_SINGLE to listOf(RecordingPlayer.Item("/r/a.wav", partOrdinal = 0, partCount = 0))),
         "a queued item with no identity" to (MODE_PARTS to listOf(RecordingPlayer.Item("/r/a.wav"))),
+        // R70: what the host refuses, Kotlin refuses too.
+        "an empty path" to (MODE_PLAYLIST to listOf(RecordingPlayer.Item("", 1))),
+        "an empty single path" to (RecordingPlayer.MODE_SINGLE to listOf(RecordingPlayer.Item(""))),
+        "a single play of two items" to
+            (RecordingPlayer.MODE_SINGLE to listOf(RecordingPlayer.Item("/r/a.wav"), RecordingPlayer.Item("/r/b.wav"))),
+        "parts of two calls" to
+            (MODE_PARTS to listOf(RecordingPlayer.Item("/r/a.wav", 1), RecordingPlayer.Item("/r/b.wav", 1, call = 1))),
+        "calls with a hole" to (MODE_PLAYLIST to listOf(item(0), item(2))),
+        "calls going back" to (MODE_PLAYLIST to listOf(item(0), item(1), item(0))),
     )
     for ((name, request) in refused) {
         check(!RecordingPlayer.validRequest(request.first, request.second, 0)) { "$name: not a request" }
@@ -2964,6 +2974,9 @@ private fun invalidItemsAreRefusedLeavingThePlayRunning() {
     }
     check(RecordingPlayer.validRequest(RecordingPlayer.MODE_SINGLE, listOf(RecordingPlayer.Item("/r/a.wav")), 0)) {
         "a path alone is part 1 of 1: a request"
+    }
+    check(!rig.machine.play(generation + 1, "") && rig.status.generation == generation && !running.released) {
+        "the path-only play of an empty path is refused, the play running untouched"
     }
 }
 

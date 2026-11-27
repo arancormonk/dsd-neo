@@ -108,10 +108,17 @@ object RecordingPlayback {
             .build()
     }
 
-    /** Play [path] alone, replacing what plays (SINGLE): the play's generation, which [status] names; 0 refused. */
+    /**
+     * Play [path] alone, replacing what plays (SINGLE): the play's generation, which [status] names; 0 refused, before
+     * it is accepted, for a request [RecordingPlayer.validRequest] refuses (an empty path, R70), what plays playing on.
+     */
     @JvmStatic
-    fun play(context: Context, path: String): Int =
-        begin(context, RecordingPlayer.MODE_SINGLE) { machine, generation -> machine.play(generation, path) }
+    fun play(context: Context, path: String): Int {
+        if (!RecordingPlayer.validRequest(RecordingPlayer.MODE_SINGLE, listOf(RecordingPlayer.Item(path)), 0)) {
+            return 0
+        }
+        return begin(context, RecordingPlayer.MODE_SINGLE) { machine, generation -> machine.play(generation, path) }
+    }
 
     /**
      * Play the items the arrays list, one entry per recording, from [start] in [mode] (RecordingPlayer.MODE_*),

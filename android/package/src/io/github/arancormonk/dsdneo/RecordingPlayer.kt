@@ -554,21 +554,30 @@ class RecordingPlayer(
         fun identified(mode: Int, sizes: LongArray): Boolean = mode == MODE_SINGLE || sizes.all { it >= 0 }
 
         /**
-         * Whether [items] from [start] in [mode] is a request [play] takes (R63): a mode, items, a start among them,
-         * calls from 0 in order with no hole, each part numbered within its call's count (1 of 1 for a path alone),
-         * and, but for SINGLE, each file's identity. Checked before anything is replaced: by RecordingPlayback before
-         * it accepts the play, and by [play] again.
+         * Whether [items] from [start] in [mode] is a request [play] takes (R63, R70: what the host admits): a mode,
+         * items (exactly one for SINGLE), a start among them, a path for each, calls from 0 in order with no hole (one
+         * call for PARTS), each part numbered within its call's count (1 of 1 for a path alone), and, but for SINGLE,
+         * each file's identity. Checked before anything is replaced: by RecordingPlayback before it accepts the play,
+         * the path-only play included, and by [play] again.
          */
         fun validRequest(mode: Int, items: List<Item>, start: Int): Boolean {
-            val framed = mode in MODE_SINGLE..MODE_PLAYLIST && items.isNotEmpty() && start in items.indices
+            val framed = mode in MODE_SINGLE..MODE_PLAYLIST && items.isNotEmpty() && start in items.indices &&
+                (mode != MODE_SINGLE || items.size == 1)
             if (!framed || items[0].call != 0) {
                 return false
             }
-            return items.indices.all { i ->
-                val item = items[i]
-                val step = if (i == 0) 0 else item.call - items[i - 1].call
-                step in 0..1 && item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
-            }
+            return items.indices.all { i -> validItem(mode, items, i) }
+        }
+
+        /**
+         * Item [i] of a request as DecoderHost::playbackItemsValid() takes it (R70): a path, its call the one before's
+         * or the next (0 for every part of PARTS), its part within its call's count, and, but for SINGLE, its identity.
+         */
+        private fun validItem(mode: Int, items: List<Item>, i: Int): Boolean {
+            val item = items[i]
+            val step = if (i == 0) 0 else item.call - items[i - 1].call
+            return item.path.isNotEmpty() && step in 0..1 && (mode != MODE_PARTS || item.call == 0) &&
+                item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
         }
 
         /**

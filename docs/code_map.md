@@ -19930,13 +19930,14 @@ Qt Quick frontend (`src/ui/qt`):
       outside its count (`partOrdinal` and `partCount` default to 1 when absent or holding no value, the check and the
       sent request reading every key alike, M4, so a SINGLE named by path alone is part 1 of 1, as
       `RecordingPlayer.Item(path)` is, and is sent so), and `RecordingPlayback.play()` returns 0 for any request
-      `RecordingPlayer.validRequest()` refuses, which `play()` checks again before closing the play running; the opener
-      skips the identity check only for a SINGLE play, chosen by its mode, never by the size's sign. The sheet's Play
-      all parts passes each part's identity as listed, inventing none, and its Delete of a part listed without one
-      deletes by id alone (`deleteRecording()`), as before #909. Results: `accepted` (generation above 0 and the call
-      count), `none`, `gone` (`startUid` not in the view after `flushPendingSearch()`), `rowNone` (shown, nothing
-      playable), `unsupported` and `refused`; every refusal leaves what plays playing. Calls recorded after the press,
-      and filter changes, never change the playlist; nothing runs on position ticks.
+      `RecordingPlayer.validRequest()` refuses (R70: the host's own rules, an empty path, more than one SINGLE item and
+      a PARTS play of several calls included; the path-only play too), which `play()` checks again before closing the
+      play running; the opener skips the identity check only for a SINGLE play, chosen by its mode, never by the size's
+      sign. The sheet's Play all parts passes each part's identity as listed, inventing none, and its Delete of a part
+      listed without one deletes by id alone (`deleteRecording()`), as before #909. Results: `accepted` (generation
+      above 0 and the call count), `none`, `gone` (`startUid` not in the view after `flushPendingSearch()`), `rowNone`
+      (shown, nothing playable), `unsupported` and `refused`; every refusal leaves what plays playing. Calls recorded
+      after the press, and filter changes, never change the playlist; nothing runs on position ticks.
     - No hold (D9, the maintainer's ruling): a playlist (and a PARTS play) holds no store selection and no
       `setPlayingPath()`; deletes and the storage limit go ahead. At its turn each item is opened by
       `RecordingDescriptor.open()` (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, then `fstat`: a regular file with the
