@@ -35,13 +35,14 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   ones).
 - A trial the detector did not measure (an analog width it refuses) fails the run with no completion record; a
   reading the guard or the occupancy check voided is a measurement and still completes (the selection run above).
-- Two outputs naming one file (the same path, another spelling of it, a hard link), or an output that is a link to a
-  file not there yet, are refused before any is opened.
+- Two outputs naming one file (the same path, another spelling of it, a hard link), or an output that is a symbolic
+  link, whether or not its target is there, are refused before any is opened.
 - --scene-ceiling never goes under its default: scaled toward the power floor, every ratio would read 0 dB.
 - --depression and --adc-noise-db must be whole tenths of a dB, the precision the CSV records them at.
 """
 import argparse
 import csv
+import errno
 import hashlib
 import math
 import os
@@ -361,16 +362,28 @@ def check_aliased_outputs(driver, root):
         done = run(driver, root, out, extra)
         if done.returncode == 0 or "name one file" not in done.stderr or keep.read_bytes() != b"keep":
             rc |= fail(f"aliased outputs {extra}: exit {done.returncode}, {done.stderr!r}, {keep.read_bytes()!r}")
-    # A link to an output not there yet (here the CSV the run would create): refused, nothing created.
+    # A symbolic link as an output, to the CSV the run would create or to a file that is there: refused, nothing created
+    # or written through it. Each case runs as soon as its link is made; only a host that cannot make symbolic links
+    # (an unprivileged Windows runner, a filesystem without them) skips them.
     if hasattr(os, "symlink"):
         target = root / "linked.csv"
-        try:
-            os.symlink(target, root / "linked.dump")
-        except OSError:
-            return rc  # no symbolic links here (unprivileged Windows)
-        done = run(driver, root, target, ["--dump", str(root / "linked.dump")])
-        if done.returncode == 0 or "does not exist" not in done.stderr or target.exists():
-            rc |= fail(f"a dangling link to the CSV: exit {done.returncode}, {done.stderr!r}")
+        for link, points_to in (("linked.dump", target), ("linked-keep.dump", keep)):
+            try:
+                os.symlink(points_to, root / link)
+            except (NotImplementedError, PermissionError):
+                return rc
+            except OSError as err:
+                # The filesystem or the account cannot make one: ENOTSUP/EOPNOTSUPP, ENOSYS, and on Windows
+                # ERROR_NOT_SUPPORTED (50) and ERROR_PRIVILEGE_NOT_HELD (1314). Anything else is a failure.
+                names = ("ENOTSUP", "EOPNOTSUPP", "ENOSYS")
+                unsupported = {getattr(errno, name) for name in names if hasattr(errno, name)}
+                if err.errno in unsupported or getattr(err, "winerror", None) in (50, 1314):
+                    return rc
+                raise
+            done = run(driver, root, target, ["--dump", str(root / link)])
+            if (done.returncode == 0 or "symbolic link" not in done.stderr or target.exists()
+                    or keep.read_bytes() != b"keep"):
+                rc |= fail(f"a link {link} as an output: exit {done.returncode}, {done.stderr!r}")
     return rc
 
 
