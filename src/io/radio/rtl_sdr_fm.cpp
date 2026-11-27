@@ -12983,6 +12983,10 @@ static int g_profile_taken_in_flight = 0;
 static int g_profile_taken_cqpsk = -1;
 static int g_profile_taken_sym_rate = 0;
 static int g_profile_taken_levels = 0;
+/* ... and whether that request came with a digital family request (a landing, or the switch out of analog), whose
+   consume resolves its CQPSK as a landing does (rtl_stream_resolve_landing_profile()), with its explicit flag. */
+static int g_profile_taken_digital_family = 0;
+static int g_profile_taken_landing_explicit = 0;
 static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's number */
 /* The number of the first analog request the queued one replaced in turn, each while the one before it was still queued
  * (its own number when it replaced none): the demod thread took none of the requests numbered from there on. */
@@ -13363,8 +13367,34 @@ static void rtl_stream_prepare_reader_model(void);
    a CQPSK state of -1) the demod keeps as it runs when it applies the request: the published profile, or one it took
    and has not finished applying (g_profile_taken_*). A request still queued is replaced whole, so its values never
    apply. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so does a hunt step (-1, 9600, 2) over a
-   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. Called under g_profile_req_m, in the
-   section that queues the request: the queued request it replaces cannot be taken in between. */
+   CQPSK-off stream; a profile that can only end on CQPSK, or off 9600/2, cannot. A request the take pairs with a queued
+   digital family request (a landing, or the switch out of analog) has its CQPSK resolved as a landing's
+   (rtl_demod_landing_cqpsk(): DSD_NEO_CQPSK replaces a value that is not the target's own, -1 included), and so has a
+   taken one that came with such a request: each resolution counts too, so a doubt builds. Called under
+   g_profile_req_m, in the section that queues the request: the queued request it replaces cannot be taken in
+   between. */
+/* The CQPSK side: whether the request can leave CQPSK off. */
+static int
+rtl_stream_cqpsk_may_end_off_locked(int cqpsk_enable) {
+    const int taken = g_profile_taken_in_flight;
+    int cqpsk_off = cqpsk_enable == 0;
+    if (cqpsk_enable < 0) {
+        cqpsk_off = g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0 || (taken && g_profile_taken_cqpsk == 0);
+    }
+    /* The queued family request this one would be taken with (a digital one waits for its profile). */
+    if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL
+        && rtl_demod_landing_cqpsk(cqpsk_enable, g_profile_req_landing_explicit) == 0) {
+        cqpsk_off = 1;
+    }
+    /* A taken landing the demod resolves before it applies; a -1 here keeps what it lands on. */
+    if (cqpsk_enable < 0 && taken && g_profile_taken_digital_family
+        && rtl_demod_landing_cqpsk(g_profile_taken_cqpsk, g_profile_taken_landing_explicit) == 0) {
+        cqpsk_off = 1;
+    }
+    return cqpsk_off;
+}
+
+/* The whole decision described above: the rate side, then the CQPSK side. */
 static int
 rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz, int levels) {
     const int taken = g_profile_taken_in_flight;
@@ -13374,11 +13404,7 @@ rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz,
                      && g_pub_symbol_levels.load(std::memory_order_relaxed) == 2)
                     || (taken && g_profile_taken_sym_rate == 9600 && g_profile_taken_levels == 2);
     }
-    int cqpsk_off = cqpsk_enable == 0;
-    if (cqpsk_enable < 0) {
-        cqpsk_off = g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0 || (taken && g_profile_taken_cqpsk == 0);
-    }
-    return rate_9600 && cqpsk_off;
+    return rate_9600 && rtl_stream_cqpsk_may_end_off_locked(cqpsk_enable);
 }
 
 /* A demod profile request into the queue, replacing a queued one whole (g_profile_req_m held). */
@@ -13955,6 +13981,8 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     g_profile_taken_cqpsk = g_profile_req_has_demod ? g_profile_req_cqpsk : -1;
     g_profile_taken_sym_rate = g_profile_req_has_demod ? g_profile_req_sym_rate : 0;
     g_profile_taken_levels = g_profile_req_has_demod ? g_profile_req_levels : 0;
+    g_profile_taken_digital_family = g_profile_req_has_demod && g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL;
+    g_profile_taken_landing_explicit = g_profile_req_landing_explicit;
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
     g_profile_req_digital_landing = 0;
