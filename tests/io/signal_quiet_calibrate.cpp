@@ -104,11 +104,12 @@
  *
  * Every trial is rendered under the clip level the detector reads (issue #834 B8): a trial with a sample component at
  * or over it fails the run, whatever --trial-log says, the CSV, dump and trial log written but no completion record
- * printed. --scene-ceiling BOUND (default 0.9) moves the bound a scene is scaled under; only a check of that refusal
- * raises it, and the run and completion records then name it. So does a trial the detector did not measure (refused,
- * failed or unfinished: an analog width it does not admit, for one), which would read busy with nothing behind it; a
- * reading the guard or the occupancy check voids is a measurement and reads busy as it should. Two outputs (--out,
- * --dump, --trial-log, --bounds) that name one file are refused before any is opened.
+ * printed. --scene-ceiling BOUND (default 0.9, never lower) moves the bound a scene is scaled under; only a check of
+ * that refusal raises it, and the run and completion records then name it. A trial the detector did not measure
+ * (refused, failed or unfinished: an analog width it does not admit, for one) fails the run the same way, as it would
+ * read busy with nothing behind it; a reading the guard or the occupancy check voids is a measurement and reads busy as
+ * it should. Two outputs (--out, --dump, --trial-log, --bounds) that name one file, or an output that is a link to a
+ * file not there yet, are refused before any is opened.
  *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs or the batches. */
@@ -2798,7 +2799,8 @@ parse_run_option(const std::string& key, const char* value, Options* o) {
     }
     if (key == "--scene-ceiling") {
         o->ceiling_given = true;
-        return parse_double(value, &o->scene_ceiling) && o->scene_ceiling > 0 && o->scene_ceiling <= 1e6;
+        /* Only ever raised: under the default, a scene scaled toward the power floor would read every ratio as 0 dB. */
+        return parse_double(value, &o->scene_ceiling) && o->scene_ceiling >= kSceneCeiling && o->scene_ceiling <= 1e6;
     }
     return false;
 }
@@ -3147,14 +3149,33 @@ output_location(const std::string& path) {
     return std::string(resolved) + "/" + path.substr(cut == std::string::npos ? 0 : cut + 1);
 }
 
+/* Whether @p path is a symbolic link to nothing yet: where it writes is decided only once something creates its target,
+   which may be another of the run's outputs, so no check made before any output exists can tell the two apart. */
+bool
+dangling_link(const std::string& path) {
+    dsd_path_type type = DSD_PATH_TYPE_FILE;
+    dsd_stat_t st;
+    return dsd_path_type_nofollow(path.c_str(), &type) == 1 && type == DSD_PATH_TYPE_LINK
+           && dsd_stat_path(path.c_str(), &st) != 0;
+}
+
 /* False, with the two options named, when two of the run's outputs (--out, --dump, --trial-log, --bounds) are one file:
-   the same path however spelled, or two names of one existing file (a hard link). Their writers would overwrite each
-   other and the completion record's digests would describe neither; checked before any output is opened. */
+   the same path however spelled, or two names of one existing file (a hard link); and a link to a file not there yet
+   (dangling_link()), which could name another output. Their writers would overwrite each other and the completion
+   record's digests would describe neither; checked before any output is opened. */
 bool
 outputs_distinct(const Options& o) {
     const std::pair<const char*, const std::string*> outputs[] = {
         {"--out", &o.out}, {"--dump", &o.dump}, {"--trial-log", &o.trial_log}, {"--bounds", &o.bounds}};
     const size_t count = sizeof(outputs) / sizeof(outputs[0]);
+    const auto* dangling = std::find_if(std::begin(outputs), std::end(outputs), [](const auto& output) {
+        return !output.second->empty() && dangling_link(*output.second);
+    });
+    if (dangling != std::end(outputs)) {
+        DSD_FPRINTF(stderr, "%s %s is a link to a file that does not exist: give the output's own path\n",
+                    dangling->first, dangling->second->c_str());
+        return false;
+    }
     for (size_t a = 0; a < count; ++a) {
         for (size_t b = a + 1; b < count; ++b) {
             const std::string &pa = *outputs[a].second, &pb = *outputs[b].second;

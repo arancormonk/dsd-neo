@@ -35,7 +35,9 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   ones).
 - A trial the detector did not measure (an analog width it refuses) fails the run with no completion record; a
   reading the guard or the occupancy check voided is a measurement and still completes (the selection run above).
-- Two outputs naming one file (the same path, another spelling of it, a hard link) are refused before any is opened.
+- Two outputs naming one file (the same path, another spelling of it, a hard link), or an output that is a link to a
+  file not there yet, are refused before any is opened.
+- --scene-ceiling never goes under its default: scaled toward the power floor, every ratio would read 0 dB.
 - --depression and --adc-noise-db must be whole tenths of a dB, the precision the CSV records them at.
 """
 import argparse
@@ -359,6 +361,26 @@ def check_aliased_outputs(driver, root):
         done = run(driver, root, out, extra)
         if done.returncode == 0 or "name one file" not in done.stderr or keep.read_bytes() != b"keep":
             rc |= fail(f"aliased outputs {extra}: exit {done.returncode}, {done.stderr!r}, {keep.read_bytes()!r}")
+    # A link to an output not there yet (here the CSV the run would create): refused, nothing created.
+    if hasattr(os, "symlink"):
+        target = root / "linked.csv"
+        try:
+            os.symlink(target, root / "linked.dump")
+        except OSError:
+            return rc  # no symbolic links here (unprivileged Windows)
+        done = run(driver, root, target, ["--dump", str(root / "linked.dump")])
+        if done.returncode == 0 or "does not exist" not in done.stderr or target.exists():
+            rc |= fail(f"a dangling link to the CSV: exit {done.returncode}, {done.stderr!r}")
+    return rc
+
+
+def check_scene_ceiling_floor(driver, root):
+    """--scene-ceiling under the default would scale scenes toward the power floor: refused; the default itself runs."""
+    rc = 0
+    for ceiling, ok in (("1e-8", False), ("0.5", False), ("0.9", True)):
+        done = run(driver, root, root / "ceiling.csv", ["--scene-ceiling", ceiling])
+        if (done.returncode == 0) != ok:
+            rc |= fail(f"--scene-ceiling {ceiling}: exit {done.returncode}, {done.stderr[-200:]!r}")
     return rc
 
 
@@ -396,6 +418,7 @@ def main():
         rc |= check_unmeasured(driver, root)
         rc |= check_aliased_outputs(driver, root)
         rc |= check_response_grid(driver, root)
+        rc |= check_scene_ceiling_floor(driver, root)
     return rc
 
 
