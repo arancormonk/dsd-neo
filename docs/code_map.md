@@ -20208,10 +20208,12 @@ Qt Quick frontend (`src/ui/qt`):
       `PresentationScale::reportsKeyboard()`, the platform's `keyboardAvailable()` at the last tick) saying -1 means
       hidden, and only a host with no word of its own (the base host, or Android without its reader) falls back to
       `Qt.inputMethod.visible` with a keyboard of some height; never by overlap, which a window
-      resized above the keyboard does not have) shows it,
-      says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call playing: the
-      player names the call that followed the skips, so a call Qt sees first after a stretch away never takes an earlier
-      skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event once, only while
+      resized above the keyboard does not have) shows it, keeps the call counter, the part counter and the time each
+      whole on the line under the name with a wrap point between them (R57: separate segments for the text and its
+      sizing probe), says the player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the
+      call playing: the player names the call that followed the skips, so a call Qt sees first after a stretch away
+      never takes an earlier skip; the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard
+      event once, only while
       its screen is visible, reachable and the application active, after the host has read the platform on a foreground
       return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose uid is
       `playbackKey` (History, Monitor, Home), paused while it is paused, opens paused or is halted for another app's

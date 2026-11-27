@@ -1571,6 +1571,32 @@ Item {
             }
         }
 
+        // R57: the call counter, the part counter and the time are each kept whole, and the line may break between
+        // them: on a narrow bar at 2x text a call in parts wraps between its counters, never inside one.
+        function test_bar_counters_wrap_between_each_other() {
+            var calls = logCalls(3);
+            var screen = idle();
+            only(screen);
+            root.width = 360;
+            idleLoader.width = 360;
+            Ui.Theme.fontScale = 2.0;
+            try {
+                playAll(screen, calls, [1, 3, 1]);
+                testContext.publishPlaybackReading({item: 2, playbackState: 2, playbackDurationMs: 60000, playbackPositionMs: 1000});
+                var lineItem = part(screen, "nowPlayingLine");
+                verify(waitForPolish(lineItem));
+                var shown = lineItem.text;
+                compare(shown.split(" "), ["Call\u00a02\u00a0of\u00a03\u00a0·", "part\u00a02\u00a0of\u00a03\u00a0·", "0:01\u00a0/\u00a01:00"],
+                        "a wrap point between the counters and before the time, none inside them");
+                compare(lineItem.lineCount, 2, "the narrow bar breaks the line");
+                verify(!lineItem.truncated, "and shows it whole: " + line(screen));
+            } finally {
+                Ui.Theme.fontScale = 1.0;
+                root.width = 360;
+                idleLoader.width = 360;
+            }
+        }
+
         // The line under the name holds at most two lines: every status it shows fits them whole at 360 px, at
         // normal or 2x text (and wide), except one whose whole words Show in list's description reads. A refused
         // resume shows a short line; its full sentence is what is read. The result takes the transport's room and

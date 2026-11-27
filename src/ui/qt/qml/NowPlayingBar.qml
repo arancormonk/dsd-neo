@@ -67,13 +67,23 @@ Rectangle {
     implicitHeight: stacked ? 2 * padding + topRow + rowGap + 52 : 2 * padding + Math.max(textBoxHeight, 52)
 
     // "Call 3 of 41", with "· part 2 of 3" for a call of several parts.
-    function placeText() {
+    // Where it is: the call counter, and the part counter of a call in
+    // parts, each its own segment so the line can break between them.
+    function callText() {
         if (!live || callIndex < 0 || callCount <= 0)
             return "";
-        var parts = decoderHost.playbackPartCount;
-        if (parts > 1)
-            return Util.fill(qsTr("Call %1 of %2 · part %3 of %4"), [Util.countText(callIndex + 1), Util.countText(callCount), decoderHost.playbackPartOrdinal, parts]);
         return Util.fill(qsTr("Call %1 of %2"), [Util.countText(callIndex + 1), Util.countText(callCount)]);
+    }
+    function partText() {
+        var parts = decoderHost.playbackPartCount;
+        if (callText().length === 0 || parts <= 1)
+            return "";
+        return Util.fill(qsTr("part %1 of %2"), [decoderHost.playbackPartOrdinal, parts]);
+    }
+    function placeText() {
+        return [callText(), partText()].filter(function (part) {
+            return part.length > 0;
+        }).join(" · ");
     }
     // The position reads the length once it reaches the end, as the sheet's.
     function timeAt(ms) {
@@ -122,7 +132,7 @@ Rectangle {
         if (!live)
             return notice;
         var state = statusText();
-        return state.length > 0 ? state : wholeParts([placeText(), timeText(positionMs)]);
+        return state.length > 0 ? state : wholeParts([callText(), partText(), timeText(positionMs)]);
     }
     readonly property string resultText: notice.length > 0 ? notice : end ? status.endedText(end) : ""
     // Show in list's description: the call, where it is, and what it is doing.
@@ -266,7 +276,7 @@ Rectangle {
     // more than two.
     readonly property var lineProbes: [qsTr("Paused: another app has the audio."), status ? status.skippedText(88) : "",
         qsTr("Paused for another app's audio"), qsTr("Paused: headphones unplugged"), qsTr("This call isn't in the list now."),
-        wholeParts([qsTr("Call %1 of %2 · part %3 of %4").arg("888").arg("888").arg("8").arg("8"), qsTr("%1 / %2").arg("00:00").arg("00:00")])]
+        wholeParts([qsTr("Call %1 of %2").arg("888").arg("888"), qsTr("part %1 of %2").arg("8").arg("8"), qsTr("%1 / %2").arg("00:00").arg("00:00")])]
     // The line's width while it plays (never the wider one an ended bar has),
     // so the box, and the bar, keep one height.
     readonly property real lineWidth: Math.max(0, (stacked ? closeX : previousX) - Theme.gap + 6 - showButton.x - 12)
