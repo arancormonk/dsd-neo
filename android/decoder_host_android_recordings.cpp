@@ -100,8 +100,10 @@ playback_request(const QVariantList& items, int mode) {
         request.mtimeSecs.append(item.value(QStringLiteral("mtimeSec")).toLongLong());
         request.mtimeNanos.append(item.value(QStringLiteral("mtimeNanos")).toInt());
         request.calls.append(item.value(QStringLiteral("call")).toInt());
-        request.partOrdinals.append(item.value(QStringLiteral("partOrdinal")).toInt());
-        request.partCounts.append(item.value(QStringLiteral("partCount")).toInt());
+        // An item with no numbering (a single play named by path alone) is part 1 of 1, as RecordingPlayer.Item(path)
+        // is (R63); the validity check took the same defaults.
+        request.partOrdinals.append(item.value(QStringLiteral("partOrdinal"), 1).toInt());
+        request.partCounts.append(item.value(QStringLiteral("partCount"), 1).toInt());
         request.titles.append(item.value(QStringLiteral("title")).toString());
         request.lines.append(item.value(QStringLiteral("line")).toString());
         request.keys.append(item.value(QStringLiteral("key")).toString());

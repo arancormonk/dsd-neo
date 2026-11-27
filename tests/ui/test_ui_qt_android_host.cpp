@@ -2911,6 +2911,17 @@ check_playlist_arrays() {
     refused({items.at(2), items.at(0)}, DecoderHost::PlaybackPlaylist, "calls going back are refused");
     refused(items, DecoderHost::PlaybackParts, "parts of two calls are refused");
     refused({items.at(0), items.at(1)}, DecoderHost::PlaybackSingle, "a single play of two items is refused");
+    // #909 R63: a part numbered outside its count is refused before the platform sees it, as the player would refuse
+    // it only after replacing what plays.
+    for (const auto& numbering : {std::pair<int, int>{0, 1}, std::pair<int, int>{3, 2}, std::pair<int, int>{1, 0}}) {
+        QVariantMap outside = items.at(0).toMap();
+        outside.insert(QStringLiteral("partOrdinal"), numbering.first);
+        outside.insert(QStringLiteral("partCount"), numbering.second);
+        refused({outside}, DecoderHost::PlaybackPlaylist, "a part outside its call's count is refused");
+    }
+    QVariantMap wordy = items.at(0).toMap();
+    wordy.insert(QStringLiteral("partOrdinal"), QStringLiteral("first"));
+    refused({wordy}, DecoderHost::PlaybackPlaylist, "a part ordinal that is no number is refused");
     // #909: the store lists every recording's identity, so a queued item without one is malformed, refused before the
     // platform sees it; the play now open (21) plays on.
     for (const int mode : {int{DecoderHost::PlaybackParts}, int{DecoderHost::PlaybackPlaylist}}) {
@@ -2937,6 +2948,10 @@ check_playlist_arrays() {
     check(host.playRecordings({byPath}, DecoderHost::PlaybackSingle, QString()) == 23
               && r.request.sizes == QList<qint64>{-1},
           "a single item names its file by path alone, no identity needed");
+    check(r.request.calls == QList<int>{0} && r.request.partOrdinals == QList<int>{1}
+              && r.request.partCounts == QList<int>{1} && r.request.mtimeSecs == QList<qint64>{0}
+              && r.request.mtimeNanos == QList<int>{0},
+          "#909 R63: as part 1 of 1 of call 0, as the player's Item(path) is");
 }
 
 /* #909: one record publishes every reading at once, its item's path, title and key from the play's own items. */

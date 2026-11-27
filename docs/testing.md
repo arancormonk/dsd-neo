@@ -191,7 +191,8 @@ refusing its later copies until it is forgotten while another request runs on, p
 errno or a message) reported apart, and the abort answering `FAILED`.
 Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (`recording_player`) runs
 `RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player, opener, focus, clock and
-scheduler: a pause or the background while preparing, focus denied or lost, completion, seeks before the player is
+scheduler: an invalid request refused leaving the play running untouched (R63), a pause or the background while
+preparing, focus denied or lost, completion, seeks before the player is
 ready, a replaced player's late callbacks, and for the History playlist (issue #909) the order across calls and parts,
 the gap and its frozen reading, Next and Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused
 with the deadline unchanged, and a Resume while the next call opens whose focus is refused ending 10 minutes from the
@@ -282,11 +283,12 @@ and withdrawn fragments, notices, interleaved timestamps, 1,000 rows with multi-
 result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row order in one reader lock, the map's
 identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
 identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
-(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 21-field status record and malformed ones ignored (a
+(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 22-field status record and malformed ones ignored (a
 reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
 reading unchanged), the recheck paths on a serial change, on a foreground return (Inactive included, an end between
 polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative
-one, no mtime or one that is no number) refused with the play open left playing while a single item needs none, token
+one, no mtime or one that is no number) or a part outside its count refused with the play open left playing while a
+single item needs none and is sent as part 1 of 1 of call 0 (R63), token
 commands (a stale token's dropped, and no position shown for any seek: only the player's record moves it), the
 replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right after its
 one check (`decoder_host_test_hooks.h`) stopping nothing, and no status reads while idle or on position-only ticks); and

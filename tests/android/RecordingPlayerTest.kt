@@ -2823,14 +2823,40 @@ private fun theTerminalRecordStaysUntilTheNextPlay() {
     check(rig.status.generation == 0 && rig.service.ends.last() == next to RecordingPlayer.ENDED_STOPPED) { "a host stop" }
 }
 
-private fun invalidItemsFailThePlay() {
+/**
+ * An invalid request is refused before anything is replaced (R63): the play running plays on untouched, its player,
+ * focus and service as they were, and nothing is opened for the refused one. A path alone is part 1 of 1.
+ */
+private fun invalidItemsAreRefusedLeavingThePlayRunning() {
     val rig = Rig()
-    rig.machine.play(1, MODE_PLAYLIST, emptyList())
-    check(rig.state == FAILED && rig.service.ends == listOf(1 to RecordingPlayer.ENDED_FAILED)) { "no items" }
-    rig.machine.play(2, MODE_PLAYLIST, listOf(RecordingPlayer.Item("/r/a.wav", call = 1)))
-    check(rig.state == FAILED && rig.opener.opened.isEmpty()) { "calls that do not start at 0" }
-    rig.machine.play(3, MODE_PARTS, listOf(RecordingPlayer.Item("/r/a.wav")), start = 1)
-    check(rig.state == FAILED && rig.status.itemIndex == -1) { "a start outside the items" }
+    rig.queue(1, 1)
+    rig.prepared()
+    val running = rig.current
+    val generation = rig.status.generation
+    val opened = rig.opener.opened.size
+    val refused = listOf(
+        "no items" to (MODE_PLAYLIST to emptyList<RecordingPlayer.Item>()),
+        "calls that do not start at 0" to (MODE_PLAYLIST to listOf(RecordingPlayer.Item("/r/a.wav", 1, call = 1))),
+        "a part outside its count (0 of 0)" to
+            (RecordingPlayer.MODE_SINGLE to listOf(RecordingPlayer.Item("/r/a.wav", partOrdinal = 0, partCount = 0))),
+        "a queued item with no identity" to (MODE_PARTS to listOf(RecordingPlayer.Item("/r/a.wav"))),
+    )
+    for ((name, request) in refused) {
+        check(!RecordingPlayer.validRequest(request.first, request.second, 0)) { "$name: not a request" }
+        check(!rig.machine.play(generation + 1, request.first, request.second)) { "$name: refused" }
+        check(rig.status.generation == generation && rig.state == PLAYING && !running.released) {
+            "$name: the play running plays on untouched"
+        }
+    }
+    check(!rig.machine.play(generation + 1, MODE_PARTS, listOf(RecordingPlayer.Item("/r/a.wav", 1)), start = 1)) {
+        "a start outside the items"
+    }
+    check(rig.opener.opened.size == opened && rig.service.ends.isEmpty() && rig.focus.held) {
+        "nothing opened, ended or given back for the refused ones"
+    }
+    check(RecordingPlayer.validRequest(RecordingPlayer.MODE_SINGLE, listOf(RecordingPlayer.Item("/r/a.wav")), 0)) {
+        "a path alone is part 1 of 1: a request"
+    }
 }
 
 /**
@@ -2847,8 +2873,9 @@ private fun queuedItemsCarryTheirIdentity() {
 
     // The machine refuses one too, as a second guard: nothing is opened unchecked.
     val bare = Rig()
-    bare.machine.play(1, MODE_PARTS, listOf(RecordingPlayer.Item("/r/a.wav"), RecordingPlayer.Item("/r/b.wav", 10)))
-    check(bare.state == FAILED && bare.opener.opened.isEmpty()) { "parts with an item without its size fail, none opened" }
+    val unsized = listOf(RecordingPlayer.Item("/r/a.wav"), RecordingPlayer.Item("/r/b.wav", 10))
+    check(!bare.machine.play(1, MODE_PARTS, unsized)) { "parts with an item without its size are refused" }
+    check(bare.status.generation == 0 && bare.opener.opened.isEmpty()) { "none opened" }
 
     val single = Rig()
     single.play()
@@ -3772,7 +3799,7 @@ fun main() {
     headphonesUnpluggedPauseWhateverWouldSound()
     theTenMinuteDeadlineCountsFromThePause()
     theTerminalRecordStaysUntilTheNextPlay()
-    invalidItemsFailThePlay()
+    invalidItemsAreRefusedLeavingThePlayRunning()
     queuedItemsCarryTheirIdentity()
     onlyAGrantedFocusRequestIsKept()
     aPrepareThatNeverAnswersFailsItsPart()

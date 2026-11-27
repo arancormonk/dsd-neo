@@ -116,9 +116,10 @@ object RecordingPlayback {
     /**
      * Play the items the arrays list, one entry per recording, from [start] in [mode] (RecordingPlayer.MODE_*),
      * replacing what plays: the play's positive generation once accepted, also when its service could not be started
-     * (that generation then reads FAILED, ended "start"). 0 only for a refusal before acceptance: arrays of different
-     * lengths, no items, [start] or [mode] out of range, a PARTS or PLAYLIST item with no identity (a negative size,
-     * [RecordingPlayer.identified]; the host refuses one first), or the app ending. The machine checks the rest.
+     * (that generation then reads FAILED, ended "start"). 0 only for a refusal before acceptance, which leaves what
+     * plays untouched: arrays of different lengths, no items, [start] or [mode] out of range, a PARTS or PLAYLIST item
+     * with no identity (a negative size, [RecordingPlayer.identified]; the host refuses one first), any other request
+     * [RecordingPlayer.validRequest] refuses (calls out of order, a part outside its call's count), or the app ending.
      */
     @JvmStatic
     fun play(
@@ -160,6 +161,11 @@ object RecordingPlayback {
                 title = titles[i],
                 line = lines[i],
             )
+        }
+        // Refused before it is accepted, so what plays plays on (R63): the machine would refuse it anyway, but only
+        // after the service's request and ownership had moved to it.
+        if (!RecordingPlayer.validRequest(mode, items, start)) {
+            return 0
         }
         return begin(context, mode) { machine, generation -> machine.play(generation, mode, items, start) }
     }

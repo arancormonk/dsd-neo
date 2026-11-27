@@ -351,12 +351,37 @@ playback_item_identified(const QVariantMap& item) {
     return sizeOk && size >= 0 && secOk && nanosOk;
 }
 
+/* @p key of @p item as a number into @p out, 1 when it is absent (issue #909 R63: an item with no numbering is one
+ * part of one, as the Android player's Item(path) is); false when it is there but no number. */
+bool
+playback_item_part_number(const QVariantMap& item, const QString& key, int* out) {
+    const QVariant value = item.value(key);
+    if (!value.isValid()) {
+        *out = 1;
+        return true;
+    }
+    bool ok = false;
+    *out = value.toInt(&ok);
+    return ok;
+}
+
+/* Whether @p item's part numbering is one the player takes: its ordinal within its count, from 1 (each 1 when absent).
+ * Checked before the request replaces what plays, as the player would refuse it only after. */
+bool
+playback_item_parts_valid(const QVariantMap& item) {
+    int ordinal = 0;
+    int count = 0;
+    return playback_item_part_number(item, QStringLiteral("partOrdinal"), &ordinal)
+           && playback_item_part_number(item, QStringLiteral("partCount"), &count) && ordinal >= 1 && ordinal <= count;
+}
+
 /* Whether item @p index of a queued request is well formed (issue #909): it names a path, and its call is 0 for a part
- * of one call, else the call before's (@p previous) or the next, from 0 with no hole. A part or playlist item (@p queued)
- * also names its identity. Writes the item's call to @p call. */
+ * of one call, else the call before's (@p previous) or the next, from 0 with no hole, and its part numbering is within
+ * its count. A part or playlist item (@p queued) also names its identity. Writes the item's call to @p call. */
 bool
 playback_item_valid(const QVariantMap& item, qsizetype index, int previous, bool parts, bool queued, int* call) {
-    if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, call)) {
+    if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, call)
+        || !playback_item_parts_valid(item)) {
         return false;
     }
     const bool inOrder = *call == previous || (index > 0 && *call == previous + 1);

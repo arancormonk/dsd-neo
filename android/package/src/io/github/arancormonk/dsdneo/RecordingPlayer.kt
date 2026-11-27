@@ -553,6 +553,24 @@ class RecordingPlayer(
         fun identified(mode: Int, sizes: LongArray): Boolean = mode == MODE_SINGLE || sizes.all { it >= 0 }
 
         /**
+         * Whether [items] from [start] in [mode] is a request [play] takes (R63): a mode, items, a start among them,
+         * calls from 0 in order with no hole, each part numbered within its call's count (1 of 1 for a path alone),
+         * and, but for SINGLE, each file's identity. Checked before anything is replaced: by RecordingPlayback before
+         * it accepts the play, and by [play] again.
+         */
+        fun validRequest(mode: Int, items: List<Item>, start: Int): Boolean {
+            val framed = mode in MODE_SINGLE..MODE_PLAYLIST && items.isNotEmpty() && start in items.indices
+            if (!framed || items[0].call != 0) {
+                return false
+            }
+            return items.indices.all { i ->
+                val item = items[i]
+                val step = if (i == 0) 0 else item.call - items[i - 1].call
+                step in 0..1 && item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
+            }
+        }
+
+        /**
          * A part's setup, on its player's own thread: open [item], make the platform player, hand it the file and close
          * what was opened. It touches nothing of the machine's; the result goes back to the machine's thread. A player
          * that cannot be made is the player's failure ([REASON_PLAYER]), a file it cannot take the file's.
@@ -759,10 +777,15 @@ class RecordingPlayer(
     fun play(generation: Int, path: String) = play(generation, MODE_SINGLE, listOf(Item(path)), 0)
 
     /**
-     * Play [items] from [start] as play [generation] in [mode], replacing what plays. Items that break [Item]'s rules
-     * fail the play. SINGLE plays only the item at [start].
+     * Play [items] from [start] as play [generation] in [mode], replacing what plays: true. A request that breaks
+     * [Item]'s rules ([validRequest]) is refused before anything is replaced (R63): false, and the play running plays
+     * on untouched. RecordingPlayback refuses one before it is accepted, so none reaches here from the host. SINGLE
+     * plays only the item at [start].
      */
-    fun play(generation: Int, mode: Int, items: List<Item>, start: Int = 0) {
+    fun play(generation: Int, mode: Int, items: List<Item>, start: Int = 0): Boolean {
+        if (!validRequest(mode, items, start)) {
+            return false
+        }
         val replaced = if (active && this.mode == MODE_PLAYLIST && !endNotified) this.generation else 0
         close(replacing = true)
         if (replaced != 0) {
@@ -776,16 +799,12 @@ class RecordingPlayer(
         failed = BooleanArray(items.size)
         wanted = true
         endNotified = mode != MODE_PLAYLIST
-        if (!valid(mode, items, start)) {
-            this.items = emptyList()
-            end(FAILED, ERROR_FAILED, ENDED_FAILED)
-            return
-        }
         callStarts = callStarts(items)
         if (mode == MODE_PLAYLIST && !admit(generation)) {
-            return
+            return true
         }
         beginMove(Move(span(start, if (mode == MODE_SINGLE) start else items.size - 1), forward = true))
+        return true
     }
 
     /** Pause, keeping the position; the focus goes back. While interrupted, it cancels the carry-on. */
@@ -1894,17 +1913,6 @@ class RecordingPlayer(
         status = snapshot()
         if (mode == MODE_PLAYLIST && generation != 0) {
             service.changed(status)
-        }
-    }
-
-    private fun valid(mode: Int, items: List<Item>, start: Int): Boolean {
-        if (mode !in MODE_SINGLE..MODE_PLAYLIST || items.isEmpty() || start !in items.indices || items[0].call != 0) {
-            return false
-        }
-        return items.indices.all { i ->
-            val item = items[i]
-            val step = if (i == 0) 0 else item.call - items[i - 1].call
-            step in 0..1 && item.partOrdinal in 1..item.partCount && (mode == MODE_SINGLE || item.size >= 0)
         }
     }
 
