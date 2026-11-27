@@ -20034,7 +20034,9 @@ Qt Quick frontend (`src/ui/qt`):
       a new `MediaPlayer` and play token, set up on its own thread), also a part still opening, so nothing of the pass
       before reaches it, and a part deleted while it played or opened is then a failed open, skipped and counted (D9
       still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
-      backward move whose every candidate fails goes on forward. Next/Previous while paused stay paused. A transient
+      restart tries its own call's parts first, then the earlier calls nearest first (R55), so a call deleted while it
+      played sends Previous to the call before it, never forward past it. A backward move whose every candidate fails
+      goes on forward. Next/Previous while paused stay paused. A transient
       focus loss interrupts (the request stays outstanding, one listener; Play is a no-op, the app's Pause cancels the
       carry-on, B4); a lasting loss ends a PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every
       mode in every state that would start audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes

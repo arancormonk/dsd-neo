@@ -771,6 +771,30 @@ private fun partsPlayThroughHoldingOneTransientFocus() {
     check(away.state == PAUSED && away.status.pausedReason == RecordingPlayer.PAUSED_BACKGROUND) { "leaving pauses it" }
 }
 
+/**
+ * A restart that fails keeps searching backward (R55): with A, B and C, B deleted while it plays and Previous after
+ * 3 s, B's reopen fails and A plays, not C; with B the last call, A plays and the playlist does not finish.
+ */
+private fun aFailedRestartKeepsSearchingBackward() {
+    for (last in listOf(false, true)) {
+        val rig = Rig()
+        if (last) rig.queue(1, 1) else rig.queue(1, 1, 1)
+        rig.prepared()
+        rig.machine.next()
+        rig.prepared()
+        check(rig.status.call == 1 && rig.state == PLAYING) { "B plays" }
+        rig.elapse(3_500)
+        rig.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+        rig.machine.previous()
+        rig.turn()
+        check(rig.status.call == 0 && rig.state != STOPPED) { "last $last: A opens, on call ${rig.status.call}" }
+        rig.prepared()
+        check(rig.status.call == 0 && rig.state == PLAYING && rig.service.ends.isEmpty()) {
+            "last $last: A plays, and the playlist goes on (${rig.state}, ${rig.service.ends})"
+        }
+    }
+}
+
 private fun aFailedPartEndsPlayAllParts() {
     val gone = Rig()
     gone.fail(path(0, 2), RecordingPlayer.REASON_GONE)
@@ -2133,9 +2157,9 @@ private fun previousOnADeletedRecordingSkipsIt() {
         "past 3 s Previous opens it again: gone, skipped, counted and rechecked"
     }
     rig.turn()
-    check(rig.last.path == path(2, 1)) { "with nothing playable behind in its call, it goes on forward" }
+    check(rig.last.path == path(0, 1)) { "with nothing playable in its call, it keeps searching backward (R55)" }
     rig.prepared()
-    check(rig.state == PLAYING && rig.status.call == 2) { "the next call plays" }
+    check(rig.state == PLAYING && rig.status.call == 0) { "the call before plays" }
 }
 
 private fun aRefusedResumeStaysPausedInEveryMode() {
@@ -3467,6 +3491,7 @@ fun main() {
     aStopReleasesAndForgetsThePlay()
     partsPlayThroughHoldingOneTransientFocus()
     aFailedPartEndsPlayAllParts()
+    aFailedRestartKeepsSearchingBackward()
     aPlaylistPlaysCallsAndPartsInOrderWithAGapBetweenCalls()
     theGapReadsFrozenAndPausesWithIt()
     nextOpensTheNextCallAtOnceAlsoFromTheGap()

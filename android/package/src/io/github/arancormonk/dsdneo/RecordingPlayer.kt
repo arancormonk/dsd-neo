@@ -151,9 +151,10 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
  * gap; otherwise it opens the previous call's first playable part, and at the first call it restarts. A restart
  * opens the part again, as any move does (a new player and token, set up on its own thread), so the pass before can
- * deliver nothing to it; a part gone since is a failed open, skipped and counted. A move that finds nothing forward
- * ends the play: "unplayable" when every recording of the play failed, else finished. A backward move whose every
- * candidate fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
+ * deliver nothing to it; a part gone since is a failed open, skipped and counted, and a restart that finds nothing
+ * playable in its call goes on to the earlier calls, nearest first (R55). A move that finds nothing forward ends the
+ * play: "unplayable" when every recording of the play failed, else finished. A backward move whose every candidate
+ * fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
  * opens on the next looper turn. A move keeps its direction and its candidates until its candidate plays (a start
  * acknowledged): one that prepared and fails before that is a candidate that failed, and the search goes on. A
  * recording that fails after it played is followed as if it had completed: the rest of its call at once, then the gap
@@ -1120,13 +1121,12 @@ class RecordingPlayer(
         // failed and wait for its skip): restart the call.
         val playableBefore = (callStarts[call] until index).any { !failed[it] }
         val restart = gap || playableBefore || currentPositionMs() > RESTART_MS
-        // The calls before, nearest first, each from its first part, then this call: made as the search reaches them.
-        val earlier = if (restart) {
-            emptySequence()
-        } else {
-            (call - 1 downTo 0).asSequence().flatMap { span(callStarts[it], callEnd(it)) }
-        }
-        val candidates = earlier + span(callStarts[call], callEnd(call))
+        // The calls before, nearest first, each from its first part, and this call: made as the search reaches them. A
+        // move tries the earlier calls first, then this one; a restart this call first, then the earlier calls (R55),
+        // so a call gone since keeps the search backward. The forward fallback comes only after both.
+        val earlier = (call - 1 downTo 0).asSequence().flatMap { span(callStarts[it], callEnd(it)) }
+        val thisCall = span(callStarts[call], callEnd(call))
+        val candidates = if (restart) thisCall + earlier else earlier + thisCall
         // Always a new open, also of the part opening now: its file is checked again under a fresh token, and the
         // pass before can deliver nothing to it.
         beginMove(Move(candidates, forward = false, resumeAfter = callEnd(call)))
