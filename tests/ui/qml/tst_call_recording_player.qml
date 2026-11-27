@@ -1642,6 +1642,16 @@ Item {
             tap("recordingPlayButton");
             testContext.publishPlaybackReading({playbackState: 3, playbackToken: 5, playbackPositionMs: 4000, playbackDurationMs: 0, playbackCanSeek: false});
             compare(item("historyRecording").positionMs, 4000, "the position, not 0");
+            // m1: the time and what is spoken name the elapsed time alone, as the bar does, and the slider's value
+            // stays within its range.
+            compare(item("recordingTime").text, "0:04", "the elapsed time alone, never / 0:00");
+            tryVerify(function () { return item("historyRecording").spokenTimeText === "0:04"; }, 2000,
+                      "spoken alone: " + item("historyRecording").spokenTimeText);
+            compare(item("recordingTime").Accessible.name, "0:04", "its accessible name too");
+            var bar = item("recordingSeekBar");
+            verify(bar.value >= bar.minimumValue && bar.value <= bar.maximumValue,
+                   "the slider's value within its range: " + bar.value + " of " + bar.maximumValue);
+            verify(!bar.seekable, "and no seek is offered");
         }
 
         // R76: a seek asked again at the same target restarts its 2 s wait: the thumb stays on the target past 2 s from

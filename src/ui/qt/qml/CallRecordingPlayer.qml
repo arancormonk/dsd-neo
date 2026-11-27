@@ -230,7 +230,9 @@ Column {
         }
     }
     readonly property real spokenPositionMs: positionSpeech.spoken.length > 0 ? Number(positionSpeech.spoken) : 0
-    readonly property string spokenTimeText: Util.fill(qsTr("%1 of %2"), [timeTextAt(spokenPositionMs), lengthText])
+    // With no known length (0), the position alone, as the bar has it: never
+    // "of 0:00".
+    readonly property string spokenTimeText: durationMs > 0 ? Util.fill(qsTr("%1 of %2"), [timeTextAt(spokenPositionMs), lengthText]) : timeTextAt(spokenPositionMs)
 
     function partLabel(index) {
         return Util.fill(qsTr("Part %1 · %2"), [index + 1, Util.playbackLengthText(parts[index].durationMs)]);
@@ -876,7 +878,8 @@ Column {
                 objectName: "recordingTime"
                 width: parent.width
                 // With no player there is no position: only the length.
-                text: player.supported ? Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText]) : player.lengthText
+                // With no known length, the elapsed time alone, as the bar shows it.
+                text: !player.supported ? player.lengthText : player.durationMs > 0 ? Util.fill(qsTr("%1 / %2"), [player.positionText, player.lengthText]) : player.positionText
                 font.family: Theme.mono
                 font.pixelSize: Theme.fontSize(15)
                 color: Theme.textPrimary
@@ -928,7 +931,9 @@ Column {
                     // ValueChanged, so it stays live (issue #782).
                     readonly property real value: player.positionMs / 1000
                     readonly property real minimumValue: 0
-                    readonly property real maximumValue: player.durationMs / 1000
+                    // With no known length, the position is the range's end, so the
+                    // value stays within it (no seek is offered then).
+                    readonly property real maximumValue: Math.max(player.durationMs, player.positionMs) / 1000
                     readonly property bool navigationAllowed: Navigation.allows(seekBar)
                     Accessible.ignored: !navigationAllowed || !visible
                     Accessible.onIncreaseAction: nudge(5000)
