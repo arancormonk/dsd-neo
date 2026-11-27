@@ -6318,6 +6318,9 @@ test_playlist_admission_checks_roots_live(void) {
     s.pass();
     expect("live roots: renamed, a pass: still indexed, unavailable", held(false));
     expect("live roots: renamed, a pass: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
+    // M3, a decided limit: a delete naming its rows is refused as storage away; their files are not there to delete.
+    expect("live roots: renamed, a pass: Delete all is refused as storage away",
+           !s.store.deleteAll() && s.store.deleteRefusal() == QLatin1String("storageAway"));
     // Renamed back: read again, available, admitted.
     expect("live roots: renamed back", QDir().rename(away, roots.external));
     s.pass();
