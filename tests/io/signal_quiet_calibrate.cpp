@@ -1239,7 +1239,11 @@ struct Builder {
                 c.rate = rate;
                 c.classes = r.classes;
                 c.analog_width = r.width;
-                c.snr_width = r.width ? r.width : 12500;
+                /* The request's own width: its analog width, else its digital class's (the width a depression is
+                   measured in, placement()). */
+                c.snr_width = r.width                                    ? r.width
+                              : r.classes == DSD_SIGNAL_QUIET_CLASS_6K25 ? (uint32_t)DSD_SIGNAL_QUIET_WIDTH_6K25_HZ
+                                                                         : (uint32_t)DSD_SIGNAL_QUIET_WIDTH_12K5_HZ;
                 const int bin = bin_hz(c);
                 for (int shift : {0, bin / 4, bin / 2}) {
                     c.grid_shift_hz = shift;
@@ -3093,7 +3097,8 @@ occupied_scene(const Condition& c, const qs::Response& response) {
 
 /* Every condition's scene bound and scale (--bounds), whatever --filter chooses (so a run with a filter that matches
  * nothing lists them all), with the row metadata the CSV will carry (the manifest pins it) and, for an occupied
- * capture, what it asked for and what it raises (occupied_scene()); the run says how many it scaled. */
+ * capture, what it asked for and what it raises (occupied_scene()), and the channel width a response's depression is
+ * measured in (placement()); the run says how many it scaled. */
 int
 write_bounds(const std::string& path, const std::vector<Condition>& all, const Options& o) {
     FILE* f = dsd_fopen_private(path.c_str(), "w");
@@ -3102,7 +3107,8 @@ write_bounds(const std::string& path, const std::vector<Condition>& all, const O
         return 1;
     }
     DSD_FPRINTF(f, "condition,bound,scale,group,kind,rate_hz,classes,analog_width_hz,grid_shift_hz,snr_db,geometry,"
-                   "response,depression_db,adc_noise_db,requested_share,achieved_share,contrast_db,placement\n");
+                   "response,depression_db,adc_noise_db,requested_share,achieved_share,contrast_db,placement,"
+                   "channel_width_hz\n");
     size_t scaled = 0;
     for (const Condition& c : all) {
         DSD_FPRINTF(f, "%s,%.6f,%.6f,%s,%s,%u,%s,%u,%d,%.2f,%s,", c.name.c_str(), c.bound, c.scale, c.group.c_str(),
@@ -3110,11 +3116,12 @@ write_bounds(const std::string& path, const std::vector<Condition>& all, const O
                     c.kind == ACTIVE ? c.snr_db : 0.0, run_columns(o).c_str());
         if (c.floor == OCCUPIED) {
             const OccupiedScene scene = occupied_scene(c, o.response);
-            DSD_FPRINTF(f, "%.4f,%.4f,%.3f,%s\n", c.occupied_share, scene.achieved_share, scene.contrast_db,
+            DSD_FPRINTF(f, "%.4f,%.4f,%.3f,%s,", c.occupied_share, scene.achieved_share, scene.contrast_db,
                         scene.placement.c_str());
         } else {
-            DSD_FPRINTF(f, ",,,\n");
+            DSD_FPRINTF(f, ",,,,");
         }
+        DSD_FPRINTF(f, "%u\n", c.snr_width);
         scaled += c.scale < 1.0;
     }
     if (!close_output(f, path)) {

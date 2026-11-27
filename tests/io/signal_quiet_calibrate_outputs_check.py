@@ -19,6 +19,8 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   share, contrast and placement.
 - A run that completes prints one "complete:" record: the run line's fields, the trials, conditions and rows, and the
   sha256 of the CSV, dump and trial log it closed, which match the files.
+- --bounds gives each condition's channel width, the width a depression is measured in: a noise-only row's is its own
+  class's (6.25 kHz for noise/6k25) or analog width.
 - The late groups (--add cross, raised) only append: the conditions of --add masks,occupancy keep their order and
   names (and so their seeds), and cross adds the -8 masks crossed with neighbours, offsets and droop.
 - A run with a trial that reaches the clip level fails (B8), with or without --trial-log: nonzero, the condition named,
@@ -211,12 +213,19 @@ def check_attestation(driver, root):
         rows = list(csv.DictReader(f))
     columns = ["condition", "bound", "scale", "group", "kind", "rate_hz", "classes", "analog_width_hz",
                "grid_shift_hz", "snr_db", "geometry", "response", "depression_db", "adc_noise_db", "requested_share",
-               "achieved_share", "contrast_db", "placement"]
+               "achieved_share", "contrast_db", "placement", "channel_width_hz"]
     if not rows or list(rows[0].keys()) != columns:
         return fail(f"bounds columns {list(rows[0].keys()) if rows else None}")
     noise = [r for r in rows if r["condition"] == "noise/12k5/1536k/grid0"]
     if len(noise) != 1 or noise[0]["kind"] != "noise" or noise[0]["group"] != "noise" or noise[0]["rate_hz"] != "1536000":
         return fail(f"bounds metadata {noise}")
+    # The channel width a depression is measured in: each noise-only row's own class (or analog) width.
+    widths = {r["condition"]: r["channel_width_hz"] for r in rows if r["condition"].startswith("noise/")
+              and r["condition"].endswith("/1536k/grid0")}
+    want_widths = {"noise/12k5/1536k/grid0": "12500", "noise/6k25/1536k/grid0": "6250",
+                   "noise/nfm_12k5/1536k/grid0": "12500"}
+    if widths != want_widths:
+        return fail(f"noise-only channel widths {widths}")
     short = run(driver, root, root / "attest-short.csv",
                 ["--seed-salt", "9", "--occupancy-veto", "0.05", "--windows", "3"])
     lines = short.stderr.splitlines()
