@@ -597,8 +597,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool rootThereForIndexLocked(int root) const;
     /* Whether the index holds a folder on @p root. Lock held. */
     bool rootHoldsFoldersLocked(int root) const;
-    /* A session start made @p root's directory (it was missing): nothing appeared that a listing must find. Lock
-     * held. */
+    /* A session start made @p root's directory (it was missing): with folders indexed on it (I2), it is listed again in
+     * full at once, its old rows unavailable until then; with none, nothing is left to list. Lock held. */
     void noteRootMadeLocked(int root);
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
     static bool opensToRead(const QString& path);
@@ -924,8 +924,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * accepted. */
     QHash<QString, DeleteAsk> m_deleteQueue;
     /* Roots found missing outside a pass (a delete request's or export's look, rootThereForIndexLocked(); a playlist's
-     * admission, rootPlayableNow(); a session start's, rootAvailableNow()) or back before a pass read them: each is
-     * listed again in full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
+     * admission, rootPlayableNow(); a session start's, rootAvailableNow()), back before a pass read them, or whose
+     * directory a session start made over indexed folders (I2): each is listed again in full by the next pass
+     * (refreshRoots()), whatever m_rootAvailable says. */
     /* Mutable, under m_mutex: a const read that records what it observed (the playlist read's live root look). */
     mutable QSet<int> m_rootsSeenAway;
     /* The seen-away roots the pass under way took into refreshRoots() and has not finished reading yet (R74): their

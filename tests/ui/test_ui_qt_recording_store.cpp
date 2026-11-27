@@ -5159,6 +5159,30 @@ test_folder_missing_at_a_cold_start(void) {
     }
 }
 
+/* I2: a session start that makes a root's recordings folder over folders the index holds on it (renamed away before
+ * any pass marked the root away) has the root read again in full at once: the old rows are unavailable from the start
+ * on, and after the read they are gone and the session's recordings are indexed. */
+void
+test_session_making_the_folder_reads_its_root_again(void) {
+    const Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-renamed");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000962-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("made again: indexed", listed_as(s.store, 1, true));
+    expect("made again: the folder renamed away, no pass since", QDir().rename(roots.external, away));
+    const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("made again: the session made the folder again", made == a && QFileInfo(made).isDir());
+    expect("made again: the old row is unavailable at once", listed_as(s.store, 1, false));
+    record(made, QStringLiteral("0000000000000962-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    s.store.endSession();
+    s.pass();
+    expect("made again: read again, the old row is gone", s.store.recordingsForFragments({fragment(1)}).isEmpty());
+    expect("made again: the session's recording is indexed", listed_as(s.store, 2, true));
+}
+
 /* Issue #902: a delete whose root a session start found missing between the delete's checks and its unlink (back by
  * then) is held for the root's listing in full, which drops it: the file stays. */
 void
@@ -6558,6 +6582,7 @@ main(int argc, char** argv) {
     test_marker_retry_takes_the_label_on_disk();
     test_session_start_remembers_storage_away();
     test_folder_missing_at_a_cold_start();
+    test_session_making_the_folder_reads_its_root_again();
     test_delete_held_when_its_root_was_seen_away();
     test_owner_lookup_failure_ends_a_tail_in_flight();
 #ifndef _WIN32

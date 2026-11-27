@@ -711,6 +711,11 @@ RecordingStore::rootThereForIndexLocked(int root) const {
 void
 RecordingStore::noteRootMadeLocked(int root) {
     m_rootDirMissing[root] = false; // made here: nothing appeared that a listing must find
+    if (rootHoldsFoldersLocked(root)) {
+        // Folders indexed on a directory that was missing (renamed or removed, perhaps before any pass marked the root
+        // away): what is there now is read in full, and their rows are unavailable until then (R74, R78).
+        noteRootSeenAwayLocked(root);
+    }
 }
 
 bool
@@ -2743,7 +2748,7 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
             continue;
         }
         if (missing) {
-            noteRootMadeLocked(i);
+            noteRootMadeLocked(i); // I2: a directory made over indexed folders is read again in full
         }
         for (int n = 1; n <= kMaxFolderCandidates; n++) {
             const QString dirName = n == 1 ? base : QStringLiteral("%1 %2").arg(base, QString::number(n));
