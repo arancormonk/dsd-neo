@@ -154,8 +154,10 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * deliver nothing to it; a part gone since is a failed open, skipped and counted. A move that finds nothing forward
  * ends the play: "unplayable" when every recording of the play failed, else finished. A backward move whose every
  * candidate fails goes on forward. Each search visits each recording at most once; the next candidate after a failure
- * opens on the next looper turn. A recording that fails while it plays is followed as if it had completed: the rest
- * of its call at once, then the gap before the next call. The gap holds no player, only the readings of the part that
+ * opens on the next looper turn. A move keeps its direction and its candidates until its candidate plays (a start
+ * acknowledged): one that prepared and fails before that is a candidate that failed, and the search goes on. A
+ * recording that fails after it played is followed as if it had completed: the rest of its call at once, then the gap
+ * before the next call. The gap holds no player, only the readings of the part that
  * completed or failed while it played (its item, token, duration and position). Every open starts at position 0 with
  * an unknown length, never the readings of the part tried before it. Play in a paused gap opens the next call at once.
  *
@@ -636,6 +638,9 @@ class RecordingPlayer(
      * or after a pause) reads paused meanwhile, its seek allowed.
      */
     private var startReadsOpening = false
+
+    /** The current part has played (a start of it was acknowledged) since it opened (R46). */
+    private var partPlayed = false
     private var positionMs = 0L
     private var playingSinceMs = -1L
     private var durationMs = 0L
@@ -888,8 +893,9 @@ class RecordingPlayer(
         cancel(Slot.PREPARE)
         durationMs = current.durationMs.coerceAtLeast(0)
         positionMs = 0
-        left = null
-        move = null
+        // The move that reached it (its direction, the candidates left) and the readings before it stay until it
+        // plays (R46): prepared and failing before its first start, it is a candidate that failed, and the search
+        // goes on in the move's direction.
         cancel(Slot.SEARCH)
         advance()
     }
@@ -907,6 +913,9 @@ class RecordingPlayer(
             return
         }
         playing = true
+        partPlayed = true
+        left = null
+        move = null
         playingSinceMs = clock.elapsedMs()
         // Audio carries on: a resume's hold-off ends, and with it the paused stretch (publish).
         resumeSuspended = false
@@ -1125,6 +1134,7 @@ class RecordingPlayer(
         // What a gap needs of the part that played is kept apart, in [left].
         positionMs = 0
         durationMs = 0
+        partPlayed = false
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
         // and a later open's player is never failed by it. It covers a wait for a thread let go to end too.
         val opened = token
@@ -1213,7 +1223,9 @@ class RecordingPlayer(
      */
     private fun failItem(reason: String, timedOut: Boolean = false) {
         cancel(Slot.PREPARE)
-        val wasOpen = prepared
+        // It played (a start acknowledged), not only prepared: one that prepared and never played is a candidate that
+        // failed, and the move that reached it goes on (R46).
+        val wasOpen = prepared && partPlayed
         positionMs = currentPositionMs()
         if (wasOpen) {
             // It played: followed as if it had completed, so the gap after its call names it, whatever opens next.

@@ -19993,17 +19993,20 @@ Qt Quick frontend (`src/ui/qt`):
       stays stoppable; each search visits each recording once, making each candidate only as it reaches it, a range and
       a cursor rather than a copy of the queue's tail, so a move costs only the candidates it tries); PARTS ends on its
       first failure as before (gone, changed, a media error), a prepare timeout aside, which it skips as a playlist does
-      (every part timed out: "unplayable"). A player is never reused: it is released as soon as its part completes (just
-      after the next part is handed off, so the release adds nothing to the joint), fails or is left, so an error or
-      completion it reports later reaches nothing (its token is never opened again); the gap after a call holds no
-      player, only the readings of the part that completed or failed while it played (item, token, duration, position),
-      kept apart from the part opening: every open starts at position 0 with an unknown length (0), so the 3,000 ms
-      Previous rule, the seek and the record read the opening part's own, never those of a part that failed while it
-      played before it. The paths of `gone` and `changed` items go to the process-wide `RecordingRecheck` (not tied to a
-      generation, so a Stop or a replacement never drops one); its serial is in the status record, and the host calls
-      `takeRecheck()` (a `String[]`, no delimiter) when the serial moved, on every foreground return and with the next
-      play, and hands the paths to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's
-      entries). Each path is handed over once.
+      (every part timed out: "unplayable"). A move keeps its direction and remaining candidates until its candidate
+      plays, a start acknowledged (R46): one that prepared and fails before its first start is a candidate that failed,
+      and the search goes on the move's way with no gap; only a part that failed after it played is followed as if it
+      had completed. A player is never reused: it is released as soon as its part completes (just after the next part is
+      handed off, so the release adds nothing to the joint), fails or is left, so an error or completion it reports
+      later reaches nothing (its token is never opened again); the gap after a call holds no player, only the readings
+      of the part that completed or failed while it played (item, token, duration, position), kept apart from the part
+      opening: every open starts at position 0 with an unknown length (0), so the 3,000 ms Previous rule, the seek and
+      the record read the opening part's own, never those of a part that failed while it played before it. The paths of
+      `gone` and `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a
+      replacement never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a
+      `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and hands the
+      paths to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path
+      is handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
       sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part,

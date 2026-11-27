@@ -1173,6 +1173,56 @@ private fun theQueueIsLetGoAtTheEnd() {
     }
 }
 
+/**
+ * A move keeps its direction until its candidate plays (R46): a candidate that prepared but failed before its first
+ * start was acknowledged is a candidate that failed, so the search goes on the way the move was going, with no gap.
+ */
+private fun aMoveKeepsItsWayUntilItsCandidatePlays() {
+    // Previous from C: B prepares, then fails before its start is acknowledged: A plays, not C again.
+    val back = Rig()
+    back.queue(1, 1, 1)
+    back.playOut()
+    back.elapse(RecordingPlayer.GAP_MS)
+    back.playOut()
+    back.elapse(RecordingPlayer.GAP_MS)
+    back.prepared()
+    check(back.status.call == 2 && back.state == PLAYING) { "C plays" }
+    back.machine.previous()
+    check(back.status.call == 1) { "Previous at its start goes to B" }
+    back.holdStarts = true
+    back.prepared()
+    back.error(back.current, RecordingPlayer.REASON_DAMAGED)
+    back.turn()
+    check(back.status.call == 0 && !back.status.gap && back.status.skipped == 1) {
+        "B failed before it played: the backward search goes on to A (call ${back.status.call}, gap ${back.status.gap})"
+    }
+    back.holdStarts = false
+    back.prepared()
+    check(back.state == PLAYING && back.status.call == 0) { "and A plays" }
+
+    // Next from A: B prepares and fails the same way: C opens at once, with no gap after B.
+    val ahead = Rig()
+    ahead.queue(1, 1, 1)
+    ahead.prepared()
+    ahead.machine.next()
+    ahead.holdStarts = true
+    ahead.prepared()
+    ahead.error(ahead.current, RecordingPlayer.REASON_DAMAGED)
+    ahead.turn()
+    check(ahead.status.call == 2 && !ahead.status.gap && ahead.state == PREPARING) {
+        "B never played: C opens at once (call ${ahead.status.call}, gap ${ahead.status.gap})"
+    }
+
+    // A part that failed after it played is followed as before: the gap after its call, then the next call.
+    val played = Rig()
+    played.queue(1, 1)
+    played.prepared()
+    played.elapse(2_000)
+    played.error(played.current, RecordingPlayer.REASON_DAMAGED)
+    played.turn()
+    check(played.status.gap && played.status.call == 0) { "played, then failed: the gap after its call" }
+}
+
 private fun previousFollowsTheThreeSecondRule() {
     // At 3,000 ms on a call's first part: the previous call.
     val at = Rig()
@@ -3234,6 +3284,7 @@ fun main() {
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
     nextPastOnlyFailedCallsFinishes()
     previousFollowsTheThreeSecondRule()
+    aMoveKeepsItsWayUntilItsCandidatePlays()
     theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()
     eachMoveMakesOnlyTheCandidatesItTries()
