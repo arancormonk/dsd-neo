@@ -218,6 +218,7 @@ Column {
     }
     Timer {
         id: seekWait
+        objectName: "recordingSeekWait"
         interval: 2000
         onTriggered: player.seekTargetMs = -1
     }

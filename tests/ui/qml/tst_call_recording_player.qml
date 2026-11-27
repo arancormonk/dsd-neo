@@ -1654,20 +1654,23 @@ Item {
             verify(!bar.seekable, "and no seek is offered");
         }
 
-        // R76: a seek asked again at the same target restarts its 2 s wait: the thumb stays on the target past 2 s from
-        // the first request, and falls back only 2 s after the second.
+        // R76, R82: a seek asked again at the same target restarts its wait. Observed on the timer itself, with no
+        // window to time: the first request's wait is stopped while its target is still pending, and the second
+        // request, the same target, runs it again (only a restart can, since the target does not change).
         function test_repeated_seek_target_restarts_its_wait() {
             openWith([rec("t-1", pathA, 60000)]);
             tap("recordingPlayButton");
             testContext.publishPlaybackReading({playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 60000, playbackCanSeek: true});
             var player = item("historyRecording");
+            var timer = findChild(player, "recordingSeekWait");
             testContext.setSeekApplied(false);
             item("recordingSeekBar").seekTo(30000, 5);
-            wait(1900);
+            verify(timer.running, "the first request's wait runs");
+            timer.stop();
+            compare(player.seekTargetMs, 30000, "its target still pending");
             item("recordingSeekBar").seekTo(30000, 5);
-            wait(400);
-            compare(player.seekTargetMs, 30000, "2.3 s after the first request: still on the target");
-            tryCompare(player, "seekTargetMs", -1, 2500, "it falls back 2 s after the second");
+            verify(timer.running, "the same target asked again runs the wait again");
+            compare(player.seekTargetMs, 30000);
             testContext.setSeekApplied(true);
         }
 
