@@ -375,6 +375,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker in a folder's read once its journal and files are read, before the read's
      * last look at its root, with the lock released. Test hook. */
     void setJournalReadHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook in a session start's owner check of each folder, under the store's lock (it must not call
+     * the store): true makes that check find the folder's root gone. While it is set, the start's owner checks walk
+     * the folders worst first, so a better folder is checked after a best one is saved. Test hook. */
+    void setOwnerCheckHookForTest(std::function<bool(const QString& folder)> hook);
     /** @brief The label the index holds for the folder at @p path ("" when none). Test hook. */
     QString folderNameForTest(const QString& path) const;
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
@@ -847,6 +851,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* One scan of ownerFolderPathLocked(): the best folder among the roots usable as it goes, its checks clearing any
      * root they find gone. */
     QString ownerFolderCandidateLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
+    /* One folder of that scan: @p folder replaces @p best when it is this owner's, better placed, on a usable root,
+     * confirmed on disk and writable. */
+    void considerOwnerFolderLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone,
+                                   QStringList* unread, const Folder** best);
     /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
      * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
      * folder is read again before any request). Under the store's lock. */
@@ -882,6 +890,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_rootLookHook;
     /* setSessionRootsHookForTest(); called under m_mutex. */
     std::function<void()> m_sessionRootsHook;
+    /* setOwnerCheckHookForTest(); called under m_mutex. */
+    std::function<bool(const QString&)> m_ownerCheckHook;
+    /* The folder table worst placed first (root, then path, descending), for setOwnerCheckHookForTest(). Lock held. */
+    QList<const Folder*> foldersWorstFirstForTest() const;
     /* setJournalReadHookForTest(); under m_mutex, called with it released. */
     std::function<void(const QString&)> m_journalReadHook;
     void journalReadForTest(const QString& folder) const;

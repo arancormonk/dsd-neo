@@ -5699,45 +5699,31 @@ test_start_with_no_folder_asks_for_the_listing(void) {
 }
 
 /* r16t: the owner-folder choice is made only among roots still usable once its checks are done. The card holds two
- * folders for one owner; the start's check of one finds the card gone (its directory no longer readable, the other's
- * folder.json still read), which clears the card: the start records on the fallback, never in the other folder. The
- * index visits folders in no set order, so eight owners each take a turn. */
+ * folders for one owner. A test hook walks them worst first and makes the second owner check (of the better folder,
+ * after the other was saved as best) find the card gone: the start records on the fallback, never in the saved one. */
 void
 test_owner_choice_drops_a_root_its_checks_found_gone(void) {
     const Roots roots;
     Store s(roots.list());
-    QStringList uids;
-    for (int k = 0; k < 8; k++) {
-        const QString uid = QStringLiteral("%1-0000-4000-8000-00000000000%2")
-                                .arg(QStringLiteral("c0ffee0") + QString::number(k))
-                                .arg(k);
-        uids.append(uid);
-        const QString tag = uid.left(8);
-        expect(
-            "owner choice: two folders for one owner",
-            write_owner_json(roots.external + QStringLiteral("/A (") + tag + QLatin1Char(')'), uid, QStringLiteral("A"))
-                && write_owner_json(roots.external + QStringLiteral("/B (") + tag + QLatin1Char(')'), uid,
-                                    QStringLiteral("A")));
-    }
+    const QString first = roots.external + QStringLiteral("/A (1a2b3c4d)");
+    const QString second = roots.external + QStringLiteral("/B (1a2b3c4d)");
+    expect("owner choice: two folders for one owner",
+           write_owner_json(first, QString(kUidA), QStringLiteral("County"))
+               && write_owner_json(second, QString(kUidA), QStringLiteral("County")));
     s.pass();
     s.pass();
-    const QFileDevice::Permissions open = QFile::permissions(roots.external);
-    const QFileDevice::Permissions shut = QFileDevice::ExeOwner | QFileDevice::WriteOwner;
-    int elsewhere = 0;
-    for (const QString& uid : std::as_const(uids)) {
-        const QString tag = uid.left(8);
-        // The earlier folder's folder.json gone: its check looks at the card, which reads as gone.
-        expect("owner choice: the earlier folder's folder.json removed",
-               QFile::remove(roots.external + QStringLiteral("/A (") + tag + QStringLiteral(")/folder.json")));
-        s.store.setSessionRootsHookForTest([&]() { (void)QFile::setPermissions(roots.external, shut); });
-        const QString path = s.store.beginSession(QStringLiteral("saved"), uid, QStringLiteral("A"));
-        s.store.endSession();
-        s.store.setSessionRootsHookForTest({});
-        (void)QFile::setPermissions(roots.external, open);
-        elsewhere += path.startsWith(roots.internal + QLatin1Char('/')) ? 1 : 0;
-        s.pass();
-    }
-    expect("owner choice: every start found the card gone and recorded on the fallback", elsewhere == 8);
+    QStringList checked;
+    s.store.setOwnerCheckHookForTest([&checked](const QString& folder) {
+        checked.append(folder);
+        return checked.size() == 2; // the check after a best was saved finds the card gone
+    });
+    const QString path = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.store.setOwnerCheckHookForTest({});
+    expect("owner choice: the worse folder was saved, then the better one checked",
+           checked.size() == 2 && checked.value(0) == second && checked.value(1) == first);
+    expect("owner choice: the start found the card gone and recorded on the fallback",
+           path.startsWith(roots.internal + QLatin1Char('/')));
 }
 
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only

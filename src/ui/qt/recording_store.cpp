@@ -2723,23 +2723,34 @@ QString
 RecordingStore::ownerFolderCandidateLocked(const QString& uid, QList<bool>* usable, QStringList* gone,
                                            QStringList* unread) {
     const Folder* best = nullptr;
+#ifdef DSD_NEO_TEST_HOOKS
+    if (m_ownerCheckHook) {
+        for (const Folder* folder : foldersWorstFirstForTest()) {
+            considerOwnerFolderLocked(*folder, uid, usable, gone, unread, &best);
+        }
+        return best != nullptr ? best->path : QString();
+    }
+#endif
     for (const Folder& folder : std::as_const(m_folders)) {
-        if (folder.uid != uid || !usable->value(folder.root)
-            || (best != nullptr
-                && (folder.root > best->root || (folder.root == best->root && folder.path >= best->path)))) {
-            continue;
-        }
-        if (!ownerFolderOnDiskLocked(folder, uid, usable, gone, unread)) {
-            continue;
-        }
-        // One that no longer takes new files (storage mounted read-only, permissions changed) records nothing: the
-        // next root takes the session, as for a folder that cannot be made.
-        if (!QFileInfo(folder.path).isWritable()) {
-            continue;
-        }
-        best = &folder;
+        considerOwnerFolderLocked(folder, uid, usable, gone, unread, &best);
     }
     return best != nullptr ? best->path : QString();
+}
+
+void
+RecordingStore::considerOwnerFolderLocked(const Folder& folder, const QString& uid, QList<bool>* usable,
+                                          QStringList* gone, QStringList* unread, const Folder** best) {
+    const Folder* saved = *best;
+    if (folder.uid != uid || !usable->value(folder.root)
+        || (saved != nullptr
+            && (folder.root > saved->root || (folder.root == saved->root && folder.path >= saved->path)))) {
+        return;
+    }
+    // One that no longer takes new files (storage mounted read-only, permissions changed) records nothing: the next
+    // root takes the session, as for a folder that cannot be made.
+    if (ownerFolderOnDiskLocked(folder, uid, usable, gone, unread) && QFileInfo(folder.path).isWritable()) {
+        *best = &folder;
+    }
 }
 
 bool
@@ -2749,6 +2760,13 @@ RecordingStore::ownerFolderOnDiskLocked(const Folder& folder, const QString& uid
     // has not read yet holds no recordings, so it leaves the table here; a read one, or one whose recordings from
     // before its storage went wait for their read, is the worker's. One whose folder.json cannot be read now is not
     // handed out either, and is kept as the index knows it.
+#ifdef DSD_NEO_TEST_HOOKS
+    if (m_ownerCheckHook && m_ownerCheckHook(folder.path)) {
+        (*usable)[folder.root] = false; // the test's: its root reads as gone at this check
+        noteRootSeenAwayLocked(folder.root);
+        return false;
+    }
+#endif
     Folder onDisk;
     const FolderMarker marker = read_folder_marker(folder.path, &onDisk.uid, &onDisk.kind, &onDisk.name);
     if (marker == FolderMarker::Read && onDisk.uid == uid) {
@@ -3723,6 +3741,25 @@ void
 RecordingStore::setRootLookHookForTest(std::function<void(const QString& root)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_rootLookHook = std::move(hook);
+}
+
+QList<const RecordingStore::Folder*>
+RecordingStore::foldersWorstFirstForTest() const {
+    // A test's owner checks see the folders worst first, so a better one is always checked after a best is saved.
+    QList<const Folder*> walk;
+    for (const Folder& folder : std::as_const(m_folders)) {
+        walk.append(&folder);
+    }
+    std::sort(walk.begin(), walk.end(), [](const Folder* a, const Folder* b) {
+        return a->root != b->root ? a->root > b->root : a->path > b->path;
+    });
+    return walk;
+}
+
+void
+RecordingStore::setOwnerCheckHookForTest(std::function<bool(const QString& folder)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_ownerCheckHook = std::move(hook);
 }
 
 void
