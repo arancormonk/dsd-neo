@@ -50,6 +50,7 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -5322,12 +5323,38 @@ test_session_making_the_folder_reads_its_root_again(void) {
     s.pass();
     expect("made again: indexed", listed_as(s.store, 1, true));
     expect("made again: the folder renamed away, no pass since", QDir().rename(roots.external, away));
+    // The read again the start asks for is held at its listing, before anything of it is installed, until the row
+    // has been looked at (r12): the pass the start wakes cannot finish first.
+    std::mutex gate;
+    std::condition_variable turned;
+    bool reached = false;
+    bool released = false;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (!root.startsWith(roots.external)) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(gate);
+        reached = true;
+        turned.notify_all();
+        turned.wait_for(lock, std::chrono::seconds(10), [&released] { return released; });
+    });
     const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
     expect("made again: the session made the folder again", made == a && QFileInfo(made).isDir());
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        expect("made again: its read again is held at its listing",
+               turned.wait_for(lock, std::chrono::seconds(10), [&reached] { return reached; }));
+    }
     expect("made again: the old row is unavailable at once", listed_as(s.store, 1, false));
+    {
+        const std::lock_guard<std::mutex> lock(gate);
+        released = true;
+    }
+    turned.notify_all();
     record(made, QStringLiteral("0000000000000962-2"), QStringLiteral("b.wav"), 1754000100, 2);
     s.store.endSession();
     s.pass();
+    s.store.setRootReadHookForTest({});
     expect("made again: read again, the old row is gone", s.store.recordingsForFragments({fragment(1)}).isEmpty());
     expect("made again: the session's recording is indexed", listed_as(s.store, 2, true));
 }
