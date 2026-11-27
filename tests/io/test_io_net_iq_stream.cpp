@@ -25,7 +25,9 @@
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/halfband.h>
 #include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/io/iq_net.h>
 #include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -52,6 +54,7 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "demod_pipeline_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/platform.h"
@@ -326,11 +329,28 @@ on_block(const rtl_stream_test_replay_block* block, void* ctx) {
     }
 }
 
+/* Every block's samples after the half-band decimation (dsd_demod_test_set_post_step_tap()), on the demod thread, while
+   g_blocks.keep is set. */
+std::mutex g_cascade_lock;
+std::vector<float> g_cascade;
+
+void
+on_cascade(const float* iq, int pairs, void* ctx) {
+    (void)ctx;
+    if (g_blocks.keep.load() == 0 || iq == nullptr || pairs <= 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> hold(g_cascade_lock);
+    g_cascade.insert(g_cascade.end(), iq, iq + 2 * pairs);
+}
+
 void
 blocks_reset(void) {
     const std::lock_guard<std::mutex> hold(g_blocks.lock);
     g_blocks.floats.clear();
     g_blocks.samples.clear();
+    const std::lock_guard<std::mutex> cascade(g_cascade_lock);
+    g_cascade.clear();
 }
 
 size_t
@@ -914,27 +934,51 @@ ingest_after(const stream_rig& s, uint64_t pairs) {
     return ingest(s);
 }
 
-/* A fresh reader of @p plan started on @p src from pair @p from (cut as the ingest cuts it): its first @p n outputs
-   into @p out. */
+/* A reader of @p plan started fresh (cleared, as the ingest restarts it) on @p src from pair @p from, cut as the ingest
+   cuts it: its first @p n outputs into @p out. @p r is configured for the plan once and reused. */
 void
-fresh_reader(const dsd_iq_reader_plan& plan, const std::vector<float>& src, size_t from, size_t n,
-             std::vector<float>* out) {
-    dsd_iq_resampler r;
-    dsd_iq_resampler_init(&r);
-    assert(dsd_iq_reader_plan_configure(&plan, &r, 4096U) == DSD_IQ_RESAMPLER_OK);
+fresh_reader(dsd_iq_resampler* r, const std::vector<float>& src, size_t from, size_t n, std::vector<float>* out) {
+    dsd_iq_resampler_clear(r);
     out->clear();
-    std::vector<float> buf(2U * dsd_iq_resampler_max_out(&r, 4096U));
-    for (size_t at = from; at < src.size() / 2U && out->size() < 2U * n; at += 4096U) {
-        const size_t k = std::min<size_t>(4096U, src.size() / 2U - at);
-        const int made = dsd_iq_resampler_process(&r, src.data() + 2U * at, k, buf.data(), buf.size() / 2U);
+    std::vector<float> buf(2U * dsd_iq_resampler_max_out(r, 4096U));
+    size_t at = from;
+    while (at < src.size() / 2U && out->size() < 2U * n) {
+        /* Enough inputs for the outputs still wanted, at most a slice: the output bits do not depend on the cut. */
+        const size_t want_in =
+            (((n - out->size() / 2U) * (size_t)r->M) / (size_t)r->L) + (size_t)r->taps_per_phase + 2U;
+        const size_t k = std::min<size_t>(std::min<size_t>(4096U, want_in), src.size() / 2U - at);
+        const int made = dsd_iq_resampler_process(r, src.data() + 2U * at, k, buf.data(), buf.size() / 2U);
         assert(made >= 0);
         out->insert(out->end(), buf.begin(), buf.begin() + 2 * made);
+        at += k;
     }
     if (out->size() > 2U * n) {
         out->resize(2U * n);
     }
-    dsd_iq_resampler_free(&r);
 }
+
+/* The decoder's half-band cascade of two passes from its start (zero history, nothing pending), fed block by block as
+   the demod is (its SIMD sums round by where a block ends). */
+struct FreshCascade {
+    float hist_i[2][30] = {}; /* the longest stage, 31 taps */
+    float hist_q[2][30] = {};
+    int pending[2] = {0, 0};
+
+    void
+    run(const float* in, size_t floats, std::vector<float>* out) {
+        std::vector<float> cur(in, in + floats);
+        for (int i = 0; i < 2; i++) {
+            std::vector<float> next(cur.size() / 2U + 2U);
+            const int len =
+                simd_hb_decim2_complex(cur.data(), (int)cur.size(), next.data(), hist_i[i], hist_q[i], &pending[i],
+                                       i == 0 ? hb31_q15_taps : hb_q15_taps, i == 0 ? 31 : HB_TAPS);
+            assert(len >= 0);
+            next.resize((size_t)len);
+            cur.swap(next);
+        }
+        out->insert(out->end(), cur.begin(), cur.end());
+    }
+};
 
 /* ring_full_restarts_the_reader: behind a reader whose decimation keeps a coset of its phases (112 kHz read into
  * 64 kHz ahead of two passes: L/M 4/7, every fourth output kept), each block the full ring drops starts the reader over
@@ -948,6 +992,7 @@ void
 test_ring_full_restarts_the_reader(void) {
     tcp_rig t;
     t.listener = open_listener(8, &t.port);
+    dsd_demod_test_set_post_step_tap(on_cascade, nullptr);
     stream_open(t.s, tcp_spec(t.port, 112000U, "cf32", 0U).c_str(), 1, nfm_16k);
     t.conn = accept_within(t.listener, kWaitMs);
     assert(t.conn != DSD_INVALID_SOCKET);
@@ -956,7 +1001,12 @@ test_ring_full_restarts_the_reader(void) {
     assert(opened.reader_in_hz == 112000 && opened.reader_out_hz == 64000);
     dsd_iq_reader_plan plan;
     assert(dsd_iq_reader_plan_for(&plan, 112000U, 64000U, 16000U) == 0 && plan.enabled);
-    const size_t block_floats = 2U * (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
+    dsd_iq_resampler reader;
+    dsd_iq_resampler_init(&reader);
+    assert(dsd_iq_reader_plan_configure(&plan, &reader, 4096U) == DSD_IQ_RESAMPLER_OK && reader.L == 4
+           && reader.M == 7);
+    const size_t block_pairs = (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
+    const size_t block_floats = 2U * block_pairs;
 
     std::vector<float> src;
     uint64_t seed = 0x899C5EEDULL;
@@ -1000,13 +1050,14 @@ test_ring_full_restarts_the_reader(void) {
     }
     assert(taken.size() > before_gap + 2U * 2048U);
     const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
-    /* The reader started over at a slice's start after the last drop: search the source's last 64 Ki inputs before the
-       known noise for it, then hold the whole post-gap stream to it. */
+    /* The reader started over with the input after the last drop, and less than a block followed it before the known
+       noise (a whole one would have dropped too): search that one partial block's inputs, at the reader's 7/4 inputs
+       per output, then hold the whole post-gap stream to the start found. */
     std::vector<float> fresh;
     size_t found = SIZE_MAX;
-    for (size_t from = known_from > 65536U ? known_from - 65536U : 0U; from <= known_from && found == SIZE_MAX;
-         from++) {
-        fresh_reader(plan, src, from, 32U, &fresh);
+    const size_t span = (block_pairs * (size_t)reader.M) / (size_t)reader.L + 2U;
+    for (size_t from = known_from > span ? known_from - span : 0U; from <= known_from && found == SIZE_MAX; from++) {
+        fresh_reader(&reader, src, from, 32U, &fresh);
         if (fresh.size() == 64U && std::equal(fresh.begin(), fresh.end(), post.begin())) {
             found = from;
         }
@@ -1015,14 +1066,53 @@ test_ring_full_restarts_the_reader(void) {
         DSD_FPRINTF(stderr, "after the drops the demod took no fresh reader's output: the reader kept running\n");
         assert(0);
     }
-    fresh_reader(plan, src, found, post.size() / 2U, &fresh);
+    fresh_reader(&reader, src, found, post.size() / 2U, &fresh);
     assert(fresh.size() == post.size() && std::equal(fresh.begin(), fresh.end(), post.begin()));
-    /* The demod started its half-bands over at that first sample (the gap mark). */
     rtl_stream_test_replay_state gaps_after{};
     assert(dsd_rtl_stream_test_get_replay_state(&gaps_after) == 0);
     assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
+    /* And the half-bands started over at that first sample, keeping the reader phases a fresh start keeps: the demod's
+       post-decimation output from the gap on is a fresh cascade over the fresh reader, sample for sample, right after
+       the outputs the pre-gap input makes from the stream's start. A reset a block late would keep another phase. */
+    std::vector<float> cascade;
+    {
+        const std::lock_guard<std::mutex> hold(g_cascade_lock);
+        cascade = g_cascade;
+    }
+    std::vector<size_t> cuts;
+    {
+        const std::lock_guard<std::mutex> hold(g_blocks.lock);
+        cuts = g_blocks.floats;
+    }
+    FreshCascade from_open;
+    FreshCascade from_gap;
+    std::vector<float> pre_cascade;
+    std::vector<float> want;
+    size_t at = 0U;
+    for (const size_t k : cuts) {
+        if (at < before_gap) {
+            assert(at + k <= before_gap); /* a read stops at the gap mark */
+            from_open.run(taken.data() + at, k, &pre_cascade);
+        } else {
+            from_gap.run(fresh.data() + (at - before_gap), k, &want);
+        }
+        at += k;
+    }
+    const size_t pre_out = pre_cascade.size();
+    assert(cascade.size() >= pre_out && std::equal(pre_cascade.begin(), pre_cascade.end(), cascade.begin()));
+    const size_t have = cascade.size() > pre_out ? cascade.size() - pre_out : 0U;
+    if (have < want.size() || want.size() < 2U * 512U
+        || !std::equal(want.begin(), want.end(), cascade.begin() + (std::ptrdiff_t)pre_out)) {
+        DSD_FPRINTF(stderr,
+                    "the decimated stream after the gap (%zu floats from %zu) is not a fresh cascade over the fresh "
+                    "reader (%zu floats)\n",
+                    have, pre_out, want.size());
+        assert(0);
+    }
     g_blocks.keep.store(0);
+    dsd_iq_resampler_free(&reader);
     tcp_close(t);
+    dsd_demod_test_set_post_step_tap(nullptr, nullptr);
 }
 
 /* What a boundary must have moved since @p seq / @p gen. */

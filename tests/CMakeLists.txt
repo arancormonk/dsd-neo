@@ -21975,7 +21975,7 @@ if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_net_iq_stream io/test_io_net_iq_stream.cpp)
     target_include_directories(
         dsd-neo_test_io_net_iq_stream
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${PROJECT_SOURCE_DIR}/src/dsp
     )
     target_compile_definitions(
         dsd-neo_test_io_net_iq_stream
@@ -21984,8 +21984,11 @@ if(DSD_HAS_RADIO)
     target_link_libraries(
         dsd-neo_test_io_net_iq_stream
         PRIVATE
+            "-Wl,--start-group"
             dsd-neo_io_radio_private_test_support
+            dsd-neo_dsp_private_test_support
             dsd-neo_io_iq
+            "-Wl,--end-group"
             dsd-neo_core
             ${LIBS}
     )
