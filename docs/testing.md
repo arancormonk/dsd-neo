@@ -2407,6 +2407,11 @@ autosaves its options into it. Then it reads the finalized WAV/JSON pairs:
 | `audio` | `-i raw.wav --rdio-unknown-talkgroup 4242`, an audio input with no frequency | talkgroup `4242`, tag `M17 CAN 7` (no MHz), `freq` 0 and no `freqList`, system 48, `short_name` `M17_CAN_7` |
 | `audio_off` | `-i raw.wav` with no `--rdio-unknown-talkgroup` | no sidecar at all; the "not exported" line logged exactly once, and no "skipped" or "export failed" line |
 
+`DECODE_IQ_M17_RDIO_DIRWATCH_BY_FREQUENCY` (same label and conditions) runs the same three legs on the same call with
+`--rdio-system-by-frequency` added to every leg through `-DMODE` (issue #931). The `rf` leg's sidecars hold system
+`851375` (the replay's frequency in kHz) and `short_name` `System 851375`, the rest as above; the `audio` leg, which
+knows no frequency, keeps system 48 and `short_name` `M17_CAN_7`; `audio_off` is unchanged.
+
 `DECODE_IQ_YSF_RDIO_DIRWATCH_UNKNOWN_TG` runs the same three legs on the synthetic YSF call `ysf_synth`, which names no
 target or source and has no terminator (the capture ends first), with `-DNO_FALLBACK=ON`: a YSF call takes the
 fallback only once it has ended on a decoded terminator, so every leg leaves its recordings with no sidecar and logs
@@ -2416,10 +2421,16 @@ The canonical paths are pinned in unit tests: `CORE_CALL_ALERT_HISTORY` through 
 rotation, its close a stub (`test_m17_rdio_export_by_address_width`: an M17 destination at `UINT32_MAX` is the talkgroup
 as decoded, one above it and the broadcast address take the kHz number and the `M17 CAN 3 433.4750 MHz` label, a source
 above it lists no radio), and `CORE_WAV_JOURNAL` through the real close and export
-(`test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once signalling
-proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played SDRTrunk call with
-no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under `--rdio-unknown-talkgroup` at
-its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept local without the option;
+(`test_rdio_system_by_frequency_in_one_session`, issue #931: in one session, with `--rdio-mode both` and one stand-in
+API server per call, a numbered DMR talkgroup 1 call on 154.4375 MHz and one on 456.9500 MHz go to systems `154437` and
+`456950` named `System <kHz>`, each upload's form `system` part and meta part naming its sidecar's system, the first
+call still on its own carrier although the `-Y` hop's tune was written and rendered before it closed; the label, the
+file name less its random field and the journal's `system` match the same session with the option off, where both go to
+system 48; `test_tetra_first_call_leaves_unowned_audio`: a TETRA anonymous call is exported under the fallback once
+signalling proves the carrier, and the speech before it is not; `test_playback_unnumbered_call_export`: a played
+SDRTrunk call with no talkgroup, on a receiver tuned to 452.3125 MHz with colour code 3, is exported under
+`--rdio-unknown-talkgroup` at its first frame's second, labelled `DMR`, with `freq` 0 and no `freqList`, and is kept
+local without the option;
 `test_playback_records_play_as_one_call`: a file of two records makes one history row, named by the identity the row
 ends with and filed at the first frame of the last call the call-state layer opened, and, not being in SDRTrunk's own
 shape, no recording at all (no WAV, no temp file, nothing published), with the run's one line said;

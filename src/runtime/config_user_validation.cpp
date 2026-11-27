@@ -74,8 +74,9 @@ validate_enum_value_with_diagnostic(const char* val, const char* allowed, dsdcfg
         return -1;
     }
     if (allowed && validate_enum_value(val, allowed) != 0) {
+        /* A value is never quoted: a mistaken one can be a credential (issue #931). */
         char msg[256];
-        DSD_SNPRINTF(msg, sizeof msg, "Invalid value '%s' (allowed: %s)", val, allowed);
+        DSD_SNPRINTF(msg, sizeof msg, "Invalid value (allowed: %s)", allowed);
         dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section ? diag_section : "", diag_key ? diag_key : "",
                          msg);
         return -1;
@@ -107,9 +108,7 @@ validate_double_entry_value(const dsdcfg_schema_entry_t* entry, const char* val,
                             int line_num, const char* diag_section, const char* diag_key) {
     double dbl_val = 0.0;
     if (user_config_parse_double_value(val, &dbl_val) != 0) {
-        char msg[128];
-        DSD_SNPRINTF(msg, sizeof msg, "Invalid numeric value '%s'", val);
-        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid numeric value");
     } else if ((entry->min_val != 0 || entry->max_val != 0)
                && (dbl_val < (double)entry->min_val || dbl_val > (double)entry->max_val)) {
         char msg[128];
@@ -128,18 +127,15 @@ validate_standard_entry_value(const dsdcfg_schema_entry_t* entry, const char* va
     switch (entry->type) {
         case DSDCFG_TYPE_BOOL:
             if (validate_bool_value(val) != 0) {
-                char msg[128];
-                DSD_SNPRINTF(msg, sizeof msg, "Invalid boolean value '%s' (use true/false/yes/no/1/0)", val);
-                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key,
+                                 "Invalid boolean value (use true/false/yes/no/1/0)");
             }
             break;
 
         case DSDCFG_TYPE_INT: {
             int int_val = 0;
             if (user_config_parse_int_value(val, &int_val) != 0) {
-                char msg[128];
-                DSD_SNPRINTF(msg, sizeof msg, "Invalid integer value '%s'", val);
-                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+                dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, "Invalid integer value");
             } else if ((entry->min_val != 0 || entry->max_val != 0)
                        && (int_val < entry->min_val || int_val > entry->max_val)) {
                 char msg[128];
@@ -227,13 +223,14 @@ validate_rtl_bw_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcf
 }
 
 /* [recording] keys the loader refuses outside their range, keeping the value it had: the NFM max gap (issue #756), the
-   NFM pre-roll and rdio-scanner analog keys (issue #668), and the rdio-scanner unknown talkgroup (issue #888). */
+   NFM pre-roll and rdio-scanner analog keys (issue #668), the rdio-scanner unknown talkgroup (issue #888) and system ID
+   (issue #931). */
 namespace {
 bool
 recording_key_is_refused_out_of_range(const char* key) {
     return strcmp(key, "analog_max_gap_ms") == 0 || strcmp(key, "analog_preroll_ms") == 0
-           || strcmp(key, "rdio_analog_system_id") == 0 || strcmp(key, "rdio_analog_talkgroup") == 0
-           || strcmp(key, "rdio_unknown_talkgroup") == 0;
+           || strcmp(key, "rdio_system_id") == 0 || strcmp(key, "rdio_analog_system_id") == 0
+           || strcmp(key, "rdio_analog_talkgroup") == 0 || strcmp(key, "rdio_unknown_talkgroup") == 0;
 }
 
 /* A refused key (above) outside the schema's range is an error rather than the schema walk's warning, as an analog
@@ -334,6 +331,31 @@ validate_path_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_
     return 1;
 }
 
+/* The rdio-scanner API URL and key (issue #931): one that does not fit its field is refused by the loader (it keeps the
+   previous value), never cut short to another endpoint or credential. The message never quotes the value. */
+static int
+validate_rdio_credential_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg_diagnostics_t* diags,
+                               int line_num, const char* diag_section, const char* diag_key) {
+    if (strcmp(entry->section, "recording") != 0) {
+        return 0;
+    }
+    size_t capacity = 0U;
+    if (strcmp(entry->key, "rdio_api_url") == 0) {
+        capacity = sizeof(dsdneoUserConfig::rdio_api_url);
+    } else if (strcmp(entry->key, "rdio_api_key") == 0) {
+        capacity = sizeof(dsdneoUserConfig::rdio_api_key);
+    } else {
+        return 0;
+    }
+    if (strlen(val) >= capacity) {
+        char msg[128];
+        DSD_SNPRINTF(msg, sizeof msg, "Value is too long (at most %zu bytes); the previous value is kept",
+                     capacity - 1U);
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, diag_section, diag_key, msg);
+    }
+    return 1;
+}
+
 /* The keys with a check of their own instead of the schema walk's: nonzero once one of them took @p entry. Factored out
    of validate_entry_value() so it stays under the CCN 15 gate tools/lizard.sh --strict enforces. */
 static int
@@ -346,6 +368,7 @@ validate_keyed_entry(const dsdcfg_schema_entry_t* entry, const char* val, dsdcfg
            || validate_scan_skip_silent_ms_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_trunk_scan_lists_off_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_rtl_serial_entry(entry, val, diags, line_num, diag_section, diag_key)
+           || validate_rdio_credential_entry(entry, val, diags, line_num, diag_section, diag_key)
            || validate_path_entry(entry, val, diags, line_num, diag_section, diag_key);
 }
 
@@ -1070,7 +1093,9 @@ validate_composed_config_path(const char* path, dsdcfg_diagnostics_t* diags) {
     char names_buf[DSD_CONFIG_VALIDATE_PROFILE_BUF_SIZE];
     int count =
         dsd_user_config_list_profiles(path, names, names_buf, sizeof names_buf, DSD_CONFIG_VALIDATE_MAX_PROFILES);
-    if (count <= 0) {
+    if (count < 0) {
+        /* Never OK with every profile's composed check skipped (issue #931). */
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, 0, "", "", "Read error; the profiles could not be listed");
         return;
     }
 
@@ -1180,9 +1205,10 @@ parse_validation_include(config_validation_scan_t* scan, const char* line, char*
     if (!scan->scan_includes) {
         return 0;
     }
-    char include_line[1024];
-    DSD_SNPRINTF(include_line, sizeof include_line, "%s", line);
-    int rc = user_config_parse_include_directive_line(include_line, include_path, include_path_size);
+    /* The whole line the reader returned, as the loader parses it (process_includes_stream()): only the extracted path
+       has a limit of its own (issue #931). */
+    std::string include_line(line);
+    int rc = user_config_parse_include_directive_line(&include_line[0], include_path, include_path_size);
     if (rc < 0) {
         scan->scan_includes = 0;
         return 0;
@@ -1257,9 +1283,29 @@ validate_config_stream_syntax_append(FILE* stream, const char* source_path, int 
     scan.scan_includes = 1;
     int line_num = 0;
 
-    while (fgets(line, sizeof line, stream)) {
+    int invalid = 0;
+    int got = 0;
+    while ((got = user_config_read_line(stream, line, sizeof line, &invalid)) > 0) {
         line_num++;
+        if (invalid) {
+            /* Never quoted, nor any part of it read as a key: it can be a credential (issue #931). Reported against
+               the file it is in, an included one too. */
+            char msg[128];
+            DSD_SNPRINTF(msg, sizeof msg,
+                         "Line is longer than %zu bytes or holds a NUL byte; the loader ignores it whole",
+                         sizeof line - 1U);
+            const int first_diag = diags->count;
+            dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num, "", "", msg);
+            set_scan_diagnostic_sources(&scan, diags, first_diag);
+            continue;
+        }
         validate_config_stream_line(line, line_num, &scan, diags);
+    }
+    if (got < 0) {
+        /* As the loader does, the file counts as unreadable: nothing of the partial line was checked. */
+        const int first_diag = diags->count;
+        dsdcfg_diags_add(diags, DSDCFG_DIAG_ERROR, line_num + 1, "", "", "Read error; the file cannot be loaded");
+        set_scan_diagnostic_sources(&scan, diags, first_diag);
     }
 
     return diags->error_count > errors_before ? -1 : 0;

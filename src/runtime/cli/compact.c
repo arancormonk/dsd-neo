@@ -56,24 +56,43 @@ compact_copy_terminator_tail_or_stop(int start, int argc, char** argv, int* out_
 }
 
 static const char* const k_skip_exact_no_arg[] = {
-    "--airspy-list",        "--auto-ppm",
-    "--rtltcp-autotune",    "--iq-loop",
-    "--tetra-uplink",       "--rdio-api-delete-after-upload",
-    "--enc-lockout",        "--enc-follow",
-    "--tg-lockout-session", "--tg-lockout-persist",
-    "--no-config",          "--print-config",
-    "--interactive-setup",  "--dump-config-template",
-    "--strict-config",      "--list-profiles",
-    "--no-force-key",       "--no-decryption-keys",
-    "--dmr-tg-key-clear",   "--strict-crc",
-    "--no-scan-voice-only", "--dmr-debug-burst",
-    "--dmr-debug-unsynced", "--show-keys",
-    "--scan-voice-only",    "--no-tone-filter",
-    "--no-slot-filter",     "--no-dcc-filter",
-    "--no-ran-filter",      "--no-nac-filter",
-    "--no-service-names",   "--record-unknown-only",
-    "--scan-skip-silent",   "--no-scan-skip-silent",
+    "--airspy-list",
+    "--auto-ppm",
+    "--rtltcp-autotune",
+    "--iq-loop",
+    "--tetra-uplink",
+    "--rdio-api-delete-after-upload",
+    "--enc-lockout",
+    "--enc-follow",
+    "--tg-lockout-session",
+    "--tg-lockout-persist",
+    "--no-config",
+    "--print-config",
+    "--interactive-setup",
+    "--dump-config-template",
+    "--strict-config",
+    "--list-profiles",
+    "--no-force-key",
+    "--no-decryption-keys",
+    "--dmr-tg-key-clear",
+    "--strict-crc",
+    "--no-scan-voice-only",
+    "--dmr-debug-burst",
+    "--dmr-debug-unsynced",
+    "--show-keys",
+    "--scan-voice-only",
+    "--no-tone-filter",
+    "--no-slot-filter",
+    "--no-dcc-filter",
+    "--no-ran-filter",
+    "--no-nac-filter",
+    "--no-service-names",
+    "--record-unknown-only",
+    "--scan-skip-silent",
+    "--no-scan-skip-silent",
     "--rtl-list",
+    "--rdio-system-by-frequency",
+    "--no-rdio-system-by-frequency",
 };
 
 static const char* const k_skip_exact_next_any[] = {
@@ -157,6 +176,17 @@ static const char* const k_skip_exact_next_any[] = {
     "--calc-cc-freq",
     "--calc-cc-lcn",
     "--calc-start-lcn",
+    /* The parser takes these values whatever they start with, and validates them (a port, an IPv4 address, a TETRA
+       network or key): a value starting with '-' fails the parse, and is never read as an option meanwhile, so
+       --api -T --api 0 turns no trunking on (issue #931). */
+    "--lrrp-extra-port",
+    "--dmr-udp-comp-port",
+    "--rtl-udp-control",
+    "--rtl-udp-control-bind",
+    "--api",
+    "--api-bind",
+    "--tetra-net",
+    "--tetra-key",
 };
 
 /* Their value is taken whatever it starts with, as is that of a free-value option (an API token or a target id may
@@ -166,20 +196,14 @@ static const char* const k_skip_exact_next_nonnull[] = {
     "--iq-replay",  "--iq-replay-rate",    "--iq-info",
 };
 
+/* Bootstrap's own options, which take the next argument only when it does not start with '-' (bootstrap.c), so
+   "--config --print-config" loads the default config and prints it. */
 static const char* const k_skip_exact_next_nonopt[] = {
-    "--lrrp-extra-port",
-    "--dmr-udp-comp-port",
-    "--rtl-udp-control",
-    "--rtl-udp-control-bind",
     "--config",
     "--validate-config",
-    "--api",
-    "--api-bind",
-    "--tetra-net",
-    "--tetra-key",
 };
 
-/* Of those, the ones that do without a value: each then reads its default path (bootstrap.c). The others need one. */
+/* Of those, the ones that do without a value: each then reads its default path (bootstrap.c). */
 static const char* const k_skip_exact_next_nonopt_optional[] = {
     "--config",
     "--validate-config",
@@ -295,6 +319,22 @@ dsd_cli_long_option_arity(const char* arg) {
         return DSD_CLI_LONG_NEXT;
     }
     return DSD_CLI_LONG_UNKNOWN;
+}
+
+int
+dsd_cli_long_option_span(int argc, char** argv, int i) {
+    if (argv == NULL || i < 0 || i >= argc) {
+        return 0;
+    }
+    const dsd_cli_long_arity arity = dsd_cli_long_option_arity(argv[i]);
+    if (arity == DSD_CLI_LONG_UNKNOWN) {
+        return 0;
+    }
+    if ((arity == DSD_CLI_LONG_NEXT && compact_has_next_nonnull(i, argc, argv))
+        || (arity == DSD_CLI_LONG_NEXT_NON_OPTION && compact_has_next_non_option(i, argc, argv))) {
+        return 2;
+    }
+    return 1;
 }
 
 int
