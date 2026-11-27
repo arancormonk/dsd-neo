@@ -361,18 +361,15 @@ class Plan:
             return np.asarray(x2).astype(np.complex64)
         return np.asarray(sps.oaconvolve(x2, self.hb.astype(np.float32), mode="valid"))[::2].astype(np.complex64)
 
-    def through_chain(self, rng: np.random.Generator | None, count: int, sig=None, scale: float = 0.0, x=None):
+    def through_chain(self, rng: np.random.Generator, count: int, sig=None, scale: float = 0.0):
         """count channel-filter inputs of a reader row, made at the source rate (white noise from @p rng, plus
-        sig(n, rate) * scale; or the source-rate signal @p x) and run through the shared chain model, past its lead."""
+        sig(n, rate) * scale) and run through the shared chain model, past its lead."""
         plan = self.chain
         lead = cm.chain_lead(plan, np.ones(1))
         n = cm.source_count(plan, count + lead + cm.chain_look_ahead(plan, self.hb_taps))
-        if x is None:
-            x = cm.white_noise(rng, n)
-            if sig is not None:
-                x = x + self.recorded(sig, n).astype(np.complex64) * np.float32(scale)
-        else:
-            x = np.resize(np.asarray(x, dtype=np.complex64), n)
+        x = cm.white_noise(rng, n)
+        if sig is not None:
+            x = x + self.recorded(sig, n).astype(np.complex64) * np.float32(scale)
         y = cm.ChainStream(plan, self.hb_taps).push(x)
         return y[lead : lead + count].astype(np.complex64)
 
@@ -471,7 +468,9 @@ def run_plan(job: dict) -> dict:
         out["edge_hz"] = plan.edge
         if len(plan.taps) <= 1 and plan.stages and fs / 2.0 <= UNFILTERED_SIGNAL_EDGE_HZ:
             out["why"] = "no channel filter behind the half-band cascade at a Nyquist the widest NFM signal reaches"
-        elif plan.reader is not None and plan.reader.pass_hz < plan.edge:
+        elif plan.reader is not None and plan.reader.pass_hz - EDGE_GUARD_HZ < min(
+            plan.edge - EDGE_GUARD_HZ, NYQUIST_FRACTION * fs
+        ):
             out["why"] = (
                 f"less than {MIN_BAND_HZ:.0f} Hz fits between {BAND_LO_HZ:.0f} Hz and the reader's pass edge "
                 f"({plan.reader.pass_hz:.0f} Hz) less {EDGE_GUARD_HZ:.0f} Hz"
@@ -631,7 +630,9 @@ def verdict(res: dict, cand: str) -> dict | None:
     gate = c["mod"].get("gate", {})
     tones = [(v["p1"], k) for k, v in gate.items() if k.startswith("tone")]
     speech = [(v["p1"], k) for k, v in gate.items() if k.startswith("speech")]
-    worst = min(tones + speech, default=(math.inf, "none gated"))
+    # A plan whose every wanted signal passes the source's band (a reader row's "edge") measured nothing the gate holds
+    # it to: it fails, as "no gated signal", rather than passing on an empty minimum.
+    worst = min(tones + speech, default=(-math.inf, "no gated signal"))
     fo = c["false_open"][str(N_MIN_DB)]
     return {
         "tone_p1_min": min(tones)[0] if tones else math.inf,
