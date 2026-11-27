@@ -184,22 +184,27 @@ class PlaybackServicePhases(private val processToken: Long) {
     /** Whether [generation] owns the service now: a command is applied only then, as it runs. */
     fun isOwner(generation: Int): Boolean = synchronized(lock) { generation != 0 && generation == owner }
 
-    /**
-     * Playlist [generation] ended (finished, stopped, timed out, refused, replaced): it no longer owns or waits. One
-     * that gave up waiting for its start ([startAbandoned]: the promotion timed out) gives the start up too (R53), so
-     * the next play issues a fresh one instead of joining a start that may never be delivered. A late delivery of the
-     * abandoned start is still fenced by its generation: it promotes nothing and retires, as a stale start does.
-     */
-    fun ended(generation: Int, startAbandoned: Boolean = false) = synchronized(lock) {
+    /** Playlist [generation] ended (finished, stopped, timed out, refused, replaced): it no longer owns or waits. */
+    fun ended(generation: Int) = synchronized(lock) {
         if (generation == owner) {
             owner = 0
         }
         if (generation == reserved) {
             reserved = 0
-            if (startAbandoned && phase == Phase.ISSUED) {
-                phase = Phase.NONE
-                issuedFor = 0
-            }
+        }
+    }
+
+    /**
+     * Playlist [generation], the request waiting for the start issued, gave that start up (its promotion timed out,
+     * R53): the start no longer promotes, so the next play issues a fresh one instead of joining a start that may never
+     * be delivered. Called on the looper before the play's end is published. A late delivery of the abandoned start is
+     * still fenced by its generation: it promotes nothing and retires, as a stale start does.
+     */
+    fun abandonStart(generation: Int) = synchronized(lock) {
+        if (generation == reserved && phase == Phase.ISSUED) {
+            reserved = 0
+            phase = Phase.NONE
+            issuedFor = 0
         }
     }
 

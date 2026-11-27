@@ -486,10 +486,12 @@ object RecordingPlayback {
     private object ServiceSide : RecordingPlayer.ServiceLink {
         override fun changed(status: RecordingPlayer.Status) = requestRender()
 
+        // On the looper, under the phases' lock, before the end is published: no main-thread hop (R53).
+        override fun startAbandoned(generation: Int) = phases.abandonStart(generation)
+
         override fun ended(generation: Int, reason: String) {
             main.post {
-                // A play that gave up on its start (the promotion timed out) gives the start up too (R53).
-                phases.ended(generation, startAbandoned = reason == RecordingPlayer.ENDED_START)
+                phases.ended(generation)
                 service?.ended(generation)
                 service?.retireCheck()
             }

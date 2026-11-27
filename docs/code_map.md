@@ -20130,7 +20130,8 @@ Qt Quick frontend (`src/ui/qt`):
       issued joins that start, and one while the service is promoted is handed to it in the process: at most one start
       is ever outstanding. A thrown refusal (`ForegroundServiceStartNotAllowedException`, `IllegalStateException`) ends
       that reserved, positive generation "start". A start not promoted in time is given up with the play that waited
-      for it (R53: `ended(generation, startAbandoned)`), so the next play issues a fresh one, not a join of a start
+      for it (R53: `abandonStart(generation)`, on the looper before the end is published, so a Play pressed as soon as
+      Qt sees the end never joins it), so the next play issues a fresh one, not a join of a start
       that may never be delivered; its late delivery is fenced by its generation, promotes nothing and retires. Each
       PROMOTE delivery runs `startForeground(MEDIA_PLAYBACK)` first, always, with the current owner's notification (a
       stale PROMOTE never overwrites B's controls) or the instance's own "Opening…" one, then promotes only this

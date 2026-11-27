@@ -319,6 +319,13 @@ class RecordingPlayer(
          * PLAYLIST generation, after the machine let its audio and focus go.
          */
         fun ended(generation: Int, reason: String)
+
+        /**
+         * PLAYLIST [generation] gives up the service start it waited for (its promotion timed out, R53): called on
+         * the looper before the play's end is published, so a play the user asks for as soon as the end shows
+         * issues a fresh start instead of joining this one.
+         */
+        fun startAbandoned(generation: Int) = Unit
     }
 
     /**
@@ -1618,6 +1625,7 @@ class RecordingPlayer(
                 promoted = false
                 schedule(Slot.PROMOTION, PROMOTION_MS) {
                     if (!promoted) {
+                        service.startAbandoned(generation) // before the end shows (R53)
                         end(FAILED, ERROR_FAILED, ENDED_START)
                     }
                 }

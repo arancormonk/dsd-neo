@@ -84,8 +84,8 @@ private class ServiceRig {
     }
 
     /** An asynchronous end posted to the service's thread: the phases settle it, then the instance checks. */
-    fun ended(generation: Int, startAbandoned: Boolean = false) {
-        phases.ended(generation, startAbandoned)
+    fun ended(generation: Int) {
+        phases.ended(generation)
         if (instance != 0) retireCheck()
     }
 
@@ -112,6 +112,14 @@ private class Playing(val rig: ServiceRig) {
     val tokens = mutableListOf<Long>()
     val seeks = mutableListOf<Pair<Long, Long>>()
     val ends = mutableListOf<Pair<Int, String>>()
+
+    /** Ends posted to the main thread and not run yet (holdEnds); else run at once. */
+    var holdEnds = false
+    val heldEnds = mutableListOf<Int>()
+
+    fun deliverEnds() {
+        while (heldEnds.isNotEmpty()) rig.ended(heldEnds.removeAt(0))
+    }
 
     /** Starts the players' threads have not made yet (holdStarts), by token and serial; else made at once. */
     var holdStarts = false
@@ -161,8 +169,11 @@ private class Playing(val rig: ServiceRig) {
             override fun changed(status: RecordingPlayer.Status) = Unit
             override fun ended(generation: Int, reason: String) {
                 ends += generation to reason
-                rig.ended(generation, startAbandoned = reason == RecordingPlayer.ENDED_START)
+                // RecordingPlayback posts the end to the main thread: held, it waits for deliverEnds().
+                if (holdEnds) heldEnds += generation else rig.ended(generation)
             }
+
+            override fun startAbandoned(generation: Int) = rig.phases.abandonStart(generation)
         },
         RecordingRecheck(),
     )
@@ -285,10 +296,14 @@ fun aTimedOutStartIsNotJoined() {
     val rig = playing.rig
     val a = playing.playlist()
     check(rig.starts == listOf(Start.ISSUE) && rig.inFlight.size == 1) { "A issues a start" }
+    playing.holdEnds = true // the end's main-thread post has not run when the user presses Play again (M1)
     playing.elapse(RecordingPlayer.PROMOTION_MS)
     check(playing.ends == listOf(a to RecordingPlayer.ENDED_START)) { "A's promotion times out: ${playing.ends}" }
+    check(playing.machine.status.endedReason == RecordingPlayer.ENDED_START) { "the end is published" }
     val b = playing.playlist()
     check(rig.starts.last() == Start.ISSUE && rig.inFlight.size == 2) { "B issues a fresh start: ${rig.starts}" }
+    playing.holdEnds = false
+    playing.deliverEnds()
     playing.deliver() // A's, late
     check(rig.promoted.isEmpty() && rig.phases.currentRequest == b) { "the abandoned start promotes nothing" }
     playing.deliver()
