@@ -5667,10 +5667,12 @@ test_first_read_of_a_vanished_directory_is_not_committed(void) {
         }
     });
     expect("vanished read: the folder put in place", QDir().rename(staged, roots.external));
+    const quint64 before = s.store.passCountForTest();
     s.pass();
-    s.store.setJournalReadHookForTest({});
     expect("vanished read: it went during the read", taken.load() && !QFileInfo::exists(roots.external));
-    s.pass(); // the pass the discarded read asked for
+    // r17f: the discarded read asks for the next pass itself: it runs with none asked for here.
+    expect("vanished read: the pass it asked for ran", passes_reach(s.store, before + 2));
+    s.store.setJournalReadHookForTest({});
     expect("vanished read: none of its rows is offered",
            s.store.recordingsForFragments({fragment(1)}).isEmpty()
                && s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).isEmpty());
