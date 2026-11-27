@@ -1610,12 +1610,13 @@ condition of any cell, over 208,022,400 attempted readings (175,152,813 kept). W
 condition, the one-sided 95% bound on its miss rate is about 3/n per attempted reading: 1.0e-3 in the nominal cells and
 5.0e-3 in the others. A bound on the readings kept is weaker: 822 to 1,087 of a cell's 7,223 active conditions kept none
 (every sloped floor and, depending on the cell, broad interferers, occupied captures and neighbour scenes), and some
-kept a single one; a condition with no kept reading is never skipped. Gated noise-only conditions read busy in 288 of
-2,966,400 trials, at most 3 of 600 in one condition (0.50%), against the 5% allowed; the highest noise-only reading was
-4.14 dB. Identically named conditions draw the same seeds in every cell, and where a response leaves everything a
-reading takes in flat, the readings agree: the ADC −10, 0 and +10 dB cells repeat the mirrored cell's kept count and
-lowest reading (within 0.00001 dB) in 6,619 to 6,966 of its 7,223 active conditions. The cells are not independent
-samples, and their trials do not add up to a smaller bound.
+kept a single one; a condition with no kept reading is never skipped. Gated noise-only conditions read busy in 287 of
+2,966,400 trials (the 2 dB dip cells' 6.25 kHz noise-only rows re-measured with the dip at its corrected width, three
+6.25 kHz channel widths), at most 3 of 600 in one condition (0.50%), against the 5% allowed; the highest noise-only
+reading was 4.14 dB. Identically named conditions draw the same seeds in every cell, and where a response leaves
+everything a reading takes in flat, the readings agree: the ADC −10, 0 and +10 dB cells repeat the mirrored cell's kept
+count and lowest reading (within 0.00001 dB) in 6,619 to 6,966 of its 7,223 active conditions. The cells are not
+independent samples, and their trials do not add up to a smaller bound.
 
 | Response | Rate | Trials | Lowest kept | at | Noise-only busy, worst condition | Bound per condition |
 | --- | --- | --- | --- | --- | --- | --- |
@@ -1637,7 +1638,7 @@ samples, and their trials do not add up to a smaller bound.
 | Flat | 10 MS/s | 600 | 5.81 dB | M17, 20% occupied +1.5 dB, one side | 2 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 16 kHz) | 5.0e-3 |
 | 2 dB dip | 2.5 MS/s | 600 | 3.81 dB | NFM 20 kHz, 25 kHz channel's tone, +22.5 dB, 25 kHz both sides | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
 | 2 dB dip | 3 MS/s | 600 | 3.88 dB | M17, 70% occupied +1.5 dB, both sides | 1 of 600 (noise, 12.5 kHz and 6.25 kHz) | 5.0e-3 |
-| 2 dB dip | 6 MS/s | 600 | 3.87 dB | M17, +27.5 dB, 25 kHz above | 1 of 600 (noise, 6.25 kHz) | 5.0e-3 |
+| 2 dB dip | 6 MS/s | 600 | 3.87 dB | M17, +27.5 dB, 25 kHz above | 1 of 600 (noise, 6.25 kHz and NFM 20 kHz) | 5.0e-3 |
 | 2 dB dip | 10 MS/s | 600 | 3.82 dB | NFM 20 kHz, 25 kHz channel's tone, +17.5 dB, 25 kHz both sides | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and AM 15 kHz) | 5.0e-3 |
 | ADC −10 dB | 2.5 MS/s | 600 | 5.77 dB | NFM 20 kHz, 25 kHz channel's tone, +40 dB, 25 kHz below | 1 of 600 (noise, 12.5 kHz, 6.25 kHz and NFM 15 kHz) | 5.0e-3 |
 | ADC −10 dB | 3 MS/s | 600 | 5.83 dB | M17, 70% occupied +1.5 dB, both sides | 2 of 600 (noise, AM 5 kHz) | 5.0e-3 |
