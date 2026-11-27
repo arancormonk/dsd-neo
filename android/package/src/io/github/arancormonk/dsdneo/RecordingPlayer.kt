@@ -584,7 +584,7 @@ class RecordingPlayer(
         val token: Long,
         val player: Player,
         val checked: Boolean,
-        /** Its work, which [AbandonedSetups] counts once it is given up, until the work returns. */
+        /** Its player's thread, which [AbandonedSetups] counts once it is let go, until the thread ends. */
         val work: AbandonedSetups.Work,
     ) {
         /** Its prepare answered before the setup's result came back: it is prepared as soon as it is adopted. */
@@ -615,7 +615,7 @@ class RecordingPlayer(
     private var opening: Opening? = null
 
     /**
-     * The current part's token while its open waits for a stuck setup to return ([AbandonedSetups] at its limit), with
+     * The current part's token while its open waits for a thread let go to end ([AbandonedSetups] at its limit), with
      * no player and no setup yet; 0 with none. Stop, a move and the end drop the wait as they drop an opening.
      */
     private var waiting = 0L
@@ -1124,7 +1124,7 @@ class RecordingPlayer(
         positionMs = 0
         durationMs = 0
         // Fenced by the slot's task id and this part's token: a prepare, an error, a move or the end cancels it,
-        // and a later open's player is never failed by it. It covers a wait for a stuck setup to return too.
+        // and a later open's player is never failed by it. It covers a wait for a thread let go to end too.
         val opened = token
         schedule(Slot.PREPARE, PREPARE_TIMEOUT_MS) {
             // schedule() has checked the paused deadline first: a playlist past it ends "timeout", with no skip.

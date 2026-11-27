@@ -226,14 +226,15 @@ two threads let go still running at once, counted until they end (a third open w
 when one ends, and times out and is skipped one at a time when both are stuck; a stalled prepare dropped by its timeout
 whose release is held stays counted, two of them make the next open wait until one release returns, and a thread dropped
 during its setup then released counts once; a setup done but not delivered counts until it lands; Stop drops the wait;
-five Next then five Previous fail nothing, with every setup in flight or with releases ending at once), a prepare
-timeout past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop
-or Next, Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion
-around a Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying
-paused in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the
-completed one is released; Previous on a recording deleted while it played skipping it), a resume from the paused gap or
-the focus back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the
-first pause: "timeout"),
+five Next then five Previous fail nothing, with every setup in flight, with releases ending at once, or with every
+release held until after the burst and returning one by one, the waiting open going on at the first), a prepare timeout
+past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next,
+Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion around a
+Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
+in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
+one is released; Previous on a recording deleted while it played skipping it), a resume from the paused gap or the focus
+back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s from the first
+pause: "timeout"),
 and `FocusRequests` (only a granted focus request kept; a refused one given back at once, every time). A second build
 of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
 `PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start

@@ -2924,6 +2924,40 @@ private fun quickMovesNeverMeetTheLimit() {
 }
 
 /**
+ * The D1 burst as on a device (R40): five Next, then five Previous, with every release held until after the burst, as
+ * each thread's end reaches the looper only after the moves already posted. The opens past the limit wait with no
+ * player and nothing fails; the play does not end; the release returning first lets the waiting open go on, and once
+ * all have returned nothing is counted and call 0 plays.
+ */
+private fun aBurstWhoseReleasesEndLateFailsNothing() {
+    val rig = Rig()
+    rig.holdReleases = true
+    rig.queue(1, 1, 1, 1, 1, 1, 1)
+    repeat(5) { rig.machine.next() }
+    repeat(5) { rig.machine.previous() }
+    check(rig.status.call == 0 && rig.status.skipped == 0 && rig.state == PREPARING) {
+        "back on call 0 (${rig.status.call}), nothing skipped (${rig.status.skipped})"
+    }
+    check(rig.abandoned.outstanding == 2 && rig.players.size == 2) {
+        "two releases held: call 0 waits with no player (${rig.abandoned.outstanding}, ${rig.players.size})"
+    }
+    check(rig.service.ends.isEmpty()) { "the play goes on" }
+    rig.elapse(RecordingPlayer.PREPARE_TIMEOUT_MS - 1)
+    rig.finishRelease()
+    check(rig.abandoned.outstanding == 1 && rig.players.size == 3 && rig.last.path == path(0, 1)) {
+        "the first release returns: call 0 sets up at once"
+    }
+    while (rig.heldReleases.isNotEmpty()) {
+        rig.finishRelease()
+    }
+    check(rig.abandoned.outstanding == 0) { "every release returned: nothing counted" }
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 0 && rig.status.skipped == 0 && rig.service.ends.isEmpty()) {
+        "call 0 plays, nothing failed"
+    }
+}
+
+/**
  * A player let go counts until its thread ends (R40), not only while its setup runs: a prepare that stalls after
  * its setup returned, dropped by its timeout, whose release then blocks in native code on the stalled read, keeps its
  * thread counted. Two such, and the next open waits, with no player made, until one release returns.
@@ -3216,6 +3250,7 @@ fun main() {
     stuckSetupsAreBounded()
     quickMovesNeverMeetTheLimit()
     aStalledReleaseCountsUntilItsThreadEnds()
+    aBurstWhoseReleasesEndLateFailsNothing()
     anOpenAtTheLimitWaitsForASetup()
     rapidNextThenPreviousNeverFailsAnItem()
     aSetupThatThrowsAnErrorStillWakesTheWait()
