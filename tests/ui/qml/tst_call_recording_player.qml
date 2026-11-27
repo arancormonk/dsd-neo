@@ -1636,6 +1636,23 @@ Item {
             compare(player.seekLanded, landed + 2, "its own landing is");
         }
 
+        // R76: a seek asked again at the same target restarts its 2 s wait: the thumb stays on the target past 2 s from
+        // the first request, and falls back only 2 s after the second.
+        function test_repeated_seek_target_restarts_its_wait() {
+            openWith([rec("t-1", pathA, 60000)]);
+            tap("recordingPlayButton");
+            testContext.publishPlaybackReading({playbackState: 2, playbackToken: 5, playbackPositionMs: 1000, playbackDurationMs: 60000, playbackCanSeek: true});
+            var player = item("historyRecording");
+            testContext.setSeekApplied(false);
+            item("recordingSeekBar").seekTo(30000, 5);
+            wait(1900);
+            item("recordingSeekBar").seekTo(30000, 5);
+            wait(400);
+            compare(player.seekTargetMs, 30000, "2.3 s after the first request: still on the target");
+            tryCompare(player, "seekTargetMs", -1, 2500, "it falls back 2 s after the second");
+            testContext.setSeekApplied(true);
+        }
+
         // A playlist's part still opening, with no token yet: the sheet offers no pause or resume that would reach
         // nothing, until the part has one.
         function test_no_control_before_the_token() {

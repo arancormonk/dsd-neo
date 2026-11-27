@@ -954,6 +954,9 @@ Column {
                             if (token > 0 && token === decoderHost.playbackToken) {
                                 player.seekLandingsBefore = Number(decoderHost.playbackSeeksLanded) || 0;
                                 player.seekTargetMs = target;
+                                // Each request waits its own 2 s, the same
+                                // target asked again included (R76).
+                                seekWait.restart();
                             }
                             decoderHost.seekPlaybackFor(token, target);
                         }
