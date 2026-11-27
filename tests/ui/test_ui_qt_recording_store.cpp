@@ -4391,8 +4391,10 @@ test_changed_file_reads_its_folder_again(void) {
            QFileInfo::exists(a + QStringLiteral("/r.wav")) && QFileInfo::exists(b + QStringLiteral("/r.wav")));
 }
 
-/* Issue #902: a session folder a start makes on a root while the worker lists that root again (a delete request saw
- * the root missing, back before the pass) is the start's: the listing never saw it, and its recordings are indexed. */
+/* Issue #902, r15t: a start while the worker lists a root again (a delete request saw the root missing, back before the
+ * pass) never records onto it, the root not read in full since it came back: it records on the fallback, and its
+ * recordings are indexed. A start during a listing of a root that is not away (its directory found again, I1) makes
+ * its folder there, and that folder is the start's: the listing never saw it (keepSessionFoldersLocked()). */
 void
 test_rescan_keeps_a_session_folder_made_meanwhile(void) {
     Roots roots;
@@ -4425,12 +4427,35 @@ test_rescan_keeps_a_session_folder_made_meanwhile(void) {
     s.store.setRootReadHookForTest({});
     expect("made meanwhile: the delete found the storage missing, back before the next pass",
            seen.load() && QFileInfo::exists(ext));
-    expect("made meanwhile: the start's folder is on that root", made.startsWith(roots.external + QLatin1Char('/')));
+    expect("made meanwhile: the start records on the fallback, not the unlisted root",
+           made.startsWith(roots.internal + QLatin1Char('/')));
     record(made, QStringLiteral("0000000000000933-2"), QStringLiteral("c.wav"), 1754000100, 2);
     s.store.endSession();
     s.pass();
     expect("made meanwhile: its recording is indexed",
            s.store.recordingCount() == 2 && s.store.isIndexedPath(made + QStringLiteral("/c.wav")));
+
+    // A root not away, listed because its directory is there again (I1): a start during that listing records there.
+    const Roots fresh;
+    Store t(fresh.list());
+    const QString staged = fresh.dir.path() + QStringLiteral("/staged");
+    expect("made meanwhile: a folder made elsewhere",
+           write_owner_json(staged + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA), QStringLiteral("County")));
+    QString there;
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == fresh.external && there.isEmpty()) {
+            there = t.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Metro"));
+        }
+    });
+    expect("made meanwhile: the directory there again", QDir().rename(staged, fresh.external));
+    t.pass();
+    t.store.setRootReadHookForTest({});
+    expect("made meanwhile: during that listing the start's folder is on that root",
+           there.startsWith(fresh.external + QLatin1Char('/')));
+    record(there, QStringLiteral("0000000000000933-3"), QStringLiteral("d.wav"), 1754000200, 3);
+    t.store.endSession();
+    t.pass();
+    expect("made meanwhile: kept, its recording is indexed", t.store.isIndexedPath(there + QStringLiteral("/d.wav")));
 }
 
 /* Issue #902: at the end of the next pass, on the worker (so no pass marks the root away meanwhile), the storage goes,
@@ -4456,8 +4481,9 @@ storage_seen_away_and_back(Store& s, const QString& ext, const QString& away, co
     return seen.load();
 }
 
-/* Issue #902: a session folder removed while its storage was away and made again by a start while the returning root is
- * listed is a new folder: its earlier recordings are not counted, only what is recorded into it now. */
+/* Issue #902, r15t: a session folder removed while its storage was away is not made again by a start while the
+ * returning root is listed (not read in full since it came back): the start records on the fallback, and the listing
+ * drops the removed folder's earlier recordings; only what is recorded now counts. */
 void
 test_rescan_drops_a_recreated_folders_old_recordings(void) {
     Roots roots;
@@ -4480,16 +4506,17 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
            storage_seen_away_and_back(s, ext, away, QString(kUidA),
                                       [&awayFolder]() { (void)QDir(awayFolder).removeRecursively(); }));
     s.store.setRootReadHookForTest({});
-    expect("recreated: the start made the same folder again", made == a);
-    record(a, QStringLiteral("0000000000000936-2"), QStringLiteral("new.wav"), 1754000100, 2, 3000);
+    expect("recreated: the start records on the fallback", made.startsWith(roots.internal + QLatin1Char('/')));
+    record(made, QStringLiteral("0000000000000936-2"), QStringLiteral("new.wav"), 1754000100, 2, 3000);
     s.store.endSession();
     s.pass();
     expect("recreated: only the new recording counts", s.store.recordingCount() == 1 && s.store.usedBytes() == 3000
                                                            && !s.store.isIndexedPath(a + QStringLiteral("/old.wav")));
 }
 
-/* Issue #902: a start that relabels its owner's folder while the returning root is listed (the listing read the old
- * folder.json already) keeps the new label. */
+/* Issue #902, r15t: a start while the returning root is listed (the listing read the old folder.json already) leaves
+ * its owner's folder there alone, that root not read in full since it came back: it records on the fallback under the
+ * new label, and the folder on the returning root keeps its own. */
 void
 test_rescan_keeps_a_relabel_made_meanwhile(void) {
     Roots roots;
@@ -4510,14 +4537,12 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
     expect("relabel: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
     s.store.setRootReadHookForTest({});
     s.pass();
-    QString name;
-    for (const QVariant& folder : s.store.folders()) {
-        if (folder.toMap().value(QStringLiteral("uid")).toString() == QString(kUidA)) {
-            name = folder.toMap().value(QStringLiteral("name")).toString();
-        }
-    }
-    expect("relabel: the same folder", relabelled == a);
-    expect("relabel: the new label stands", name == QStringLiteral("Metro"));
+    expect("relabel: the start records on the fallback", relabelled.startsWith(roots.internal + QLatin1Char('/')));
+    QFile marker(a + QStringLiteral("/folder.json"));
+    const QString onDisk = marker.open(QIODevice::ReadOnly) ? QString::fromUtf8(marker.readAll()) : QString();
+    expect("relabel: the folder on the returning root keeps its label",
+           onDisk.contains(QStringLiteral("County")) && !onDisk.contains(QStringLiteral("Metro"))
+               && s.store.folderPathsForTest().contains(a));
 }
 
 /* Issue #902: storage plugged in again after a pass marked it away wakes no pass on its own; an export (or a save)
@@ -5468,6 +5493,50 @@ test_session_on_another_root_notes_a_missing_indexed_root(void) {
     expect("other root: the folder back", QDir().rename(renamed, roots.external));
     s.pass();
     expect("other root: read again, the row is available", listed_as(s.store, 1, true));
+}
+
+/* r15t: a session start never records onto a root held away that is back but not read in full. The card comes back
+ * between the start's look at its roots (its directory missing then) and its choice of folder, with this owner's folder
+ * under another name: the start records on the fallback; the pass after lists the card, and the next start takes the
+ * card's own folder, with no second folder made there. */
+void
+test_session_never_records_onto_a_root_back_unlisted(void) {
+    const Roots roots;
+    const QString moved = roots.dir.path() + QStringLiteral("/ext/moved");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("back unlisted: the owner's folder on the card", a.startsWith(roots.external + QLatin1Char('/')));
+    record(a, QStringLiteral("0000000000000971-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("back unlisted: the card's folder moved away", QDir().rename(roots.external, moved));
+    s.pass(); // held away, its row kept
+    expect("back unlisted: held away", listed_as(s.store, 1, false));
+    const QString renamed = QStringLiteral("Older (1a2b3c4d)");
+    expect("back unlisted: the owner's folder renamed on the card",
+           QDir(moved).rename(QFileInfo(a).fileName(), renamed));
+    std::atomic<bool> restored{false};
+    s.store.setSessionRootsHookForTest([&]() {
+        if (!restored.exchange(true)) {
+            (void)QDir().rename(moved, roots.external); // back between the look and the choice of folder
+        }
+    });
+    const QString during = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.store.setSessionRootsHookForTest({});
+    expect("back unlisted: the card came back inside the start", restored.load() && QFileInfo(roots.external).isDir());
+    expect("back unlisted: the start records on the fallback", during.startsWith(roots.internal + QLatin1Char('/')));
+    s.pass();
+    expect("back unlisted: listed, the card's row is available", listed_as(s.store, 1, true));
+    const QString after = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("back unlisted: the next start takes the card's own folder",
+           after.startsWith(roots.external + QLatin1Char('/')));
+    int onCard = 0;
+    for (const QString& path : s.store.folderPathsForTest()) {
+        onCard += path.startsWith(roots.external + QLatin1Char('/')) ? 1 : 0;
+    }
+    expect("back unlisted: no second folder made on the card", onCard == 1);
 }
 
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
@@ -6916,6 +6985,7 @@ main(int argc, char** argv) {
     test_session_seeing_a_listing_root_gone_queues_another();
     test_first_read_waits_for_its_last_slice();
     test_session_on_another_root_notes_a_missing_indexed_root();
+    test_session_never_records_onto_a_root_back_unlisted();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();

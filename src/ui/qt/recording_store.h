@@ -369,6 +369,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after a pass's look at a root (listRootNow()), with the lock released, before
      * what the look found is taken under it. Test hook. */
     void setRootLookHookForTest(std::function<void(const QString& root)> hook);
+    /** @brief Call @p hook in a session start after it has looked at the roots and before it makes or takes a folder,
+     * under the store's lock (the hook must not call the store). Test hook. */
+    void setSessionRootsHookForTest(std::function<void()> hook);
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
     /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
@@ -824,8 +827,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QString folderLocked(const QString& kind, const QString& uid, const QString& name);
     /* folderLocked()'s steps, under the store's lock: the roots usable now; the owner's folder (its path, @p gone
      * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
-     * and a new folder. */
-    QList<bool> usableRootsLocked();
+     * and a new folder. @p makeOnly: the roots held or seen away that this start found with no directory, which it may
+     * make anew (I2 reads them again after) but never use as they stand (r15t). */
+    QList<bool> usableRootsLocked(QList<bool>* makeOnly);
     QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
     /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
      * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
@@ -835,7 +839,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
     CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);
-    QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable);
+    QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable,
+                            const QList<bool>& makeOnly);
     QVariantMap entryMap(const Entry& entry) const;
     /* entryMap() and what a detection's list shows of a recording. */
     QVariantMap detectionEntryMap(const Entry& entry) const;
@@ -859,6 +864,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     mutable std::atomic<int> m_readerLocks{0};
     /* setRootLookHookForTest(); under m_mutex. */
     std::function<void(const QString&)> m_rootLookHook;
+    /* setSessionRootsHookForTest(); called under m_mutex. */
+    std::function<void()> m_sessionRootsHook;
     /* Call m_rootLookHook, if set, for @p root; the lock not held. */
     void rootLookedForTest(const QString& root) const;
 #endif

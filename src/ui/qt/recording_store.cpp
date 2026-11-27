@@ -2623,13 +2623,14 @@ RecordingStore::noteRootSeenAwayLocked(int root) {
 }
 
 QList<bool>
-RecordingStore::usableRootsLocked() {
+RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
     // The roots as they are now, not as the last pass found them: storage that left since is never made again under
     // its absent mount, where recordings would hide once it came back over them. The pass asked for marks it away.
     // A session keeps the rule that a root that can be made is one it records into (R83): one held away only because
     // its directory is missing (it can be made, and it is not back unread) is made again, and its next read again
     // finds what is really there, the old rows gone as for any folder emptied on disk.
     QList<bool> usable = m_rootAvailable;
+    *makeOnly = QList<bool>(usable.size(), false);
     for (int i = 0; i < usable.size(); i++) {
         // One look decides whether the directory is missing; only a missing one is asked whether it can be made (r14t),
         // so a directory replaced between two looks never reads as there to one and missing to the other.
@@ -2645,8 +2646,13 @@ RecordingStore::usableRootsLocked() {
         if (usable.at(i) && !creatable) {
             usable[i] = false;
             noteRootSeenAwayLocked(i);
-        } else if (!usable.at(i) && creatable && missing) {
-            usable[i] = true;
+        }
+        // A root held or seen away is not recorded onto until a full listing has read it, whatever the looks see now
+        // (r15t): a card back unread may hold this owner's folder under another name. Only a start that finds its
+        // directory absent may make it anew (I2 reads it again after); the pass the start asks for lists the rest.
+        if (!m_rootAvailable.value(i) || rootSeenAwayLocked(i)) {
+            (*makeOnly)[i] = missing && creatable;
+            usable[i] = false;
         }
     }
     return usable;
@@ -2816,13 +2822,14 @@ RecordingStore::makeFolderLocked(const QString& path, int root, const QString& k
 }
 
 QString
-RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const QString& name,
-                                const QList<bool>& usable) {
+RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable,
+                                const QList<bool>& makeOnly) {
     const QString base = recording_folder_base_name(kind, uid, name);
     for (int i = 0; i < m_roots.size(); i++) {
-        // Never a parent: an available root's parent is there, and one gone since is not made again in its place.
-        const bool missing = usable.at(i) && !QFileInfo(m_roots.at(i)).isDir();
-        if (!usable.at(i) || (missing && !QDir().mkdir(m_roots.at(i)))) {
+        // Never a parent: an available root's parent is there, and one gone since is not made again in its place. A
+        // root only to be made (r15t) is passed over when its directory is there by now: it waits for its listing.
+        const bool missing = !QFileInfo(m_roots.at(i)).isDir();
+        if (!(usable.at(i) || (makeOnly.value(i) && missing)) || (missing && !QDir().mkdir(m_roots.at(i)))) {
             continue;
         }
         if (missing) {
@@ -2852,10 +2859,16 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
 
 QString
 RecordingStore::folderLocked(const QString& kind, const QString& uid, const QString& name) {
-    QList<bool> usable = usableRootsLocked();
+    QList<bool> makeOnly;
+    QList<bool> usable = usableRootsLocked(&makeOnly);
+#ifdef DSD_NEO_TEST_HOOKS
+    if (m_sessionRootsHook) {
+        m_sessionRootsHook();
+    }
+#endif
     QString path = existingFolderLocked(kind, uid, name, &usable);
     if (path.isEmpty()) {
-        path = newFolderLocked(kind, uid, name, usable);
+        path = newFolderLocked(kind, uid, name, usable, makeOnly);
     }
     return path;
 }
@@ -3654,6 +3667,12 @@ void
 RecordingStore::setRootLookHookForTest(std::function<void(const QString& root)> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_rootLookHook = std::move(hook);
+}
+
+void
+RecordingStore::setSessionRootsHookForTest(std::function<void()> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_sessionRootsHook = std::move(hook);
 }
 
 void
