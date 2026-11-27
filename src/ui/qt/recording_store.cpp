@@ -2629,10 +2629,18 @@ RecordingStore::usableRootsLocked() {
     // finds what is really there, the old rows gone as for any folder emptied on disk.
     QList<bool> usable = m_rootAvailable;
     for (int i = 0; i < usable.size(); i++) {
-        if (usable.at(i) && !rootAvailableNow(m_roots.at(i))) {
+        const bool creatable = rootAvailableNow(m_roots.at(i));
+        const bool missing = !rootPlayableNow(m_roots.at(i));
+        if (missing && m_listing.contains(i) && !m_rootsSeenAway.contains(i)) {
+            // Gone while its listing in full is in flight (r13, R79's rule): what that listing found may be from
+            // before, and the storage there at its end another card, so another listing follows it, wherever this
+            // session records.
+            noteRootSeenAwayLocked(i);
+        }
+        if (usable.at(i) && !creatable) {
             usable[i] = false;
             noteRootSeenAwayLocked(i);
-        } else if (!usable.at(i) && rootAvailableNow(m_roots.at(i)) && !rootPlayableNow(m_roots.at(i))) {
+        } else if (!usable.at(i) && creatable && missing) {
             usable[i] = true;
         }
     }

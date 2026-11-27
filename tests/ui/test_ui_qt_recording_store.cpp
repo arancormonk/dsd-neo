@@ -5349,6 +5349,48 @@ test_directory_gone_during_a_folder_read_is_remembered_missing(void) {
     expect("gone in a read: back, the folder put on it is found", listed_as(s.store, 1, true));
 }
 
+/* r13: a session start that sees a returning root's directory gone while its listing is in flight queues another
+ * listing, though it records elsewhere (its owner's folder on the internal storage): a different directory back before
+ * the listing's end has its folders found by the listing after it. */
+void
+test_session_seeing_a_listing_root_gone_queues_another(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString extAway = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString aside = roots.dir.path() + QStringLiteral("/aside");
+    expect("listing gone: the external storage away", QDir().rename(ext, extAway));
+    Store s(roots.list());
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+    s.store.endSession();
+    expect("listing gone: the owner's folder on the internal storage", b.startsWith(roots.internal + QLatin1Char('/')));
+    s.pass();
+    expect("listing gone: the external storage back",
+           QDir().rename(extAway, ext)
+               && write_owner_json(roots.external + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA),
+                                   QStringLiteral("County")));
+    std::atomic<int> listings{0};
+    QString again;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root != roots.external || listings++ != 0) {
+            return;
+        }
+        // Listed: its directory goes, a session start sees it gone (recording on the internal storage), and another
+        // directory is there before the listing's last look.
+        (void)QDir().rename(roots.external, aside);
+        again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+        s.store.endSession();
+        const QString metro = roots.external + QStringLiteral("/Metro (5e6f7a8b)");
+        (void)write_owner_json(metro, QString(kUidC), QStringLiteral("Metro"));
+        record(metro, QStringLiteral("0000000000000968-1"), QStringLiteral("m.wav"), 1754000000, 1);
+    });
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("listing gone: the session recorded on the internal storage", again == b);
+    expect("listing gone: another listing ran after it", listings.load() >= 2);
+    expect("listing gone: the other directory's folder is found", listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -6792,6 +6834,7 @@ main(int argc, char** argv) {
     test_root_without_rows_is_not_held_away();
     test_directory_gone_during_its_listing_is_remembered_missing();
     test_directory_gone_during_a_folder_read_is_remembered_missing();
+    test_session_seeing_a_listing_root_gone_queues_another();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();
