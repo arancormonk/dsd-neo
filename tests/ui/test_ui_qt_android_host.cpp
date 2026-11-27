@@ -2777,11 +2777,18 @@ check_recording_playback() {
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackStopped, "a stopped play's late record is not published");
 
+    // #909 (R43): a playlist open, its items held, then a sheet's play the platform cannot take: it replaces the
+    // playlist, whose items go with it.
+    r.nextGeneration = 8;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 8
+              && host.playbackItemsHeld() == 3,
+          "a playlist holds its items");
     r.nextGeneration = 0;
     r.commands.clear();
     check(host.playRecordingOwned(a) == 0, "a play the platform cannot take answers no generation");
     check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("failed"),
           "and fails");
+    check(host.playbackItemsHeld() == 0, "the playlist it replaced lets its items go");
     check(r.commands == QStringList({QStringLiteral("stop")}),
           "and stops what plays first, as the base host's failures do");
 

@@ -117,8 +117,8 @@ DecoderHostAndroid::beginPlayback(const QString& path) {
     drainRecordingRecheck();
     if (generation <= 0) {
         // As the base host's failures do: the play replaces what plays, so the player stops before the store is told
-        // nothing plays it.
-        m_playback_generation = 0;
+        // nothing plays it. The play it replaced lets its items go with it.
+        closePlayback();
         platformStopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("failed"));
         return;
@@ -572,8 +572,8 @@ DecoderHostAndroid::closeRecordingWork() {
     m_share_holds.clear();
     if (m_playback_generation != 0) {
         platformStopPlayback();
-        m_playback_generation = 0;
     }
+    closePlayback();
 }
 
 bool
