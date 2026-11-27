@@ -30,14 +30,19 @@
 #include "platform_path.h"
 #include "qstring_scrub.h"
 
+#include <QMetaType>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
 #include <cerrno>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
 #ifdef DSD_NEO_TEST_HOOKS
 #include <functional>
+#include <initializer_list>
 #include "decoder_host_test_hooks.h"
 #endif
 
@@ -324,6 +329,101 @@ DecoderHost::startRecordingPlayback(const QString& path) {
 
 namespace {
 
+/* @p text, a decimal integer and nothing else (no space, no junk), into @p out (strtoll with its end checked). */
+bool
+playback_whole_text(const QString& text, qint64* out) {
+    const QByteArray bytes = text.toUtf8();
+    const char* begin = bytes.constData();
+    const bool leadsWithDigitOrSign = begin[0] == '-' || (begin[0] >= '0' && begin[0] <= '9');
+    if (bytes.isEmpty() || !leadsWithDigitOrSign) {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long long parsed = std::strtoll(begin, &end, 10);
+    if (errno != 0 || end == begin || end == nullptr || *end != '\0') {
+        return false;
+    }
+    *out = static_cast<qint64>(parsed);
+    return true;
+}
+
+/* @p number with no fraction and within a qint64, into @p out (R80; no equality on doubles: whole < or > number). */
+bool
+playback_whole_double(double number, qint64* out) {
+    const double whole = std::trunc(number);
+    // 2^63 bounds what a qint64 holds.
+    if (!std::isfinite(number) || whole < number || whole > number || number < -9223372036854775808.0
+        || number >= 9223372036854775808.0) {
+        return false;
+    }
+    *out = static_cast<qint64>(number);
+    return true;
+}
+
+/* Whether @p id is one of @p ids. */
+bool
+playback_type_in(int id, std::initializer_list<int> ids) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
+/* @p value as a whole number (R80): an integer type, a double with no fraction, or a decimal string, read in 64 bits
+ * so nothing is narrowed before its range is checked; false for anything else (a bool, a fraction, junk). */
+bool
+playback_whole_value(const QVariant& value, qint64* out) {
+    const int id = value.metaType().id();
+    if (playback_type_in(id, {
+                                 QMetaType::Int,
+                                 QMetaType::Long,
+                                 QMetaType::LongLong,
+                                 QMetaType::Short,
+                                 QMetaType::SChar,
+                             })) {
+        *out = value.toLongLong();
+        return true;
+    }
+    if (playback_type_in(id, {
+                                 QMetaType::UInt,
+                                 QMetaType::ULong,
+                                 QMetaType::ULongLong,
+                                 QMetaType::UShort,
+                                 QMetaType::UChar,
+                             })) {
+        const qulonglong unsignedValue = value.toULongLong();
+        *out = static_cast<qint64>(unsignedValue);
+        return unsignedValue <= static_cast<qulonglong>(LLONG_MAX);
+    }
+    if (id == QMetaType::Double || id == QMetaType::Float) {
+        return playback_whole_double(value.toDouble(), out);
+    }
+    if (id == QMetaType::QString || id == QMetaType::QByteArray) {
+        return playback_whole_text(value.toString(), out);
+    }
+    return false;
+}
+
+/* @p value as a whole number within [@p low, @p high], into @p out once checked there; false otherwise. */
+bool
+playback_ranged_value(const QVariant& value, qint64 low, qint64 high, qint64* out) {
+    qint64 number = 0;
+    if (!playback_whole_value(value, &number) || number < low || number > high) {
+        return false;
+    }
+    *out = number;
+    return true;
+}
+
+/* @p value as an int (R80: checked in 64 bits first), into @p out; false when it is no whole number in int's range. */
+bool
+playback_int_value(const QVariant& value, int* out) {
+    qint64 number = 0;
+    if (!playback_ranged_value(value, INT_MIN, INT_MAX, &number)) {
+        return false;
+    }
+    *out = static_cast<int>(number);
+    return true;
+}
+
 /* The call of playlist item @p item (0 when it names none), into @p call; false when it names one that is no number. */
 bool
 playback_item_call(const QVariantMap& item, int* call) {
@@ -332,9 +432,7 @@ playback_item_call(const QVariantMap& item, int* call) {
         *call = 0;
         return true;
     }
-    bool ok = false;
-    *call = value.toInt(&ok);
-    return ok;
+    return playback_int_value(value, call);
 }
 
 /* Whether queued item @p item names the file the store listed (issue #909): a size from 0, and the modification time's
@@ -342,14 +440,14 @@ playback_item_call(const QVariantMap& item, int* call) {
  * malformed; the queue would otherwise have no identity to check the file found at its turn against. */
 bool
 playback_item_identified(const QVariantMap& item) {
-    bool sizeOk = false;
-    bool secOk = false;
-    bool nanosOk = false;
-    const qint64 size = item.value(QStringLiteral("size")).toLongLong(&sizeOk);
-    (void)item.value(QStringLiteral("mtimeSec")).toLongLong(&secOk);
-    const int nanos = item.value(QStringLiteral("mtimeNanos")).toInt(&nanosOk);
-    // A file identity's nanoseconds lie in 0..999,999,999 (dsd_file_identity_t, R75): any other names no file.
-    return sizeOk && size >= 0 && secOk && nanosOk && nanos >= 0 && nanos <= 999999999;
+    qint64 size = 0;
+    qint64 seconds = 0;
+    qint64 nanos = 0;
+    // Each read whole and in 64 bits (R80). A file identity's nanoseconds lie in 0..999,999,999 (dsd_file_identity_t,
+    // R75): any other names no file.
+    return playback_ranged_value(item.value(QStringLiteral("size")), 0, LLONG_MAX, &size)
+           && playback_ranged_value(item.value(QStringLiteral("mtimeSec")), LLONG_MIN, LLONG_MAX, &seconds)
+           && playback_ranged_value(item.value(QStringLiteral("mtimeNanos")), 0, 999999999, &nanos);
 }
 
 /* @p key of @p item as a number into @p out, 1 when it is absent (issue #909 R63: an item with no numbering is one
@@ -361,9 +459,7 @@ playback_item_part_number(const QVariantMap& item, const QString& key, int* out)
         *out = 1;
         return true;
     }
-    bool ok = false;
-    *out = value.toInt(&ok);
-    return ok;
+    return playback_int_value(value, out);
 }
 
 /* Whether @p item's part numbering is one the player takes: its ordinal within its count, from 1 (each 1 when absent).

@@ -307,8 +307,9 @@ identity under its id changed, and one for an id no longer indexed answering gon
 reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
 reading unchanged), the recheck paths on a serial change, on a foreground return (Inactive included, an end between
 polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative
-one, no mtime or one that is no number, nanoseconds outside 0 to 999,999,999) or a part outside its count refused with
-the play open left playing while a single item needs none and is sent as part 1 of 1 of call 0 (R63), keys holding no
+one, no mtime or one that is no number, nanoseconds outside 0 to 999,999,999, an integer past 32 bits as a number or
+text, a fraction, or text with junk, R80) or a part outside its count refused with the play open left playing while a
+single item needs none and is sent as part 1 of 1 of call 0 (R63), keys holding no
 value read as absent by the check and the request alike (M4), a legacy single play reading part 1 of 1 (M5), token
 commands (a stale token's dropped, and no position shown for any seek: only the player's record moves it), the
 replacement point, the legacy `playRecording()` missing-file reading, a sheet's own play whose file goes right after its

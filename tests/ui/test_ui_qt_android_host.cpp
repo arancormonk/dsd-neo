@@ -2924,6 +2924,31 @@ check_playlist_arrays() {
     QVariantMap wordy = items.at(0).toMap();
     wordy.insert(QStringLiteral("partOrdinal"), QStringLiteral("first"));
     refused({wordy}, DecoderHost::PlaybackPlaylist, "a part ordinal that is no number is refused");
+    // R80: each integer is read whole and in 64 bits before it is narrowed: 2^32 (which toInt() reads as 0), as a
+    // number and as text, a fraction and text with junk after its digits are refused, the play open left playing.
+    for (const char* field : {"call", "partOrdinal", "partCount", "mtimeNanos"}) {
+        const QVariant tooWide[] = {QVariant(qint64{4294967296}), QVariant(QStringLiteral("4294967296"))};
+        for (const QVariant& wide : tooWide) {
+            QVariantMap item = items.at(0).toMap();
+            item.insert(QString::fromLatin1(field), wide);
+            refused({item}, DecoderHost::PlaybackPlaylist, "an integer past 32 bits is refused, not narrowed");
+        }
+    }
+    for (const char* field : {"call", "partOrdinal", "partCount", "mtimeNanos", "mtimeSec", "size"}) {
+        const QVariant malformed[] = {QVariant(1.5), QVariant(QStringLiteral("1x")), QVariant(QStringLiteral(" 1"))};
+        for (const QVariant& odd : malformed) {
+            QVariantMap item = items.at(0).toMap();
+            item.insert(QString::fromLatin1(field), odd);
+            refused({item}, DecoderHost::PlaybackPlaylist, "a fraction or text with junk is refused");
+        }
+    }
+    QVariantMap wholeForms = items.at(0).toMap();
+    wholeForms.insert(QStringLiteral("partOrdinal"), 1.0);
+    wholeForms.insert(QStringLiteral("size"), QStringLiteral("96044"));
+    r.nextGeneration = 21;
+    check(host.playRecordings({wholeForms}, DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 21
+              && r.request.partOrdinals == QList<int>{1} && r.request.sizes == QList<qint64>{96044},
+          "#909 R80: a whole double and decimal text are taken, as the numbers they are");
     // #909: the store lists every recording's identity, so a queued item without one is malformed, refused before the
     // platform sees it; the play now open (21) plays on.
     for (const int mode : {int{DecoderHost::PlaybackParts}, int{DecoderHost::PlaybackPlaylist}}) {
