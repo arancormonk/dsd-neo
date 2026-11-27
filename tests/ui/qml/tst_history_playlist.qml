@@ -1457,6 +1457,42 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
+        // A filter that hides every call while a playlist plays (r12): on a 360x360 screen at 2x text the empty
+        // state's text and Clear filters stay in the list's area, scrolled there, never over the bar, and both its
+        // button and the bar's take a tap.
+        function test_filtered_empty_state_stays_above_the_bar() {
+            var calls = logCalls(3);
+            var screen = idle();
+            idleLoader.height = 360;
+            Ui.Theme.fontScale = 2.0;
+            try {
+                playAll(screen, calls);
+                playing({item: 1});
+                historyView.filterText = "no call matches this";
+                verify(waitForPolish(screen));
+                waitForRendering(screen);
+                var barItem = bar(screen);
+                var barRect = rectIn(barItem, screen);
+                verify(findChild(screen, "callLogEmptyState").visible, "the empty state shows");
+                var listRect = rectIn(findChild(screen, "callLogList"), screen);
+                var clear = findChild(screen, "historyClearFilters");
+                clear.forceActiveFocus();
+                verify(waitForPolish(screen));
+                waitForRendering(screen);
+                var clearRect = rectIn(clear, screen);
+                verify(clearRect.y >= listRect.y - 0.5 && clearRect.y + clearRect.height <= barRect.y + 0.5,
+                       "Clear filters whole above the bar's top: " + describe(clearRect) + " " + describe(barRect));
+                var play = part(screen, "nowPlayingPlay");
+                mouseClick(play);
+                compare(hostCallsNamed("pausePlayback").length, 1, "the bar's button takes its tap");
+                compare(historyView.filterText, "no call matches this", "the tap on the bar cleared nothing");
+                mouseClick(clear);
+                compare(historyView.filterText, "", "Clear filters takes its tap");
+            } finally {
+                idleLoader.height = 640;
+            }
+        }
+
         // The bar hides while the keyboard shows, by the host's visible-IME indicator rather than by overlap: a
         // window Android resized above the keyboard reports the keyboard's top at or below the screen's bottom, and
         // the bar still hides there, History laid out as without one.

@@ -686,6 +686,8 @@ Item {
         if (!window || !visible)
             return;
         Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        // Clear filters reached by keyboard scrolls into the empty state's view.
+        Theme.revealFocus(emptyArea, emptyState, window.activeFocusItem);
     }
     // A header squeezed below its top row (a short window, the bar docked)
     // with nothing of it focused shows that row's controls whole, its title's
@@ -965,60 +967,76 @@ Item {
 
     // A sibling of the view, not a child: ListView reparents declared children
     // into its contentItem, where `parent.count` is undefined and the empty state
-    // would never show.
-    Column {
-        objectName: "callLogEmptyState"
-        anchors.centerIn: logList
-        width: logList.width - 2 * Theme.screenPadding
+    // would never show. Its own clipped area over the list's (issue #909): a
+    // short window with the bar docked scrolls the text and Clear filters there,
+    // never over the bar.
+    Flickable {
+        id: emptyArea
+        objectName: "callLogEmptyArea"
+        anchors.fill: logList
         // The filter's count, not the view's: the view holds no rows while hidden.
         visible: historyView.count === 0
-        spacing: 8
+        clip: true
+        contentWidth: width
+        contentHeight: Math.max(height, emptyState.height)
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.StopAtBounds
 
-        // An empty filtered view and an empty log are different situations: the
-        // first must say the calls are hidden, not gone, or the filter pill left
-        // active yesterday reads as a decoder that stopped logging.
-        readonly property bool filtered: callHistory.count > 0
-        // Each count spelled as a whole sentence rather than one %n plural: the
-        // app installs no QTranslator, and an untranslated %n form substitutes the
-        // number but never picks a plural form — this read "1 logged call(s) are
-        // hidden". Two strings also let the verb agree.
-        readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
+        Column {
+            id: emptyState
+            objectName: "callLogEmptyState"
+            x: Theme.screenPadding
+            // Centred while it fits; from the top, scrolled, when it does not.
+            y: Math.max(0, (emptyArea.height - height) / 2)
+            width: emptyArea.width - 2 * Theme.screenPadding
+            spacing: 8
 
-        ReadableText {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(16)
-            font.weight: Font.DemiBold
-            color: Theme.textSecondary
-        }
+            // An empty filtered view and an empty log are different situations: the
+            // first must say the calls are hidden, not gone, or the filter pill left
+            // active yesterday reads as a decoder that stopped logging.
+            readonly property bool filtered: callHistory.count > 0
+            // Each count spelled as a whole sentence rather than one %n plural: the
+            // app installs no QTranslator, and an untranslated %n form substitutes the
+            // number but never picks a plural form — this read "1 logged call(s) are
+            // hidden". Two strings also let the verb agree.
+            readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
 
-        ReadableText {
-            objectName: "logEmptyDetail"
+            ReadableText {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(16)
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
 
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? parent.hiddenText : qsTr("Start listening on a system and every call lands here.")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            color: Theme.textSubdued
-            wrapMode: Text.Wrap
-        }
+            ReadableText {
+                objectName: "logEmptyDetail"
 
-        Item {
-            width: 1
-            height: 6
-            visible: parent.filtered
-        }
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? parent.hiddenText : qsTr("Start listening on a system and every call lands here.")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+                wrapMode: Text.Wrap
+            }
 
-        OutlineButton {
-            objectName: "historyClearFilters"
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: parent.filtered
-            width: Math.min(parent.width, 220)
-            text: qsTr("Clear filters")
-            onClicked: screen.clearFilters()
+            Item {
+                width: 1
+                height: 6
+                visible: parent.filtered
+            }
+
+            OutlineButton {
+                objectName: "historyClearFilters"
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: parent.filtered
+                width: Math.min(parent.width, 220)
+                text: qsTr("Clear filters")
+                onClicked: screen.clearFilters()
+            }
         }
     }
 
