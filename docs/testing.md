@@ -220,11 +220,14 @@ stuck ending "unplayable", a result after a move released, a prepare answering b
 SINGLE and PARTS on the same path, and a player that cannot be made on its thread, a thread that cannot start and a
 refused hand-off ending the play), a stuck setup holding only its own thread, at its timeout or when Stop or Next leaves
 it (the next item and a later sheet play set up at once, never failing; a hung prepare is not counted as stuck), at most
-two setups given up still running at once (a third open waits with no player made: it goes on when one returns, and
-times out and is skipped one at a time when both are stuck; Stop drops the wait; five quick moves whose setups are done
-but not delivered skip nothing; five Next then five Previous with every setup in flight fail nothing), a prepare timeout
-past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next,
-Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion around a
+two threads let go still running at once, counted until they end (a third open waits with no player made: it goes on
+when one ends, and times out and is skipped one at a time when both are stuck; a stalled prepare dropped by its timeout
+whose release is held stays counted, two of them make the next open wait until one release returns, and a thread
+dropped during its setup then released counts once; a setup done but not delivered counts until it lands; Stop drops
+the wait; five Next then five Previous fail nothing, with every setup in flight or with releases ending at once), a
+prepare timeout past a paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes
+after Stop or Next, Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a
+completion around a
 Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
 in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
 one is released; Previous on a recording deleted while it played skipping it), a resume from the paused gap or the focus

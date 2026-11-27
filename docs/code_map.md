@@ -19962,16 +19962,17 @@ Qt Quick frontend (`src/ui/qt`):
       (carried in the result) on the recheck list, leaving the play now open alone. A setup stuck in a read holds only
       its own player's thread, so nothing ever queues behind it; it releases its player and ends once the read
       returns and its result is delivered.
-      Setups given up are counted for the process while their work still runs (`AbandonedSetups`, a limit of 2,
-      `LIMIT`): while two owner threads are still running setup work whose open was dropped, each holding a
-      `MediaPlayer` in a read that may never return, an open makes no player and starts no setup and waits (R35), its
-      own prepare timeout armed as usual and bounding the wait to 10 s. One leaves the count when its work returns on
-      its owner thread, before its result is posted, so a setup that is done and waits only for delivery counts for
-      nothing; the looper hears it when that result is delivered, which releases its player and lets the waiting open
-      go on under its own token. Only the current part waits, and Stop, a move or the end drop the wait as they drop an
-      opening, so stalled storage costs one ten-second timeout per recording, one at a time, never a burst of failures,
-      and quick moves never fail a recording. Stop never waits for a setup. The JVM tests drive it with fake owner
-      threads, numbered per setup, that hold a setup, run it late, fail it or refuse it.
+      Owner threads the machine has let go are counted for the process until they end (`AbandonedSetups`, a limit of
+      2, `LIMIT`, R32/R35/R40): one counts from the moment its open is dropped or its player released until its
+      release task ends (`Player.release(ended)`, acknowledged on the looper; a release whose post is refused ends at
+      once), once for a thread dropped during its setup and then released. While two are running, each holding a
+      `MediaPlayer` in a setup's or a release's read that may never return, an open makes no player and starts no
+      setup and waits (R35), its own prepare timeout armed as usual and bounding the wait to 10 s; the looper hearing
+      a thread end lets the waiting open go on under its own token. Only the current part waits, and Stop, a move or the
+      end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per recording, one at a
+      time, never a burst of failures, and quick moves never fail a recording. Stop never waits for a setup. The JVM
+      tests drive it with fake owner threads, numbered per setup, that hold a setup, run it late, fail it or refuse it,
+      and releases that end at once or are held in native code.
     - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
       link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
       seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed

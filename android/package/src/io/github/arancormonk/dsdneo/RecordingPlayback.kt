@@ -70,10 +70,10 @@ object RecordingPlayback {
     private val recheck = RecordingRecheck()
 
     /**
-     * The setups given up while their work still runs, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
-     * player's own thread and its MediaPlayer each, stuck in a read that may never return) an open waits, bounded by
-     * its prepare timeout, so stalled storage cannot pile up threads; Stop never waits for one. The work leaves the
-     * count on its player's thread as it returns.
+     * The players' threads let go and not ended yet, for the process (#909): at [AbandonedSetups.LIMIT] of them (a
+     * player's own thread and its MediaPlayer each, stuck in a setup's read or a release's that may never return) an
+     * open waits, bounded by its prepare timeout, so stalled storage cannot pile up threads; Stop never waits for one.
+     * A thread leaves the count when its release task ends ([MediaItem.release]'s acknowledgement on the looper).
      */
     private val abandonedSetups = AbandonedSetups()
 
@@ -676,9 +676,9 @@ object RecordingPlayback {
         override val durationMs: Long
             get() = duration
 
-        override fun release() {
+        override fun release(ended: () -> Unit) {
             wantedStart = 0L
-            owner.post {
+            val posted = owner.post {
                 try {
                     media?.release()
                 } catch (e: Throwable) {
@@ -691,6 +691,12 @@ object RecordingPlayback {
                 // running can still be refused, harmlessly); an event already queued is for a released player, and
                 // quit() drops it unread. Nothing of ours is posted after this.
                 thread.quit()
+                // The thread ends with this task: the looper stops counting it (a release stuck in native code on a
+                // stalled read keeps it counted until it returns).
+                post { ended() }
+            }
+            if (!posted) {
+                post { ended() } // its thread had ended already
             }
         }
 

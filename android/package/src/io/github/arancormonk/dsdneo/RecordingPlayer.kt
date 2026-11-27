@@ -61,55 +61,56 @@ class FocusRequests<T : Any>(private val give: (T) -> Unit) {
 }
 
 /**
- * The setups given up while their work still runs (#909), counted for the process: a setup dropped while it runs (its
- * part timed out, was moved off, stopped or replaced) keeps its player's own thread and its MediaPlayer until its read
- * returns, and on storage that stopped answering it may never return. While [limit] of them are still running, a new
- * open makes no player and starts no setup: it waits, under its own prepare timeout, for one to return. One leaves the
- * count when its work returns on its player's thread, before its result is posted, so a setup that is done and only
- * waits for the looper to take its result counts for nothing; the looper hears it when that result is delivered, which
- * releases its player (and so ends its thread) and lets a waiting open go on. RecordingPlayback owns one for the
- * process. [abandoned] and [full] run on the playback looper, [returned] on the player's thread.
+ * The players' own threads the machine has let go and that have not ended yet (#909, R32/R35/R40), counted for the
+ * process. A player is let go when its open is dropped with its setup still out (its part timed out, was moved off,
+ * stopped or replaced) or when it is released; it leaves the count once its thread has ended, at the end of its
+ * release ([Player.release]'s acknowledgement). Each thread counts once: one dropped during its setup and released
+ * when its result lands is one. A setup stuck in a read, or a release stuck in native code on a stalled read, keeps its
+ * thread and its MediaPlayer, and on storage that stopped answering may never end. While [limit] of them are still
+ * running, a new open makes no player and starts no setup: it waits, under its own prepare timeout, for one to end,
+ * and goes on when the machine hears that. RecordingPlayback owns one for the process. [letGo], [ended] and [full] run
+ * on the playback looper.
  */
 class AbandonedSetups(val limit: Int = LIMIT) {
-    /** One setup's work, as the count follows it: given up or not, returned or not. */
+    /** One player's thread, as the count follows it: let go or not, ended or not. */
     class Work internal constructor() {
-        internal var abandoned = false
-        internal var returned = false
+        internal var letGo = false
+        internal var ended = false
     }
 
     private val lock = Any()
     private var running = 0
 
-    /** The setups given up whose work has not returned. */
+    /** The threads let go that have not ended. */
     val outstanding: Int get() = synchronized(lock) { running }
 
     val full: Boolean get() = synchronized(lock) { running >= limit }
 
-    /** A setup's work, as it is handed to its player's thread. */
+    /** A player's thread, as its player is made. */
     fun begin(): Work = Work()
 
-    /** The machine gave the setup up: counted while its work still runs. */
-    fun abandoned(work: Work) = synchronized(lock) {
-        if (!work.abandoned) {
-            work.abandoned = true
-            if (!work.returned) {
+    /** The machine let the player go (its open dropped, or released): counted until its thread ends. Once. */
+    fun letGo(work: Work) = synchronized(lock) {
+        if (!work.letGo) {
+            work.letGo = true
+            if (!work.ended) {
                 running++
             }
         }
     }
 
-    /** Its work returned (or its result came with no work run): it no longer counts. Once; any thread. */
-    fun returned(work: Work) = synchronized(lock) {
-        if (!work.returned) {
-            work.returned = true
-            if (work.abandoned) {
+    /** Its thread has ended: it no longer counts. Once. */
+    fun ended(work: Work) = synchronized(lock) {
+        if (!work.ended) {
+            work.ended = true
+            if (work.letGo) {
                 running--
             }
         }
     }
 
     companion object {
-        /** At most this many stuck setups (threads and players) are left behind. */
+        /** At most this many threads let go (each with its MediaPlayer) are left running. */
         const val LIMIT = 2
     }
 }
@@ -142,8 +143,9 @@ class AbandonedSetups(val limit: Int = LIMIT) {
  * its own player's thread. A setup that found its file gone or changed puts it on the recheck list whether or not its
  * part is still current. A part not prepared within [PREPARE_TIMEOUT_MS] of its open,
  * setup included, fails (a stalled read or a MediaPlayer that never answers would leave the play opening for good):
- * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] setups given up still run, an open waits, with
- * no player made, until one returns; its prepare timeout bounds the wait.
+ * SINGLE ends, PARTS and PLAYLIST skip it. While [AbandonedSetups.LIMIT] players let go still have their threads
+ * running (a setup or a release stuck on a stalled read), an open waits, with no player made, until one ends; its
+ * prepare timeout bounds the wait.
  *
  * Moves: [next] opens the next call's first playable part (also from the gap). [previous] restarts the current call
  * when a playable part of the call comes before the current one, the position is past [RESTART_MS] or it is in the
@@ -231,8 +233,12 @@ class RecordingPlayer(
         /** The length, once prepared: read when [onPrepared] has come for this player. */
         val durationMs: Long
 
-        /** Let the player go; its own thread releases it after everything passed to it before, then ends. */
-        fun release()
+        /**
+         * Let the player go; its own thread releases it after everything passed to it before, then ends, and [ended]
+         * is called on the machine's thread once it has (at once, there, if the thread had ended already). A release
+         * stuck in native code on a stalled read ends late or never.
+         */
+        fun release(ended: () -> Unit)
     }
 
     /** An opened recording, handed to [Player.prepare]. */
@@ -602,6 +608,9 @@ class RecordingPlayer(
     private var token = 0L
     private var player: Player? = null
 
+    /** The current [player]'s thread, as [AbandonedSetups] counts it once the player is let go. */
+    private var playerWork: AbandonedSetups.Work? = null
+
     /** The current part's setup, while it runs; dropped (and its player released when it comes back) if it is not. */
     private var opening: Opening? = null
 
@@ -906,6 +915,7 @@ class RecordingPlayer(
         // Done with: never touched again (a later callback from it carries a token no open has again), and released
         // once the next part is handed off, so its release adds nothing to the joint between parts.
         val done = player
+        val doneWork = playerWork
         leave(release = false)
         val call = currentCall()
         when {
@@ -915,7 +925,9 @@ class RecordingPlayer(
             hasCallAfter(call) -> enterGap()
             else -> end(STOPPED, "", ENDED_FINISHED)
         }
-        done?.release()
+        if (done != null && doneWork != null) {
+            letGo(done, doneWork)
+        }
     }
 
     /**
@@ -967,8 +979,7 @@ class RecordingPlayer(
         if (player != null && prepared) {
             leave()
         }
-        player?.release()
-        player = null
+        releasePlayer()
         prepared = false
         positionMs = 0
         durationMs = 0
@@ -977,24 +988,54 @@ class RecordingPlayer(
     }
 
     /**
-     * The current part's setup is dropped with its result still out: it is counted until its work returns, and its
+     * The current part's setup is dropped with its result still out: its thread counts from now until it ends, and its
      * player is released when its result is delivered. Its read holds only its own player's thread.
      */
     private fun dropOpening() {
         waiting = 0L
         val dropped = opening ?: return
         opening = null
-        abandoned.abandoned(dropped.work)
+        abandoned.letGo(dropped.work)
     }
 
     /** The current part is done with (completed, or left by a move): its player goes, its readings stay in [left]. */
     private fun leave(release: Boolean = true) {
         left = Left(index, token, durationMs, currentPositionMs())
         if (release) {
-            player?.release()
+            releasePlayer()
         }
         player = null
+        playerWork = null
         prepared = false
+    }
+
+    /** Release the current part's player, if one is adopted: let go, it counts until its thread ends. */
+    private fun releasePlayer() {
+        val current = player ?: return
+        val work = playerWork
+        player = null
+        playerWork = null
+        if (work != null) {
+            letGo(current, work)
+        } else {
+            current.release {}
+        }
+    }
+
+    /** Release [let]: its thread counts from now until it has ended ([onThreadEnded]). */
+    private fun letGo(let: Player, work: AbandonedSetups.Work) {
+        abandoned.letGo(work)
+        let.release { onThreadEnded(work) }
+    }
+
+    /** A player's thread let go has ended: it leaves the count, and an open waiting at the limit goes on. */
+    private fun onThreadEnded(work: AbandonedSetups.Work) {
+        abandoned.ended(work)
+        if (waiting != 0L && waiting == token && !abandoned.full) {
+            // Under its own token and prepare timeout, which already cover the wait.
+            waiting = 0L
+            startSetup(index)
+        }
     }
 
     /** Open the move's next candidate not failed: always a new player, never the one left. */
@@ -1059,9 +1100,9 @@ class RecordingPlayer(
     /**
      * Build the candidate's player here, guarded: one that cannot be built (its thread cannot start) ends the play.
      * Then hand its setup to its own thread, with the prepare timeout already armed, so it covers the setup too.
-     * With [AbandonedSetups.LIMIT] setups given up still running, no player is made and no setup started: the open
-     * waits ([waiting]) until a setup returns ([onSetUp]), its prepare timeout armed as usual, so storage that stalls
-     * costs one timeout per recording, never a burst of failures.
+     * With [AbandonedSetups.LIMIT] players let go still running, no player is made and no setup started: the open
+     * waits ([waiting]) until one's thread ends ([onThreadEnded]), its prepare timeout armed as usual, so storage that
+     * stalls costs one timeout per recording, never a burst of failures.
      */
     private fun open(candidate: Int) {
         index = candidate
@@ -1105,16 +1146,13 @@ class RecordingPlayer(
         opening = setup
         publish()
         val item = items[candidate]
-        // The work returning, on the player's thread, takes it off the count before its result is posted. It never
-        // throws: anything thrown (an Error such as running out of memory in the data source) is a failed setup, so
-        // a result is posted on every path, its player is released and an open waiting for a stuck setup is woken.
+        // The work never throws: anything thrown (an Error such as running out of memory in the data source) is a
+        // failed setup, so a result is posted on every path and its player is released, and so its thread ends.
         made.setup({
             try {
                 setUp(opener, item, setup.checked, made)
             } catch (_: Throwable) {
                 SetupResult(REASON_PLAYER, item.path)
-            } finally {
-                abandoned.returned(setup.work)
             }
         }) { result -> onSetUp(setup, result) }
     }
@@ -1125,31 +1163,28 @@ class RecordingPlayer(
      * releases its player; a current one adopts it, prepared already if its prepare answered first, or fails.
      */
     private fun onSetUp(setup: Opening, result: SetupResult) {
-        abandoned.returned(setup.work) // a result that came with no work run (a refused hand-off)
         val serial = recheck.serial
         if (setup.checked && (result.failure == REASON_GONE || result.failure == REASON_CHANGED)) {
             recheck.add(result.path)
         }
         if (opening !== setup) {
-            setup.player.release()
-            if (waiting != 0L && waiting == token && !abandoned.full) {
-                // A stuck setup returned: the open waiting for one goes on, under its own token and timeout.
-                waiting = 0L
-                startSetup(index)
-            } else if (recheck.serial != serial) {
+            // Let go when its open was dropped; its thread ends after this release, which may wake a waiting open.
+            letGo(setup.player, setup.work)
+            if (recheck.serial != serial) {
                 publish() // The host reads the recheck serial from the status.
             }
             return
         }
         opening = null
         if (result.failure.isNotEmpty()) {
-            setup.player.release()
+            letGo(setup.player, setup.work)
             if (!expireIfDue()) {
                 failItem(result.failure)
             }
             return
         }
         player = setup.player
+        playerWork = setup.work
         if (expireIfDue()) {
             return
         }
@@ -1172,8 +1207,7 @@ class RecordingPlayer(
             // It played: followed as if it had completed, so the gap after its call names it, whatever opens next.
             left = Left(index, token, durationMs, positionMs)
         }
-        player?.release()
-        player = null
+        releasePlayer()
         dropOpening()
         prepared = false
         playing = false
@@ -1464,8 +1498,7 @@ class RecordingPlayer(
     private fun end(state: Int, error: String, reason: String) {
         positionMs = currentPositionMs()
         cancelAll()
-        player?.release()
-        player = null
+        releasePlayer()
         dropOpening()
         left = null
         move = null
@@ -1490,8 +1523,7 @@ class RecordingPlayer(
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
     private fun close() {
         cancelAll()
-        player?.release()
-        player = null
+        releasePlayer()
         dropOpening()
         left = null
         move = null

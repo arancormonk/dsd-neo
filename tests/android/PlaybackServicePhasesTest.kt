@@ -129,7 +129,7 @@ private class Playing(val rig: ServiceRig) {
                     seeks += token to positionMs
                 }
                 override val durationMs: Long get() = 10_000
-                override fun release() = Unit
+                override fun release(ended: () -> Unit) = ended()
             }
         },
         { _, _ ->

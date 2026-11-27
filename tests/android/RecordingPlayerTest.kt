@@ -41,6 +41,8 @@ private class FakePlayer(
     private val unmakeable: () -> Boolean = { false },
     /** What its own thread does with start request [Long] (the rig makes and acknowledges it, holds or fails it). */
     private val onStart: (FakePlayer, Long) -> Unit = { player, serial -> player.makeStart(serial) },
+    /** What its own thread does with the release: the rig ends the thread at once, or holds it in native code. */
+    private val onRelease: (FakePlayer, () -> Unit) -> Unit = { _, ended -> ended() },
 ) : RecordingPlayer.Player {
     var path = ""
 
@@ -133,11 +135,12 @@ private class FakePlayer(
             return length
         }
 
-    override fun release() {
+    override fun release(ended: () -> Unit) {
         check(!released) { "released twice" }
         wantedStart = 0L
         released = true
         log += "release $token"
+        onRelease(this, ended)
     }
 }
 
@@ -305,6 +308,10 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     var holdStarts = false
     var failStarts = false
     val heldStarts = mutableListOf<Pair<FakePlayer, Long>>()
+
+    /** Releases: their threads end at once unless [holdReleases] (held in native code, in [heldReleases]). */
+    var holdReleases = false
+    val heldReleases = mutableListOf<Pair<FakePlayer, () -> Unit>>()
     val focus = FakeFocus()
     val scheduler = FakeScheduler { nowMs }
     val service = FakeService()
@@ -319,13 +326,16 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
                 throw OutOfMemoryError("unable to create a native thread")
             }
             log += "build $token"
-            FakePlayer(token, length, damaged, log, threads, { createFails }) { player, serial ->
-                when {
-                    failStarts -> machine.onFailed(player.token, RecordingPlayer.REASON_PLAYER)
-                    holdStarts -> heldStarts += player to serial
-                    player.makeStart(serial) -> machine.onStarted(player.token, serial)
-                }
-            }.also { players += it }
+            FakePlayer(
+                token, length, damaged, log, threads, { createFails },
+                { player, serial ->
+                    when {
+                        failStarts -> machine.onFailed(player.token, RecordingPlayer.REASON_PLAYER)
+                        holdStarts -> heldStarts += player to serial
+                        player.makeStart(serial) -> machine.onStarted(player.token, serial)
+                    }
+                },
+            ) { player, ended -> if (holdReleases) heldReleases += player to ended else ended() }.also { players += it }
         },
         opener,
         focus,
@@ -398,6 +408,11 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
         }
         machine.onStarted(player.token, serial)
         return true
+    }
+
+    /** The oldest held release returns from native code: its thread ends, as the looper hears. */
+    fun finishRelease() {
+        heldReleases.removeAt(0).second()
     }
 
     /** Prepare and complete the current part. */
@@ -2756,8 +2771,8 @@ private fun aSetupThatThrowsAnErrorStillWakesTheWait() {
 
 /**
  * The emulator's sequence on healthy storage, every setup still in flight: five Next at once, then five Previous at
- * once. Nothing fails and the play goes on, landing on the first call; a setup whose work has returned when its part
- * is dropped counts for nothing.
+ * once. Nothing fails and the play goes on, landing on the first call; opens that meet the limit wait, never fail, and
+ * go on as the threads let go end.
  */
 private fun rapidNextThenPreviousNeverFailsAnItem() {
     val rig = Rig()
@@ -2776,12 +2791,16 @@ private fun rapidNextThenPreviousNeverFailsAnItem() {
     check(rig.state == PLAYING && rig.status.call == 0 && rig.status.skipped == 0) { "call 0 plays" }
     check(rig.service.ends.isEmpty() && rig.abandoned.outstanding == 0) { "the play never ended; nothing left counted" }
 
+    // Dropped after its work returned, its result not delivered yet: its thread has not ended, so it counts until its
+    // result lands and its release ends (R40).
     val done = Rig()
     done.threads.holding = true
     done.queue(1, 1)
     done.threads.setups[0].run()
     done.machine.next()
-    check(done.abandoned.outstanding == 0) { "dropped after its work returned: it does not count" }
+    check(done.abandoned.outstanding == 1) { "dropped, its thread not ended: it counts" }
+    done.threads.setups[0].land()
+    check(done.abandoned.outstanding == 0) { "its result lands and its release ends: none" }
 }
 
 /**
@@ -2805,28 +2824,66 @@ private fun aPrepareTimeoutPastTheDeadlineEndsTimeout() {
 }
 
 /**
- * Quick moves on healthy storage never meet the bound: a setup given up whose work is done, its result only waiting
- * for the looper, counts for nothing, so five moves in a row leave every open working and nothing skipped.
+ * Quick moves on healthy storage never meet the bound (R40): with every setup landing and every release ending at
+ * once, five Next then five Previous fail nothing, every open is made at once, and nothing is left counted.
  */
 private fun quickMovesNeverMeetTheLimit() {
     val rig = Rig()
-    rig.threads.stuck += (1..8).toSet() // each setup waits for the test to run and deliver it
     rig.queue(1, 1, 1, 1, 1, 1, 1)
-    repeat(5) {
-        rig.threads.setups.last().run() // done on its own thread, its result not delivered yet
-        rig.machine.next()
+    repeat(5) { rig.machine.next() }
+    repeat(5) { rig.machine.previous() }
+    check(rig.status.skipped == 0 && rig.status.call == 0 && rig.state == PREPARING) {
+        "ten moves: nothing skipped (${rig.status.skipped}), back on call ${rig.status.call}"
     }
-    check(rig.status.skipped == 0 && rig.status.call == 5 && rig.state == PREPARING) {
-        "five moves: nothing skipped (${rig.status.skipped}, call ${rig.status.call})"
-    }
-    check(rig.players.size == 6 && rig.threads.setups.size == 6) { "the sixth open made its player and its setup" }
-    rig.threads.setups.last().land()
+    check(rig.players.size == 11 && rig.abandoned.outstanding == 0) { "each open made at once, nothing counted" }
+    check(rig.players.dropLast(1).all { it.released }) { "every player left is released" }
     rig.prepared()
-    check(rig.state == PLAYING && rig.status.call == 5) { "and plays" }
-    rig.play()
-    check(rig.players.size == 7 && rig.threads.setups.size == 7) { "a sheet play after them is set up too" }
-    rig.threads.setups.forEach { if (it.result != null) it.land() }
-    check(rig.players.take(6).all { it.released }) { "the results delivered late release their players" }
+    check(rig.state == PLAYING && rig.status.call == 0 && rig.service.ends.isEmpty()) { "and call 0 plays" }
+}
+
+/**
+ * A player let go counts until its thread ends (R40), not only while its setup runs: a prepare that stalls after
+ * its setup returned, dropped by its timeout, whose release then blocks in native code on the stalled read, keeps its
+ * thread counted. Two such, and the next open waits, with no player made, until one release returns.
+ */
+private fun aStalledReleaseCountsUntilItsThreadEnds() {
+    val limit = RecordingPlayer.PREPARE_TIMEOUT_MS
+    val rig = Rig()
+    rig.holdReleases = true
+    rig.queue(1, 1, 1, 1)
+    rig.elapse(limit)
+    check(rig.status.skipped == 1 && rig.players[0].released && rig.abandoned.outstanding == 1) {
+        "call 0's prepare timed out: released, its release held, still counted (${rig.abandoned.outstanding})"
+    }
+    rig.turn()
+    check(rig.status.call == 1 && rig.players.size == 2) { "call 1 opens: one held release is under the limit" }
+    rig.elapse(limit)
+    check(rig.abandoned.outstanding == 2) { "two held releases count" }
+    rig.turn()
+    check(rig.status.call == 2 && rig.players.size == 2 && rig.state == PREPARING) {
+        "at the limit call 2 waits, with no player made (${rig.players.size})"
+    }
+    rig.finishRelease()
+    check(rig.abandoned.outstanding == 1 && rig.players.size == 3 && rig.last.asked) {
+        "a release returns: the waiting open goes on at once"
+    }
+    rig.holdReleases = false
+    rig.prepared()
+    check(rig.state == PLAYING && rig.status.call == 2 && rig.status.skipped == 2) { "and plays" }
+    rig.finishRelease()
+    check(rig.abandoned.outstanding == 0) { "the last held release ends: nothing counted" }
+
+    // One thread counts once: dropped during its setup, then released when its result lands.
+    val once = Rig()
+    once.threads.stuck += 1
+    once.holdReleases = true
+    once.queue(1, 1)
+    once.machine.next()
+    check(once.abandoned.outstanding == 1) { "dropped during its setup: counted" }
+    once.threads.setups.single().land()
+    check(once.abandoned.outstanding == 1 && once.players[0].released) { "released when it lands: still once" }
+    once.finishRelease()
+    check(once.abandoned.outstanding == 0) { "its thread ends: none" }
 }
 
 /** Previous while the part opens opens it again: a file deleted meanwhile is skipped; the old open plays nothing. */
@@ -3075,6 +3132,7 @@ fun main() {
     aResumeKeepsThePausedStretchUntilAPartPlays()
     stuckSetupsAreBounded()
     quickMovesNeverMeetTheLimit()
+    aStalledReleaseCountsUntilItsThreadEnds()
     anOpenAtTheLimitWaitsForASetup()
     rapidNextThenPreviousNeverFailsAnItem()
     aSetupThatThrowsAnErrorStillWakesTheWait()
