@@ -20,6 +20,15 @@ Item {
         anchors.fill: parent
         source: uiDir + "/HistoryDetailSheet.qml"
     }
+    // R69: History's now-playing bar and the playlist's status, made for the case that checks the bar stays silent.
+    Component {
+        id: playlistStatusComponent
+        Ui.PlaylistStatus {}
+    }
+    Component {
+        id: nowPlayingBarComponent
+        Ui.NowPlayingBar {}
+    }
 
     TestCase {
         name: "CallRecordingPlayer"
@@ -1760,6 +1769,52 @@ Item {
             verify(callHistory.setRowRecordings(row, [c]));
             wait(20);
             compare(player.announcements, said + 1, "not again on another reread");
+        }
+
+        // R69: a dialog's dismissal that moves the selection reconciles the refusal. Delete (or the Save picker) open
+        // on part 1, the playlist moves on to part 2, pauses, and a Resume is refused: the sheet still shows part 1, so
+        // nothing is said. Dismissed, the sheet follows to part 2, shows the refusal and reads it once; closed, the
+        // bar, shown then, stays silent.
+        function test_dismissal_reconciles_the_refusal_data() {
+            return [{tag: "delete"}, {tag: "save"}];
+        }
+        function test_dismissal_reconciles_the_refusal(data) {
+            var text = "Can't play right now. Another app has the audio, such as a phone call.";
+            var a = rec("t-1", pathA, 12000);
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([a, b]);
+            var status = playlistStatusComponent.createObject(sheet().parent);
+            var bar = nowPlayingBarComponent.createObject(sheet().parent, {status: status, visible: false, width: 360});
+            var generation = playPlaylist([itemOf(a, 0, 1, 2, uid), itemOf(b, 0, 2, 2, uid)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 2, playbackToken: 4, playbackDurationMs: 12000});
+            openRow(uid);
+            var player = item("historyRecording");
+            var said = player.announcements;
+            if (data.tag === "delete") {
+                tap("recordingDelete");
+                verify(item("recordingDeleteConfirm").visible);
+            } else {
+                recordings.setSelection(1, 96000, [pathA]);
+                startSave();
+            }
+            testContext.publishPlaybackReading({item: 1, playbackState: 3, playbackToken: 5, playbackDurationMs: 8000});
+            testContext.publishPlaybackReading({playbackPausedReason: "unavailable", playbackRefusals: 1});
+            compare(player.currentPath, pathA, "the dialog holds the sheet on part 1");
+            compare(item("recordingNotice").text, "", "nothing said for a part not shown");
+            if (data.tag === "delete")
+                findChild(item("recordingDeleteConfirm"), "confirmCancelButton").activate();
+            else
+                findChild(player, "recordingSavePicker").cancel();
+            compare(player.currentPath, pathB, "dismissed: the sheet follows to part 2");
+            tryCompare(item("recordingNotice"), "text", text, 1000, "the refusal is shown");
+            compare(player.announcements, said + 1, "and read once");
+            compare(Ui.Navigation.refusalSaid, Ui.Navigation.refusalKey(generation, 1), "through the shared key");
+            sheet().visible = false;
+            bar.visible = true;
+            tryVerify(function () { return status.eventHeard; }, 2000, "the bar takes the refusal as heard");
+            compare(bar.announcements, 0, "the bar stays silent");
+            bar.destroy();
+            status.destroy();
         }
 
         // A refusal standing through a move inside the call (Previous from part 2 to part 1: opening, then prepared,

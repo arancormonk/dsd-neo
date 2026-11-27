@@ -499,8 +499,14 @@ Column {
             return;
         for (var i = 0; i < parts.length; i++) {
             if (playsFile(parts[i]) && parts[i].path !== missingAway) {
-                if (i !== current)
+                if (i !== current) {
                     select(i);
+                    // The selection moved (a dialog dismissed, the play
+                    // moving on): reconciled once its bindings settle (R69),
+                    // as a store update is (R64).
+                    if (sheetShown)
+                        reconcileLater.restart();
+                }
                 return;
             }
         }
