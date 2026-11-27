@@ -2343,6 +2343,17 @@ def run_pool(jobs: list[dict], workers: int, started: float) -> list[dict]:
     return results
 
 
+def plan_ids(combos: list[dict]) -> dict:
+    """Every physical plan's (ckey) members as (configuration label, chain name), for ACCEPTED_MARGINAL: taken over
+    every combination before a --chains selection, so a scoped run of one member (replay-48k/pd2) finds the entry of
+    another (replay-48k) for the same plan. Each entry still covers one plan and one bound."""
+    ids: dict = {}
+    for c in combos:
+        if modelled(c):
+            ids.setdefault(c["ckey"], set()).add((c["config"].label, c["plan"].name))
+    return ids
+
+
 def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: Path) -> int:
     combos = model["combos"]
     jobs = make_jobs(combos, model["hb_taps"], args.quick, noise_windows, True, args.segments)
@@ -2358,10 +2369,7 @@ def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: 
     results = run_pool(jobs, args.jobs, started)
     noise = merge_noise([r for r in results if r["kind"] == "noise"], True)
     carriers = {r["key"]: r for r in results if r["kind"] == "carrier"}
-    ids = {}
-    for c in combos:
-        if modelled(c):
-            ids.setdefault(c["ckey"], set()).add((c["config"].label, c["plan"].name))
+    ids = model["plan_ids"]
     verdicts = {ck: frozen_verdict(c, noise[c["fkey"]], carriers[ck], ids[ck]) for ck, c in unique.items()}
     command = ["python3", "tools/squelch_model.py", *(sys.argv[1:] if args.argv is None else args.argv)]
     meta = {
@@ -2487,6 +2495,7 @@ def main(argv: list[str] | None = None) -> int:
     out_dir = (args.out or (ROOT / "build" / default_out)).resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
     model = load_chain_model(args, out_dir)
+    model["plan_ids"] = plan_ids(model["combos"])
     if args.chains:
         model["combos"] = [c for c in model["combos"] if args.chains in c["plan"].name]
     if not any(modelled(c) for c in model["combos"]):
