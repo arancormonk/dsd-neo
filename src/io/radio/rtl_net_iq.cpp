@@ -68,6 +68,8 @@ struct rtl_net_iq {
     std::atomic<uint64_t> input_restarts{0U};
     std::atomic<uint64_t> resampler_clears{0U};
     std::atomic<uint64_t> drop_clears{0U};
+    /* Samples whose callback has returned, every count above it written first (a test waits for it, issue #899). */
+    std::atomic<uint64_t> samples_ingested{0U};
     std::atomic<uint64_t> resampler_errors{0U};
 };
 
@@ -201,9 +203,11 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
     if (!n || !iq || pairs == 0U) {
         return;
     }
+    const size_t total = pairs;
     net_iq_publish_level(n, iq, pairs);
     if (!n->resampler) {
         (void)net_iq_append(n, iq, pairs);
+        n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
         return;
     }
     while (pairs > 0U) {
@@ -218,6 +222,7 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
         iq += slice * 2U;
         pairs -= slice;
     }
+    n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
 }
 
 /* The samples after this point do not follow the ones before it: the block being filled and the samples a level block
@@ -428,6 +433,7 @@ rtl_net_iq_get_state(const struct rtl_net_iq* n, rtl_net_iq_state* out) {
     if (!n) {
         return;
     }
+    out->samples_ingested = n->samples_ingested.load(std::memory_order_acquire);
     out->blocks_written = n->blocks_written.load(std::memory_order_relaxed);
     out->blocks_dropped = n->blocks_dropped.load(std::memory_order_relaxed);
     out->boundaries = n->boundaries.load(std::memory_order_acquire);

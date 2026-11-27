@@ -18,12 +18,14 @@
  * stall on (rtl_net_iq_test_set_clock()), which a case advances by hand.
  */
 
+#include <algorithm>
 #include <assert.h>
 #include <atomic>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/io/iq_net.h>
 #include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -294,6 +296,8 @@ free_udp_port(void) {
 struct block_log {
     std::mutex lock;
     std::vector<size_t> floats; /* each block's float count */
+    std::vector<float> samples; /* every block's floats, in order, while keep is set */
+    std::atomic<int> keep{0};
     std::atomic<int> paused{0}; /* the demod waits in its next block until this is 0 */
     std::atomic<int> waiting{0};
 };
@@ -306,6 +310,12 @@ on_block(const rtl_stream_test_replay_block* block, void* ctx) {
     {
         const std::lock_guard<std::mutex> hold(g_blocks.lock);
         g_blocks.floats.push_back(block->float_count);
+        if (g_blocks.keep.load() != 0) {
+            g_blocks.samples.insert(g_blocks.samples.end(), block->p1, block->p1 + block->n1);
+            if (block->p2 != nullptr) {
+                g_blocks.samples.insert(g_blocks.samples.end(), block->p2, block->p2 + block->n2);
+            }
+        }
     }
     if (g_blocks.paused.load() != 0) {
         g_blocks.waiting.store(1);
@@ -320,6 +330,7 @@ void
 blocks_reset(void) {
     const std::lock_guard<std::mutex> hold(g_blocks.lock);
     g_blocks.floats.clear();
+    g_blocks.samples.clear();
 }
 
 size_t
@@ -731,31 +742,98 @@ test_ring_full_drops_whole_blocks(void) {
     tcp_close(t);
 }
 
-/* ring_full_restarts_the_reader: behind a resampler (a 24 kHz stream read into 48 kHz), each block the full ring drops
- * starts the resampler over (issue #899), as the demod starts its filters over at the drop's gap mark, so the
- * decimators keep the reader phases the squelch's reader model describes; the rest of that slice's output is let go
- * with the block. No boundary, no discontinuity, no output generation move, and the blocks after are whole. */
+/* The NFM monitor at a 16 kHz DSP bandwidth: a 112 kHz stream is read into 64 kHz ahead of two passes. */
+void
+nfm_16k(dsd_opts* opts) {
+    opts->frame_dmr = 0;
+    opts->analog_only = 1;
+    opts->rtl_dsp_bw_khz = 16;
+}
+
+/* @p pairs complex cf32 samples of noise from @p seed (xorshift, uniform in +-0.25), appended to @p src. */
+void
+cf32_noise(std::vector<float>* src, size_t pairs, uint64_t* seed) {
+    for (size_t k = 0U; k < 2U * pairs; k++) {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        src->push_back((float)((double)(*seed >> 11) * (1.0 / 9007199254740992.0) - 0.5) * 0.5f);
+    }
+}
+
+void
+tcp_send_floats(tcp_rig& t, const float* f, size_t pairs) {
+    send_all(t.conn, reinterpret_cast<const uint8_t*>(f), pairs * 2U * sizeof(float));
+}
+
+/* The ingest done with @p pairs received samples: their callbacks returned, so the counts are final. */
+rtl_net_iq_state
+ingest_after(const stream_rig& s, uint64_t pairs) {
+    assert(wait_until([&] { return ingest(s).samples_ingested >= pairs; }, kWaitMs));
+    return ingest(s);
+}
+
+/* A fresh reader of @p plan started on @p src from pair @p from (cut as the ingest cuts it): its first @p n outputs
+   into @p out. */
+void
+fresh_reader(const dsd_iq_reader_plan& plan, const std::vector<float>& src, size_t from, size_t n,
+             std::vector<float>* out) {
+    dsd_iq_resampler r;
+    dsd_iq_resampler_init(&r);
+    assert(dsd_iq_reader_plan_configure(&plan, &r, 4096U) == DSD_IQ_RESAMPLER_OK);
+    out->clear();
+    std::vector<float> buf(2U * dsd_iq_resampler_max_out(&r, 4096U));
+    for (size_t at = from; at < src.size() / 2U && out->size() < 2U * n; at += 4096U) {
+        const size_t k = std::min<size_t>(4096U, src.size() / 2U - at);
+        const int made = dsd_iq_resampler_process(&r, src.data() + 2U * at, k, buf.data(), buf.size() / 2U);
+        assert(made >= 0);
+        out->insert(out->end(), buf.begin(), buf.begin() + 2 * made);
+    }
+    if (out->size() > 2U * n) {
+        out->resize(2U * n);
+    }
+    dsd_iq_resampler_free(&r);
+}
+
+/* ring_full_restarts_the_reader: behind a reader whose decimation keeps a coset of its phases (112 kHz read into
+ * 64 kHz ahead of two passes: L/M 4/7, every fourth output kept), each block the full ring drops starts the reader over
+ * (issue #899), as the demod starts its half-bands over at the drop's gap mark. With the demod held, noise fills the
+ * ring and drops blocks; once it drains, known noise follows. Everything the demod takes after the drops' gap mark is
+ * then the output of a reader started fresh on the source at a slice boundary after the last drop, sample for sample,
+ * which a reader that kept running across the drops is not: the decimators, started over at the mark, keep the reader
+ * phases the squelch's model describes. The counts are read once every callback returned: every drop started the
+ * reader over, with no boundary, restart or output generation move. */
 void
 test_ring_full_restarts_the_reader(void) {
     tcp_rig t;
-    tcp_open(t, 24000U, 0U, 1);
+    t.listener = open_listener(8, &t.port);
+    stream_open(t.s, tcp_spec(t.port, 112000U, "cf32", 0U).c_str(), 1, nfm_16k);
+    t.conn = accept_within(t.listener, kWaitMs);
+    assert(t.conn != DSD_INVALID_SOCKET);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 112000 && opened.reader_out_hz == 64000);
+    dsd_iq_reader_plan plan;
+    assert(dsd_iq_reader_plan_for(&plan, 112000U, 64000U, 16000U) == 0 && plan.enabled);
+    const size_t block_floats = 2U * (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
+
+    std::vector<float> src;
+    uint64_t seed = 0x899C5EEDULL;
     blocks_reset();
+    g_blocks.keep.store(1);
     g_blocks.paused.store(1);
-    tcp_send_pairs(t, kBlock);
+    cf32_noise(&src, 4096U, &seed);
+    tcp_send_floats(t, src.data(), 4096U);
     assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
     const uint64_t seq = rtl_stream_discontinuity_seq();
     const uint32_t gen = rtl_stream_output_generation();
-    tcp_send_pairs(t, (size_t)24000U * 3U);
-    assert(wait_until([&] { return ingest(t.s).blocks_dropped > 0U; }, kWaitMs));
-    tcp_send_pairs(t, 4096U);
-    rtl_net_iq_state st = ingest(t.s);
-    assert(wait_until(
-        [&] {
-            st = ingest(t.s);
-            return st.reader.samples >= (uint64_t)kBlock + 24000U * 3U + 4096U;
-        },
-        kWaitMs));
-    if (st.drop_clears == 0U || st.drop_clears != st.blocks_dropped) {
+    rtl_stream_test_replay_state gaps_before{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_before) == 0);
+    const size_t held = 112000U * 3U;
+    cf32_noise(&src, held, &seed);
+    tcp_send_floats(t, src.data() + 2U * 4096U, held);
+    const rtl_net_iq_state st = ingest_after(t.s, 4096U + held);
+    if (st.blocks_dropped == 0U || st.drop_clears != st.blocks_dropped) {
         DSD_FPRINTF(stderr, "resampled stream, ring full: %llu blocks dropped, the resampler started over %llu times\n",
                     (unsigned long long)st.blocks_dropped, (unsigned long long)st.drop_clears);
         assert(0);
@@ -763,12 +841,46 @@ test_ring_full_restarts_the_reader(void) {
     assert(st.boundaries == 0U && st.input_restarts == 0U && st.resampler_clears == 0U);
     assert(rtl_stream_discontinuity_seq() == seq);
     assert(rtl_stream_output_generation() == gen);
+    /* Every block written before the first drop, taken; then the known noise after the drops. */
+    const size_t before_gap = (size_t)st.blocks_written * block_floats;
     g_blocks.paused.store(0);
     assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
-    const size_t taken = blocks_taken();
-    tcp_send_pairs(t, 24000U / 2U);
-    assert(wait_until([&] { return blocks_taken() >= taken + (size_t)(kRate / 2U / kBlock) - 2U; }, kWaitMs));
-    expect_blocks_exactly(kBlockFloats);
+    const size_t tail = 112000U / 2U;
+    const size_t known_from = src.size() / 2U;
+    cf32_noise(&src, tail, &seed);
+    tcp_send_floats(t, src.data() + 2U * known_from, tail);
+    const rtl_net_iq_state after = ingest_after(t.s, 4096U + held + tail);
+    assert(after.blocks_dropped == st.blocks_dropped);
+    assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
+    std::vector<float> taken;
+    {
+        const std::lock_guard<std::mutex> hold(g_blocks.lock);
+        taken = g_blocks.samples;
+    }
+    assert(taken.size() > before_gap + 2U * 2048U);
+    const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
+    /* The reader started over at a slice's start after the last drop: search the source's last 64 Ki inputs before the
+       known noise for it, then hold the whole post-gap stream to it. */
+    std::vector<float> fresh;
+    size_t found = SIZE_MAX;
+    for (size_t from = known_from > 65536U ? known_from - 65536U : 0U; from <= known_from && found == SIZE_MAX;
+         from++) {
+        fresh_reader(plan, src, from, 32U, &fresh);
+        if (fresh.size() == 64U && std::equal(fresh.begin(), fresh.end(), post.begin())) {
+            found = from;
+        }
+    }
+    if (found == SIZE_MAX) {
+        DSD_FPRINTF(stderr, "after the drops the demod took no fresh reader's output: the reader kept running\n");
+        assert(0);
+    }
+    fresh_reader(plan, src, found, post.size() / 2U, &fresh);
+    assert(fresh.size() == post.size() && std::equal(fresh.begin(), fresh.end(), post.begin()));
+    /* The demod started its half-bands over at that first sample (the gap mark). */
+    rtl_stream_test_replay_state gaps_after{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_after) == 0);
+    assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
+    g_blocks.keep.store(0);
     tcp_close(t);
 }
 
