@@ -6238,11 +6238,39 @@ test_playlist_admission_checks_roots_live(void) {
     // readable directory, not one that can be made, and is refused with what plays left playing.
     expect("live roots: the recordings folder renamed", QDir().rename(roots.external, away));
     expect("live roots: renamed: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
-    // A session start keeps its own rule: a root that can be made is one it records into (rootAvailableNow()).
+
+    // R83: a root whose directory is missing (its parent there) is away, not empty. After a pass its recording is still
+    // indexed, unavailable, and Play all is still refused.
+    const QString row = fragment(static_cast<qint64>(ring.rings[0].push_seq));
+    const auto held = [&s, &row](bool available) {
+        const QVariantList list = s.store.recordingsForFragments({row});
+        return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
+    };
+    s.pass();
+    expect("live roots: renamed, a pass: still indexed, unavailable", held(false));
+    expect("live roots: renamed, a pass: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
+    // Renamed back: read again, available, admitted.
+    expect("live roots: renamed back", QDir().rename(away, roots.external));
+    s.pass();
+    expect("live roots: renamed back, a pass: available", held(true));
+    expect("live roots: renamed back: Play all plays", result() == QLatin1String("accepted") && host.plays == 4);
+
+    // Away again, a session start keeps its own rule (a root that can be made is one it records into) and makes the
+    // folder anew, empty: the root's read again finds what is really there, the old recording gone, the new one there.
+    expect("live roots: renamed away again", QDir().rename(roots.external, away));
+    s.pass();
+    expect("live roots: away again: still indexed, unavailable", held(false));
     const QString made = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
-    s.store.endSession();
-    expect("live roots: renamed: a session start still makes its folder there",
+    expect("live roots: away: a session start makes its folder there anew",
            made.startsWith(roots.external + QLatin1Char('/')) && QFileInfo(made).isDir());
+    const QString fresh = fragment(4242);
+    record(made, QStringLiteral("00000000000000CE-2"), QStringLiteral("b.wav"), when + 60, 4242);
+    s.store.endSession();
+    s.pass();
+    const QVariantList now = s.store.recordingsForFragments({fresh});
+    expect("live roots: read again: the old recording is gone", s.store.recordingsForFragments({row}).isEmpty());
+    expect("live roots: read again: the new session's recording is indexed",
+           now.size() == 1 && now.value(0).toMap().value(QStringLiteral("available")).toBool());
     model.setRecordingProvider(nullptr);
 }
 

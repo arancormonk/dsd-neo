@@ -689,6 +689,30 @@ RecordingStore::rootAvailableNow(const QString& root) {
     return !info.isSymLink() && QFileInfo(info.absolutePath()).isDir();
 }
 
+bool
+RecordingStore::rootThereForIndex(int root, const QString& path) const {
+    if (rootPlayableNow(path)) {
+        return true;
+    }
+    if (!rootAvailableNow(path)) {
+        return false;
+    }
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    return !rootHoldsFoldersLocked(root);
+}
+
+bool
+RecordingStore::rootThereForIndexLocked(int root) const {
+    const QString& path = m_roots.at(root);
+    return rootPlayableNow(path) || (rootAvailableNow(path) && !rootHoldsFoldersLocked(root));
+}
+
+bool
+RecordingStore::rootHoldsFoldersLocked(int root) const {
+    return std::any_of(m_folders.cbegin(), m_folders.cend(),
+                       [root](const Folder& folder) { return folder.root == root; });
+}
+
 void
 RecordingStore::refreshRoots(bool first, Pass* pass) {
     QStringList roots;
@@ -702,7 +726,8 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
         m_rootsRereading = seenAway; // still seen away to the readers until this read is done (R74)
     }
     for (int i = 0; i < roots.size(); i++) {
-        const bool now = rootAvailableNow(roots.at(i));
+        // Its directory missing while it holds folders is away (R83): the rows stay, unavailable, until it is back.
+        const bool now = rootThereForIndex(i, roots.at(i));
         // A root a delete request found missing is listed again in full, even when it is back before this pass: it
         // may have come back changed (two owners' folders swapped) with journals as long as the ones read.
         if (now && (first || !was.at(i) || seenAway.contains(i))) {
@@ -752,7 +777,7 @@ RecordingStore::rootStillAvailable(int root, Pass* pass) {
         }
         rootPath = m_roots.at(root);
     }
-    if (rootAvailableNow(rootPath)) {
+    if (rootThereForIndex(root, rootPath)) {
         return true;
     }
     const std::lock_guard<std::mutex> lock(m_mutex);
@@ -806,7 +831,7 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
     }
     // Gone again while it was listed: an empty or short listing is not a root emptied. It stays away, what it held
     // stays indexed, and the next pass reads it again.
-    const bool there = rootAvailableNow(rootPath);
+    const bool there = rootThereForIndex(root, rootPath);
     const std::lock_guard<std::mutex> lock(m_mutex);
     if (there) {
         installRootTableLocked(root, table, pass);
@@ -2513,11 +2538,16 @@ QList<bool>
 RecordingStore::usableRootsLocked() {
     // The roots as they are now, not as the last pass found them: storage that left since is never made again under
     // its absent mount, where recordings would hide once it came back over them. The pass asked for marks it away.
+    // A session keeps the rule that a root that can be made is one it records into (R83): one held away only because
+    // its directory is missing (it can be made, and it is not back unread) is made again, and its next read again
+    // finds what is really there, the old rows gone as for any folder emptied on disk.
     QList<bool> usable = m_rootAvailable;
     for (int i = 0; i < usable.size(); i++) {
         if (usable.at(i) && !rootAvailableNow(m_roots.at(i))) {
             usable[i] = false;
             noteRootSeenAwayLocked(i);
+        } else if (!usable.at(i) && rootAvailableNow(m_roots.at(i)) && !rootPlayableNow(m_roots.at(i))) {
+            usable[i] = true;
         }
     }
     return usable;
@@ -3212,7 +3242,7 @@ RecordingStore::checkRootsLocked(const QList<int>& roots, bool* away, bool* unre
     // refused as loading, not as storage away.
     bool readAgain = false;
     for (const int root : roots) {
-        const bool now = rootAvailableNow(m_roots.at(root));
+        const bool now = rootThereForIndexLocked(root);
         const bool known = m_rootAvailable.value(root);
         const bool seen = m_rootsSeenAway.contains(root);
         if (now && known && !seen) {

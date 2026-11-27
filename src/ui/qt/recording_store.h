@@ -589,6 +589,14 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Whether @p root is an existing directory that can be read now (R77): a playlist's admission's look. Not
      * rootAvailableNow(), whose root that can be made counts for a session start, not for recordings already in it. */
     static bool rootPlayableNow(const QString& root);
+    /* Whether root @p root (at @p path) is there for the index (R83): an existing readable directory, or a missing one
+     * a session could make (rootAvailableNow()) while the index holds no folder on it. So a root never made reads as
+     * there and empty, and one whose directory went (renamed, removed) holds its rows away, never dropped. Takes the
+     * lock for the folder table only when the directory is missing; the Locked form is for a caller holding it. */
+    bool rootThereForIndex(int root, const QString& path) const;
+    bool rootThereForIndexLocked(int root) const;
+    /* Whether the index holds a folder on @p root. Lock held. */
+    bool rootHoldsFoldersLocked(int root) const;
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
     static bool opensToRead(const QString& path);
     /* False for @p path, read as @p stat, while it is a recording a transfer could not open (m_unopenable) and it still
