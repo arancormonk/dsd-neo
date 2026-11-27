@@ -221,9 +221,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * recording_entry_name() as selectForExport() names it. */
     QList<QStringList> recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override;
     /** @brief Every row's recordings under one hold of the store's lock (a History playlist, issue #909): each row's
-     * maps as recordingsForFragments() gives them, plus `deleteQueued` (a delete asked for it waits). */
-    /* Also probes the storage roots it would admit from (one stat each, under the lock): a root gone is marked seen
-     * away and one back asks for its read again (R74). For Play all and Play from here, not per-refresh reads. */
+     * maps as recordingsForFragments() gives them, plus `deleteQueued` (a delete asked for it waits). It looks at no
+     * storage: what is admitted is what the store knows. */
     QList<QVariantList> recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const override;
 
     /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
@@ -406,9 +405,6 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Call @p hook on the worker after each slice of a folder's journal is applied, with the lock released;
      * before start() or between passes. Test hook. */
     void setSliceHookForTest(std::function<void(const QString& folder)> hook);
-    /** @brief Call @p hook in a playlist's admission (recordingsForFragmentLists()) after its look at the storage
-     * roots, with the lock released, before the store is looked at again; on the reading thread. Test hook. */
-    void setAdmissionProbeHookForTest(std::function<void()> hook);
     /** @brief Call @p hook on the worker, under the lock, each time a sum takes its copy of the folder table, with
      * whether that copy still shares the table's storage (it never should: foldersCopyLocked()). Test hook. */
     void setFolderCopyHookForTest(std::function<void(bool shared)> hook);
@@ -589,7 +585,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * @p starts). */
     bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
-    /* Whether @p root is an existing directory that can be read now (R77): a playlist's admission's look. Not
+    /* Whether @p root is an existing directory that can be read now: the worker's look at a root (R83, I1). Not
      * rootAvailableNow(), whose root that can be made counts for a session start, not for recordings already in it. */
     static bool rootPlayableNow(const QString& root);
     /* Whether root @p root (at @p path) is there for the index (R83): an existing readable directory, or a missing one
@@ -701,29 +697,6 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * through the pass's read of it. */
     bool rootSeenAwayLocked(int root) const;
 
-    /* One root a playlist's admission admits from, as the store held it when the admission took its roots (R77). */
-    struct AdmissionRoot {
-        QString path;
-        bool known = false;     // m_rootAvailable
-        bool pending = false;   // in m_rootsSeenAway: a listing in full asked for, not begun
-        bool rereading = false; // in m_rootsRereading
-        bool listing = false;   // in m_listing: rebuildRoot() is listing it now
-        bool missing = false;   // m_rootDirMissing: there and empty only because its directory is missing (item 5)
-
-        bool
-        operator==(const AdmissionRoot& other) const {
-            return path == other.path && known == other.known && pending == other.pending
-                   && rereading == other.rereading && listing == other.listing && missing == other.missing;
-        }
-    };
-
-    /* The roots the recordings of @p found are on, and every root with its missing flag set (one whose folder may be
-     * back, holding recordings the index has not seen), each as the store holds it. Under the store's lock. */
-    QHash<int, AdmissionRoot> admissionRootsLocked(const QList<QList<const Entry*>>& found) const;
-    /* A playlist's admission records what its look found, @p playable (rootPlayableNow()) for each root of @p roots:
-     * true when a pass was asked for (a root gone was noted seen away, or one back asks for its read again). Under the
-     * store's lock, which the look itself never held. */
-    bool admissionLookRecordedLocked(const QHash<int, AdmissionRoot>& roots, const QHash<int, bool>& playable) const;
     /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
     bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
@@ -765,7 +738,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void deferFolderReadLocked(const QString& path, Pass* pass);
     /* A session start found @p root missing: listed in full when it is back, deletes held, selections stale. Lock
      * held. */
-    void noteRootSeenAwayLocked(int root) const;
+    void noteRootSeenAwayLocked(int root);
     /* A recheck could not read @p id's name: kept, its journal line with it, and out of every index, count and usage
      * (Entry::unreadable). Under the store's lock. */
     void markEntryUnreadableLocked(const QString& id, Pass* pass);
@@ -889,8 +862,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Call m_rootLookHook, if set, for @p root; the lock not held. */
     void rootLookedForTest(const QString& root) const;
 #endif
-    /* Mutable: a const read that records what it observed (the playlist read's live root look) wakes the worker. */
-    mutable std::condition_variable m_wake;
+    std::condition_variable m_wake;
     std::condition_variable m_passed;
     std::condition_variable m_settled;
 
@@ -951,12 +923,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Each delete asked and not done yet, with its file's identity and path as the index knew them when the request was
      * accepted. */
     QHash<QString, DeleteAsk> m_deleteQueue;
-    /* Roots found missing outside a pass (a delete request's or export's look, rootThereForIndexLocked(); a playlist's
-     * admission, rootPlayableNow(); a session start's, rootAvailableNow()), back before a pass read them, or whose
-     * directory a session start made over indexed folders (I2): each is listed again in full by the next pass
-     * (refreshRoots()), whatever m_rootAvailable says. */
-    /* Mutable, under m_mutex: a const read that records what it observed (the playlist read's live root look). */
-    mutable QSet<int> m_rootsSeenAway;
+    /* Roots found missing outside a pass (a delete request's or export's look, rootThereForIndexLocked(); a session
+     * start's, rootAvailableNow()), back before a pass read them, or whose directory a session start made over indexed
+     * rows (I2): each is listed again in full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
+    QSet<int> m_rootsSeenAway;
     /* The seen-away roots the pass under way took into refreshRoots() and has not finished reading yet (R74): their
      * recordings stay unavailable to every reader until that read is done, as while they wait in m_rootsSeenAway. */
     QSet<int> m_rootsRereading;
@@ -985,8 +955,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     bool m_stop = false;
     /* m_stop, readable without the lock between the folders and slices of a long read. */
     std::atomic<bool> m_stopping{false};
-    /* Mutable, under m_mutex: a const read that records what it observed asks for the pass that reads it again. */
-    mutable bool m_passRequested = false;
+    bool m_passRequested = false;
     bool m_inPass = false;
     /* A pass's end hook running (setPassEndHookForTest()): the pass is not counted done until it returns. */
     bool m_passEnding = false;
@@ -1025,7 +994,6 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     std::function<void(const QString&)> m_rootReadHook;
     std::function<void(const QString&)> m_tailHook;
     std::function<void(const QString&)> m_sliceHook;
-    std::function<void()> m_admissionProbeHook; // set and copied under m_mutex: called on the reading thread
     std::function<void(bool)> m_folderCopyHook;
     std::function<void(const QString&)> m_entryCheckHook;
     std::function<void()> m_passEndHook;

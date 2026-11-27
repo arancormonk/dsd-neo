@@ -776,8 +776,7 @@ CallHistoryModel::playlistRows(const QList<int>& sourceRows) const {
     if (m_recordings == nullptr) {
         return rows;
     }
-    // One read for every row: the store takes its lock twice, around its look at the storage roots, never once per row.
-    // An answer that does not cover every row (the store refuses one whose storage kept changing) lists none.
+    // One read for every row: the store takes its lock once. An answer that does not cover every row lists none.
     const QList<QVariantList> recordings = m_recordings->recordingsForFragmentLists(fragments);
     if (recordings.size() == rows.size()) {
         for (qsizetype i = 0; i < rows.size(); i++) {

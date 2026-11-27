@@ -6045,8 +6045,7 @@ test_playlist_recordings_per_row(void) {
 
     const int locks = s.store.readerLocksForTest();
     const QList<QVariantList> rows = s.store.recordingsForFragmentLists(asked);
-    // Two holds whatever the rows (R77): the roots taken, then, after the unlocked look at them, the rows read.
-    expect("playlist read: two holds of the lock, not one per row", s.store.readerLocksForTest() == locks + 2);
+    expect("playlist read: one hold of the lock", s.store.readerLocksForTest() == locks + 1);
     expect("playlist read: one list per row", rows.size() == asked.size());
     if (rows.size() != asked.size()) {
         return;
@@ -6329,9 +6328,9 @@ test_seen_away_root_is_not_admitted(void) {
     expect("seen away: read again, it is admitted again", admitted());
 }
 
-/* R79: a loss a playlist's admission sees while the root's listing in full is in flight (after its folders were
- * listed, before the table is installed) is not dropped as already seen: the storage there at the listing's end may be
- * another card, so another listing in full runs after it. */
+/* R79: a loss seen outside the pass while the root's listing in full is in flight (after its folders were listed,
+ * before the table is installed; here by a session start, which then records elsewhere) is not dropped as already
+ * seen: the storage there at the listing's end may be another card, so another listing in full runs after it. */
 void
 test_loss_during_a_listing_asks_for_another(void) {
     const Roots roots;
@@ -6348,15 +6347,16 @@ test_loss_during_a_listing_asks_for_another(void) {
         if (!root.startsWith(ext + QLatin1Char('/')) || listings++ != 0) {
             return;
         }
-        // Listed: the storage goes, the admission sees it gone, and storage is back before the listing's last look.
+        // Listed: the storage goes, a session start sees it gone, and storage is back before the listing's last look.
         if (QDir().rename(ext, away)) {
-            const QVariantMap listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
-            lossSeen = !listed.value(QStringLiteral("available")).toBool();
+            const QString elsewhere = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+            lossSeen = elsewhere.startsWith(roots.internal + QLatin1Char('/'));
             (void)QDir().rename(away, ext);
         }
     });
     expect("listing loss: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
-    expect("listing loss: the admission saw the loss during the listing", lossSeen.load());
+    expect("listing loss: the session start saw the loss during the listing", lossSeen.load());
     s.pass(); // the listing asked for has run by now, at once or in this pass
     s.store.setRootReadHookForTest({});
     expect("listing loss: another listing in full ran after it", listings.load() == 2);
@@ -6400,11 +6400,13 @@ class PlayingHost : public dsd_qt::DecoderHost {
     }
 };
 
-/* The emulator's defect, R74 and M5: Play all looks at its storage live. With the root's folder replaced by a file and
- * no scan since, Play all is refused ("none") and the play running is unchanged; the root back, the same press asks for
- * its read again and is still refused, and once that read is done Play all is admitted. */
+/* R83 through a playlist: a recordings folder renamed away keeps its rows indexed and unavailable once the store has
+ * noticed, so Play all is refused with the play running unchanged; renamed back and read again, Play all plays. A
+ * session start while it is away makes the folder anew, and the read after it drops the old rows. Play all admits
+ * from what the store knows (r12 Part B): pressed before the store has noticed, it admits as before (a decided limit;
+ * the play then ends "Couldn't play these recordings"). */
 void
-test_playlist_admission_checks_roots_live(void) {
+test_playlist_missing_folder_keeps_its_rows_away(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
     const Roots roots;
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
@@ -6426,139 +6428,50 @@ test_playlist_admission_checks_roots_live(void) {
     PlayingHost host;
     dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
     const auto result = [&playlist] { return playlist.start(0).value(QStringLiteral("result")).toString(); };
-    expect("live roots: on storage that is there, Play all plays",
+    expect("missing folder: on storage that is there, Play all plays",
            result() == QLatin1String("accepted") && host.plays == 1);
 
-    // The root's folder replaced by a file, with no scan since.
-    expect("live roots: the folder moved away", QDir().rename(roots.external, away));
-    make_file(roots.external, 10); // a file where the folder was
-    expect("live roots: Play all is refused", result() == QLatin1String("none"));
-    expect("live roots: the play running is unchanged", host.plays == 1);
-
-    // Back: the press asks for its read again at once and is still refused; after that read, which no one else asked
-    // for, it is admitted.
-    s.pass(); // the pass the first look asked for marks the root away
-    expect("live roots: the folder back", QFile::remove(roots.external) && QDir().rename(away, roots.external));
-    const quint64 before = s.store.passCountForTest();
-    expect("live roots: back but not read again: still refused", result() == QLatin1String("none") && host.plays == 1);
-    QElapsedTimer waited;
-    waited.start();
-    while (s.store.passCountForTest() == before && waited.elapsed() < 5000) {
-        QThread::msleep(5);
-    }
-    expect("live roots: the press asked for the read again", s.store.passCountForTest() > before);
-    QCoreApplication::processEvents(); // the read's publication; no further pass: the press's own read is enough
-    expect("live roots: read again, Play all plays", result() == QLatin1String("accepted") && host.plays == 2);
-
-    // R77: a store that changes while the roots are looked at (no lock held) is looked at again, the admission run
-    // once more from the top. The storage goes and a pass marks it away meanwhile: looked at again, refused.
-    const QString ext = roots.dir.path() + QStringLiteral("/ext");
-    const QString extAway = roots.dir.path() + QStringLiteral("/ext-gone");
-    int looks = 0;
-    s.store.setAdmissionProbeHookForTest([&] {
-        if (looks++ == 0) {
-            (void)QDir().rename(ext, extAway);
-            s.pass(); // marked away
-        }
-    });
-    expect("live roots: changed during the look: refused", result() == QLatin1String("none") && host.plays == 2);
-    expect("live roots: changed during the look: looked at again", looks == 2);
-    // Changed during each look (the storage back and read again, then gone and marked away again): refused after the
-    // second, with no third.
-    looks = 0;
-    s.store.setAdmissionProbeHookForTest([&] {
-        const bool back = looks++ % 2 == 0;
-        (void)(back ? QDir().rename(extAway, ext) : QDir().rename(ext, extAway));
-        s.pass();
-    });
-    const bool changedTwice = result() == QLatin1String("none") && host.plays == 2;
-    expect("live roots: changed again during the second look: refused", changedTwice);
-    expect("live roots: changed again: looked at twice, no more", looks == 2);
-    s.store.setAdmissionProbeHookForTest({});
-    expect("live roots: the storage back", QDir().rename(extAway, ext));
-    s.pass();
-    expect("live roots: unchanged, Play all plays", result() == QLatin1String("accepted") && host.plays == 3);
-
-    // R77: the plain rename. The recordings folder renamed while its parent is there: Play all looks for an existing
-    // readable directory, not one that can be made, and is refused with what plays left playing.
-    expect("live roots: the recordings folder renamed", QDir().rename(roots.external, away));
-    expect("live roots: renamed: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
+    // The decided limit: renamed, with no pass since, Play all admits from what the store knows.
+    expect("missing folder: the recordings folder renamed", QDir().rename(roots.external, away));
+    expect("missing folder: not noticed yet, Play all admits as before",
+           result() == QLatin1String("accepted") && host.plays == 2);
 
     // R83: a root whose directory is missing (its parent there) is away, not empty. After a pass its recording is still
-    // indexed, unavailable, and Play all is still refused.
+    // indexed, unavailable, and Play all is refused.
     const QString row = fragment(static_cast<qint64>(ring.rings[0].push_seq));
     const auto held = [&s, &row](bool available) {
         const QVariantList list = s.store.recordingsForFragments({row});
         return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
     };
     s.pass();
-    expect("live roots: renamed, a pass: still indexed, unavailable", held(false));
-    expect("live roots: renamed, a pass: Play all is refused", result() == QLatin1String("none") && host.plays == 3);
+    expect("missing folder: renamed, a pass: still indexed, unavailable", held(false));
+    expect("missing folder: renamed, a pass: Play all is refused",
+           result() == QLatin1String("none") && host.plays == 2);
     // M3, a decided limit: a delete naming its rows is refused as storage away; their files are not there to delete.
-    expect("live roots: renamed, a pass: Delete all is refused as storage away",
+    expect("missing folder: renamed, a pass: Delete all is refused as storage away",
            !s.store.deleteAll() && s.store.deleteRefusal() == QLatin1String("storageAway"));
     // Renamed back: read again, available, admitted.
-    expect("live roots: renamed back", QDir().rename(away, roots.external));
+    expect("missing folder: renamed back", QDir().rename(away, roots.external));
     s.pass();
-    expect("live roots: renamed back, a pass: available", held(true));
-    expect("live roots: renamed back: Play all plays", result() == QLatin1String("accepted") && host.plays == 4);
+    expect("missing folder: renamed back, a pass: available", held(true));
+    expect("missing folder: renamed back: Play all plays", result() == QLatin1String("accepted") && host.plays == 3);
 
     // Away again, a session start keeps its own rule (a root that can be made is one it records into) and makes the
     // folder anew, empty: the root's read again finds what is really there, the old recording gone, the new one there.
-    expect("live roots: renamed away again", QDir().rename(roots.external, away));
+    expect("missing folder: renamed away again", QDir().rename(roots.external, away));
     s.pass();
-    expect("live roots: away again: still indexed, unavailable", held(false));
+    expect("missing folder: away again: still indexed, unavailable", held(false));
     const QString made = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
-    expect("live roots: away: a session start makes its folder there anew",
+    expect("missing folder: away: a session start makes its folder there anew",
            made.startsWith(roots.external + QLatin1Char('/')) && QFileInfo(made).isDir());
     const QString fresh = fragment(4242);
     record(made, QStringLiteral("00000000000000CE-2"), QStringLiteral("b.wav"), when + 60, 4242);
     s.store.endSession();
     s.pass();
     const QVariantList now = s.store.recordingsForFragments({fresh});
-    expect("live roots: read again: the old recording is gone", s.store.recordingsForFragments({row}).isEmpty());
-    expect("live roots: read again: the new session's recording is indexed",
+    expect("missing folder: read again: the old recording is gone", s.store.recordingsForFragments({row}).isEmpty());
+    expect("missing folder: read again: the new session's recording is indexed",
            now.size() == 1 && now.value(0).toMap().value(QStringLiteral("available")).toBool());
-    model.setRecordingProvider(nullptr);
-}
-
-/* Item 5: after a cold start with the recordings folder missing, the folder comes back holding a History call's
- * recording. Play all finds nothing indexed yet and is refused, and its look at the storage finds the folder there
- * and asks for its read at once, with no pass asked for by anyone else; once read, Play all plays. */
-void
-test_playlist_asks_for_a_missing_folder_back(void) {
-    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
-    const Roots roots;
-    Store s(roots.list());
-    Ring ring;
-    dsd_qt::CallHistoryModel model;
-    model.setRecordingProvider(&s.store);
-    QObject::connect(&s.store, &RecordingStore::recordingFragmentsChanged, &model,
-                     &dsd_qt::CallHistoryModel::recordingFragmentsChanged);
-    const time_t when = 1754705000;
-    ring.commit(31002, 502, when, when + 4);
-    model.refresh(ring.state);
-    const QString staged = roots.dir.path() + QStringLiteral("/staged");
-    const QString owner = staged + QStringLiteral("/Explore");
-    expect("missing back: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
-    record(owner, QStringLiteral("00000000000000CF-1"), QStringLiteral("a.wav"), when, ring.rings[0].push_seq);
-    dsd_qt::CallHistoryFilterModel view;
-    view.setSourceModel(&model);
-    PlayingHost host;
-    dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
-    const auto result = [&playlist] { return playlist.start(0).value(QStringLiteral("result")).toString(); };
-    expect("missing back: nothing to play yet", result() == QLatin1String("none") && host.plays == 0);
-    expect("missing back: the folder put in place", QDir().rename(staged, roots.external));
-    const quint64 before = s.store.passCountForTest();
-    expect("missing back: Play all is refused for now", result() == QLatin1String("none") && host.plays == 0);
-    QElapsedTimer waited;
-    waited.start();
-    while (s.store.passCountForTest() == before && waited.elapsed() < 5000) {
-        QThread::msleep(5);
-    }
-    expect("missing back: the press asked for the read", s.store.passCountForTest() > before);
-    QCoreApplication::processEvents();
-    expect("missing back: read, Play all plays", result() == QLatin1String("accepted") && host.plays == 1);
     model.setRecordingProvider(nullptr);
 }
 
@@ -6839,8 +6752,7 @@ main(int argc, char** argv) {
     test_checked_delete_refuses_another_file();
     test_checked_delete_refuses_another_path();
     test_seen_away_root_is_not_admitted();
-    test_playlist_admission_checks_roots_live();
-    test_playlist_asks_for_a_missing_folder_back();
+    test_playlist_missing_folder_keeps_its_rows_away();
     test_loss_during_a_listing_asks_for_another();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
