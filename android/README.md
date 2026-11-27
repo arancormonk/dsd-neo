@@ -873,8 +873,6 @@ the media controls are current all along. After a playlist ends, a media button 
   comes back is picked up within about a minute.
 - A playlist holds no files, so the storage limit can delete calls that have not played yet: with Record calls on near
   the limit while an old backlog plays, the limit (oldest first) can take the next calls, which are then skipped.
-- A recording found gone after you stopped the playlist from DSD-neo is checked again when you next play or come back
-  to DSD-neo; until then its row may still show a recording, and playing it from its sheet finds it missing.
 - If Android closed DSD-neo while a playlist was still starting, it may show the **Call recordings** notification for a
   moment the next time it starts the playback service; nothing plays.
 - The 10-minute timer counts the time the phone is awake. The end is also checked when the screen turns on and at
