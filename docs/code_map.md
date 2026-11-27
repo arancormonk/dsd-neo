@@ -19814,7 +19814,9 @@ Qt Quick frontend (`src/ui/qt`):
     again, and once across the sheet and the bar: the sheet that follows the play notes the refusal it read out in
     `Navigation.refusalSaid` (`refusalKey()`), and the bar marks its waiting event for that refusal heard
     (`PlaylistStatus.eventSaidElsewhere`) instead of reading it again when the sheet closes; one the sheet did not read
-    out waits for the bar as before. The bar notes the refusals it reads in the same place, and a sheet opened after
+    out waits for the bar as before. Each surface writes its heard keys only when `Navigation.announce()` read the text
+    out (`say()` returns it): a refusal shown on a sheet under its Delete confirmation is not read there, and stays
+    the bar's to read (R41). The bar notes the refusals it reads in the same place, and a sheet opened after
     shows such a refusal without reading it again; a transient focus loss reads `playbackInterrupted` ("Paused for
     another app's audio", the button Pause, B4); with no player the block says "Recordings can't be played on this
     device." and chips only select (B6); a part played from the sheet whose file is gone at the press is refused before

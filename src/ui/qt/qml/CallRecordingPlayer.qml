@@ -289,12 +289,13 @@ Column {
             notice = text;
             noticeProblem = true;
         } else if (text.length > 0) {
-            if (refusal) {
+            // Heard only once read out: one shown under the Delete
+            // confirmation is left for the surface that can say it next (the
+            // bar a playlist's refusal waits on).
+            if (say(text, true) && refusal) {
                 refusalSaid = key;
-                // The bar a playlist's refusal waits on reads it as heard.
                 Navigation.refusalSaid = heard;
             }
-            say(text, true);
         } else if (said.length > 0 && notice === said && noticeProblem) {
             say("", false);
         }
@@ -515,12 +516,14 @@ Column {
     }
     // A problem is read out once each time it is said, a repeat included, and
     // so is a result that is the only place a fact is given (@p readOut: where
-    // a Download-folder save went).
+    // a Download-folder save went). True when it was read out: a line under a
+    // dialog of its own (the Delete confirmation) is shown but not read.
     function say(text, problem, readOut) {
         notice = text;
         noticeProblem = problem;
         if (problem || readOut === true)
-            Navigation.announce(player, noticeLine, text);
+            return Navigation.announce(player, noticeLine, text);
+        return false;
     }
 
     function share() {

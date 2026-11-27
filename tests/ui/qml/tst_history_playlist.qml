@@ -630,6 +630,41 @@ Item {
             compare(barItem.announced, full, "and the bar reads it");
         }
 
+        // A refusal is heard only once it is read out: shown on a sheet under its Delete confirmation, it is not read
+        // there, so the bar reads it once the confirmation and the sheet are closed.
+        function test_refusal_shown_under_a_dialog_is_read_by_the_bar() {
+            var calls = logCalls(2);
+            var screen = idle();
+            only(screen);
+            var full = "Can't play right now. Another app has the audio, such as a phone call.";
+            var barItem = bar(screen);
+            testContext.setHistoryPlaylistAnswer("accepted", calls.map(function (call, i) {
+                return {path: "/rec/call-" + i + ".wav", size: 192044, mtimeSec: 1700000100, mtimeNanos: 0, call: i, partOrdinal: 1,
+                    partCount: 1, title: call.name, line: "", key: String(call.uid)};
+            }));
+            findChild(screen, "historyPlayAll").activate();
+            playing({item: 0});
+            tryCompare(barItem, "announcements", 1);
+            var sheet = detailSheet(screen);
+            var block = findChild(sheet, "historyRecording");
+            part(screen, "nowPlayingShowInList").activate();
+            verify(sheet.visible);
+            block.askDelete();
+            var confirm = findChild(block, "recordingDeleteConfirm");
+            verify(confirm.visible, "the Delete confirmation covers the sheet");
+            var said = block.announcements;
+            playing({item: 0, playbackState: 3, playbackPausedReason: "unavailable", playbackRefusals: 1});
+            compare(block.notice, full, "the sheet shows the refusal");
+            compare(block.announcements, said, "but cannot read it under the confirmation");
+            compare(Ui.Navigation.refusalSaid === Ui.Navigation.refusalKey(decoderHost.playbackGeneration, 1), false,
+                    "so it is not marked heard");
+            confirm.visible = false;
+            sheet.visible = false;
+            tryCompare(barItem, "announcements", 2);
+            compare(barItem.announced, full, "the bar reads it");
+            verify(status.eventHeard);
+        }
+
         // The reverse: a refused resume the bar read out is heard by a sheet opened after it. Show in list opens the
         // playing call's sheet, and a move that keeps the refusal standing (the part opened again under a new token)
         // shows it on the sheet's notice line without reading it again; the next refusal is read.
