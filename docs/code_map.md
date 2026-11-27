@@ -20041,9 +20041,11 @@ Qt Quick frontend (`src/ui/qt`):
       the record read the opening part's own, never those of a part that failed while it played before it. The paths of
       `gone` and `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a
       replacement never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a
-      `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and hands the
-      paths to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path
-      is handed over once.
+      `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and, with no
+      play open, when the list's own serial (`recheckSerial()`, a `()J` counter) moved at a poll, so a late recheck
+      after a play ended (its last item's open past its timeout) is heard without reopening it (r13); it hands the paths
+      to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path is
+      handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
       it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
       sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part,
@@ -20110,25 +20112,26 @@ Qt Quick frontend (`src/ui/qt`):
       again with the same reading still moves it), skip notice call and count (the call a part played on after
       recordings were skipped, and how many, kept by the player while that call is current: `noteSkips()` when a part
       starts, cleared when another call opens; -1 and 0 with none), seeks landed (R56: the play's seeks the player
-      confirmed, `playbackSeeksLanded`). `run_jvm_tests.py` checks the writers and the parser count the same fields. A
-      seek is a landing only once the player confirms it: each carries a seek serial, the owner forwards
-      `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` for the seek that landed (R59: the listener names no
-      request, so the owner, `PlayerOwnerState`, keeps one platform seek in flight and holds the newest request, which
-      replaces an older held one and goes to the platform once the one in flight completes, or is given up at 2 s with
-      no completion, M1, not reported as landed then, though with no newer seek issued its late completion still lands
-      it, m1; a start asked for while a seek is held waits until that seek has gone to the platform, M2, so the platform
-      sees seek, then start, R45; the owner marks a completed player before forwarding its completion, and nothing
-      starts or seeks it again, R66: a start queued behind the completion never plays the recording again), and until
-      the latest seek lands the readings keep the confirmed position and its clock (so Previous's 3,000 ms rule reads
-      it); a superseded seek's completion counts for nothing. A plain seek (no start pending to ask again) publishes
-      nothing until it lands, so a system scrubber the user dragged never snaps back to the old position (M4). The sheet
-      takes a position near its target as the landing only from a record whose landing count moved since it asked, so a
-      position read before the seek reached the player never lands it; its preview, with the 2 s fallback, shows the
-      target meanwhile, each request restarting that 2 s, the same target asked again included (R76). The host resolves
-      `playbackPath`, `playbackTitle`, `playbackKey` and the identity from the item index of the same record, and
-      publishes everything together; the position alone goes on `playbackPositionChanged`. Zero status reads while idle;
-      a foreground return refreshes at once, from Hidden, Suspended or Inactive (R51: an app visible but not active, as
-      in split screen, holds the bar's events, so the first active reading comes before the bar says anything).
+      confirmed, `playbackSeeksLanded`), can go next (r13: `allows(ACTION_NEXT)`, `playbackCanNext`). `run_jvm_tests.py`
+      checks the writers and the parser count the same fields. A seek is a landing only once the player confirms it:
+      each carries a seek serial, the owner forwards `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` for
+      the seek that landed (R59: the listener names no request, so the owner, `PlayerOwnerState`, keeps one platform
+      seek in flight and holds the newest request, which replaces an older held one and goes to the platform once the
+      one in flight completes, or is given up at 2 s with no completion, M1, not reported as landed then, though with no
+      newer seek issued its late completion still lands it, m1; a start asked for while a seek is held waits until that
+      seek has gone to the platform, M2, so the platform sees seek, then start, R45; the owner marks a completed player
+      before forwarding its completion, and nothing starts or seeks it again, R66: a start queued behind the completion
+      never plays the recording again), and until the latest seek lands the readings keep the confirmed position and its
+      clock (so Previous's 3,000 ms rule reads it); a superseded seek's completion counts for nothing. A plain seek (no
+      start pending to ask again) publishes nothing until it lands, so a system scrubber the user dragged never snaps
+      back to the old position (M4). The sheet takes a position near its target as the landing only from a record whose
+      landing count moved since it asked, so a position read before the seek reached the player never lands it; its
+      preview, with the 2 s fallback, shows the target meanwhile, each request restarting that 2 s, the same target
+      asked again included (R76). The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from
+      the item index of the same record, and publishes everything together; the position alone goes on
+      `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once, from Hidden,
+      Suspended or Inactive (R51: an app visible but not active, as in split screen, holds the bar's events, so the
+      first active reading comes before the bar says anything).
     - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
       the old generation ends (its service is told it was replaced), the new one publishes Preparing and the call
       returns its positive generation, which owns every later message, a synchronous service-start exception (published
@@ -20282,16 +20285,16 @@ Qt Quick frontend (`src/ui/qt`):
       play), and Resume moves on as if it had just completed: the next part, the gap, or the end; Stop, Next and
       Previous act as from any paused part, Previous reading the end position, and the paused deadline counts on); calls
       recorded after the press are not added; the limit or a delete can take a queued recording, which is skipped; a
-      gone file found after a host-asked Stop waits in the recheck list until the next play or foreground return; a
-      start redelivered after the process died may flash the notification; while the app is in the background Qt does
-      not update the bar or the rows (the notification does); after the end a media key no longer restarts it;
-      interrupted, the lock screen shows Play, which changes nothing; a lock-screen or system seek applies to the part
-      current when the looper runs it, so one sent in the instant a part changes lands on the new part; a play whose
-      start waited for an old player's silence (R52, a move or a replacement) and failed at its 10 s watchdog forgets
-      that wait as it ends, so a later play does not wait for the stuck player again and may start over it if it ever
-      sounds, while its thread stays counted until it ends (R40); a seek given up at its 2 s bound (M1) still lands when
-      its late completion comes if no newer seek was issued since (m1), but one that arrives after a newer seek has been
-      issued is matched to the newer one, which can land that seek early.
+      gone file found after a host-asked Stop reaches the store at the next poll (r13); a start redelivered after the
+      process died may flash the notification; while the app is in the background Qt does not update the bar or the rows
+      (the notification does); after the end a media key no longer restarts it; interrupted, the lock screen shows Play,
+      which changes nothing; a lock-screen or system seek applies to the part current when the looper runs it, so one
+      sent in the instant a part changes lands on the new part; a play whose start waited for an old player's silence
+      (R52, a move or a replacement) and failed at its 10 s watchdog forgets that wait as it ends, so a later play does
+      not wait for the stuck player again and may start over it if it ever sounds, while its thread stays counted until
+      it ends (R40); a seek given up at its 2 s bound (M1) still lands when its late completion comes if no newer seek
+      was issued since (m1), but one that arrives after a newer seek has been issued is matched to the newer one, which
+      can land that seek early.
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,

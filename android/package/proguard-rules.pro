@@ -74,6 +74,7 @@
     public static void resumeFor(long);
     public static java.lang.String status();
     public static java.lang.String[] takeRecheck();
+    public static long recheckSerial();
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingExport {

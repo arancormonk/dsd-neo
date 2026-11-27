@@ -237,6 +237,13 @@ object RecordingPlayback {
     fun takeRecheck(): Array<String> = recheck.take()
 
     /**
+     * The recheck list's serial ([RecordingRecheck.serial]), for a poll with no play open (r13): a play that ended
+     * can still add to the list (a late open's Gone), and the host reads it without the ended play's record.
+     */
+    @JvmStatic
+    fun recheckSerial(): Long = recheck.serial.toLong()
+
+    /**
      * The media session of the History playlist that owns the promoted playback service, while it is active: the
      * Activity hands media keys past Qt to it (a MediaController on this token). Null before the service has rendered
      * the owner's session active, so a key in between stays with Qt. Any thread.

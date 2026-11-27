@@ -148,6 +148,7 @@ struct PlatformRecordings {
     int arrayPlays = 0;
     QStringList recheck;
     int rechecks = 0;
+    qint64 recheckSerial = -1; // RecordingPlayback.recheckSerial(); -1: not readable (#909 r13)
     std::atomic<int> transfers{0};
     std::atomic<int> shares{0};
     int canShares = 0;
@@ -268,6 +269,7 @@ reset_recordings() {
     r.arrayPlays = 0;
     r.recheck.clear();
     r.rechecks = 0;
+    r.recheckSerial = -1;
     r.transfers = 0;
     r.transferId = 0;
     r.paths.clear();
@@ -700,6 +702,11 @@ DecoderHostAndroid::platformResumePlaybackFor(qint64 token) {
 void
 DecoderHostAndroid::platformStopPlaybackGeneration(int generation) {
     recordings().commands.append(QStringLiteral("stopGeneration %1").arg(generation));
+}
+
+qint64
+DecoderHostAndroid::platformRecordingRecheckSerial() {
+    return recordings().recheckSerial;
 }
 
 QStringList
@@ -3292,6 +3299,28 @@ check_playlist_recheck() {
     host.refresh();
     check(host.playbackError() == QStringLiteral("missing") && seen.missing.isEmpty(),
           "a part gone is not reported from the reading");
+
+    // r13: the play over (its terminal record taken, nothing open), a late Gone (its last item's open, past its
+    // timeout, found the file gone) moves the list's serial: the next poll hands it to the store, without reading the
+    // ended play's record or reopening it.
+    {
+        const int readsAfterEnd = r.statusReads;
+        const int rechecksAfterEnd = r.rechecks;
+        r.recheckSerial = 4;
+        host.refresh();
+        check(r.rechecks == rechecksAfterEnd, "a poll with no play open: the serial the end left is not news");
+        r.recheck = {QStringLiteral("/r/late.wav")};
+        r.recheckSerial = 5;
+        seen.missing.clear();
+        host.refresh();
+        check(seen.missing == QStringList({QStringLiteral("/r/late.wav")}) && r.statusReads == readsAfterEnd
+                  && host.playbackError() == QStringLiteral("missing"),
+              "#909 r13: a late recheck after the end reaches the store at the next poll, the end left as it was");
+        host.refresh();
+        check(r.rechecks == rechecksAfterEnd + 1, "the same serial again is not news");
+        r.recheckSerial = -1;
+        seen.missing.clear();
+    }
 
     // Away and back: read at once, and the list taken even with no play open.
     const int reads = r.statusReads;

@@ -1111,6 +1111,12 @@ DecoderHostAndroid::platformPlaybackStatus() {
     return status.isValid() ? status.toString() : QString();
 }
 
+qint64
+DecoderHostAndroid::platformRecordingRecheckSerial() {
+    // Must match RecordingPlayback.kt: @JvmStatic fun recheckSerial(): Long (#909 r13). An atomic read.
+    return read_static_counter(kPlaybackClass, "recheckSerial");
+}
+
 QStringList
 DecoderHostAndroid::platformTakeRecordingRecheck() {
     // Must match RecordingPlayback.kt: @JvmStatic fun takeRecheck(): Array<String> (#909).

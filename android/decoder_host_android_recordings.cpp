@@ -295,7 +295,16 @@ DecoderHostAndroid::drainRecordingRecheck() {
 bool
 DecoderHostAndroid::refreshPlayback() {
     if (m_playback_generation == 0) {
-        return false;
+        // No play open: only the recheck list's serial (r13). A play that ended can still add to the list (its last
+        // item's open, past its timeout, found the file gone), so the store hears of it at the next poll; the ended
+        // play's record is not read, and it is not reopened.
+        const qint64 serial = platformRecordingRecheckSerial();
+        if (serial < 0 || serial == m_recheck_serial) {
+            return false;
+        }
+        m_recheck_serial = serial;
+        drainRecordingRecheck();
+        return true;
     }
     PlaybackStatusRecord record;
     if (!parse_playback_status(platformPlaybackStatus(), &record)) {
