@@ -1902,8 +1902,11 @@ def clopper_pearson(k: int, n: int, level: float = 0.95) -> tuple[float, float]:
     return lo, hi
 
 
-def rate_entry(k: int, n: int, bound: float) -> dict:
-    lo, hi = clopper_pearson(k, n)
+def rate_entry(k: int, n: int, bound: float, interval: bool = True) -> dict:
+    """k events in n decisions against @p bound, with their 95 % Clopper-Pearson interval; @p interval False for
+    decisions that are not independent trials (the same windows counted at several CNRs): no interval, and no "near"
+    flag drawn from one."""
+    lo, hi = clopper_pearson(k, n) if interval else (None, None)
     rate = k / n if n else None
     return {
         "k": int(k),
@@ -1913,7 +1916,7 @@ def rate_entry(k: int, n: int, bound: float) -> dict:
         "hi": hi,
         "bound": bound,
         "pass": rate is not None and rate <= bound,
-        "near": rate is not None and lo <= bound <= hi,
+        "near": interval and rate is not None and lo <= bound <= hi,
     }
 
 
@@ -1958,7 +1961,14 @@ def frozen_verdict(combo: dict, noise: dict, carrier: dict, ids: set | None = No
         "false_carrier": rate_entry(c[CARRIER], total, FALSE_CARRIER_TARGET),
         "noise_undecided": rate_entry(total - c[NOISE], total, NOISE_UNDECIDED_TARGET),
         "miss_cnr6": rate_entry(*misses("in6"), MISS_TARGET),
-        "pollution_ge6": rate_entry(*as_noise("in_ge6"), POLLUTION_TARGET),
+        # Every CNR from 6 dB up mixes the same carrier and noise windows, so the grouped target has no interval; each
+        # CNR's own windows are independent of one another and carry theirs.
+        "pollution_ge6": rate_entry(*as_noise("in_ge6"), POLLUTION_TARGET, interval=False),
+        **{
+            f"pollution_cnr{int(cnr)}": rate_entry(*as_noise(f"in{int(cnr)}"), POLLUTION_TARGET)
+            for cnr in CNRS_DB
+            if cnr >= CARRIER_MIN_CNR_DB
+        },
         "miss_cnr3": rate_entry(*misses("in3"), 1.0),
         "miss_cnr0": rate_entry(*misses("in0"), 1.0),
         "pollution_cnr3": rate_entry(*as_noise("in3"), 1.0),
@@ -2006,6 +2016,8 @@ def fmt_entry(e: dict, digits: int = 2) -> str:
         return "-"
     rate = e["rate"]
     text = "0" if rate == 0.0 else (f"{rate:.{digits}e}" if rate < 0.01 else f"{100.0 * rate:.{digits}f} %")
+    if e["hi"] is None:
+        return f"{text} ({e['k']}/{e['n']}; no interval)"
     return f"{text} ({e['k']}/{e['n']}; {e['hi']:.1e})"
 
 
@@ -2017,7 +2029,7 @@ def pooled_text(key: str, unique: dict, verdicts: dict) -> str:
     taps (AM and NFM at one width on one chain) read the same noise decisions. Its pooled rate has no interval: every
     filter on a chain reads the same source noise, so the windows of different filters are not independent trials. A
     carrier target pools every plan's own streams (each carrier plan draws its signals and noise from its own seed),
-    with its Clopper-Pearson interval."""
+    with its Clopper-Pearson interval, but one counting the same windows at several CNRs (pollution_ge6) has none."""
     if key in NOISE_TARGETS:
         by_filter = {}
         for ck, combo in unique.items():
@@ -2034,7 +2046,8 @@ def pooled_text(key: str, unique: dict, verdicts: dict) -> str:
     entries = [verdicts[ck][key] for ck in unique if verdicts[ck][key]["n"]]
     if not entries:
         return "-"
-    return fmt_entry(rate_entry(sum(e["k"] for e in entries), sum(e["n"] for e in entries), entries[0]["bound"]))
+    k, n = sum(e["k"] for e in entries), sum(e["n"] for e in entries)
+    return fmt_entry(rate_entry(k, n, entries[0]["bound"], interval=entries[0]["hi"] is not None))
 
 
 def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict, carrier_results: dict) -> tuple:
@@ -2079,10 +2092,13 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
     if failing or accepted:
         lines.append("")
     targets = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
+    pollution_cnrs = tuple(f"pollution_cnr{int(cnr)}" for cnr in CNRS_DB if cnr >= CARRIER_MIN_CNR_DB)
     lines += [
         (
             "Each target's 95 % interval against its bound, plan by plan, and every plan's windows pooled (a noise "
-            "target once per filter, with no interval: the filters on one chain read the same source noise):"
+            "target once per filter, with no interval: the filters on one chain read the same source noise). "
+            "pollution_ge6 counts each carrier window once at every CNR from 6 dB up, so it has no interval; the "
+            "pollution_cnrN rows give each CNR's own windows with theirs:"
         ),
         "",
         (
@@ -2091,12 +2107,15 @@ def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict,
         ),
         "| --- | --- | --- | --- | --- | --- |",
     ]
-    for key in targets:
+    for key in (*targets, *pollution_cnrs):
         entries = [verdicts[ck][key] for ck in unique if verdicts[ck][key]["n"]]
+        over = sum(1 for e in entries if not e["pass"])
+        if any(e["hi"] is None for e in entries):
+            lines.append(f"| {key} | - | - | - | {over} | {pooled_text(key, unique, verdicts)} |")
+            continue
         resolved = sum(1 for e in entries if e["hi"] <= e["bound"])
         zero = sum(1 for e in entries if e["k"] == 0 and e["hi"] > e["bound"])
         events = sum(1 for e in entries if e["k"] > 0 and e["pass"] and e["hi"] > e["bound"])
-        over = sum(1 for e in entries if not e["pass"])
         lines.append(f"| {key} | {resolved} | {zero} | {events} | {over} | {pooled_text(key, unique, verdicts)} |")
     lines += ["", "Plans with events whose interval holds the bound:", ""]
     held = [

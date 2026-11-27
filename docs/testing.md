@@ -3411,14 +3411,16 @@ four streams) and the carrier set above; it took 103 minutes on 8 workers.
 | --- | --- | --- | --- |
 | Noise read as carrier (1e-4) | 2 | 1.3e-4 (13 / 100,000; 95 % upper 2.2e-4): unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 7.6e-6 (109 / 14,400,000 over the 144 distinct filters) |
 | 6 dB carrier missed (1 %) | 1 | 2.16 % (12 / 555): unset NFM, `DSD_NEO_CHANNEL_LPF=1`, rtl-8k | 6.3e-5 (34 / 537,875) |
-| Carrier of 6 dB or more read as noise (1e-4) | 0 | none in any plan (at most 15,075 windows a plan, so no plan alone resolves 1e-4) | 0 (0 / 1,613,625; 95 % upper 2.3e-6) |
+| Carrier of 6 dB or more read as noise (1e-4) | 0 | none in any plan (at most 5,025 windows a plan at each CNR, so no plan alone resolves 1e-4) | 0 (0 / 1,613,625 decisions: 537,875 windows, each at 6, 10 and 20 dB; at each CNR 0 / 537,875, 95 % upper 6.9e-6) |
 | Noise left undecided (25 %) | 0 | 3.65 %: unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 1.29 % (over the 144 filters) |
 
 The noise rows pool each filter once: plans that share their taps (AM and NFM at one width on one chain) read the same
 noise decisions. They carry no interval, because every filter on a chain reads the same source noise, so the windows of
 different filters are not independent trials. The carrier rows pool every plan, each from its own seeded signals and
-noise, with their 95 % interval. (Pooling by plan had counted the shared filters twice: 6.8e-6, 127 / 18,800,000, and
-1.27 %.)
+noise, with their 95 % interval. The "6 dB or more" row mixes the same carrier and noise windows at 6, 10 and 20 dB, so
+its three decisions per window are not independent trials either. Its interval is given at each CNR (0 / 537,875 windows
+each), not over the grouped 1,613,625, which would have given an upper end of 2.3e-6. (Pooling by plan had counted the
+shared filters twice: 6.8e-6, 127 / 18,800,000, and 1.27 %.)
 
 Three plans miss a bound. The thresholds stay as shipped, and these plans are accepted as known marginals. Each entry
 in the tool covers one plan and one bound. Its allowance sits just above the 95 % interval's upper end, so another
