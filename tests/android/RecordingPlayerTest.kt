@@ -1430,16 +1430,44 @@ private fun aReplacementStartsOnceTheOldPlayIsSilent() {
     check(stop.state == STOPPED && x.startRequests.isEmpty() && x.released) { "Stop ends X at once, unstarted" }
     stop.elapse(RecordingPlayer.START_TIMEOUT_MS)
     check(stop.state == STOPPED && x.startRequests.isEmpty()) { "the watchdog's time changes nothing" }
-    // The wait went with the play: the next play starts at once, and A's late silence changes nothing.
+    // The wait outlives the play (R61): the next play waits for A too, and A's silence starts it, not X.
     stop.holdSilences = false
     stop.queue(1, 1)
     stop.prepared()
     val y = stop.current
-    check(stop.state == PLAYING && y.startRequests.size == 1) { "a play after the Stop starts at once" }
+    check(stop.state == STARTING && y.startRequests.isEmpty()) { "a play after the Stop waits for A's silence" }
     stop.ackSilence()
     check(stop.state == PLAYING && y.startRequests.size == 1 && x.startRequests.isEmpty()) {
-        "A's late silence posts nothing"
+        "A's silence starts the next play, once, and nothing of X"
     }
+}
+
+/**
+ * A silence outstanding outlives a normal end (R61): A sounds, its pause held, and Next finds every later recording
+ * gone, so the play ends finished at once; a Play then prepares C and its start waits for A's silence, which starts it.
+ */
+private fun aSilenceOutlivesANormalEnd() {
+    val rig = Rig()
+    rig.fail(path(1, 1), RecordingPlayer.REASON_GONE)
+    rig.fail(path(2, 1), RecordingPlayer.REASON_GONE)
+    rig.queue(1, 1, 1)
+    rig.prepared()
+    val a = rig.current
+    rig.holdSilences = true
+    rig.machine.next()
+    rig.turn()
+    rig.turn()
+    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "every later recording gone: finished, published at once (${rig.state}, ${rig.status.endedReason})"
+    }
+    check(rig.heldSilences == listOf(a)) { "A's silence is still outstanding" }
+    rig.holdSilences = false
+    rig.machine.play(++rig.generation, "/r/c.wav")
+    rig.prepared()
+    val c = rig.current
+    check(c !== a && rig.state == STARTING && c.startRequests.isEmpty()) { "C prepares; its start waits for A" }
+    rig.ackSilence()
+    check(rig.state == PLAYING && c.startRequests.size == 1) { "A silent: C starts" }
 }
 
 /**
@@ -1478,6 +1506,10 @@ private fun theNextPartStartsOnceTheOutgoingOneIsSilent() {
     check(stuck.state == FAILED && stuck.service.ends.size == 1) {
         "the watchdog ends the play at 10 s (${stuck.state}, ${stuck.service.ends})"
     }
+    // The documented limit: a wait that failed at its watchdog is dropped, so the next play does not wait again.
+    stuck.queue(1, 1)
+    stuck.prepared()
+    check(stuck.state == PLAYING && stuck.current.startRequests.size == 1) { "the next play starts at once" }
 
     // Five Next with the silences late: only the last candidate starts, once.
     val burst = Rig()
@@ -1515,19 +1547,20 @@ private fun theNextPartStartsOnceTheOutgoingOneIsSilent() {
         "the outgoing player never started: B starts at once"
     }
 
-    // Stop needs no wait, and a silence from the play before is ignored.
+    // A silence outstanding outlives Stop (R61): the end is published at once, and the next play waits for it.
     val stop = Rig()
     stop.queue(1, 1)
     stop.prepared()
     stop.holdSilences = true
     stop.machine.next()
     stop.machine.stop(stop.generation)
+    check(stop.state == STOPPED && stop.service.ends.size == 1) { "Stop is published at once" }
     stop.holdSilences = false
     stop.queue(1, 1)
     stop.prepared()
-    check(stop.state == PLAYING) { "a new play after Stop starts at once" }
+    check(stop.state == STARTING && stop.current.startRequests.isEmpty()) { "a new play after Stop waits for A" }
     stop.ackSilence()
-    check(stop.state == PLAYING && stop.current.startRequests.size == 1) { "the old play's silence changes nothing" }
+    check(stop.state == PLAYING && stop.current.startRequests.size == 1) { "A's silence starts it, once" }
 }
 
 /**
@@ -3769,6 +3802,7 @@ fun main() {
     aMoveKeepsItsWayUntilItsCandidatePlays()
     theNextPartStartsOnceTheOutgoingOneIsSilent()
     aReplacementStartsOnceTheOldPlayIsSilent()
+    aSilenceOutlivesANormalEnd()
     aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()

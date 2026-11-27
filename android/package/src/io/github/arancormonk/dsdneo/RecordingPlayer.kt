@@ -708,11 +708,13 @@ class RecordingPlayer(
     private var startMade = false
 
     /**
-     * The players a move or a replacement let go while they may have been sounding, by token, whose silence
-     * ([onSilenced]) has not come yet (R52). A start asked for meanwhile, also the replacing play's first, waits
-     * ([startDeferred]) under its watchdog. Each silence is fenced by its own token, so it counts only for the wait it
-     * belongs to. The play's end (Stop, the host's own stop) forgets them: nothing new starts. At most one is
-     * outstanding today, since no start is posted while one is; the set keeps that true for any later path.
+     * The players a move, the end or a replacement let go while they may have been sounding, by token, whose silence
+     * ([onSilenced]) has not come yet (R52). A start asked for meanwhile, also a later play's first, waits
+     * ([startDeferred]) under its watchdog. They outlive the play's end (finished, nothing left to try, Stop, the
+     * host's own stop, a replacement: R61), which is published at once; only a start whose wait failed at its watchdog
+     * drops them, so the next play does not wait for a stuck player again (the documented limit). Each silence is
+     * fenced by its own token, so it counts only for the wait it belongs to. At most one is outstanding today, since no
+     * start is posted while one is; the set keeps that true for any later path.
      */
     private val silencing = HashSet<Long>()
     private var startDeferred = false
@@ -787,7 +789,7 @@ class RecordingPlayer(
             return false
         }
         val replaced = if (active && this.mode == MODE_PLAYLIST && !endNotified) this.generation else 0
-        close(replacing = true)
+        close()
         if (replaced != 0) {
             endNotified = true
             service.ended(replaced, ENDED_REPLACED)
@@ -1408,6 +1410,9 @@ class RecordingPlayer(
         startPending = serial
         schedule(Slot.START, START_TIMEOUT_MS) {
             if (startPending == serial && token == asked && player != null) {
+                if (startDeferred) {
+                    silencing.clear() // a silence that never came: the next play does not wait for it again (R61)
+                }
                 failItem(REASON_PLAYER)
             }
         }
@@ -1694,9 +1699,12 @@ class RecordingPlayer(
 
     /** The play is over: let everything go and keep its terminal reading. */
     private fun end(state: Int, error: String, reason: String) {
+        // The end is published at once, but a player that may still sound is paused and asked for its silence, which
+        // the next play's first start waits for (R61). The pause freezes the position the terminal reading keeps.
+        halt()
+        askSilence()
         positionMs = currentPositionMs()
         cancelAll()
-        silencing.clear() // nothing new starts after the end: no wait (R52)
         releasePlayer()
         dropOpening()
         left = null
@@ -1725,15 +1733,11 @@ class RecordingPlayer(
     }
 
     /** Release the players, the focus and the tasks, and forget the play's readings (not its generation). */
-    private fun close(replacing: Boolean = false) {
+    private fun close() {
         cancelAll()
-        if (replacing) {
-            // The replacing play's first start waits for this play's sounding player to fall silent (R52, M3).
-            halt()
-            askSilence()
-        } else {
-            silencing.clear() // the host's own stop: nothing new starts, no wait
-        }
+        // The next play's first start waits for this play's sounding player to fall silent (R52, M3, R61).
+        halt()
+        askSilence()
         releasePlayer()
         dropOpening()
         left = null

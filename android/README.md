@@ -877,8 +877,9 @@ the media controls are current all along. After a playlist ends, a media button 
 - A seek on the lock screen or in the media controls moves the call part playing when it arrives: one made in the
   instant a part ends lands on the next part.
 - A call starts only once the one before it has gone quiet, also when you start another playlist or play a recording
-  from its sheet over one. If the phone's player for the call before stops answering, the new call stops with an
-  error after 10 seconds, and the next one you play does not wait for that player again.
+  from its sheet over one, or play again after a playlist stopped or finished. If the phone's player for the call before
+  stops answering, the new call stops with an error after 10 seconds, and the next one you play does not wait for that
+  player again.
 
 ### Exporting and deleting
 
