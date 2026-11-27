@@ -1250,8 +1250,13 @@ turned it on).
   (computed passband shapes, a dip at the channel and ADC noise levels; rendered, not received), with the occupancy
   check and the `-8` masks below.
 
-  > **PLACEHOLDER (campaign 2):** the native Airspy's figures: conditions and trials per rate, the lowest kept reading,
-  > and the zero-miss bounds per cell, from the forge01 campaign.
+  The native Airspy's calibration rendered 7,992 conditions at each of its four rates under each of eight modelled
+  responses, 7,223 of them with a signal 1 dB weaker than the weakest one DSD-neo still receives: 2,000 selection and
+  3,000 validation trials per condition under the nominal response, 300 and 600 under the others (52.0 million
+  validation readings of a signal at each rate). No signal read silent at 3.2 dB. The lowest reading kept in validation
+  was 3.81 dB with the 2 dB dip at the channel and 5.67 dB under every other response. With no miss, the one-sided 95%
+  bound per condition is about 1.0e-3 under the nominal response and 5.0e-3 under the others. The tables, per response
+  and rate, are under [Native Airspy calibration](signal-search.md#native-airspy-calibration).
 
 
 ### What a skip costs and logs
@@ -1470,8 +1475,9 @@ Turning the setting on accepts these:
   a weak one in a band raised round it (the raised-sideband limit above) can still read silent and be skipped before
   the decoder hears it.
 - Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
-  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour at
-  1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
+  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour, at
+  1.536 Msps on the RTL-SDR path and at each of a native Airspy's four rates; other sample rates and other kinds of
+  neighbour were not tested.
 - An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
   takes in every carrier.
 - With the `-8` monitor on, a digital row or target is judged in its own width and the monitor's analog width
@@ -1479,7 +1485,12 @@ Turning the setting on accepts these:
   neighbours only beside the narrowest and the widest analog width (AM 5 kHz and NFM 25 kHz); it rendered no sloped
   floor, broad interferer or crowded band under a pair.
 
-  > **PLACEHOLDER (campaign 2):** the `-8` pairs' lowest kept reading and bounds, on the RTL path and per native rate.
+  The lowest reading kept under a pair, over selection and validation, was 5.77 dB on the RTL-SDR path (threshold
+  5.0 dB), and 5.79 dB in the cross group, which adds busy neighbours, offsets and a DMR mobile's droop beside AM 5 kHz
+  and NFM 25 kHz. On a native Airspy (threshold 3.2 dB) it was 3.92, 3.93, 3.99 and 3.87 dB at 2.5, 3, 6 and 10 MS/s
+  with the 2 dB dip, and 5.83, 5.83, 5.79 and 5.81 dB under the other responses. No pair read silent in validation: the
+  one-sided 95% bound per condition is about 1.0e-3 on the RTL-SDR path and under the native nominal response
+  (3,000 trials), and 5.0e-3 under the other native responses (600).
 - The occupancy check gives up on a band it reads as crowded, which only withdraws skips, but it reads its level from
   the band itself: a band raised almost everywhere, the channel's sides included, looks like plain noise to it (the
   raised-band limit above).
