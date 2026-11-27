@@ -506,6 +506,23 @@ class PlayPauseTaps(
         }
 
         /**
+         * A scoped explicit command (R73): an item command for the item whose play [token] the host captured, or a
+         * stop of play [generation] ([token] 0). Checked first: only one the player accepts ([RecordingPlayer.accepts])
+         * cancels the waiting tap and acts; a stale one changes nothing, so a tap waiting on the next item still acts.
+         */
+        fun scoped(
+            taps: PlayPauseTaps?,
+            player: RecordingPlayer,
+            generation: Int,
+            token: Long,
+            command: (RecordingPlayer, Int) -> Unit,
+        ) {
+            if (player.accepts(generation, token)) {
+                explicit(taps, generation, player, command)
+            }
+        }
+
+        /**
          * The headphones were disconnected (AUDIO_BECOMING_NOISY), on the looper: the instance's waiting tap ([taps],
          * null with no service) is dropped first, then the player pauses for the noise (R54). Left armed, the tap's
          * timeout would find the play paused and resume it through the speaker.

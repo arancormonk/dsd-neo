@@ -203,20 +203,27 @@ object RecordingPlayback {
 
     /** Stop play [generation] only (the bar's Stop names its playlist); it keeps its terminal reading. */
     @JvmStatic
-    fun stopGeneration(generation: Int) = explicit { it.stop(generation) }
+    fun stopGeneration(generation: Int) =
+        post { machine -> PlayPauseTaps.scoped(serviceTaps, machine, generation, 0L) { player, g -> player.stop(g) } }
 
     private fun explicit(command: (RecordingPlayer) -> Unit) =
         post { machine -> PlayPauseTaps.explicit(serviceTaps, 0, machine) { player, _ -> command(player) } }
 
-    /** Item commands: dropped on the looper unless the item whose play [token] the host captured is still current. */
+    /**
+     * Item commands: dropped on the looper unless the item whose play [token] the host captured is still current; only
+     * an accepted Pause or Resume cancels a waiting headset tap (R73).
+     */
     @JvmStatic
     fun seekFor(token: Long, positionMs: Long) = post { it.seekFor(it.status.generation, token, positionMs) }
 
     @JvmStatic
-    fun pauseFor(token: Long) = explicit { it.pauseFor(it.status.generation, token) }
+    fun pauseFor(token: Long) = itemCommand(token) { player, g -> player.pauseFor(g, token) }
 
     @JvmStatic
-    fun resumeFor(token: Long) = explicit { it.resumeFor(it.status.generation, token) }
+    fun resumeFor(token: Long) = itemCommand(token) { player, g -> player.resumeFor(g, token) }
+
+    private fun itemCommand(token: Long, command: (RecordingPlayer, Int) -> Unit) =
+        post { machine -> PlayPauseTaps.scoped(serviceTaps, machine, machine.status.generation, token, command) }
 
     /**
      * The player's status record ([RecordingPlayer.Status.record], 22 fields), which DecoderHostAndroid parses; the

@@ -884,6 +884,17 @@ class RecordingPlayer(
      * current while its player is open, and in the gap after its call even with none (its call's last part failed
      * while it played): the status names it there, and Pause and Resume act on the play.
      */
+    /**
+     * Whether a command scoped to play [generation] (and to the item whose play [token] it captured, 0 for the play
+     * alone) would act now (R73): checked on the looper before an explicit command cancels a waiting tap, so a stale
+     * one changes nothing, the tap included.
+     */
+    fun accepts(generation: Int, token: Long = 0L): Boolean = if (token != 0L) {
+        isCurrent(generation, token)
+    } else {
+        generation != 0 && generation == this.generation && active
+    }
+
     fun pauseFor(generation: Int, token: Long) {
         if (isCurrent(generation, token)) {
             pause(generation)

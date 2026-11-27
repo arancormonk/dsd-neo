@@ -954,6 +954,57 @@ fun anExplicitCommandCancelsAWaitingTap() {
 }
 
 /**
+ * A scoped command checks its token before it cancels a tap (R73): the playlist moved on from A to B, a tap waits on
+ * the playlist, and the sheet's Pause for A arrives late. It is stale: it changes nothing, and the tap still acts (it
+ * pauses B). The sheet's Pause for B is accepted: it cancels the tap and pauses. A stop of another generation is stale
+ * too.
+ */
+fun aScopedCommandChecksItsTokenBeforeTheTap() {
+    for (current in listOf(false, true)) {
+        val playing = Playing(ServiceRig())
+        val machine = playing.machine
+        val t = Taps(playing)
+        val g = playing.playlist()
+        playing.deliver()
+        machine.onPrepared(playing.tokens.last())
+        val a = machine.status.playToken
+        machine.next(g)
+        machine.onPrepared(playing.tokens.last())
+        val b = machine.status.playToken
+        check(machine.status.call == 1 && machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "B plays" }
+        t.taps.keyDown(g, 0)
+        val token = if (current) b else a
+        PlayPauseTaps.scoped(t.taps, machine, machine.status.generation, token) { player, gen ->
+            player.pauseFor(gen, token)
+        }
+        if (current) {
+            check(machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) { "B's Pause pauses" }
+            t.elapse(Taps.TAP_TIMEOUT_MS)
+            check(t.toggles.isEmpty() && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+                "and cancelled the tap: still paused"
+            }
+        } else {
+            check(machine.status.sessionState == RecordingPlayer.SESSION_PLAYING) { "A's stale Pause changes nothing" }
+            t.elapse(Taps.TAP_TIMEOUT_MS)
+            check(t.toggles == listOf(g) && machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+                "the tap was kept: its timeout pauses B (${t.toggles})"
+            }
+        }
+        val stale = Playing(ServiceRig())
+        val sg = stale.playlist()
+        stale.deliver()
+        stale.machine.onPrepared(stale.tokens.last())
+        val st = Taps(stale)
+        st.taps.keyDown(sg, 0)
+        PlayPauseTaps.scoped(st.taps, stale.machine, sg + 1, 0L) { player, gen -> player.stop(gen) }
+        st.elapse(Taps.TAP_TIMEOUT_MS)
+        check(st.toggles == listOf(sg) && stale.machine.status.sessionState == RecordingPlayer.SESSION_PAUSED) {
+            "a stop of another generation is stale: the tap still acts"
+        }
+    }
+}
+
+/**
  * The transport keys are the session's own queue commands against the player's state on the looper (#909): paused, a
  * headset tap and then a dedicated Pause within the double-tap wait: the tap plays first, then the Pause pauses.
  */
@@ -1040,5 +1091,6 @@ fun main() {
     transportKeysFollowAWaitingTapOnThePlayersState()
     aDirectPauseCancelsAWaitingTap()
     anExplicitCommandCancelsAWaitingTap()
+    aScopedCommandChecksItsTokenBeforeTheTap()
     println("PASS: the playback service promotes, hands over, drops stale deliveries, retires and tears down in order")
 }
