@@ -652,6 +652,23 @@ static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
    again, its step included. */
 static std::atomic<int> g_replay_loop_restart_step_l{0};
 static std::atomic<int> g_replay_loop_restart_step_m{0};
+/* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899), its rates, and
+   whether that model is built, as the last rate commit or switch preparation left them
+   (rtl_stream_publish_reader_state()): read by other threads, which never touch the demod's own fields. */
+static std::atomic<int> g_pub_reader_in_hz{0};
+static std::atomic<int> g_pub_reader_out_hz{0};
+static std::atomic<int> g_pub_reader_model{0};
+
+/* Publish the reader and its model's state: called by the thread that changed them, with the demod thread idle. */
+static void
+rtl_stream_publish_reader_state(void) {
+    g_pub_reader_in_hz.store(demod.iq_reader.in_hz, std::memory_order_relaxed);
+    g_pub_reader_out_hz.store(demod.iq_reader.out_hz, std::memory_order_relaxed);
+    g_pub_reader_model.store(
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes),
+        std::memory_order_release);
+}
+
 /* The centre the demod was last reset on, kept by a replayed RETUNE as it moves last_applied_freq_hz on
  * (rtl_replay_on_retune_event()), for the RESET that follows to reset from, as the live retune it records did; 0: no
  * RETUNE since the last RESET or rewind. The replay reader's thread alone uses it. */
@@ -1168,6 +1185,7 @@ rate_chain_run_plan(const dsd_rate_plan* plan) {
     /* A live chain reads its device with no resampler ahead of the cascade (issue #899). */
     demod.iq_reader = dsd_iq_reader_plan{};
     (void)dsd_demod_squelch_reader_model_sync(&demod);
+    rtl_stream_publish_reader_state();
     demod.downsample_passes = plan->passes;
     const int post = demod.post_downsample > 1 ? demod.post_downsample : 1;
     demod.complex_rate = (int)plan->step_out_hz;
@@ -7967,6 +7985,7 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
                  "mute noise.\n",
                  demod.iq_reader.in_hz, demod.iq_reader.out_hz);
     }
+    rtl_stream_publish_reader_state();
     return 0;
 }
 
@@ -10423,6 +10442,7 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
     /* A device has no reader resampling ahead of its cascade, whatever a replay before it ran (issue #899). */
     demod.iq_reader = dsd_iq_reader_plan{};
     (void)dsd_demod_squelch_reader_model_sync(&demod);
+    rtl_stream_publish_reader_state();
     if (controller_apply_initial_settings(&controller, opts) != 0) {
         LOG_ERROR("Failed to apply initial tuner settings.\n");
         return -1;
@@ -17860,11 +17880,11 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     out_state->dongle_rate_hz = load_dongle_rate();
     out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
-    /* Written only when the rate plan commits, before the demod thread takes samples. */
-    out_state->reader_in_hz = demod.iq_reader.in_hz;
-    out_state->reader_out_hz = demod.iq_reader.out_hz;
-    out_state->reader_model =
-        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes);
+    /* As the last rate commit (an --iq-loop rewind's included) published them: the demod's fields are rewritten there
+       on another thread. */
+    out_state->reader_model = g_pub_reader_model.load(std::memory_order_acquire);
+    out_state->reader_in_hz = g_pub_reader_in_hz.load(std::memory_order_relaxed);
+    out_state->reader_out_hz = g_pub_reader_out_hz.load(std::memory_order_relaxed);
     return 0;
 }
 

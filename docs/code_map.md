@@ -12305,7 +12305,8 @@ Key public headers:
     complex over post), forced flag and step; a config no plan was applied to (test seams) runs its half-band output as
     forced with no step. It publishes the reader's resampler too (`controller_apply_replay_reader()`:
     `demod_state::iq_reader`, from the rule the device's and the stream's reader open by, a replay's and an `iqtcp:` /
-    `iqudp:` stream's alike), builds the squelches' reader model for it, and after the chain's finalize designs the
+    `iqudp:` stream's alike), builds the squelches' reader model for it (published for other threads as
+    `g_pub_reader_*`, which the test replay state reads), and after the chain's finalize designs the
     auto squelch's plan behind it, all before samples arrive (issue #899); a reader that resamples and the live step
     never run together (only KEEP steps, at the capture's own rate; both on refuses the open). A live chain clears the
     reader (`rate_chain_run_plan()`, and before a device's first settings). The replay device keeps the plan beside the
