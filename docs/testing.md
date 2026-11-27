@@ -3665,6 +3665,11 @@ still pass, because the AM detector writes silence for a closed sample itself (`
 the envelope over the held carrier, means nothing without a carrier), so on AM they pin the detector's handling of
 the flags instead.
 
+The floor plan's model of the whole half-band cascade and the reader's resampler (issue #899) was A/B'd on a real
+multi-pass capture too: `tools/replay_ab.sh --metric analog` on a 269 s off-air recording read at 16 kHz through six
+passes, against `main` over 4 realizations (the determinism control read +0.00 on every metric), played 3.3 s from the
+transmission 120.7 s in, where `main` played 267 s of idle noise from 40 ms.
+
 #### Level squelch replay cases
 
 The level squelch (`--squelch <dB>`, a row's `--squelch-db`) gates each demod block whole on its channel power, and a
