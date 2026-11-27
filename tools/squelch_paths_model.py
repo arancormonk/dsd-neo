@@ -784,14 +784,21 @@ def main(argv: list[str] | None = None) -> int:
     noise_windows = args.noise_windows or (sm.QUICK_NOISE_WINDOWS if args.quick else sm.FULL_NOISE_WINDOWS)
     noise_windows = max(2, noise_windows // 2 * 2)
     started = time.time()
+    plans = sm.rate_plans()
+    filters = [f for f in path_filters(plans) if args.chains in f["plan"].name]
+    if not filters:
+        # A mistyped name, or stepped chains only (path_filters() scopes them out): nothing would be tested.
+        matched = sorted(p.name for p in plans if args.chains in p.name)
+        raise SystemExit(
+            f"--chains {args.chains!r} selects no path filter (chains matched: {', '.join(matched) or 'none'}; "
+            "stepped chains are scoped out)"
+        )
     out_dir = args.out.resolve()
     out_dir.mkdir(parents=True, exist_ok=True)
 
     exe = sm.build_harness(args.build_dir.resolve(), out_dir)
     header, _ = sm.run_harness(exe, [])
     hb_taps = {name: np.asarray(header[name], dtype=np.float64) for name in ("hb15", "hb31")}
-    plans = sm.rate_plans()
-    filters = [f for f in path_filters(plans) if args.chains in f["plan"].name]
     run_profile_harness(exe, filters, hb_taps)
     sm.real_sources()  # fail early on a missing fixture
 
