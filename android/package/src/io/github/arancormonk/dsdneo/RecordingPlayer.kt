@@ -1143,19 +1143,29 @@ class RecordingPlayer(
             askSilence()
         }
         val work = playerWork
+        val released = token
         player = null
         playerWork = null
         if (work != null) {
-            letGo(current, work)
+            letGo(current, work, released)
         } else {
-            current.release {}
+            current.release { onSilenced(released) }
         }
     }
 
-    /** Release [let]: its thread counts from now until it has ended ([onThreadEnded]). */
-    private fun letGo(let: Player, work: AbandonedSetups.Work) {
+    /**
+     * Release [let]: its thread counts from now until it has ended ([onThreadEnded]). Its thread ended, it is silent:
+     * a silence still outstanding for [silenced] (its token; 0 for none) is taken as come (M3), so a release that threw
+     * or a thread that ended before answering costs the next start no 10 s wait.
+     */
+    private fun letGo(let: Player, work: AbandonedSetups.Work, silenced: Long = 0L) {
         abandoned.letGo(work)
-        let.release { onThreadEnded(work) }
+        let.release {
+            onThreadEnded(work)
+            if (silenced != 0L) {
+                onSilenced(silenced)
+            }
+        }
     }
 
     /** A player's thread let go has ended: it leaves the count, and an open waiting at the limit goes on. */

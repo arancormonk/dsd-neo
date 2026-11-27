@@ -214,7 +214,8 @@ outgoing player's held silence comes, the watchdog ending a play whose silence n
 late starting only the last candidate once, a player never started asked for none, a sheet play replacing a sounding
 playlist starting on its silence or failing at 10 s without it, a silence outliving a finished end and a Stop so the
 next play waits for it, Stop, the host's stop, a lasting focus loss and a player failure each pausing a sounding
-player and asking for its silence, and a wait failed at its watchdog not waited for again), each move
+player and asking for its silence, an ended owner thread taken as silent, and a wait failed at its watchdog not
+waited for again), each move
 making only the candidates it tries (N calls or N parts played make N, Previous from the last call one;
 `candidatesMade`), a candidate that prepared and failed
 before it played continuing its move (Previous from C with B failing: A plays; Next from A: C opens with no gap), a part

@@ -356,11 +356,21 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
     /** The first player of the play now: the overlap check is within a play (Stop and a replacement do not wait). */
     var playFirst = 0
 
-    /** The oldest held silence reaches the machine. */
+    /** The oldest held silence reaches the machine; its player's release, queued behind it on its owner, then runs. */
     fun ackSilence() {
         val player = heldSilences.removeAt(0)
         machine.onSilenced(player.token)
+        for (blocked in silenceBlocked.filter { it.first === player }) {
+            silenceBlocked.remove(blocked)
+            blocked.second()
+        }
     }
+
+    /** Releases queued on their owner behind a held silence (the owner is one thread: first in, first out). */
+    val silenceBlocked = mutableListOf<Pair<FakePlayer, () -> Unit>>()
+
+    /** Silences the owner never answers (its pause threw: R62); only the release's end is left to say it. */
+    var refuseSilences = false
 
     /** Releases: their threads end at once unless [holdReleases] (held in native code, in [heldReleases]). */
     var holdReleases = false
@@ -395,9 +405,19 @@ private class Rig(foreground: Boolean = true, var length: Long = 60_000) {
                     if (holdSeeks) heldSeeks += player to serial else machine.onSeekCompleted(player.token, serial)
                 },
                 onSilence = { player ->
-                    if (holdSilences) heldSilences += player else machine.onSilenced(player.token)
+                    when {
+                        refuseSilences -> Unit
+                        holdSilences -> heldSilences += player
+                        else -> machine.onSilenced(player.token)
+                    }
                 },
-            ) { player, ended -> if (holdReleases) heldReleases += player to ended else ended() }.also { players += it }
+            ) { player, ended ->
+                when {
+                    holdReleases -> heldReleases += player to ended
+                    player in heldSilences -> silenceBlocked += player to ended
+                    else -> ended()
+                }
+            }.also { players += it }
         },
         opener,
         focus,
@@ -1475,6 +1495,25 @@ private fun everyEndLetsASoundingPlayerFallSilentFirst() {
         rig.ackSilence()
         check(rig.state == PLAYING && next.startRequests.size == 1) { "$name: A silent: it starts, once" }
     }
+}
+
+/**
+ * An ended owner thread is silent (M3): A's owner never answers its silence (its pause threw, so it waits for the
+ * release, which threw too), and A's thread ends. The next play's start goes on as the thread ends, with no 10 s wait.
+ */
+private fun anEndedOwnerThreadIsSilent() {
+    val rig = Rig()
+    rig.queue(1, 1)
+    rig.prepared()
+    rig.refuseSilences = true
+    rig.holdReleases = true
+    rig.machine.play(++rig.generation, "/r/next.wav")
+    rig.prepared()
+    val next = rig.current
+    check(rig.state == STARTING && next.startRequests.isEmpty()) { "no silence answered: the next start waits" }
+    rig.elapse(1_000)
+    rig.finishRelease() // A's release returns (or throws) and its thread ends
+    check(rig.state == PLAYING && next.startRequests.size == 1) { "A's thread ended: silent, the next start goes on" }
 }
 
 /**
@@ -3839,6 +3878,7 @@ fun main() {
     aReplacementStartsOnceTheOldPlayIsSilent()
     aSilenceOutlivesANormalEnd()
     everyEndLetsASoundingPlayerFallSilentFirst()
+    anEndedOwnerThreadIsSilent()
     aSeekLandsOnlyWhenThePlayerConfirmsIt()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
     anInterruptedOpeningReadsPausedOnTheSession()
