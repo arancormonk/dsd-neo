@@ -653,20 +653,38 @@ static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
 static std::atomic<int> g_replay_loop_restart_step_l{0};
 static std::atomic<int> g_replay_loop_restart_step_m{0};
 /* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899), its rates, and
-   whether that model is built, as the last rate commit or switch preparation left them
-   (rtl_stream_publish_reader_state()): read by other threads, which never touch the demod's own fields. */
-static std::atomic<int> g_pub_reader_in_hz{0};
-static std::atomic<int> g_pub_reader_out_hz{0};
-static std::atomic<int> g_pub_reader_model{0};
+   whether that model is built, as whatever last rewrote them left them (rtl_stream_publish_reader_state()): read by
+   other threads, which never touch the demod's own fields. One word, so a reader takes all three from one publish:
+   the source rate in bits 32-62, the DSP input rate in bits 1-31 (both at most INT_MAX), the model in bit 0. */
+static std::atomic<uint64_t> g_pub_reader_state{0};
 
-/* Publish the reader and its model's state: called by the thread that changed them, with the demod thread idle. */
+/* What g_pub_reader_state holds, unpacked. */
+struct PublishedReaderState {
+    int in_hz;
+    int out_hz;
+    int model;
+};
+
+static PublishedReaderState
+rtl_stream_published_reader_state(void) {
+    const uint64_t word = g_pub_reader_state.load(std::memory_order_acquire);
+    PublishedReaderState st;
+    st.in_hz = (int)((word >> 32) & 0x7FFFFFFFU);
+    st.out_hz = (int)((word >> 1) & 0x7FFFFFFFU);
+    st.model = (int)(word & 1U);
+    return st;
+}
+
+/* Publish the reader and its model's state: called by the thread that changed them, with the demod thread idle, on
+   every path that rewrote them. */
 static void
 rtl_stream_publish_reader_state(void) {
-    g_pub_reader_in_hz.store(demod.iq_reader.in_hz, std::memory_order_relaxed);
-    g_pub_reader_out_hz.store(demod.iq_reader.out_hz, std::memory_order_relaxed);
-    g_pub_reader_model.store(
-        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes),
-        std::memory_order_release);
+    const uint64_t in_hz = demod.iq_reader.in_hz > 0 ? (uint64_t)demod.iq_reader.in_hz : 0U;
+    const uint64_t out_hz = demod.iq_reader.out_hz > 0 ? (uint64_t)demod.iq_reader.out_hz : 0U;
+    const uint64_t model =
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes) ? 1U
+                                                                                                                 : 0U;
+    g_pub_reader_state.store((in_hz << 32) | (out_hz << 1) | model, std::memory_order_release);
 }
 
 /* The centre the demod was last reset on, kept by a replayed RETUNE as it moves last_applied_freq_hz on
@@ -7967,10 +7985,13 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
        to, runs as forced. */
     demod.capture_rate_device_forced = plan ? plan->forced : 1;
     g_live_rate_plan = dsd_rate_plan{};
+    /* The reader is rewritten from here on: every exit publishes what it left. */
     if (controller_apply_replay_reader(cfg, dsp_in_hz) != 0) {
+        rtl_stream_publish_reader_state();
         return -1;
     }
     if (controller_apply_replay_step(plan) != 0) {
+        rtl_stream_publish_reader_state();
         return -1;
     }
     /* A reader that resamples and the live step never run together: the step runs only on a KEEP plan, which reads the
@@ -7978,6 +7999,7 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
     if (demod.iq_reader.enabled && demod.live_iq_step.enabled) {
         dsd_live_iq_step_disable(&demod.live_iq_step);
         LOG_ERROR("IQ replay: the capture would be resampled ahead of the I/Q rate step.\n");
+        rtl_stream_publish_reader_state();
         return -1;
     }
     /* Built only on a chain a dynamic squelch runs on; a switch onto one later prepares it
@@ -11215,6 +11237,8 @@ dsd_rtl_stream_soft_stop(void) {
     stream_close_capture_writer();
 
     rtl_demod_cleanup(&demod);
+    /* The cleanup released the reader model. */
+    rtl_stream_publish_reader_state();
     output_cleanup(&output);
     controller_cleanup(&controller);
 
@@ -13599,8 +13623,8 @@ static void rtl_stream_queue_family_request_locked(int family, int kind, int wid
  * with no stream, no reader, or the model built (read from what the commit published, so no lock then). */
 static void
 rtl_stream_prepare_reader_model(void) {
-    if (!g_stream || g_pub_reader_in_hz.load(std::memory_order_relaxed) == 0
-        || g_pub_reader_model.load(std::memory_order_acquire) != 0) {
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    if (!g_stream || published.in_hz == 0 || published.model != 0) {
         return;
     }
     const int gate = rtl_stream_take_demod_gate_unparked();
@@ -17929,9 +17953,10 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
     /* As the last rate commit (an --iq-loop rewind's included) published them: the demod's fields are rewritten there
        on another thread. */
-    out_state->reader_model = g_pub_reader_model.load(std::memory_order_acquire);
-    out_state->reader_in_hz = g_pub_reader_in_hz.load(std::memory_order_relaxed);
-    out_state->reader_out_hz = g_pub_reader_out_hz.load(std::memory_order_relaxed);
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    out_state->reader_model = published.model;
+    out_state->reader_in_hz = published.in_hz;
+    out_state->reader_out_hz = published.out_hz;
     return 0;
 }
 
