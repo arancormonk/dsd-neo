@@ -6034,7 +6034,7 @@ test_checked_delete_refuses_another_path(void) {
  * after it came back is still reading it; once that read is done they are available again. */
 void
 test_seen_away_root_is_not_admitted(void) {
-    Roots roots;
+    const Roots roots;
     const QString ext = roots.dir.path() + QStringLiteral("/ext");
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
@@ -6042,7 +6042,7 @@ test_seen_away_root_is_not_admitted(void) {
     s.store.endSession();
     record(a, QStringLiteral("0000000000000934-1"), QStringLiteral("a.wav"), 1754000000, 1);
     s.pass();
-    const auto admitted = [&s]() {
+    const auto admitted = [&s] {
         const QVariantMap single = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
         const QVariantMap listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
         return single.value(QStringLiteral("available")).toBool() && listed.value(QStringLiteral("available")).toBool();
@@ -6056,7 +6056,7 @@ test_seen_away_root_is_not_admitted(void) {
             duringRead = admitted();
         }
     });
-    const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&]() { beforePass = admitted(); });
+    const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&] { beforePass = admitted(); });
     s.store.setRootReadHookForTest({});
     expect("seen away: the delete found the storage missing", seen);
     expect("seen away: before the worker's pass marks it, the recording is not admitted", !beforePass.load());
@@ -6109,7 +6109,7 @@ class PlayingHost : public dsd_qt::DecoderHost {
 void
 test_playlist_admission_checks_roots_live(void) {
     QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
-    Roots roots;
+    const Roots roots;
     const QString away = roots.dir.path() + QStringLiteral("/ext-away");
     Store s(roots.list());
     const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
@@ -6128,7 +6128,7 @@ test_playlist_admission_checks_roots_live(void) {
     view.setSourceModel(&model);
     PlayingHost host;
     dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
-    const auto result = [&playlist]() { return playlist.start(0).value(QStringLiteral("result")).toString(); };
+    const auto result = [&playlist] { return playlist.start(0).value(QStringLiteral("result")).toString(); };
     expect("live roots: on storage that is there, Play all plays",
            result() == QLatin1String("accepted") && host.plays == 1);
 
@@ -6150,7 +6150,7 @@ test_playlist_admission_checks_roots_live(void) {
         QThread::msleep(5);
     }
     expect("live roots: the press asked for the read again", s.store.passCountForTest() > before);
-    s.pass();
+    QCoreApplication::processEvents(); // the read's publication; no further pass: the press's own read is enough
     expect("live roots: read again, Play all plays", result() == QLatin1String("accepted") && host.plays == 2);
     model.setRecordingProvider(nullptr);
 }

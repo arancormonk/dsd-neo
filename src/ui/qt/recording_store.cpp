@@ -2912,8 +2912,8 @@ RecordingStore::recordingsForFragmentLists(const QList<QStringList>& fragmentsPe
 bool
 RecordingStore::admissionRootsCheckedLocked(const QSet<int>& roots) const {
     // One look per root the request would admit from, under the store's lock. Gone: noted seen away (R74), so none of
-    // its recordings is admitted. Back while seen away or marked away: its read again is asked at once, its recordings
-    // ineligible until that read is done.
+    // its recordings is admitted. Back while marked away: its read again is asked at once; seen away, it has one asked
+    // or under way. Either way its recordings stay ineligible until that read is done.
     bool wake = false;
     for (const int root : roots) {
         if (root < 0 || root >= m_roots.size()) {
@@ -2926,7 +2926,9 @@ RecordingStore::admissionRootsCheckedLocked(const QSet<int>& roots) const {
                 noteRootSeenAwayLocked(root);
                 wake = true;
             }
-        } else if (seen || !known) {
+        } else if (!known) {
+            // Back while marked away: its read again is asked for at once. A root seen away needs none here: its
+            // pass was asked for when it was noted, or is reading it now (m4).
             m_passRequested = true;
             wake = true;
         }

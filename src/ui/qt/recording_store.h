@@ -222,6 +222,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QList<QStringList> recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override;
     /** @brief Every row's recordings under one hold of the store's lock (a History playlist, issue #909): each row's
      * maps as recordingsForFragments() gives them, plus `deleteQueued` (a delete asked for it waits). */
+    /* Also probes the storage roots it would admit from (one stat each, under the lock): a root gone is marked seen
+     * away and one back asks for its read again (R74). For Play all and Play from here, not per-refresh reads. */
     QList<QVariantList> recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const override;
 
     /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
