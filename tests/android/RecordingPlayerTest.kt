@@ -1416,6 +1416,30 @@ private fun aReplacementStartsOnceTheOldPlayIsSilent() {
             check(rig.state == FAILED && x.startRequests.isEmpty()) { "A's silence never comes: X's watchdog ends it" }
         }
     }
+
+    // Stop during the wait: the play ends at once, nothing starts, and A's late silence changes nothing.
+    val stop = Rig()
+    stop.queue(1, 1)
+    stop.prepared()
+    stop.holdSilences = true
+    stop.machine.play(++stop.generation, "/r/x.wav")
+    stop.prepared()
+    val x = stop.current
+    check(stop.state == STARTING && stop.heldSilences.size == 1) { "X waits for A's silence" }
+    stop.machine.stop(stop.generation)
+    check(stop.state == STOPPED && x.startRequests.isEmpty() && x.released) { "Stop ends X at once, unstarted" }
+    stop.elapse(RecordingPlayer.START_TIMEOUT_MS)
+    check(stop.state == STOPPED && x.startRequests.isEmpty()) { "the watchdog's time changes nothing" }
+    // The wait went with the play: the next play starts at once, and A's late silence changes nothing.
+    stop.holdSilences = false
+    stop.queue(1, 1)
+    stop.prepared()
+    val y = stop.current
+    check(stop.state == PLAYING && y.startRequests.size == 1) { "a play after the Stop starts at once" }
+    stop.ackSilence()
+    check(stop.state == PLAYING && y.startRequests.size == 1 && x.startRequests.isEmpty()) {
+        "A's late silence posts nothing"
+    }
 }
 
 /**

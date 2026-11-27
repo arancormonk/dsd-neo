@@ -1572,24 +1572,39 @@ Item {
         }
 
         // R57: the call counter, the part counter and the time are each kept whole, and the line may break between
-        // them: on a narrow bar at 2x text a call in parts (its length not known yet, so the time is short) breaks
-        // between its counters, never inside one, and shows whole on its two lines.
+        // them. At 2x text, on a call in parts, the bar is narrowed until its line is as wide as the measured segments
+        // say it must break between the counters (wide enough for the call counter, and for the part counter with the
+        // time, too narrow for both counters): it breaks there, never inside a counter, and shows whole.
         function test_bar_counters_wrap_between_each_other() {
             var calls = logCalls(3);
             var screen = idle();
             only(screen);
-            root.width = 340;
-            idleLoader.width = 340;
             Ui.Theme.fontScale = 2.0;
             try {
                 playAll(screen, calls, [1, 3, 1]);
                 testContext.publishPlaybackReading({item: 2, playbackState: 2, playbackDurationMs: 0, playbackPositionMs: 1000});
                 var lineItem = part(screen, "nowPlayingLine");
                 verify(waitForPolish(lineItem));
-                compare(lineItem.text.split(" "), ["Call\u00a02\u00a0of\u00a03\u00a0·", "part\u00a02\u00a0of\u00a03\u00a0·", "0:01"],
+                var segments = lineItem.text.split(" ");
+                compare(segments, ["Call\u00a02\u00a0of\u00a03\u00a0·", "part\u00a02\u00a0of\u00a03\u00a0·", "0:01"],
                         "a wrap point between the counters and before the time, none inside them");
-                // Where it breaks: the first line laid out is the call counter alone, as wide as its segment and
-                // narrower than the call counter with the part counter's first word (M5).
+                var probe = Qt.createQmlObject("import QtQuick; TextMetrics {}", lineItem);
+                probe.font = lineItem.font;
+                function measure(text) {
+                    probe.text = text;
+                    return probe.advanceWidth;
+                }
+                var callWidth = measure(segments[0]);
+                var low = Math.ceil(Math.max(callWidth, measure(segments[1] + " " + segments[2]))) + 1;
+                var high = Math.floor(measure(segments[0] + " " + segments[1])) - 1;
+                verify(low <= high, "a width that breaks between the counters exists: " + low + "-" + high);
+                // The line's width follows the bar's; narrow the bar until the line is within [low, high].
+                for (var w = root.width; w > 120 && lineItem.width > high; w--) {
+                    root.width = w;
+                    idleLoader.width = w;
+                    verify(waitForPolish(lineItem));
+                }
+                verify(lineItem.width >= low && lineItem.width <= high, "the line's width is in the window: " + lineItem.width);
                 var laid = [];
                 var note = function (laidLine) {
                     laid.push({number: laidLine.number, width: laidLine.implicitWidth});
@@ -1598,21 +1613,16 @@ Item {
                 testContext.publishPlaybackReading({playbackPositionMs: 2000});
                 verify(waitForPolish(lineItem));
                 lineItem.lineLaidOut.disconnect(note);
-                compare(lineItem.lineCount, 2, "the narrow bar breaks the line once");
-                verify(!lineItem.truncated, "and shows it whole: " + line(screen));
+                segments = lineItem.text.split(" ");
                 var first = laid.filter(function (l) {
                     return l.number === 0;
                 }).pop();
                 verify(first !== undefined, "the line was laid out again");
-                var probe = Qt.createQmlObject("import QtQuick; TextMetrics {}", lineItem);
-                probe.font = lineItem.font;
-                probe.text = "Call\u00a02\u00a0of\u00a03\u00a0·";
-                var callWidth = probe.advanceWidth;
-                probe.text = "Call\u00a02\u00a0of\u00a03\u00a0· part";
-                var withPart = probe.advanceWidth;
+                verify(Math.abs(first.width - measure(segments[0])) <= 1,
+                       "the first line is the call counter alone: " + first.width + " for " + measure(segments[0]));
+                compare(lineItem.lineCount, 2, "the call counter, then the part counter with the time");
+                verify(!lineItem.truncated, "shown whole: " + line(screen));
                 probe.destroy();
-                verify(Math.abs(first.width - callWidth) <= 1 && first.width < withPart,
-                       "the first line is the call counter: " + first.width + " (call " + callWidth + ", with part " + withPart + ")");
             } finally {
                 Ui.Theme.fontScale = 1.0;
                 root.width = 360;
