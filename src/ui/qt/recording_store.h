@@ -367,6 +367,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void recheckPaths(const QStringList& paths);
 
 #ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Call @p hook on the worker after a pass's look at a root (listRootNow()), with the lock released, before
+     * what the look found is taken under it. Test hook. */
+    void setRootLookHookForTest(std::function<void(const QString& root)> hook);
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
     /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
@@ -878,6 +881,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
 #ifdef DSD_NEO_TEST_HOOKS
     /* History reads that took m_mutex (readerLocksForTest()). */
     mutable std::atomic<int> m_readerLocks{0};
+    /* setRootLookHookForTest(); under m_mutex. */
+    std::function<void(const QString&)> m_rootLookHook;
+    /* Call m_rootLookHook, if set, for @p root; the lock not held. */
+    void rootLookedForTest(const QString& root) const;
 #endif
     /* Mutable: a const read that records what it observed (the playlist read's live root look) wakes the worker. */
     mutable std::condition_variable m_wake;

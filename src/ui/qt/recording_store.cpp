@@ -790,6 +790,9 @@ RecordingStore::listRootNow(int root, const QString& path, bool first, bool was,
     const bool playable = rootPlayableNow(path);
     const bool now = playable || rootMissingTakenAsThere(root, path);
     *there = now;
+#ifdef DSD_NEO_TEST_HOOKS
+    rootLookedForTest(path);
+#endif
     const std::lock_guard<std::mutex> lock(m_mutex);
     // Written only from a look no session start overtook (m1): a directory made meanwhile was made by the store, and
     // its flag is already clear.
@@ -3717,6 +3720,24 @@ RecordingStore::recheckPaths(const QStringList& paths) {
 /* --- Tests. --- */
 
 #ifdef DSD_NEO_TEST_HOOKS
+
+void
+RecordingStore::setRootLookHookForTest(std::function<void(const QString& root)> hook) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    m_rootLookHook = std::move(hook);
+}
+
+void
+RecordingStore::rootLookedForTest(const QString& root) const {
+    std::function<void(const QString&)> hook;
+    {
+        const std::lock_guard<std::mutex> lock(m_mutex);
+        hook = m_rootLookHook;
+    }
+    if (hook) {
+        hook(root);
+    }
+}
 
 void
 RecordingStore::waitForPassCountForTest(quint64 count) {

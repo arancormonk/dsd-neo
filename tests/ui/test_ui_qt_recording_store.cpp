@@ -5158,22 +5158,55 @@ test_folder_missing_at_a_cold_start(void) {
     {
         const Roots roots;
         Store s(roots.list());
-        const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
-        expect("fresh install: the session made its folder", made.startsWith(roots.external + QLatin1Char('/')));
-        record(made, QStringLiteral("0000000000000961-2"), QStringLiteral("b.wav"), 1754000100, 2);
-        s.store.endSession();
-        // The folder the session made is the store's own: the pass after it lists nothing (its flag cleared, I1).
+        // The folder the session makes is the store's own: no pass after the start lists it (its flag cleared, I1).
+        // Counted from before the start, so the pass the start wakes cannot run before the count does.
         std::atomic<int> listings{0};
         s.store.setRootReadHookForTest([&](const QString& root) {
             if (root.startsWith(roots.external)) {
                 listings++;
             }
         });
+        const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        expect("fresh install: the session made its folder", made.startsWith(roots.external + QLatin1Char('/')));
+        record(made, QStringLiteral("0000000000000961-2"), QStringLiteral("b.wav"), 1754000100, 2);
+        s.store.endSession();
         s.pass();
         s.store.setRootReadHookForTest({});
         expect("fresh install: the pass after the session lists nothing", listings.load() == 0);
         expect("fresh install: its recording is indexed and available", listed_as(s.store, 2, true));
     }
+}
+
+/* m1, scenario B: a session start that makes a flagged root's directory between a pass's look at that root (which
+ * found it missing) and the write of what the look found: the stale look writes no flag, so the next pass does not
+ * list the store's own new folder. */
+void
+test_session_made_root_inside_a_look_writes_no_flag(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("made in a look: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    QString made;
+    s.store.setRootLookHookForTest([&](const QString& root) {
+        if (root == roots.internal && made.isEmpty()) {
+            made = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+        }
+    });
+    s.pass();
+    s.store.setRootLookHookForTest({});
+    expect("made in a look: the session made the internal folder inside the look",
+           made.startsWith(roots.internal + QLatin1Char('/')) && QFileInfo(made).isDir());
+    std::atomic<int> listings{0};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            listings++;
+        }
+    });
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("made in a look: the internal root was not listed after", listings.load() == 0);
 }
 
 /* m1: a pass looks at each root's missing flag as it is at that root's turn. A session start during the pass (here,
@@ -6748,6 +6781,7 @@ main(int argc, char** argv) {
     test_folder_missing_at_a_cold_start();
     test_root_without_rows_is_not_held_away();
     test_session_made_root_during_a_pass_is_not_listed();
+    test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();
     test_session_making_the_folder_reads_its_root_again();
     test_delete_held_when_its_root_was_seen_away();
