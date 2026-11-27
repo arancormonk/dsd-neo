@@ -10319,15 +10319,20 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   count `dsd_squelch_reader_model_build()` makes a reader design of its own; the covariance white noise at the source
   rate (variance 2^(passes - 1), the scale of the plans without a reader) shows at each of the reader's L output
   phases, from its taps, lined up on the samples the decimators keep (stage output n is centred on input 2n, counted
-  from the stream's start, which the reader and the cascade start over at together: the reader is cleared at the
-  RETUNE, RESET, MUTE and rewind where the demodulator's filters are reset, and an I/Q stream's resampler at each
-  block its full ring drops; a documented limit where the cascade starts over without the reader: an FM <-> AM switch
-  on the analog monitor, and on an I/Q stream the blocks a reconnect's or resume's purge takes after the reader's
-  restart, after which the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the
-  next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune on
-  a replay or I/Q stream before the rigctl or stream landing); the worst plan error that costs, over 9,530 readers the
-  rate plans make with every pass count and sources at every 1 % of the octave, unfiltered and through the analog
-  channel filters, is 1.2e-4, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
+  from the stream's start, which the reader and the cascade start over at together: at the open, a replay's RESET and
+  rewind, a replay MUTE that marks a gap (a driver overflow), and on an I/Q stream a reconnect or resume and each
+  block its full ring drops, which is exact for an isolated drop (fewer than 33 gap marks pending,
+  `INPUT_RING_GAP_SLOTS`). A documented limit where one of the two starts over without the other: the cascade alone
+  at an FM <-> AM switch and at a digital -> analog switch (`rtl_demod_enter_analog_family()`), on an I/Q stream at
+  the blocks a reconnect's or resume's purge takes after the reader's restart, and at a drop whose gap mark the 33rd
+  pending one moved (a congested stream: the reader restarts, the demod misses it); the reader alone at a replay's
+  RETUNE and at a MUTE that marks no gap (a retune_mute or retune_reconfigure span with no RESET at the same sample).
+  After any of them the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the
+  next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune
+  on a replay or I/Q stream before the rigctl or stream landing). Each is a shift of the reader-to-decimator
+  alignment, so its cost is bounded by the worst over every coset: 1.2e-4 of a plan over 9,530 readers the rate plans
+  make with every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel
+  filters, at 60 kHz read into 48 kHz ahead of two passes) and carried through the cascade phase by
   phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
   pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
   when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,
@@ -12472,10 +12477,11 @@ Key public headers:
     4096-sample slices; a one-block accumulator of `dsd_iq_live_block_samples()` writes whole blocks only. A block the
     ring cannot take is dropped whole: producer drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log
     (queued samples and the generation stay; a PCM input in front leaves the stream running this way). Behind a
-    resampler the resampler starts over there, the rest of that slice's output dropped with the block
-    (`rtl_net_iq_state::drop_clears`), as the demod's filters start over at the gap mark: its first output after the gap
-    is the cascade's first input, the alignment the squelch's reader model describes (issue #899; left running, the
-    decimators could keep another coset of the reader's phases, 5e-5 off the plan at 112 kHz into 64 kHz).
+    resampler the resampler starts over there (exact for an isolated drop: fewer than 33 gap marks pending), the rest of
+    that slice's output dropped with the block (`rtl_net_iq_state::drop_clears`), as the demod's filters start over at
+    the gap mark: its first output after the gap is the cascade's first input, the alignment the squelch's reader model
+    describes (issue #899; left running, the decimators could keep another coset of the reader's phases, 5e-5 off the
+    plan at 112 kHz into 64 kHz).
     `dsd_iq_net_reader_note_written()` follows each block written. KNOWN_LOSS discards the partial block, clears the
     resampler and marks a gap; DISCONNECTED discards the partial block.
   - Boundary: RECONNECT (a new TCP connection, a new UDP sender) and RESUME (samples after a stall) discard the
