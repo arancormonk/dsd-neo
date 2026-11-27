@@ -11,11 +11,12 @@ package io.github.arancormonk.dsdneo
  * it decides; it holds no Android state, so the JVM tests drive it directly.
  *
  * Everything is under one lock: admission (closed for good by [release]), the service's [Phase], the reserved request
- * (the playlist a start will promote) and the owner (the playlist the promoted service serves). At most one start is
- * ever outstanding. A playlist accepted while the service is promoted is handed to it in the process; one accepted
- * while a start is issued becomes that start's request; only one accepted with no service issues a start
- * ([Start.ISSUE]). Issuing, handing over, retiring and closing admission all take the lock, so a play, a retire and
- * the teardown never interleave.
+ * (the playlist a start will promote) and the owner (the playlist the promoted service serves). At most one start that
+ * can promote is outstanding; a start given up ([abandonStart], R53) may still be delivered beside a fresh one, and its
+ * delivery, fenced by its generation, promotes nothing and retires. A playlist accepted while the service is promoted
+ * is handed to it in the process; one accepted while a start is issued becomes that start's request; only one accepted
+ * with no service issues a start ([Start.ISSUE]). Issuing, handing over, retiring and closing admission all take the
+ * lock, so a play, a retire and the teardown never interleave.
  *
  * A start carries this process's token and the generation it was issued for. Its delivery ([promote]) promotes the
  * current request only when it is that start; anything else (a start from an earlier process, redelivered after it
@@ -26,7 +27,7 @@ package io.github.arancormonk.dsdneo
  */
 class PlaybackServicePhases(private val processToken: Long) {
     enum class Phase {
-        /** No service, and no start outstanding. */
+        /** No service, and no start outstanding that can promote (an abandoned one may still arrive, R53). */
         NONE,
 
         /** A start was issued and not delivered yet. */
