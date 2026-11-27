@@ -1726,6 +1726,42 @@ Item {
             compare(item("historyRecording").announcements, said + 1);
         }
 
+        // R64: a store update that moves the sheet's selection reconciles its refusal, both ways. A refusal on part A
+        // leaves the notice line once A is gone and the sheet shows B; and a reread that makes the refused file match
+        // the sheet for the first time shows its refusal, read once through the shared key.
+        function test_store_update_reconciles_the_refusal() {
+            var text = "Can't play right now. Another app has the audio, such as a phone call.";
+            var a = rec("t-1", pathA, 12000);
+            var b = rec("t-2", pathB, 8000);
+            var uid = callHistory.pushWithRecordings([a, b]);
+            playPlaylist([itemOf(a, 0, 1, 2, uid), itemOf(b, 0, 2, 2, uid)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 3, playbackToken: 4, playbackPausedReason: "unavailable", playbackRefusals: 1, playbackDurationMs: 12000});
+            openRow(uid);
+            compare(item("recordingNotice").text, text, "the refusal on A is shown");
+            verify(callHistory.setRowRecordings(uid, [b]));
+            compare(item("historyRecording").currentPath, pathB, "A gone: the sheet shows B");
+            tryCompare(item("recordingNotice"), "text", "", 1000, "A's refusal leaves the notice line");
+            sheet().visible = false;
+            testContext.resetHostPlayback();
+
+            // The reverse: the sheet lists the file under another identity, then a reread lists the one refused.
+            var c = rec("t-3", pathC, 4000);
+            var other = rec("t-3", pathC, 4000, {mtimeSec: 1700000999});
+            var row = callHistory.pushWithRecordings([other]);
+            playPlaylist([itemOf(c, 0, 1, 1, row)]);
+            testContext.publishPlaybackReading({item: 0, playbackState: 3, playbackToken: 6, playbackPausedReason: "unavailable", playbackRefusals: 1, playbackDurationMs: 4000});
+            var player = item("historyRecording");
+            var said = player.announcements;
+            openRow(row);
+            compare(item("recordingNotice").text, "", "not the file refused: no refusal shown");
+            verify(callHistory.setRowRecordings(row, [c]));
+            tryCompare(item("recordingNotice"), "text", text, 1000, "the reread file is the one refused: shown");
+            compare(player.announcements, said + 1, "and read once");
+            verify(callHistory.setRowRecordings(row, [c]));
+            wait(20);
+            compare(player.announcements, said + 1, "not again on another reread");
+        }
+
         // A refusal standing through a move inside the call (Previous from part 2 to part 1: opening, then prepared,
         // still "unavailable") is shown on, and read out once, as the bar has it.
         function test_standing_refusal_said_once_across_a_move() {

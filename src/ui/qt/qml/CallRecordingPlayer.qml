@@ -779,6 +779,24 @@ Column {
         if (!kept)
             select(current);
         follow();
+        // Once the selection and the following have settled on a store
+        // update, what stands for the part shown now is reconciled (R64).
+        if (sheetShown)
+            reconcileLater.restart();
+    }
+    // A refusal for a file no longer shown leaves the notice line; one that
+    // now matches is shown, read once through the shared key. A paused play
+    // sends no change that would do it. After the bindings the store update
+    // moved (the part shown, whether it is the host's file); a Timer, which
+    // dies with the block. Only while the sheet is shown: its opening
+    // reconciles for itself.
+    Timer {
+        id: reconcileLater
+        interval: 0
+        onTriggered: {
+            if (player.sheetShown)
+                player.noteFailure();
+        }
     }
 
     Connections {
