@@ -20422,7 +20422,13 @@ Qt Quick frontend (`src/ui/qt`):
     drops it (`test_delete_held_when_its_root_was_seen_away`). Every root found missing outside a pass, by a delete
     request's probe, a session start's first probe or its owner lookup, goes through one function
     (`noteRootSeenAwayLocked()`): remembered, and every selection made before stale at once; the worker marking a root
-    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). A recheck a
+    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). From that first
+    look through the pass that reads the root again (`m_rootsRereading` holds it while `refreshRoots()` has taken it
+    out of `m_rootsSeenAway`), its recordings read as unavailable to every reader (`rootSeenAwayLocked()` in the entry
+    map's `available`, R74), so Play all and Play from here admit none of them and answer `none` or `rowNone`, a sheet
+    shows them as storage not available, and the unlink and compaction checks hold for the same window
+    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). A
+    recheck a
     transfer asked for that finds the file the index knows but cannot open it (no read access) marks it unreadable, so
     the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
     by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never

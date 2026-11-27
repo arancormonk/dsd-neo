@@ -662,6 +662,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * then publish order). */
     QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
+    /* A root seen away (R74): found missing outside a pass, or back and not read again yet, from that first look
+     * through the pass's read of it. */
+    bool rootSeenAwayLocked(int root) const;
     /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
     bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
@@ -877,6 +880,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
      * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
     QSet<int> m_rootsSeenAway;
+    /* The seen-away roots the pass under way took into refreshRoots() and has not finished reading yet (R74): their
+     * recordings stay unavailable to every reader until that read is done, as while they wait in m_rootsSeenAway. */
+    QSet<int> m_rootsRereading;
     /* Paths of recordings a transfer could not open (recheckRegularLocked()): unreadable until an open succeeds. */
     QSet<QString> m_unopenable;
     /* The roots rebuildRoot() is listing now, each with the folders a session start made, took or relabelled on it since

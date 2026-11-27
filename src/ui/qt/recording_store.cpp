@@ -699,6 +699,7 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
         roots = m_roots;
         was = m_rootAvailable;
         seenAway.swap(m_rootsSeenAway);
+        m_rootsRereading = seenAway; // still seen away to the readers until this read is done (R74)
     }
     for (int i = 0; i < roots.size(); i++) {
         const bool now = rootAvailableNow(roots.at(i));
@@ -714,6 +715,10 @@ RecordingStore::refreshRoots(bool first, Pass* pass) {
             // Gone: what it held stays indexed, untouched, until it comes back and is read again.
             const std::lock_guard<std::mutex> lock(m_mutex);
             markRootAwayLocked(i, pass);
+        }
+        if (seenAway.contains(i)) {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_rootsRereading.remove(i); // read as it is now: the index says what is there
         }
     }
 }
@@ -1569,6 +1574,11 @@ RecordingStore::folderAvailableLocked(const QString& folder) const {
     return it != m_folders.cend() && m_rootAvailable.value(it->root);
 }
 
+bool
+RecordingStore::rootSeenAwayLocked(int root) const {
+    return m_rootsSeenAway.contains(root) || m_rootsRereading.contains(root);
+}
+
 QString
 RecordingStore::folderUidLocked(const QString& folder) const {
     const auto it = m_folders.constFind(folder);
@@ -1825,7 +1835,7 @@ RecordingStore::unlinkRefusedLocked(const Entry& entry, const QString& path, boo
     // Nor while its root has been seen away since (a session start or a request found it missing, the root back by now
     // perhaps): the root's listing in full, which drops every delete asked before it, comes first.
     if (!folderAvailableLocked(entry.folder) || !m_folders.value(entry.folder).loaded
-        || m_rootsSeenAway.contains(m_folders.value(entry.folder).root)) {
+        || rootSeenAwayLocked(m_folders.value(entry.folder).root)) {
         return DeleteResult::Held;
     }
     if (uploading || heldLocked(path)) {
@@ -2206,8 +2216,7 @@ RecordingStore::compactableLocked(const QString& path) const {
     // Only a folder read and confirmed as it is: on storage that is there, not seen away since (a rescan of it asked
     // for), and its journal read. A journal a rescan has not read yet may be another owner's.
     const auto it = m_folders.constFind(path);
-    return it != m_folders.cend() && it->loaded && m_rootAvailable.value(it->root)
-           && !m_rootsSeenAway.contains(it->root);
+    return it != m_folders.cend() && it->loaded && m_rootAvailable.value(it->root) && !rootSeenAwayLocked(it->root);
 }
 
 bool
@@ -2784,7 +2793,10 @@ RecordingStore::entryMap(const Entry& entry) const {
         {QStringLiteral("mtimeSec"), static_cast<qint64>(entry.identity.mtime_s)},
         {QStringLiteral("mtimeNanos"), static_cast<int>(entry.identity.mtime_ns)},
         {QStringLiteral("failed"), entry.failed},
-        {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)},
+        // Not while its root is seen away (R74: found missing, or back unread, from the first look through its read
+        // again): a playlist then admits none of it, and a sheet shows it as storage not available.
+        {QStringLiteral("available"), folderAvailableLocked(entry.folder) && folderReadLocked(entry.folder)
+                                          && !rootSeenAwayLocked(m_folders.value(entry.folder).root)},
     };
 }
 

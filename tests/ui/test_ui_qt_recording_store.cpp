@@ -6025,6 +6025,42 @@ test_checked_delete_refuses_another_path(void) {
                && s.store.deletesSkipped() == skipped + 2);
 }
 
+/* R74: a root seen away is not admitted. Its recordings read as unavailable to a playlist (and every reader) from the
+ * first look that found it missing, before the worker's pass marks it away, and while the pass that reads it again
+ * after it came back is still reading it; once that read is done they are available again. */
+void
+test_seen_away_root_is_not_admitted(void) {
+    Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000934-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const auto admitted = [&s]() {
+        const QVariantMap single = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+        const QVariantMap listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
+        return single.value(QStringLiteral("available")).toBool() && listed.value(QStringLiteral("available")).toBool();
+    };
+    expect("seen away: on storage that is there, the recording is admitted", admitted());
+    std::atomic<bool> beforePass{true};
+    std::atomic<bool> duringRead{true};
+    std::atomic<bool> readHooked{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(ext + QLatin1Char('/')) && !readHooked.exchange(true)) {
+            duringRead = admitted();
+        }
+    });
+    const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&]() { beforePass = admitted(); });
+    s.store.setRootReadHookForTest({});
+    expect("seen away: the delete found the storage missing", seen);
+    expect("seen away: before the worker's pass marks it, the recording is not admitted", !beforePass.load());
+    expect("seen away: back, while the pass reads it again, still not admitted",
+           readHooked.load() && !duringRead.load());
+    expect("seen away: read again, it is admitted again", admitted());
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -6295,6 +6331,7 @@ main(int argc, char** argv) {
     test_recording_map_identity_is_the_indexed_one();
     test_checked_delete_refuses_another_file();
     test_checked_delete_refuses_another_path();
+    test_seen_away_root_is_not_admitted();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();
