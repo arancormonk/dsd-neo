@@ -1121,6 +1121,8 @@ Item {
                             width: parent.width - 2 * Theme.cardPadding
                             comboObjectName: "settingsBandwidth"
                             noteObjectName: "settingsBandwidthNote"
+                            meaningShown: true
+                            meaningObjectName: "settingsBandwidthMeaning"
                             value: prefs.bandwidthKhz
                             onChosen: function (khz) {
                                 prefs.bandwidthKhz = khz;

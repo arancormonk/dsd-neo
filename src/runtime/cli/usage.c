@@ -26,7 +26,8 @@ dsd_cli_usage_section_intro(void) {
     printf("      --profile <name>       Load a named profile section (profile.<name>)\n");
     printf("      --list-profiles        List available profiles in the config and exit\n");
     printf("      --interactive-setup    Run interactive bootstrap wizard\n");
-    printf("      --print-config         Print the effective config (as INI) and exit\n");
+    printf("      --print-config         Print the effective config (as INI) and exit, leaving out the secrets\n");
+    printf("                             (rdio_api_key, rdio_api_url, the RadioReference app_key)\n");
     printf("      --dump-config-template Print a commented config template and exit\n");
     printf("      --validate-config [PATH] Validate a config file and exit\n");
     printf("      --strict-config        Treat --validate-config warnings as errors\n");
@@ -58,12 +59,17 @@ dsd_cli_usage_section_intro(void) {
 static void
 dsd_cli_usage_rdio_options(void) {
     printf("      --rdio-mode <off|dirwatch|api|both>  Export per-call WAV metadata for rdio-scanner\n");
-    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID (required for API uploads)\n");
+    printf("      --rdio-system-id <N>  rdio-scanner numeric system ID, 0 to 2147483647\n");
+    printf("                 (API uploads need it for calls no other rdio system option numbers)\n");
     printf("      --rdio-analog-system-id <N>  rdio-scanner system ID for analog calls\n");
-    printf("                 (0 to 65535; 0 = use --rdio-system-id, the default)\n");
+    printf("                 (0 to 2147483647; 0 = use --rdio-system-id, the default)\n");
+    printf("      --rdio-system-by-frequency  Export each call with a known frequency to the rdio-scanner system\n");
+    printf(
+        "                 numbered by that frequency in kHz (an analog call with --rdio-analog-system-id keeps it)\n");
+    printf("      --no-rdio-system-by-frequency  Turn --rdio-system-by-frequency off (the default)\n");
     printf("      --rdio-analog-talkgroup <N>  rdio-scanner talkgroup for analog calls with no known frequency\n");
-    printf("                 (audio input; 0 to 2147483647, 0 = not exported, the default. A call with a frequency\n");
-    printf("                 is exported under it in kHz.)\n");
+    printf("                 (audio input with no -Y or --trunk-scan landing; 0 to 2147483647, 0 = not exported,\n");
+    printf("                 the default. A call with a frequency is exported under it in kHz.)\n");
     printf(
         "      --rdio-unknown-talkgroup <N>  rdio-scanner talkgroup for digital calls with no talkgroup and no known "
         "frequency\n");
@@ -410,7 +416,7 @@ dsd_cli_usage_section_advanced_decoder_options(void) {
     printf("  -F            Relax M17 LSF/PKT CRC Error Checking\n");
     printf("\n");
     printf("      --show-keys  Reveal radio keys and keystream material in CLI/status output for this run.\n");
-    printf("                   Default output remains redacted.\n");
+    printf("                   Default output remains redacted. API keys and the rdio API URL are never shown.\n");
     printf("\n");
     printf("      --dmr-debug-burst     Dump each synced DMR burst payload to stderr as hex\n");
     printf("                            ('Debug Demod +Sync' lines; RC bursts dump all 12 bytes incl. sync).\n");

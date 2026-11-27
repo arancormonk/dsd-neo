@@ -2142,6 +2142,195 @@ rdio_case_opts(void) {
     return g_rdio_case_opts;
 }
 
+/* Issue #931: the row and options a per-frequency system case exports: an analog (NFM) row, or a numbered P25 one,
+   heard on @p freq_hz, under base system @p base and analog system @p analog_id, the option on or off. Analog calls
+   with no frequency take talkgroup 77 so that every case is exported. */
+static void
+system_case_setup(Event_History_I* hist, dsd_opts* opts, int analog, int64_t freq_hz, int on, int base, int analog_id) {
+    analog_row(hist, freq_hz);
+    if (!analog) {
+        Event_History* item = &hist->Event_History_Items[0];
+        item->systype = DSD_SYNC_P25P1_POS;
+        item->target_id = 1201U;
+        item->gi = 0;
+        DSD_SNPRINTF(item->sysid_string, sizeof item->sysid_string, "%s", "P25");
+    }
+    DSD_MEMSET(opts, 0, sizeof(*opts));
+    opts->rdio_mode = DSD_RDIO_MODE_DIRWATCH;
+    opts->rdio_system_by_frequency = on;
+    opts->rdio_system_id = base;
+    opts->rdio_analog_system_id = analog_id;
+    opts->rdio_analog_talkgroup = 77;
+}
+
+/* The case set up in @p hist / @p opts resolves to @p want_id and @p want_rule, in the resolver and the public id
+   function; with @p exported, its sidecar names that system and the rule's short_name (@p row_name unless the rule is
+   FREQUENCY). */
+static int
+expect_system_case_ex(const char* label, Event_History_I* hist, dsd_opts* opts, int want_id,
+                      dsd_rdio_system_rule want_rule, const char* row_name, int exported) {
+    const Event_History* item = &hist->Event_History_Items[0];
+    const dsd_rdio_system_choice got = dsd_rdio_resolve_call_system(opts, item);
+    int rc = 0;
+    if (got.id != want_id || got.rule != want_rule) {
+        DSD_FPRINTF(stderr, "%s: resolved %d rule %d, want %d rule %d\n", label, got.id, (int)got.rule, want_id,
+                    (int)want_rule);
+        rc = 1;
+    }
+    if (dsd_rdio_call_system_id(opts, item) != want_id) {
+        DSD_FPRINTF(stderr, "%s: dsd_rdio_call_system_id() differs from the resolver\n", label);
+        rc = 1;
+    }
+    if (!exported) {
+        return rc;
+    }
+    char body[4096];
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "%s: export failed\n", label);
+        return 1;
+    }
+    char want[64];
+    DSD_SNPRINTF(want, sizeof want, "\"system\": %d,", want_id);
+    rc |= expect_body_has(label, body, want);
+    if (want_rule == DSD_RDIO_SYSTEM_RULE_FREQUENCY) {
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"System %d\",", want_id);
+    } else {
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", row_name);
+    }
+    rc |= expect_body_has(label, body, want);
+    return rc;
+}
+
+static int
+expect_system_case(const char* label, Event_History_I* hist, dsd_opts* opts, int want_id,
+                   dsd_rdio_system_rule want_rule, const char* row_name) {
+    return expect_system_case_ex(label, hist, opts, want_id, want_rule, row_name, 1);
+}
+
+// Issue #931 D3: --rdio-system-by-frequency files a call under its frequency in whole kHz, rounded down (1 kHz up to
+// 2147483647 kHz), as the sidecar's system, the upload's system and a "System <kHz>" short_name; an analog call with
+// --rdio-analog-system-id keeps that system; a call with no usable frequency, and every call with the option off, keep
+// today's system. Every combination of option, row kind, analog system, base system and frequency is resolved; the
+// sidecar is written for each combination at 154.4375 MHz and for every frequency of a digital row over base 48 with
+// the option on (each sidecar is synced to disk, so not all of them are).
+static int
+test_system_by_frequency_resolver(void) {
+    static const struct {
+        int64_t freq_hz;
+        int khz; /* the kHz system, 0 for none */
+    } freqs[] = {
+        {0, 0},
+        {999, 0},
+        {1000, 1},
+        {530000, 530},
+        {154437500, 154437},
+        {INT64_C(2147483647000), 2147483647},
+        {INT64_C(2147483648000), 0},
+    };
+
+    static const int bases[] = {0, 48};
+    static const int analog_ids[] = {0, 5};
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    for (int on = 0; on <= 1; on++) {
+        for (int analog = 0; analog <= 1; analog++) {
+            for (size_t a = 0; a < sizeof analog_ids / sizeof analog_ids[0]; a++) {
+                for (size_t b = 0; b < sizeof bases / sizeof bases[0]; b++) {
+                    for (size_t f = 0; f < sizeof freqs / sizeof freqs[0]; f++) {
+                        system_case_setup(hist, opts, analog, freqs[f].freq_hz, on, bases[b], analog_ids[a]);
+                        int want_id = bases[b];
+                        dsd_rdio_system_rule want_rule = DSD_RDIO_SYSTEM_RULE_BASE;
+                        if (analog && analog_ids[a] > 0) {
+                            want_id = analog_ids[a];
+                            want_rule = DSD_RDIO_SYSTEM_RULE_ANALOG;
+                        } else if (on && freqs[f].khz > 0) {
+                            want_id = freqs[f].khz;
+                            want_rule = DSD_RDIO_SYSTEM_RULE_FREQUENCY;
+                        }
+                        char label[160];
+                        DSD_SNPRINTF(label, sizeof label, "option %d, %s row, analog id %d, base %d, %lld Hz", on,
+                                     analog ? "analog" : "digital", analog_ids[a], bases[b],
+                                     (long long)freqs[f].freq_hz);
+                        const int exported = freqs[f].freq_hz == 154437500 || (on && !analog && a == 0 && b == 1);
+                        rc |= expect_system_case_ex(label, hist, opts, want_id, want_rule, analog ? "NFM" : "P25",
+                                                    exported);
+                    }
+                }
+            }
+        }
+    }
+
+    // The label follows the rule, never the number: an analog system equal to the row's kHz is still the analog one,
+    // a base system equal to it with the option off is still the base one, and with the option on a kHz equal to the
+    // base system is still a frequency system.
+    system_case_setup(hist, opts, 1, 5000, 1, 48, 5);
+    rc |= expect_system_case("analog system equal to the kHz", hist, opts, 5, DSD_RDIO_SYSTEM_RULE_ANALOG, "NFM");
+    system_case_setup(hist, opts, 0, 48000, 0, 48, 0);
+    rc |= expect_system_case("option off, base equal to the kHz", hist, opts, 48, DSD_RDIO_SYSTEM_RULE_BASE, "P25");
+    system_case_setup(hist, opts, 0, 48000, 1, 48, 0);
+    rc |= expect_system_case("option on, kHz equal to the base", hist, opts, 48, DSD_RDIO_SYSTEM_RULE_FREQUENCY, "P25");
+
+    // No row: the base system; no options: system 0.
+    system_case_setup(hist, opts, 0, 154437500, 1, 48, 5);
+    dsd_rdio_system_choice got = dsd_rdio_resolve_call_system(opts, NULL);
+    if (got.id != 48 || got.rule != DSD_RDIO_SYSTEM_RULE_BASE || dsd_rdio_call_system_id(opts, NULL) != 48) {
+        DSD_FPRINTF(stderr, "no row: resolved %d rule %d, want 48 BASE\n", got.id, (int)got.rule);
+        rc = 1;
+    }
+    got = dsd_rdio_resolve_call_system(NULL, &hist->Event_History_Items[0]);
+    if (got.id != 0 || got.rule != DSD_RDIO_SYSTEM_RULE_BASE) {
+        DSD_FPRINTF(stderr, "no options: resolved %d rule %d, want 0 BASE\n", got.id, (int)got.rule);
+        rc = 1;
+    }
+    return rc;
+}
+
+// Issue #931 D4: a frequency system's sidecar names it by number and by "System <kHz>", and the row's own system
+// string is left as it was (the WAV name, the journal and the event feed use it). A 530 kHz call has no storable freq
+// (0, no freqList) but still its 530 kHz system.
+static int
+test_system_by_frequency_sidecar(void) {
+    Event_History_I* const hist = rdio_case_hist();
+    dsd_opts* const opts = rdio_case_opts();
+    if (hist == NULL || opts == NULL) {
+        return 1;
+    }
+    int rc = 0;
+    char body[4096];
+    system_case_setup(hist, opts, 0, 154437500, 1, 0, 0);
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "154.4375 MHz sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"system\": 154437,");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"short_name\": \"System 154437\",");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"freq\": 154437500,");
+    rc |= expect_body_has("154.4375 MHz sidecar", body, "\"talkgroup\": 1201,");
+    if (strcmp(hist->Event_History_Items[0].sysid_string, "P25") != 0) {
+        DSD_FPRINTF(stderr, "154.4375 MHz sidecar: the row's system string changed to '%s'\n",
+                    hist->Event_History_Items[0].sysid_string);
+        rc = 1;
+    }
+
+    system_case_setup(hist, opts, 0, 530000, 1, 48, 0);
+    if (export_sidecar_body_with(opts, hist, 1, 0, 0, body, sizeof body) != 0) {
+        DSD_FPRINTF(stderr, "530 kHz sidecar: export failed\n");
+        return 1;
+    }
+    rc |= expect_body_has("530 kHz sidecar", body, "\"freq\": 0,");
+    rc |= expect_body_has("530 kHz sidecar", body, "\"system\": 530,");
+    rc |= expect_body_has("530 kHz sidecar", body, "\"short_name\": \"System 530\",");
+    if (strstr(body, "freqList") != NULL) {
+        DSD_FPRINTF(stderr, "530 kHz sidecar: freqList written\n%s\n", body);
+        rc = 1;
+    }
+    return rc;
+}
+
 // Issue #888 B6: the sidecar's emergency is the row's own flag (an NXDN VCALL with the emergency bit, say), never a
 // constant false.
 static int
@@ -3859,6 +4048,80 @@ test_api_fallback_call_meta_and_system(void) {
 #endif
 }
 
+// Issue #931 D3/D5: with --rdio-system-by-frequency and no base system, a 154.4375 MHz call uploads to system 154437 in
+// its form system part and its meta part alike, named "System 154437"; a call with no frequency still has no system
+// and is not queued, as before.
+static int
+test_api_system_by_frequency(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    char wav_path[DSD_TEST_PATH_MAX] = {0};
+    char json_path[DSD_TEST_PATH_MAX] = {0};
+    if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_export_freq_system_api")
+        || dsd_test_path_join(wav_path, sizeof(wav_path), dir, "freq_system.wav") != 0
+        || dsd_test_path_join(json_path, sizeof(json_path), dir, "freq_system.json") != 0
+        || write_pcm16_mono_wav(wav_path, 8000, 1) != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: setup failed\n");
+        return 1;
+    }
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        free(hist);
+        free(opts);
+        (void)remove(wav_path);
+        remove_empty_dir(dir);
+        return 1;
+    }
+    system_case_setup(hist, opts, 0, 154437500, 1, 0, 0);
+    rdio_cancel_opts(opts, api_url, 5000, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_API;
+    opts->rdio_system_by_frequency = 1;
+    opts->rdio_system_id = 0;
+    opts->rdio_api_delete_after_upload = 0; /* the WAV serves the second call too */
+
+    int rc = 0;
+    int queued = 0;
+    if (dsd_rdio_export_call_ex(opts, hist, wav_path, 0, 0, &queued) != 0 || !queued) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: the upload was not queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: the server did not receive a complete upload\n");
+        rc = 1;
+    }
+    if (strcmp(server.system, "154437") != 0) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: form system part '%s', want 154437\n", server.system);
+        rc = 1;
+    }
+    rc |= expect_body_has("per-frequency API upload", server.meta, "\"system\": 154437,");
+    rc |= expect_body_has("per-frequency API upload", server.meta, "\"short_name\": \"System 154437\",");
+    (void)remove(json_path);
+
+    // No frequency, no base system: nothing to upload to, so no job, as without the option.
+    hist->Event_History_Items[0].freq_hz = 0;
+    queued = 0;
+    (void)dsd_rdio_export_call_ex(opts, hist, wav_path, 0, 0, &queued);
+    if (queued) {
+        DSD_FPRINTF(stderr, "per-frequency API upload: a call with no frequency and no system was queued\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+    (void)remove(json_path);
+    (void)remove(wav_path);
+    remove_empty_dir(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
 static int
 test_analog_api_upload_contract(void) {
     int rc = 0;
@@ -4885,9 +5148,38 @@ rdio_test_read_only_dir_denies_removal(const char* dir) {
 }
 #endif
 
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+/* The user's Stop of a run whose uploads keep private inputs in @p dir, made read-only meanwhile so none can be
+   removed: how many times the run said a removal failed, or -1 when stderr could not be captured or @p setup_rc says
+   the run's setup failed (the run is stopped all the same). What was said is printed when it is not once. */
+static int
+rdio_read_only_stop_said(const char* dir, int setup_rc) {
+    dsd_test_capture_stderr cap;
+    const int capturing = setup_rc == 0 && chmod(dir, 0500) == 0 && dsd_test_capture_stderr_begin(&cap, "rdio_ro") == 0;
+    dsd_rdio_upload_cancel();
+    dsd_rdio_upload_shutdown();
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+    }
+    (void)chmod(dir, 0700);
+    int said = 0;
+    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
+        said++;
+    }
+    if (capturing && said != 1) {
+        DSD_FPRINTF(stderr, "%s\n", out);
+    }
+    return capturing ? said : -1;
+}
+#endif
+
 // Issue #888 (Windows limit, here by a read-only folder): private inputs whose removal fails are left in place and said
-// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Skipped
-// where a read-only folder does not stop a removal (as root, or on a mount that ignores the folder's mode).
+// once a run, not once a job: a partial copy's (where the link seams can make one) and those of the jobs' end. Issue
+// #931: once a run, not once a process, so the next run (dsd_rdio_session_reset(), as a second Android session starts)
+// says it again. Skipped where a read-only folder does not stop a removal (as root, or on a mount that ignores the
+// folder's mode).
 static int
 test_both_mode_failed_private_removal_said_once(void) {
 #if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
@@ -4896,8 +5188,8 @@ test_both_mode_failed_private_removal_said_once(void) {
     dsd_socket_t stalled = DSD_INVALID_SOCKET;
     char api_url[128] = {0};
     char dir[DSD_TEST_PATH_MAX] = {0};
-    char wav[2][DSD_TEST_PATH_MAX] = {{0}};
-    char json[2][DSD_TEST_PATH_MAX] = {{0}};
+    char wav[3][DSD_TEST_PATH_MAX] = {{0}};
+    char json[3][DSD_TEST_PATH_MAX] = {{0}};
     if (!dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_both_ro")) {
         return 1;
     }
@@ -4927,31 +5219,367 @@ test_both_mode_failed_private_removal_said_once(void) {
         DSD_SNPRINTF(leaf, sizeof(leaf), "ro_%d", i);
         rc |= rdio_both_publish(opts, hist, dir, leaf, "RIFF-read-only", (uint32_t)(1206 + i), wav[i], json[i]);
     }
-    dsd_test_capture_stderr cap;
-    const int capturing = rc == 0 && chmod(dir, 0500) == 0 && dsd_test_capture_stderr_begin(&cap, "rdio_ro") == 0;
-    dsd_rdio_upload_cancel();
-    dsd_rdio_upload_shutdown();
-    char out[4096] = "";
-    if (capturing) {
-        dsd_test_capture_stderr_end(&cap);
-        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
-    }
-    (void)chmod(dir, 0700);
-    int said = 0;
-    for (const char* p = out; (p = strstr(p, "failed to delete the private upload input")) != NULL; p++) {
-        said++;
-    }
-    const int left = rdio_test_private_inputs_in(dir, NULL);
-    if (!capturing || said_before + said != 1 || left != 4) {
+    int said = rdio_read_only_stop_said(dir, rc);
+    int left = rdio_test_private_inputs_in(dir, NULL);
+    if (said < 0 || said_before + said != 1 || left != 4) {
         DSD_FPRINTF(stderr,
-                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n%s\n",
-                    said, said_before, left, out);
+                    "both read-only folder: said %d time(s) (%d before), %d private inputs left, want once and 4\n",
+                    said, said_before, left);
         rc = 1;
+    }
+    if (rc == 0) {
+        dsd_rdio_session_reset();
+        rc |= rdio_both_publish(opts, hist, dir, "ro_2", "RIFF-read-only", 1208U, wav[2], json[2]);
+        said = rdio_read_only_stop_said(dir, rc);
+        left = rdio_test_private_inputs_in(dir, NULL);
+        if (said != 1 || left != 6) {
+            DSD_FPRINTF(stderr,
+                        "both read-only folder, next run: said %d time(s), %d private inputs left, want once and 6\n",
+                        said, left);
+            rc = 1;
+        }
     }
 
     rdio_test_remove_dir_tree(dir);
     (void)dsd_socket_close(stalled);
     dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+#if defined(USE_CURL) && !DSD_PLATFORM_WIN_NATIVE
+#define RDIO_NO_SYSTEM_WARNING "Rdio API upload skipped: no system ID (set --rdio-system-id)"
+
+/* Call @p leaf (a WAV in @p dir, talkgroup 1201) exported as @p opts say, its export's stderr captured: the export's
+   result, with *@p queued whether its upload was queued and *@p warned how many times it said @p needle; *@p warned is
+   -1 when stderr could not be captured. */
+static int
+rdio_export_saying(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* needle,
+                   int* queued, int* warned) {
+    char wav[DSD_TEST_PATH_MAX];
+    *queued = -1;
+    *warned = -1;
+    if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        return -2;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_nosys") == 0;
+    const int rc = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, queued);
+    char out[4096] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        *warned = 0;
+        for (const char* p = out; (p = strstr(p, needle)) != NULL; p++) {
+            (*warned)++;
+        }
+    }
+    return rc;
+}
+
+/* rdio_export_saying() of the no-system warning. */
+static int
+rdio_no_system_export(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, int* queued,
+                      int* warned) {
+    return rdio_export_saying(opts, hist, dir, leaf, RDIO_NO_SYSTEM_WARNING, queued, warned);
+}
+
+/* One export of call @p leaf: it succeeds, queues an upload when @p want_queued, and says the no-system warning
+   @p want_warned times. */
+static int
+rdio_no_system_expect(const char* label, const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf,
+                      int want_queued, int want_warned) {
+    int queued = 0;
+    int warned = 0;
+    const int rc = rdio_no_system_export(opts, hist, dir, leaf, &queued, &warned);
+    if (rc != 0 || queued != want_queued || warned != want_warned) {
+        DSD_FPRINTF(stderr, "%s: %s returned %d, queued %d, warned %d time(s); want 0, %d, %d\n", label, leaf, rc,
+                    queued, warned, want_queued, want_warned);
+        return 1;
+    }
+    return 0;
+}
+#endif
+
+// Issue #931 B4: an API upload of a call with no system ID is skipped, not failed: the export succeeds, queues
+// nothing, keeps its sidecar, and the run says so once, the first time. A successful upload of a call that has one
+// between two skips leaves the second silent. Each decoder run (dsd_rdio_session_reset()) says it once again, a run
+// made of skips alone (no upload worker started) and a run whose worker ran alike.
+static int
+test_api_no_system_skip_said_once_a_run(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    rdio_test_http_server server;
+    char api_url[128] = {0};
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:1", 5000, 1);
+    opts->rdio_api_delete_after_upload = 0;
+    opts->rdio_system_id = 0;
+    int rc = 0;
+
+    dsd_rdio_session_reset();
+    rc |= rdio_no_system_expect("skips-only run", opts, hist, dir, "skip_a.wav", 0, 1);
+    rc |= rdio_no_system_expect("skips-only run", opts, hist, dir, "skip_b.wav", 0, 0);
+    char json[DSD_TEST_PATH_MAX];
+    if (dsd_test_path_join(json, sizeof(json), dir, "skip_a.json") != 0 || !file_exists(json)) {
+        DSD_FPRINTF(stderr, "no system ID: the skipped call's sidecar is not in place\n");
+        rc = 1;
+    }
+    dsd_rdio_upload_shutdown();
+
+    dsd_rdio_session_reset();
+    if (rdio_test_http_server_start(&server, api_url, sizeof(api_url)) != 0) {
+        rdio_test_remove_dir_tree(dir);
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", api_url);
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "skip_c.wav", 0, 1);
+    opts->rdio_system_id = 48;
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "sent.wav", 1, 0);
+    opts->rdio_system_id = 0;
+    rc |= rdio_no_system_expect("second run", opts, hist, dir, "skip_d.wav", 0, 0);
+    dsd_rdio_upload_shutdown();
+    if (dsd_thread_join(server.thread) != 0 || server.rc != 0 || server.requests_seen != 1
+        || strcmp(server.system, "48") != 0) {
+        DSD_FPRINTF(stderr, "no system ID: %d upload(s) with system '%s', want the one with 48\n", server.requests_seen,
+                    server.system);
+        rc = 1;
+    }
+
+    dsd_rdio_session_reset();
+    rc |= rdio_no_system_expect("third run", opts, hist, dir, "skip_e.wav", 0, 1);
+    dsd_rdio_upload_shutdown();
+
+    rdio_test_remove_dir_tree(dir);
+    dsd_socket_cleanup();
+    free(hist);
+    free(opts);
+    return rc;
+#endif
+}
+
+/* One export of a new WAV @p leaf in @p dir with stderr captured: the export's result, and in *@p warned how many
+   times it said @p needle (-1 when stderr could not be captured). */
+static int
+rdio_export_counting(const dsd_opts* opts, Event_History_I* hist, const char* dir, const char* leaf, const char* needle,
+                     int* warned) {
+    char wav[DSD_TEST_PATH_MAX];
+    *warned = -1;
+    if (dsd_test_path_join(wav, sizeof(wav), dir, leaf) != 0 || write_pcm16_mono_wav(wav, 8000, 1) != 0) {
+        return -2;
+    }
+    hist->Event_History_Items[0].event_start_time = (time_t)1699999985;
+    hist->Event_History_Items[0].event_time = (time_t)1700000000;
+    hist->Event_History_Items[0].target_id = 1201;
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_nosys_any") == 0;
+    int queued = 0;
+    const int rc = dsd_rdio_export_call_ex(opts, hist, wav, 0, 0, &queued);
+    if (capturing) {
+        char out[4096] = "";
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof(out));
+        *warned = 0;
+        for (const char* p = out; (p = strstr(p, needle)) != NULL; p++) {
+            (*warned)++;
+        }
+    }
+    return rc;
+}
+
+// Issue #931 (gate r1): a call with no system ID is skipped, not failed, in a build without libcurl too: its export
+// succeeds with its sidecar in place, and the run says so once. Without libcurl, an upload with a system ID (one the
+// build would have to send) and a call with no API key still fail, as before.
+static int
+test_api_no_system_skip_in_every_build(void) {
+    static const char* const k_no_system = "Rdio API upload skipped: no system ID (set --rdio-system-id)";
+    static const int modes[] = {DSD_RDIO_MODE_API, DSD_RDIO_MODE_BOTH};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]); i++) {
+        char dir[DSD_TEST_PATH_MAX] = {0};
+        char json[DSD_TEST_PATH_MAX] = {0};
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+        if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system_any")
+            || dsd_test_path_join(json, sizeof(json), dir, "skip_a.json") != 0) {
+            free(hist);
+            free(opts);
+            return 1;
+        }
+        opts->rdio_mode = modes[i];
+        opts->rdio_system_id = 0;
+        opts->rdio_upload_timeout_ms = 100;
+        opts->rdio_upload_retries = 1;
+        DSD_SNPRINTF(opts->rdio_api_url, sizeof(opts->rdio_api_url), "%s", "http://127.0.0.1:1");
+        DSD_SNPRINTF(opts->rdio_api_key, sizeof(opts->rdio_api_key), "%s", "test-key");
+        dsd_rdio_session_reset();
+        int warned = 0;
+        int got = rdio_export_counting(opts, hist, dir, "skip_a.wav", k_no_system, &warned);
+        if (got != 0 || warned != 1 || !file_exists(json)) {
+            DSD_FPRINTF(stderr, "mode %d, no system ID: returned %d, warned %d, sidecar %d; want 0, 1, 1\n", modes[i],
+                        got, warned, file_exists(json));
+            rc = 1;
+        }
+        got = rdio_export_counting(opts, hist, dir, "skip_b.wav", k_no_system, &warned);
+        if (got != 0 || warned != 0) {
+            DSD_FPRINTF(stderr, "mode %d, second call: returned %d, warned %d; want 0, 0\n", modes[i], got, warned);
+            rc = 1;
+        }
+#ifndef USE_CURL
+        opts->rdio_system_id = 5;
+        got = rdio_export_counting(opts, hist, dir, "needs_curl.wav", "compiled without libcurl", &warned);
+        if (got != -1 || warned != 1) {
+            DSD_FPRINTF(stderr, "mode %d, no libcurl, system 5: returned %d, warned %d; want -1, 1\n", modes[i], got,
+                        warned);
+            rc = 1;
+        }
+        opts->rdio_system_id = 0;
+        opts->rdio_api_key[0] = '\0';
+        got = rdio_export_counting(opts, hist, dir, "no_key.wav", "compiled without libcurl", &warned);
+        if (got != -1) {
+            DSD_FPRINTF(stderr, "mode %d, no libcurl, no API key: returned %d; want -1\n", modes[i], got);
+            rc = 1;
+        }
+#endif
+        dsd_rdio_upload_shutdown();
+        static const char* const k_leaves[] = {"skip_a.wav",     "skip_a.json",     "skip_b.wav", "skip_b.json",
+                                               "needs_curl.wav", "needs_curl.json", "no_key.wav", "no_key.json"};
+        for (size_t k = 0; k < sizeof(k_leaves) / sizeof(k_leaves[0]); k++) {
+            char leaf[DSD_TEST_PATH_MAX];
+            if (dsd_test_path_join(leaf, sizeof(leaf), dir, k_leaves[k]) == 0) {
+                (void)remove(leaf);
+            }
+        }
+        remove_empty_dir(dir);
+        free(hist);
+        free(opts);
+    }
+    return rc;
+}
+
+// Issue #931 B4: in both modes with an API side, a call skipped for having no system ID still publishes its sidecar,
+// makes no private upload inputs (--rdio-mode both) and queues nothing; a sidecar that cannot be put in place (its name
+// taken by a folder) is still an export failure on that path. The API key is checked first: a call with neither a key
+// nor a system ID is an export failure, not a skip, and says nothing about the system ID.
+static int
+test_api_no_system_skip_keeps_the_sidecar_rule(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const int modes[] = {DSD_RDIO_MODE_API, DSD_RDIO_MODE_BOTH};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof(modes) / sizeof(modes[0]) && rc == 0; i++) {
+        char dir[DSD_TEST_PATH_MAX] = {0};
+        char json[DSD_TEST_PATH_MAX] = {0};
+        dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+        Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+        if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_no_system_sidecar")
+            || dsd_test_path_join(json, sizeof(json), dir, "blocked.json") != 0) {
+            if (dir[0] != '\0') {
+                rdio_test_remove_dir_tree(dir);
+            }
+            free(hist);
+            free(opts);
+            return 1;
+        }
+        rdio_cancel_opts(opts, "http://127.0.0.1:1", 5000, 1);
+        opts->rdio_mode = modes[i];
+        opts->rdio_system_id = 0;
+        const char* label = modes[i] == DSD_RDIO_MODE_BOTH ? "no system ID, both" : "no system ID, api";
+        dsd_rdio_session_reset();
+        rc |= rdio_no_system_expect(label, opts, hist, dir, "skip.wav", 0, 1);
+        int files = 0;
+        const int private_inputs = rdio_test_private_inputs_in(dir, &files);
+        if (private_inputs != 0 || files != 2) {
+            DSD_FPRINTF(stderr, "%s: %d private inputs of %d files, want none of 2\n", label, private_inputs, files);
+            rc = 1;
+        }
+        int queued = 0;
+        int warned = 0;
+        const int failed =
+            mkdir(json, 0700) == 0 ? rdio_no_system_export(opts, hist, dir, "blocked.wav", &queued, &warned) : 0;
+        if (failed != -1 || queued != 0 || rdio_test_private_inputs_in(dir, NULL) != 0) {
+            DSD_FPRINTF(stderr, "%s: a sidecar that cannot be put in place returned %d, queued %d\n", label, failed,
+                        queued);
+            rc = 1;
+        }
+        opts->rdio_api_key[0] = '\0';
+        dsd_rdio_session_reset();
+        const int no_key = rdio_no_system_export(opts, hist, dir, "no_key.wav", &queued, &warned);
+        if (no_key != -1 || queued != 0 || warned != 0 || rdio_test_private_inputs_in(dir, NULL) != 0) {
+            DSD_FPRINTF(stderr, "%s: no API key nor system ID returned %d, queued %d, warned %d; want -1, 0, 0\n",
+                        label, no_key, queued, warned);
+            rc = 1;
+        }
+        remove_empty_dir(json);
+        rdio_test_remove_dir_tree(dir);
+        dsd_rdio_upload_shutdown();
+        free(hist);
+        free(opts);
+    }
+    return rc;
+#endif
+}
+
+// Issue #931: delete-after-upload beside DirWatch (--rdio-mode both) is ignored with one warning a decoder run, not one
+// a process: the second call of a run is silent, and the next run (dsd_rdio_session_reset(), as a second Android
+// session starts) warns again. The uploads go to a closed port and fail; their files are kept.
+static int
+test_both_mode_delete_after_warning_once_a_run(void) {
+#if !defined(USE_CURL) || DSD_PLATFORM_WIN_NATIVE
+    return 0;
+#else
+    static const char* const k_warning = "Rdio API delete-after-upload ignored when DirWatch export is active";
+    static const char* const k_leaf[2][2] = {{"run1_a.wav", "run1_b.wav"}, {"run2_a.wav", "run2_b.wav"}};
+    char dir[DSD_TEST_PATH_MAX] = {0};
+    dsd_opts* opts = (dsd_opts*)calloc(1, sizeof(*opts));
+    Event_History_I* hist = (Event_History_I*)calloc(1, sizeof(*hist));
+    if (!opts || !hist || !dsd_test_mkdtemp(dir, sizeof(dir), "dsdneo_rdio_delete_after_dirwatch")) {
+        free(hist);
+        free(opts);
+        return 1;
+    }
+    rdio_cancel_opts(opts, "http://127.0.0.1:1", 100, 1);
+    opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    int rc = 0;
+    for (int run = 0; run < 2; run++) {
+        dsd_rdio_session_reset();
+        for (int call = 0; call < 2; call++) {
+            int queued = 0;
+            int warned = 0;
+            const int exported = rdio_export_saying(opts, hist, dir, k_leaf[run][call], k_warning, &queued, &warned);
+            if (exported != 0 || queued != 1 || warned != (call == 0 ? 1 : 0)) {
+                DSD_FPRINTF(stderr, "delete-after beside DirWatch: run %d call %d returned %d, queued %d, warned %d\n",
+                            run + 1, call + 1, exported, queued, warned);
+                rc = 1;
+            }
+        }
+        /* The uploads to the closed port fail as the shutdown drains them: their log lines are the test's own. */
+        dsd_test_capture_stderr cap;
+        const int capturing = dsd_test_capture_stderr_begin(&cap, "rdio_delete_after_drain") == 0;
+        dsd_rdio_upload_shutdown();
+        if (capturing) {
+            dsd_test_capture_stderr_end(&cap);
+            char drained[512];
+            (void)dsd_test_capture_stderr_read(&cap, drained, sizeof(drained)); /* removes the capture file */
+        }
+    }
+    rdio_test_remove_dir_tree(dir);
     free(hist);
     free(opts);
     return rc;
@@ -5042,6 +5670,8 @@ main(void) {
     rc |= test_analog_talkgroup_sources();
     rc |= test_analog_tag_is_stable();
     rc |= test_analog_system_id();
+    rc |= test_system_by_frequency_resolver();
+    rc |= test_system_by_frequency_sidecar();
     rc |= test_sidecar_tag_of_unknown_kind_is_empty();
     rc |= test_sidecar_emergency_from_the_row();
     rc |= test_sidecar_short_name_falls_back_to_the_protocol();
@@ -5058,6 +5688,7 @@ main(void) {
     rc |= test_api_journaled_upload_keeps_the_wav();
     rc |= test_api_meta_part_matches_dirwatch_sidecar();
     rc |= test_api_fallback_call_meta_and_system();
+    rc |= test_api_system_by_frequency();
     rc |= test_api_upload_does_not_follow_redirect();
     rc |= test_api_cancel_before_shutdown_skips_backlog();
     rc |= test_api_cancel_during_drain_returns_promptly();
@@ -5079,6 +5710,10 @@ main(void) {
     rc |= test_both_mode_stop_before_queueing_releases_the_job();
     rc |= test_both_mode_failed_private_open_leaves_nothing();
     rc |= test_both_mode_failed_private_removal_said_once();
+    rc |= test_api_no_system_skip_said_once_a_run();
+    rc |= test_api_no_system_skip_keeps_the_sidecar_rule();
+    rc |= test_api_no_system_skip_in_every_build();
+    rc |= test_both_mode_delete_after_warning_once_a_run();
     /* Last: it leaves the upload worker failed for good. */
     rc |= test_failed_join_releases_queued_jobs();
     free(g_rdio_case_hist);

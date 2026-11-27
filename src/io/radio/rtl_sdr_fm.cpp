@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_net_spec.h>
@@ -652,6 +654,43 @@ static std::atomic<uint32_t> g_replay_loop_restart_last_frequency_hz{0};
    again, its step included. */
 static std::atomic<int> g_replay_loop_restart_step_l{0};
 static std::atomic<int> g_replay_loop_restart_step_m{0};
+/* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899), its rates, and
+   whether that model is built, as whatever last rewrote them left them (rtl_stream_publish_reader_state()): read by
+   other threads, which never touch the demod's own fields. One word, so a reader takes all three from one publish:
+   the source rate in bits 32-62, the DSP input rate in bits 1-31 (both at most INT_MAX), the model in bit 0. */
+static std::atomic<uint64_t> g_pub_reader_state{0};
+
+namespace {
+/* What g_pub_reader_state holds, unpacked. */
+struct PublishedReaderState {
+    int in_hz;
+    int out_hz;
+    int model;
+};
+} // namespace
+
+static PublishedReaderState
+rtl_stream_published_reader_state(void) {
+    const uint64_t word = g_pub_reader_state.load(std::memory_order_acquire);
+    PublishedReaderState st;
+    st.in_hz = (int)((word >> 32) & 0x7FFFFFFFU);
+    st.out_hz = (int)((word >> 1) & 0x7FFFFFFFU);
+    st.model = (int)(word & 1U);
+    return st;
+}
+
+/* Publish the reader and its model's state: called by the thread that changed them, with the demod thread idle, on
+   every path that rewrote them. */
+static void
+rtl_stream_publish_reader_state(void) {
+    const uint64_t in_hz = demod.iq_reader.in_hz > 0 ? (uint64_t)demod.iq_reader.in_hz : 0U;
+    const uint64_t out_hz = demod.iq_reader.out_hz > 0 ? (uint64_t)demod.iq_reader.out_hz : 0U;
+    const uint64_t model =
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes) ? 1U
+                                                                                                                 : 0U;
+    g_pub_reader_state.store((in_hz << 32) | (out_hz << 1) | model, std::memory_order_release);
+}
+
 /* The centre the demod was last reset on, kept by a replayed RETUNE as it moves last_applied_freq_hz on
  * (rtl_replay_on_retune_event()), for the RESET that follows to reset from, as the live retune it records did; 0: no
  * RETUNE since the last RESET or rewind. The replay reader's thread alone uses it. */
@@ -1165,6 +1204,10 @@ rate_chain_plan(uint32_t request_hz, uint32_t programmed_hz, uint32_t readback_h
 static void
 rate_chain_run_plan(const dsd_rate_plan* plan) {
     g_live_rate_plan = *plan;
+    /* A live chain reads its device with no resampler ahead of the cascade (issue #899). */
+    demod.iq_reader = dsd_iq_reader_plan{};
+    (void)dsd_demod_squelch_reader_model_sync(&demod);
+    rtl_stream_publish_reader_state();
     demod.downsample_passes = plan->passes;
     const int post = demod.post_downsample > 1 ? demod.post_downsample : 1;
     demod.complex_rate = (int)plan->step_out_hz;
@@ -3717,6 +3760,15 @@ rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), v
     g_test_demod_idle_wait_probe.set(probe, ctx);
 }
 
+/* Called on the demod thread as it takes a queued request, before it applies it
+   (rtl_stream_test_set_profile_taken_hook()). */
+static RtlTestHook<int> g_test_profile_taken_hook;
+
+extern "C" void
+rtl_stream_test_set_profile_taken_hook(void (*hook)(int has_demod, void* ctx), void* ctx) {
+    g_test_profile_taken_hook.set(hook, ctx);
+}
+
 #define DEMOD_IDLE_WAIT_TEST_EVENT(event) g_test_demod_idle_wait_probe.invoke(event)
 #else
 #define DEMOD_IDLE_WAIT_TEST_EVENT(event) ((void)0)
@@ -5695,6 +5747,13 @@ demod_take_squelch_setting(struct demod_state* d) {
     if (d->live_iq_step.enabled) {
         key.step_l = d->live_iq_step.plan.L;
         key.step_m = d->live_iq_step.plan.M;
+    }
+    /* So does a replay or I/Q stream reader's resampler ahead of the cascade (issue #899): an 8 kHz source read into a
+       16 kHz chain is not a 16 kHz source. */
+    if (d->iq_reader.enabled) {
+        key.reader_in_hz = d->iq_reader.in_hz;
+        key.reader_out_hz = d->iq_reader.out_hz;
+        key.reader_protect_hz = d->iq_reader.protect_hz;
     }
     d->squelch_context = key;
 }
@@ -7904,6 +7963,19 @@ controller_apply_replay_step(const dsd_iq_replay_rate_plan* plan) {
     return 0;
 }
 
+/* The resampler a replay's or an I/Q stream's reader runs ahead of the cascade for @p cfg read into @p dsp_in_hz (issue
+ * #899): the plan the reader opened with (rtl_iq_resampler_open(), one rule), published for the squelch models before
+ * samples arrive, or none at equal rates. Returns 0, or -1 for rates no reader could take (its open refuses them). */
+static int
+controller_apply_replay_reader(const dsd_iq_replay_config* cfg, uint32_t dsp_in_hz) {
+    const uint64_t final_dsp_hz =
+        (uint64_t)cfg->demod_rate_hz * (cfg->post_downsample > 0U ? cfg->post_downsample : 1U);
+    dsd_iq_reader_plan reader;
+    const int rc = dsd_iq_reader_plan_for(&reader, cfg->sample_rate_hz, dsp_in_hz, final_dsp_hz);
+    demod.iq_reader = reader;
+    return rc;
+}
+
 /* The rates a replay of @p cfg runs after the half-band chain (issue #806): the applied plan's complex rate, after any
  * I/Q rate step, its forced flag, and its step; a config no plan was applied to runs its half-band output at
  * @p dsp_in_hz over base_decimation, as forced. Returns 0, or -1 when the step cannot be designed. */
@@ -7928,7 +8000,32 @@ controller_apply_replay_rates(const dsd_iq_replay_config* cfg, uint32_t dsp_in_h
        to, runs as forced. */
     demod.capture_rate_device_forced = plan ? plan->forced : 1;
     g_live_rate_plan = dsd_rate_plan{};
-    return controller_apply_replay_step(plan);
+    /* The reader is rewritten from here on: every exit publishes what it left. */
+    if (controller_apply_replay_reader(cfg, dsp_in_hz) != 0) {
+        rtl_stream_publish_reader_state();
+        return -1;
+    }
+    if (controller_apply_replay_step(plan) != 0) {
+        rtl_stream_publish_reader_state();
+        return -1;
+    }
+    /* A reader that resamples and the live step never run together: the step runs only on a KEEP plan, which reads the
+       capture at its own rate. */
+    if (demod.iq_reader.enabled && demod.live_iq_step.enabled) {
+        dsd_live_iq_step_disable(&demod.live_iq_step);
+        LOG_ERROR("IQ replay: the capture would be resampled ahead of the I/Q rate step.\n");
+        rtl_stream_publish_reader_state();
+        return -1;
+    }
+    /* Built only on a chain a dynamic squelch runs on; a switch onto one later prepares it
+       (rtl_stream_prepare_reader_model()). */
+    if (dsd_demod_squelch_reader_model_sync(&demod) != 0) {
+        LOG_WARN("Auto and noise squelch could not be set up for the %d Hz input resampled to %d Hz, so they will not "
+                 "mute noise.\n",
+                 demod.iq_reader.in_hz, demod.iq_reader.out_hz);
+    }
+    rtl_stream_publish_reader_state();
+    return 0;
 }
 
 static int
@@ -7983,6 +8080,9 @@ controller_apply_replay_settings(struct controller_state* s, const dsd_opts* opt
         g_external_output_freq_hz.store(0U, std::memory_order_release);
         (void)controller_finalize_dsp_chain(s, opts, 0U, 0, DemodRetuneResetReason::FreshStream, 0U, 0, NULL);
     }
+    /* Behind a reader that resamples, the auto squelch's plan for the channel the chain now runs is designed here,
+       before samples arrive, not on the demod thread's first block (issue #899). */
+    dsd_demod_squelch_prime_reader_plan(&demod);
     s->cold_start_ready.store(1, std::memory_order_release);
     return 0;
 }
@@ -10378,6 +10478,10 @@ stream_open_apply_controller_settings(RadioSourceKind source_kind, const dsd_opt
         controller.freqs[controller.freq_len] = 446000000;
         controller.freq_len++;
     }
+    /* A device has no reader resampling ahead of its cascade, whatever a replay before it ran (issue #899). */
+    demod.iq_reader = dsd_iq_reader_plan{};
+    (void)dsd_demod_squelch_reader_model_sync(&demod);
+    rtl_stream_publish_reader_state();
     if (controller_apply_initial_settings(&controller, opts) != 0) {
         LOG_ERROR("Failed to apply initial tuner settings.\n");
         return -1;
@@ -11148,6 +11252,8 @@ dsd_rtl_stream_soft_stop(void) {
     stream_close_capture_writer();
 
     rtl_demod_cleanup(&demod);
+    /* The cleanup released the reader model. */
+    rtl_stream_publish_reader_state();
     output_cleanup(&output);
     controller_cleanup(&controller);
 
@@ -12876,6 +12982,18 @@ static int g_profile_req_levels = 0;
 static int g_profile_req_chan = -1;
 static int g_profile_req_ted_sps = -1; /* <0 = leave timing untouched, 0 = clear override only */
 static int g_profile_req_ted_sps_is_override = 0;
+/* The demod profile the demod thread took and has not finished applying (rtl_stream_take_demod_profile_request() to
+   the end of rtl_stream_consume_demod_profile_request()): what the stream will run before the published profile says
+   so, which a request queued meanwhile may leave in force (rtl_stream_profile_may_land_fsk9600_locked()). */
+static int g_profile_taken_in_flight = 0;
+static int g_profile_taken_cqpsk = -1;
+static int g_profile_taken_sym_rate = 0;
+static int g_profile_taken_levels = 0;
+static int g_profile_taken_ted_sps = -1;
+/* ... and whether that request came with a digital family request (a landing, or the switch out of analog), whose
+   consume resolves its CQPSK as a landing does (rtl_stream_resolve_landing_profile()), with its explicit flag. */
+static int g_profile_taken_digital_family = 0;
+static int g_profile_taken_landing_explicit = 0;
 static uint32_t g_profile_req_analog_seq = 0U; /* the queued analog request's number */
 /* The number of the first analog request the queued one replaced in turn, each while the one before it was still queued
  * (its own number when it replaced none): the demod thread took none of the requests numbered from there on. */
@@ -13249,6 +13367,136 @@ rtl_stream_demod_request_repeats_locked(int cqpsk, int rate, int levels, int cha
     return rtl_stream_demod_request_repeats_published(cqpsk, rate, levels, chan, ted, ovr);
 }
 
+static void rtl_stream_prepare_reader_model(void);
+
+/* Whether a demod profile request can land the 9600 bit/s FSK path, which runs a dynamic squelch
+   (dsd_demod_fsk9600_active()), judged on every profile it can leave in force. What it leaves out (a symbol rate of 0,
+   a CQPSK state of -1) the demod keeps as it runs when it applies the request: the published profile, or one it took
+   and has not finished applying (g_profile_taken_*). A request still queued is replaced whole, so its values never
+   apply. The fields that move the rate or the levels (rtl_stream_apply_demod_profile_params()): a positive symbol
+   rate, which lands with its levels whatever the TED; with none, a positive TED, which sets the rate the complex rate
+   gives over it and keeps the levels (rtl_stream_ted_request_symbol_rate()); and CQPSK on, which sets four levels and
+   never runs the path. Levels apply only with a rate, a TED of 0 clears the override alone, and the channel profile,
+   the override flag and the digital-decode mark move neither (the mark can only keep the request off the monitor); a
+   queued family request moves no rate, and the complex rate moves only with a rate chain (an open, a retune), never
+   with a profile. A CQPSK toggle's (0, 0, 0) on a 9600/2 stream lands the path, and so do a hunt step (-1, 9600, 2)
+   over a CQPSK-off stream and a TED-only (-1, 0, 0, -1, 5, 0) on a 48 kHz 4800/2 one; a profile that can only end on
+   CQPSK, or off 9600/2, cannot. A request the take pairs with a queued
+   digital family request (a landing, or the switch out of analog) has its CQPSK resolved as a landing's
+   (rtl_demod_landing_cqpsk(): DSD_NEO_CQPSK replaces a value that is not the target's own, -1 included), and so has a
+   taken one that came with such a request: each resolution counts too, so a doubt builds. Called under
+   g_profile_req_m, in the section that queues the request: the queued request it replaces cannot be taken in
+   between. */
+/* The CQPSK side: whether the request can leave CQPSK off. */
+static int
+rtl_stream_cqpsk_may_end_off_locked(int cqpsk_enable) {
+    const int taken = g_profile_taken_in_flight;
+    int cqpsk_off = cqpsk_enable == 0;
+    if (cqpsk_enable < 0) {
+        cqpsk_off = g_pub_cqpsk_enable.load(std::memory_order_relaxed) == 0 || (taken && g_profile_taken_cqpsk == 0);
+    }
+    /* The queued family request this one would be taken with (a digital one waits for its profile). */
+    if (g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL
+        && rtl_demod_landing_cqpsk(cqpsk_enable, g_profile_req_landing_explicit) == 0) {
+        cqpsk_off = 1;
+    }
+    /* A taken landing the demod resolves before it applies; a -1 here keeps what it lands on. */
+    if (cqpsk_enable < 0 && taken && g_profile_taken_digital_family
+        && rtl_demod_landing_cqpsk(g_profile_taken_cqpsk, g_profile_taken_landing_explicit) == 0) {
+        cqpsk_off = 1;
+    }
+    return cqpsk_off;
+}
+
+/* The symbol rate a request's TED of @p ted_sps sets when the request names no rate: both TED setters
+   (rtl_stream_set_ted_sps(), rtl_stream_set_ted_sps_no_override()) clamp it and set the profile to the complex rate
+   over it, rounded. 0 when it sets none. */
+static int
+rtl_stream_ted_request_symbol_rate(int ted_sps) {
+    const int complex_rate = g_pub_complex_rate.load(std::memory_order_relaxed);
+    if (ted_sps <= 0 || complex_rate <= 0) {
+        return 0;
+    }
+    const int sps = ted_sps < 2 ? 2 : (ted_sps > 64 ? 64 : ted_sps);
+    return (complex_rate + (sps / 2)) / sps;
+}
+
+/* The rate the taken request in flight lands (0: none in flight, or one that keeps the rate), and in @p levels_2
+   whether it lands two levels: a named rate's own levels, or for a TED-only one the published levels it keeps. */
+static int
+rtl_stream_taken_landing_rate_locked(int* levels_2) {
+    *levels_2 = 0;
+    if (!g_profile_taken_in_flight) {
+        return 0;
+    }
+    if (g_profile_taken_sym_rate > 0) {
+        *levels_2 = g_profile_taken_levels == 2;
+        return g_profile_taken_sym_rate;
+    }
+    *levels_2 = g_pub_symbol_levels.load(std::memory_order_relaxed) == 2;
+    return rtl_stream_ted_request_symbol_rate(g_profile_taken_ted_sps);
+}
+
+/* The rate side: whether the request can leave 9600 sym/s on two levels in force. A named rate decides alone; a TED
+   alone sets its rate on the levels in force, the published ones or the taken request's; neither keeps the rate in
+   force. */
+static int
+rtl_stream_profile_may_land_9600_2_locked(int symbol_rate_hz, int levels, int ted_sps) {
+    if (symbol_rate_hz > 0) {
+        return symbol_rate_hz == 9600 && levels == 2;
+    }
+    int taken_levels_2 = 0;
+    const int taken_rate = rtl_stream_taken_landing_rate_locked(&taken_levels_2);
+    const int published_levels_2 = g_pub_symbol_levels.load(std::memory_order_relaxed) == 2;
+    if (ted_sps > 0) {
+        return rtl_stream_ted_request_symbol_rate(ted_sps) == 9600 && (published_levels_2 || taken_levels_2);
+    }
+    return (g_pub_symbol_rate.load(std::memory_order_relaxed) == 9600 && published_levels_2)
+           || (taken_rate == 9600 && taken_levels_2);
+}
+
+/* The whole decision described above: the rate side, then the CQPSK side. */
+static int
+rtl_stream_profile_may_land_fsk9600_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int ted_sps) {
+    return rtl_stream_profile_may_land_9600_2_locked(symbol_rate_hz, levels, ted_sps)
+           && rtl_stream_cqpsk_may_end_off_locked(cqpsk_enable);
+}
+
+/* A demod profile request into the queue, replacing a queued one whole (g_profile_req_m held). */
+static void
+rtl_stream_queue_demod_profile_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile,
+                                      int ted_sps, int ted_sps_is_override, int digital_decode) {
+    g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
+    g_profile_req_family_after = rtl_stream_requested_family_locked();
+    g_profile_req_landing_after = rtl_stream_requested_landing_locked();
+    /* Numbered as every queued request (its ordering against a retune's family, its settlement), and applied as any
+       other; only one that may change the receive chain moves the change counter (issue #834). */
+    const int repeats = rtl_stream_demod_request_repeats_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
+                                                                ted_sps, ted_sps_is_override);
+    (void)rtl_stream_number_request_locked();
+    if (!repeats) {
+        rtl_stream_note_receive_change_locked();
+    }
+    g_profile_req_has_demod = 1;
+    g_profile_req_digital_decode = digital_decode ? 1 : 0;
+    g_profile_req_cqpsk = cqpsk_enable;
+    g_profile_req_sym_rate = symbol_rate_hz;
+    g_profile_req_levels = levels;
+    g_profile_req_chan = channel_profile;
+    g_profile_req_ted_sps = ted_sps;
+    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
+    g_profile_req_pending.store(1, std::memory_order_release);
+}
+
+/* Whether a request queued now needs the reader model built first (g_profile_req_m held): a reader runs with no model
+   built (as published), and the request can land the 9600 bit/s FSK path. */
+static int
+rtl_stream_reader_model_wanted_locked(int cqpsk_enable, int symbol_rate_hz, int levels, int ted_sps) {
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    return published.in_hz != 0 && published.model == 0
+           && rtl_stream_profile_may_land_fsk9600_locked(cqpsk_enable, symbol_rate_hz, levels, ted_sps);
+}
+
 static int
 rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels, int channel_profile, int ted_sps,
                                int ted_sps_is_override, int digital_decode) {
@@ -13275,28 +13523,22 @@ rtl_stream_queue_demod_profile(int cqpsk_enable, int symbol_rate_hz, int levels,
         rtl_stream_settle_all_requests();
         return 0;
     }
-    std::lock_guard<std::mutex> lock(g_profile_req_m);
-    g_profile_req_cqpsk_after = (cqpsk_enable >= 0) ? (cqpsk_enable ? 1 : 0) : rtl_stream_requested_cqpsk_locked();
-    g_profile_req_family_after = rtl_stream_requested_family_locked();
-    g_profile_req_landing_after = rtl_stream_requested_landing_locked();
-    /* Numbered as every queued request (its ordering against a retune's family, its settlement), and applied as any
-       other; only one that may change the receive chain moves the change counter (issue #834). */
-    const int repeats = rtl_stream_demod_request_repeats_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile,
-                                                                ted_sps, ted_sps_is_override);
-    (void)rtl_stream_number_request_locked();
-    if (!repeats) {
-        rtl_stream_note_receive_change_locked();
+    /* The decision and the queueing are one section of g_profile_req_m, so the request this one replaces is either
+       still queued (and never applies) or already taken (and counted): no other request can be taken between them.
+       The reader model's build parks the demod, which takes requests inside its blocks, so it runs outside the lock
+       before anything is queued; the request is then queued in a section of its own, after the one build (which
+       built the model, or could not). */
+    for (int prepared = 0;; prepared = 1) {
+        std::unique_lock<std::mutex> lock(g_profile_req_m);
+        if (!prepared && rtl_stream_reader_model_wanted_locked(cqpsk_enable, symbol_rate_hz, levels, ted_sps)) {
+            lock.unlock();
+            rtl_stream_prepare_reader_model();
+            continue;
+        }
+        rtl_stream_queue_demod_profile_locked(cqpsk_enable, symbol_rate_hz, levels, channel_profile, ted_sps,
+                                              ted_sps_is_override, digital_decode);
+        return 0;
     }
-    g_profile_req_has_demod = 1;
-    g_profile_req_digital_decode = digital_decode ? 1 : 0;
-    g_profile_req_cqpsk = cqpsk_enable;
-    g_profile_req_sym_rate = symbol_rate_hz;
-    g_profile_req_levels = levels;
-    g_profile_req_chan = channel_profile;
-    g_profile_req_ted_sps = ted_sps;
-    g_profile_req_ted_sps_is_override = ted_sps_is_override ? 1 : 0;
-    g_profile_req_pending.store(1, std::memory_order_release);
-    return 0;
 }
 
 extern "C" int
@@ -13514,6 +13756,36 @@ rtl_stream_check_analog_profile(int family, int kind, int width_hz) {
 static void rtl_stream_queue_family_request_locked(int family, int kind, int width_hz, int digital_landing,
                                                    int cqpsk_explicit);
 
+/* Before a request that can put a dynamic squelch on the chain is queued (an analog family request, the 9600 bit/s FSK
+ * profile): behind a reader whose squelch model the rate commit left unbuilt (a digital chain's, issue #899), build it
+ * now, on this thread with the demod thread parked, so the switch's first blocks find it and allocate nothing. Nothing
+ * with no stream, no reader, or the model built (read from what the commit published, so no lock then). */
+static void
+rtl_stream_prepare_reader_model(void) {
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    if (!g_stream || published.in_hz == 0 || published.model != 0) {
+        return;
+    }
+    const int gate = rtl_stream_take_demod_gate_unparked();
+    if (gate == RTL_DEMOD_GATE_NONE) {
+        return;
+    }
+    const int passes = demod.downsample_passes > 0 ? demod.downsample_passes : 0;
+    if (!demod.iq_reader.enabled
+        || dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, passes)) {
+        rtl_stream_leave_demod_family_switch_gate(gate);
+        return;
+    }
+    const int parked = rtl_stream_park_demod_under_gate(gate);
+    if (dsd_demod_squelch_reader_model_prepare(&demod) != 0) {
+        LOG_WARN("Auto and noise squelch could not be set up for the %d Hz input resampled to %d Hz, so they will not "
+                 "mute noise.\n",
+                 demod.iq_reader.in_hz, demod.iq_reader.out_hz);
+    }
+    rtl_stream_publish_reader_state();
+    rtl_stream_leave_demod_family_switch_gate(parked);
+}
+
 /* Body of rtl_stream_request_analog_profile(), and of rtl_stream_request_digital_family_landing() with
  * @p digital_landing set (the digital family only): that family request then lands the digital family's landing
  * whichever family the front end runs where it applies, with @p cqpsk_explicit saying whether the CQPSK state of the
@@ -13535,6 +13807,9 @@ rtl_stream_queue_family_request(int family, int kind, int width_hz, int digital_
         /* No pipeline, nothing to switch: the next stream open configures the front end from the options. */
         rtl_stream_settle_all_requests();
         return 0;
+    }
+    if (family == DSD_RX_FAMILY_ANALOG) {
+        rtl_stream_prepare_reader_model();
     }
     rtl_stream_queue_family_request_locked(family, kind, width_hz, digital_landing, cqpsk_explicit);
     return 0;
@@ -13757,6 +14032,13 @@ rtl_stream_take_demod_profile_request(TakenProfileRequest* out) {
     out->ted_sps_is_override = g_profile_req_ted_sps_is_override;
     out->taken_seq = g_rx_req_seq.load(std::memory_order_relaxed);
     out->analog_seq = g_profile_req_analog_seq;
+    g_profile_taken_in_flight = 1;
+    g_profile_taken_cqpsk = g_profile_req_has_demod ? g_profile_req_cqpsk : -1;
+    g_profile_taken_sym_rate = g_profile_req_has_demod ? g_profile_req_sym_rate : 0;
+    g_profile_taken_levels = g_profile_req_has_demod ? g_profile_req_levels : 0;
+    g_profile_taken_ted_sps = g_profile_req_has_demod ? g_profile_req_ted_sps : -1;
+    g_profile_taken_digital_family = g_profile_req_has_demod && g_profile_req_analog_family == DSD_RX_FAMILY_DIGITAL;
+    g_profile_taken_landing_explicit = g_profile_req_landing_explicit;
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
     g_profile_req_digital_landing = 0;
@@ -13786,6 +14068,9 @@ rtl_stream_consume_demod_profile_request(void) {
     if (!rtl_stream_take_demod_profile_request(&req)) {
         return;
     }
+#if defined(DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS)
+    g_test_profile_taken_hook.invoke(req.has_demod);
+#endif
     const uint32_t refused_seq = rtl_stream_drop_refused_analog_request(&req.analog_family, req.analog_kind,
                                                                         req.analog_width_hz, req.analog_seq);
     const int symbol_rate_before_hz = demod.symbol_rate_hz;
@@ -13821,6 +14106,8 @@ rtl_stream_consume_demod_profile_request(void) {
     }
     rtl_stream_family_request_boundary(req.analog_family, req.has_demod, was_monitor, kind_before);
     rtl_stream_settle_taken_requests(req.taken_seq, refused_seq);
+    std::lock_guard<std::mutex> lock(g_profile_req_m);
+    g_profile_taken_in_flight = 0;
 }
 
 /* Drop the queued request no demod thread will take, and settle every request numbered so far (g_profile_req_m held):
@@ -13828,6 +14115,7 @@ rtl_stream_consume_demod_profile_request(void) {
 static void
 rtl_stream_retire_demod_profile_request_locked(void) {
     g_profile_req_pending.store(0, std::memory_order_relaxed);
+    g_profile_taken_in_flight = 0;
     g_profile_req_has_demod = 0;
     g_profile_req_analog_family = -1;
     g_profile_req_digital_landing = 0;
@@ -17844,6 +18132,12 @@ dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state) {
     out_state->replay_output_truncated = g_stream->replay_output_truncated.load(std::memory_order_acquire);
     out_state->dongle_rate_hz = load_dongle_rate();
     out_state->input_gap_reset_count = g_input_gap_reset_count.load(std::memory_order_relaxed);
+    /* As the last rate commit (an --iq-loop rewind's included) published them: the demod's fields are rewritten there
+       on another thread. */
+    const PublishedReaderState published = rtl_stream_published_reader_state();
+    out_state->reader_model = published.model;
+    out_state->reader_in_hz = published.in_hz;
+    out_state->reader_out_hz = published.out_hz;
     return 0;
 }
 
@@ -18488,6 +18782,13 @@ post_chain_test_capture(const dsd_opts* opts, rtl_stream_test_post_chain_result*
     out->squelch_step_model = demod.live_iq_step.enabled
                                   ? dsd_squelch_step_model_matches(&demod.squelch_step_model, &demod.live_iq_step.plan)
                                   : 0;
+    out->reader_enabled = demod.iq_reader.enabled;
+    out->reader_in_hz = demod.iq_reader.in_hz;
+    out->reader_out_hz = demod.iq_reader.out_hz;
+    out->reader_protect_hz = demod.iq_reader.protect_hz;
+    out->squelch_reader_model =
+        dsd_squelch_reader_model_matches(&demod.squelch_reader_model, &demod.iq_reader, demod.downsample_passes);
+    out->squelch_plan_valid = demod.squelch_plan.set ? demod.squelch_floor.plan.valid : -1;
     out->complex_rate_hz = demod.complex_rate;
     out->rate_out_hz = demod.rate_out;
     out->ted_sps = demod.ted_sps;
@@ -18531,11 +18832,13 @@ post_chain_test_open_and_run(const dsd_opts* opts, const dsd_iq_replay_config* c
     const int prev_rate_out2 = demod.rate_out2;
     test_stream_set(NULL);
     int rc = family_test_seed_open(opts, 48000, 0);
+    const uint64_t designs_before = demod.squelch_plan_designs;
     if (rc == 0 && controller_apply_replay_settings(&controller, opts, cfg) != 0) {
         rc = -1;
     }
     dsd_live_iq_step_finish(&demod.live_iq_step);
     post_chain_test_capture(opts, out);
+    out->squelch_plan_designs = (long long)(demod.squelch_plan_designs - designs_before);
     if (rc == 0 && g_test_post_chain_probe) {
         g_test_post_chain_probe(out, g_test_post_chain_probe_ctx);
     }
@@ -20267,6 +20570,33 @@ squelch_test_step_context_check(void) {
                : 15;
 }
 
+/* A replay or I/Q stream reader's resampler names the squelch context's chain too (issue #899): its rates and protected
+   band while it resamples, nothing once it is off, so an 8 kHz source read into a 16 kHz chain is not a 16 kHz source.
+   Only the plan is read here; the setting goes back to the level squelch. Returns 0 when that held, else 16. */
+static int
+squelch_test_reader_context_check(void) {
+    dsd_squelch_setting auto6 = {DSD_SQUELCH_MODE_AUTO, 0.0, 6};
+    rtl_stream_set_channel_squelch_setting(&auto6);
+    const dsd_iq_reader_plan saved = demod.iq_reader;
+    demod.iq_reader = dsd_iq_reader_plan{};
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key native = demod.squelch_context;
+    const int planned = dsd_iq_reader_plan_for(&demod.iq_reader, 8000U, 16000U, 16000U) == 0;
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key read = demod.squelch_context;
+    demod.iq_reader = dsd_iq_reader_plan{};
+    demod_take_squelch_setting(&demod);
+    const dsd_squelch_floor_key after = demod.squelch_context;
+    demod.iq_reader = saved;
+    dsd_squelch_setting level = {DSD_SQUELCH_MODE_LEVEL, 2e-6, 10};
+    rtl_stream_set_channel_squelch_setting(&level);
+    demod_take_squelch_setting(&demod);
+    const int named = planned && native.reader_in_hz == 0 && native.reader_out_hz == 0 && native.reader_protect_hz == 0
+                      && read.reader_in_hz == 8000 && read.reader_out_hz == 16000 && read.reader_protect_hz == 7200;
+    return (named && !dsd_squelch_floor_key_equal(&read, &native) && dsd_squelch_floor_key_equal(&after, &native)) ? 0
+                                                                                                                   : 16;
+}
+
 /* The setting reaches the demod: AUTO turns the level off, the margin is clamped, a level comes back whole. Returns the
    first failed check's code, 0 when all held. */
 static int
@@ -20463,6 +20793,9 @@ rtl_stream_test_squelch_plumbing(void) {
     int failed = squelch_test_setting_checks();
     if (!failed) {
         failed = squelch_test_step_context_check();
+    }
+    if (!failed) {
+        failed = squelch_test_reader_context_check();
     }
     if (!failed) {
         failed = squelch_test_noise_setting_checks();

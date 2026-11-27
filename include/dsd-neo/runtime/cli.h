@@ -66,9 +66,9 @@ int dsd_cli_compact_args(int argc, char** argv);
  * An API token (`--api-token`), its file (`--api-token-file`), a trunk-scan
  * target id (`--trunk-scan-hold`) or a CSV file to read (`--dmr-chan-overrides`,
  * `--dmr-tg-key-csv`, `--p25-bandplan`, `--src-csv`) can read like an option of
- * its own ("--print-config", "--trunk-scan"). A pre-scan of the raw argv must step over
- * such a value, as the parser and dsd_cli_compact_args() do, instead of reading
- * it as an option.
+ * its own ("--print-config", "--trunk-scan"). The parser and dsd_cli_compact_args()
+ * take such a value whatever it starts with; a pre-scan of the raw argv steps over it,
+ * and over every other long option's value, by dsd_cli_long_option_span().
  */
 int dsd_cli_option_takes_free_value(const char* arg);
 
@@ -87,6 +87,16 @@ typedef enum {
  * dsd_cli_short_option_takes_value(), so it reads each token as an option or as a value exactly as the decoder will.
  */
 dsd_cli_long_arity dsd_cli_long_option_arity(const char* arg);
+
+/**
+ * @brief How many elements of @p argv the long option at @p argv[@p i] spans as the parser reads it: 2 when it takes
+ * the next element as its value (dsd_cli_long_option_arity()), 1 when it takes none there, 0 when it is no long option
+ * the parser knows (or @p i is out of range).
+ *
+ * Every pass over the raw argv (bootstrap's pre-parse and inherited-trunk-scan check, the one-shot check) steps by it,
+ * so no option's value is ever read as an option of its own: `--rdio-api-key --print-config` is a key (issue #931).
+ */
+int dsd_cli_long_option_span(int argc, char** argv, int i);
 
 /**
  * @brief Nonzero when the DSD_CLI_LONG_NEXT_NON_OPTION option @p arg does without its value (`--config`,

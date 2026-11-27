@@ -10,7 +10,10 @@
  * Everything here but create, start, stop and destroy runs on the socket reader's thread (its callbacks), so the
  * block being filled, the resampler and the level scratch need no lock. The reader never waits on the ring: a block
  * the ring cannot take whole is dropped whole and leaves a gap mark, as a SoapySDR or Airspy device drops what a full
- * ring cannot take, so the queued samples, the resampler and the decoder's generation stay as they are.
+ * ring cannot take, so the queued samples and the decoder's generation stay as they are. The demod starts its filters
+ * over at the gap mark, so a resampler starts over there too, with the input after the dropped block (its calls end
+ * where a block does, so the drop costs that block alone): its first output after the gap is the cascade's first input
+ * after its reset, the alignment the squelch's reader model describes (issue #899).
  */
 
 #include "rtl_net_iq.h"
@@ -64,6 +67,9 @@ struct rtl_net_iq {
     std::atomic<uint64_t> known_losses{0U};
     std::atomic<uint64_t> input_restarts{0U};
     std::atomic<uint64_t> resampler_clears{0U};
+    std::atomic<uint64_t> drop_clears{0U};
+    /* Samples whose callback has returned, every count above it written first (a test waits for it, issue #899). */
+    std::atomic<uint64_t> samples_ingested{0U};
     std::atomic<uint64_t> resampler_errors{0U};
 };
 
@@ -132,8 +138,8 @@ net_iq_publish_level(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     }
 }
 
-/* Write the full block to the input ring, or drop it whole when the ring cannot take it. */
-static void
+/* Write the full block to the input ring, or drop it whole when the ring cannot take it: 1 when it was dropped. */
+static int
 net_iq_write_block(struct rtl_net_iq* n) {
     struct input_ring_state* ring = n->ring;
     const size_t need = (size_t)n->chunk_pairs * 2U;
@@ -148,7 +154,7 @@ net_iq_write_block(struct rtl_net_iq* n) {
         input_ring_note_gap(ring);
         n->blocks_dropped.fetch_add(1U, std::memory_order_relaxed);
         dsd_iq_net_reader_note_drop(n->reader);
-        return;
+        return 1;
     }
     DSD_MEMCPY(p1, n->chunk, n1 * sizeof(float));
     if (n2 > 0U) {
@@ -157,16 +163,21 @@ net_iq_write_block(struct rtl_net_iq* n) {
     if (!input_ring_discard_generation_matches(ring, discard_generation)) {
         /* A purge came between the reservation and now: it discarded what this block follows. */
         ring->producer_drops.fetch_add((uint64_t)need);
-        return;
+        return 0;
     }
     input_ring_commit(ring, need);
     n->blocks_written.fetch_add(1U, std::memory_order_relaxed);
     dsd_iq_net_reader_note_written(n->reader);
+    return 0;
 }
 
-/* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. */
-static void
-net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
+/* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. Returns 1 when a block was
+ * dropped behind a resampler, which then starts over, so that its next output is the first after the gap mark; the
+ * rest of @p iq, made before the gap, is not written, and @p rest gets its length. The resampler's calls end where a
+ * block does (net_iq_resample_slice()), so that rest is at most a few outputs of one input (net_iq_on_samples()). */
+static int
+net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs, size_t* rest) {
+    *rest = 0U;
     while (pairs > 0U) {
         const size_t room = (size_t)n->chunk_pairs - n->fill;
         const size_t take = pairs < room ? pairs : room;
@@ -175,10 +186,35 @@ net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
         iq += take * 2U;
         pairs -= take;
         if (n->fill == (size_t)n->chunk_pairs) {
-            net_iq_write_block(n);
+            const int dropped = net_iq_write_block(n);
             n->fill = 0U;
+            if (dropped && n->resampler) {
+                *rest = pairs;
+                dsd_iq_resampler_clear(n->resampler);
+                n->drop_clears.fetch_add(1U, std::memory_order_relaxed);
+                return 1;
+            }
         }
     }
+    return 0;
+}
+
+/* The inputs the resampler takes next: at most a slice, and no more than can fill the block being filled
+   (floor(room M / L), at least one input), so a block the ring drops ends a resampler call: those inputs make at most
+   ceil(k L / M) <= room outputs. Only a one-input call, on an upsampling reader with less room left than the input's
+   L / M outputs, makes more (at most ceil(L / M) - 1 past the block). */
+static size_t
+net_iq_resample_slice(const struct rtl_net_iq* n, size_t pairs) {
+    const uint64_t room = (uint64_t)n->chunk_pairs - (uint64_t)n->fill;
+    uint64_t fit = room * (uint64_t)n->resampler->M / (uint64_t)n->resampler->L;
+    if (fit < 1U) {
+        fit = 1U;
+    }
+    size_t slice = pairs < kNetIqResampleSliceSamples ? pairs : kNetIqResampleSliceSamples;
+    if ((uint64_t)slice > fit) {
+        slice = (size_t)fit;
+    }
+    return slice;
 }
 
 static void
@@ -187,23 +223,39 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
     if (!n || !iq || pairs == 0U) {
         return;
     }
+    const size_t total = pairs;
     net_iq_publish_level(n, iq, pairs);
     if (!n->resampler) {
-        net_iq_append(n, iq, pairs);
+        size_t rest = 0U;
+        (void)net_iq_append(n, iq, pairs, &rest);
+        n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
         return;
     }
+    const float* refed = nullptr;
     while (pairs > 0U) {
-        const size_t slice = pairs < kNetIqResampleSliceSamples ? pairs : kNetIqResampleSliceSamples;
+        const size_t slice = net_iq_resample_slice(n, pairs);
         const int made = dsd_iq_resampler_process(n->resampler, iq, slice, n->resampled, n->resampled_cap);
-        if (made > 0) {
-            net_iq_append(n, n->resampled, (size_t)made);
+        size_t used = slice;
+        size_t rest = 0U;
+        if (made > 0 && net_iq_append(n, n->resampled, (size_t)made, &rest) && rest > 0U) {
+            /* A dropped block ended inside the call's one input: the started-over reader takes that input again, so
+               its outputs start the next block and the drop costs the block alone. Once: an input whose outputs alone
+               fill a block and drop it again lets the rest go, counted as dropped. */
+            const float* last = iq + (slice - 1U) * 2U;
+            if (last != refed) {
+                refed = last;
+                used = slice - 1U;
+            } else {
+                n->ring->producer_drops.fetch_add((uint64_t)rest * 2U);
+            }
         } else if (made < 0) {
             /* Cannot happen with slices within the design's max_in; counted, so a misconfiguration shows. */
             n->resampler_errors.fetch_add(1U, std::memory_order_relaxed);
         }
-        iq += slice * 2U;
-        pairs -= slice;
+        iq += used * 2U;
+        pairs -= used;
     }
+    n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
 }
 
 /* The samples after this point do not follow the ones before it: the block being filled and the samples a level block
@@ -414,12 +466,14 @@ rtl_net_iq_get_state(const struct rtl_net_iq* n, rtl_net_iq_state* out) {
     if (!n) {
         return;
     }
+    out->samples_ingested = n->samples_ingested.load(std::memory_order_acquire);
     out->blocks_written = n->blocks_written.load(std::memory_order_relaxed);
     out->blocks_dropped = n->blocks_dropped.load(std::memory_order_relaxed);
     out->boundaries = n->boundaries.load(std::memory_order_acquire);
     out->known_losses = n->known_losses.load(std::memory_order_relaxed);
     out->input_restarts = n->input_restarts.load(std::memory_order_relaxed);
     out->resampler_clears = n->resampler_clears.load(std::memory_order_relaxed);
+    out->drop_clears = n->drop_clears.load(std::memory_order_relaxed);
     out->resampler_errors = n->resampler_errors.load(std::memory_order_relaxed);
     out->local_port = dsd_iq_net_reader_local_port(n->reader);
     dsd_iq_net_reader_get_counters(n->reader, &out->reader);

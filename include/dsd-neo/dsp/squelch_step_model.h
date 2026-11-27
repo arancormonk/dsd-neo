@@ -8,12 +8,14 @@
  * @brief The noise the dynamic squelches see through the live I/Q rate step (issue #806).
  *
  * The auto and noise squelches are calibrated on the noise that reaches the channel filter. With no step that is
- * white noise through the half-band cascade at twice the channel rate, which their own designs model. A step between
+ * white noise at the capture rate through the half-band cascade, which their own designs model (the floor plan from the
+ * same half-band recursion as R_hb below, issue #899). A step between
  * the cascade and the channel filter breaks that: the cascade runs at twice the step's input rate, and the step is a
  * periodically varying filter (its phase repeats every L outputs). This model describes that noise for one step plan:
  *
  * - R_hb, the autocorrelation at hb_out of white complex noise at the capture rate through the cascade, exactly, from
- *   the half-band recursion R_{i+1}[k] = sum_j g_i[j] R_i[2k - j], g_i the autocorrelation of stage i's taps. The
+ *   the half-band recursion R_{i+1}[k] = sum_j g_i[j] R_i[2k - j], g_i the autocorrelation of stage i's taps
+ *   (dsd_squelch_cascade_noise(), src/dsp/squelch_cascade_noise.h, which the floor plan without a step runs too). The
  *   input's variance is 2^(passes - 1) (1 with no pass): in the passband that is unit white noise at the last stage's
  *   input, what the designs without a step assume, so noise gains are on their scale.
  * - The spectral factor of R_hb: a zero-phase FIR whose autocorrelation is R_hb, from sqrt(DFT(R_hb)) on 4096 points,

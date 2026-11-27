@@ -15,9 +15,11 @@
  *
  * Band (tools/noise_squelch_model.py, docs/testing.md "Noise squelch"): B = [3.8 kHz, hi], hi = min(edge - 800 Hz,
  * 0.45 fs), edge the channel taps' -1 dB point (fs/2 without a channel filter). A plan needs at least 1200 Hz there; a
- * narrower channel (8 and 10 kHz NFM widths) has none, nor has a channel with no filter behind the half-band cascade at
- * a rate of 16 kHz or less (the cascade's roll-off would be its edge), and the demodulator runs the auto squelch for
- * those instead. B is
+ * narrower channel (8 and 10 kHz NFM widths) has none, nor has a channel with no filter behind at least one half-band
+ * pass at a rate of 16 kHz or less (the cascade's roll-off would be its edge), nor one behind a replay or network
+ * reader's resampler whose passband edge, less the same 800 Hz guard, leaves less than that (an 8 kHz source read into
+ * 48 kHz: edge 3.6 kHz; a 12 kHz one: 5.4 kHz, the band's top 4.6 kHz; issue #899),
+ * and the demodulator runs the auto squelch for those instead. B is
  * cut into K equal sub-bands, K = floor(|B| / 300 Hz) held to 1..DSD_NOISE_SQUELCH_MAX_SUB_BANDS, and a staggered
  * set of K - 1 more, each a sub-band's width shifted by half of it, so a line on a boundary of the first set sits
  * inside one of the second. Each of the 2K - 1 is a Butterworth band-pass of prototype order 4 (four biquads).
@@ -164,6 +166,23 @@ double dsd_noise_squelch_passband_edge_hz(const float* taps, int taps_len, int r
  */
 int dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
                                   const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz);
+
+/**
+ * @brief dsd_noise_squelch_plan_design() behind a replay or network I/Q reader's resampler @p reader (a design of the
+ * reader's plan, dsd_iq_reader_plan_configure(); NULL: none, which is dsd_noise_squelch_plan_design() bit for bit)
+ * ahead of the cascade (issue #899). The reader passes nothing past its passband edge, and its transition band under it
+ * would cut a carrier's sidebands into the band, so the band's upper edge is held 800 Hz under that edge (the channel
+ * edge's guard), and a plan needs its 1200 Hz below that: an upsampled source (8 or 12 kHz read into a 48 kHz chain,
+ * edge 3.6 or 5.4 kHz) has no band, and the auto squelch runs; 16 kHz read into 48 kHz keeps 3.8 to 6.4 kHz. Where a
+ * band fits, the reader's magnitude response (its bank's, at the frequencies the cascade FIR samples) is folded into
+ * the cascade FIR, which then also runs with one stage or none (at the channel rate with none). Allocates nothing.
+ *
+ * @return As dsd_noise_squelch_plan_design(), and -1 for a band the reader's edge, less 800 Hz, leaves narrower than
+ * 1200 Hz.
+ */
+int dsd_noise_squelch_plan_design_reader(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                         const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz,
+                                         const struct dsd_iq_resampler* reader);
 
 /**
  * @brief Design the plan for the channel taps (@p taps, @p taps_len; NULL or 0 when no channel filter runs) behind the

@@ -11,6 +11,8 @@
 #ifndef DSD_NEO_RUNTIME_RDIO_EXPORT_INTERNAL_H
 #define DSD_NEO_RUNTIME_RDIO_EXPORT_INTERNAL_H
 
+#include <dsd-neo/core/opts_fwd.h>
+#include <dsd-neo/core/state.h>
 #include <stddef.h>
 
 #ifdef __cplusplus
@@ -24,6 +26,30 @@ extern "C" {
  * names no file and matches nothing.
  */
 int dsd_rdio_upload_names_same_file(const char* job_path, const char* path, int win);
+
+/*
+ * Which rule chose a call's rdio-scanner system (issue #931): --rdio-system-id (BASE), --rdio-analog-system-id
+ * (ANALOG), or the call's frequency in kHz under --rdio-system-by-frequency (FREQUENCY). The sidecar's short_name
+ * follows the rule, never a comparison of numbers: a kHz equal to a configured ID is still a frequency system.
+ */
+typedef enum {
+    DSD_RDIO_SYSTEM_RULE_BASE = 0,
+    DSD_RDIO_SYSTEM_RULE_ANALOG,
+    DSD_RDIO_SYSTEM_RULE_FREQUENCY,
+} dsd_rdio_system_rule;
+
+typedef struct {
+    int id;
+    dsd_rdio_system_rule rule;
+} dsd_rdio_system_choice;
+
+/*
+ * The rdio-scanner system of the call @p event (NULL: none) under @p opts, decided once per export and handed to the
+ * sidecar and the API job alike: an analog row (DSD_SYNC_ANALOG) with opts->rdio_analog_system_id above 0 takes that
+ * (ANALOG); else with opts->rdio_system_by_frequency a row whose frequency is at least 1 kHz and whose kHz, rounded
+ * down, fit 1..2147483647 takes that kHz (FREQUENCY); else opts->rdio_system_id (BASE). NULL @p opts: id 0, BASE.
+ */
+dsd_rdio_system_choice dsd_rdio_resolve_call_system(const dsd_opts* opts, const Event_History* event);
 
 /*
  * For tests: @p observer (NULL for none) sees every upload job as it is released, sent, dropped or abandoned at the

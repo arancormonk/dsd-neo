@@ -362,6 +362,41 @@ int dsd_demod_live_step_prepare(struct demod_state* d, const dsd_live_iq_step_pl
 int dsd_demod_squelch_step_model_sync(struct demod_state* d);
 
 /**
+ * Build the dynamic squelches' noise model for the replay or network I/Q reader's resampler (issue #899;
+ * dsd_squelch_reader_model_build() on demod_state::squelch_reader_model for demod_state::iq_reader, behind the
+ * half-band cascade of downsample_passes), on a chain a dynamic squelch runs on (dsd_demod_dynamic_squelch_path()).
+ * Call it whenever the rate plan commits, on the controller thread before samples arrive (the demod thread idle): the
+ * auto and noise squelch plans of a chain the reader resamples come from it, and stay not valid (the gate open)
+ * without it. A model already built for the reader and passes is kept; with the reader off, or another reader's on a
+ * chain no dynamic squelch runs on (a digital decoder's, which never reads it), it is released and none is built: a
+ * switch onto such a chain later prepares it first (dsd_demod_squelch_reader_model_prepare()).
+ *
+ * @return 0, or -1 when the model could not be built (the squelch gate then stays open behind the reader).
+ */
+int dsd_demod_squelch_reader_model_sync(struct demod_state* d);
+
+/**
+ * dsd_demod_squelch_reader_model_sync() whatever the chain runs: for a switch that will put a dynamic squelch on the
+ * chain (an analog family request, the 9600 bit/s FSK path), made with the demod thread parked before the switch is
+ * queued, so the switch's first blocks find the model and allocate nothing. A model already built is kept.
+ *
+ * @return As dsd_demod_squelch_reader_model_sync().
+ */
+int dsd_demod_squelch_reader_model_prepare(struct demod_state* d);
+
+/**
+ * Design the auto squelch's floor plan behind the reader's resampler for the channel plan in force (issue #899), as the
+ * first block would: call it when the rate plan commits, after the reader model's sync and the chain's finalize, on the
+ * controller thread before samples arrive. A reader with thousands of output phases (8,046 Hz read into 72 kHz: 4000)
+ * takes tens of milliseconds to design from every phase, which the demod thread then does not spend on its first
+ * block; a block whose plan key is the same designs nothing. No-op with the reader off, and on a chain the dynamic
+ * squelches never run on (dsd_demod_dynamic_squelch_path()); under any squelch setting, since the demod thread takes
+ * the setting at every block and a later switch to AUTO or NOISE then finds the plan designed. The plan is kept with
+ * the others (demod_state::floor_plan_cache).
+ */
+void dsd_demod_squelch_prime_reader_plan(struct demod_state* d);
+
+/**
  * Channel edge (Hz) that the channel low-pass protects for a profile.
  *
  * The half-width of the nominal channel — 12.5 kHz modes return 6250. This is

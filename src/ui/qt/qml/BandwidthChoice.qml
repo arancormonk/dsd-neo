@@ -13,7 +13,9 @@ import QtQuick
 // another width is picked. That entry stays in the list after such a pick,
 // so the list never changes under the reader (a new model would reset the
 // choice and rebuild every row); `reload()` takes the stored value afresh
-// when the caller loads another one.
+// when the caller loads another one. With `meaningShown` a line under the
+// choice says what the bandwidth is (issue #899: it was taken for the NFM
+// channel width).
 Column {
     id: choice
 
@@ -24,6 +26,10 @@ Column {
     property int value: 48
     property string comboObjectName: ""
     property string noteObjectName: ""
+    // Settings and the system editor: the line saying the bandwidth is the
+    // spectrum the decoder processes, and where the NFM channel width is set.
+    property bool meaningShown: false
+    property string meaningObjectName: ""
     property string accessibleName: title
     readonly property var widths: [4, 6, 8, 12, 16, 24, 48, 72]
     // A stored value that is not one of the widths, offered as its own entry
@@ -93,6 +99,16 @@ Column {
         width: parent.width
         visible: text.length > 0
         text: choice.inherited ? choice.inheritNote : choice.odd ? qsTr("Runs at %1 kHz on an RTL-SDR, %2 kHz on an Airspy.").arg(sessionArgs.effectiveBandwidthKhz("", "usb", choice.value)).arg(sessionArgs.effectiveBandwidthKhz("", "airspy", choice.value)) : ""
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(12)
+        color: Theme.textSecondary
+    }
+    ReadableText {
+        objectName: choice.meaningObjectName
+        width: parent.width
+        visible: choice.meaningShown
+        text: qsTr("The slice of spectrum the decoder processes. The NFM channel width is set in the Radio sheet.")
         wrapMode: Text.Wrap
         font.family: Theme.sans
         font.pixelSize: Theme.fontSize(12)

@@ -35,6 +35,10 @@
  * I and Q share one phase and one set of taps, so the two never mix. The output depends only on the samples fed since
  * the last clear, never on how they were cut into calls.
  *
+ * A replay's or an I/Q stream's reader designs its resampler from a dsd_iq_reader_plan (dsd_iq_reader_plan_for(), the
+ * one rule for both), which the controller also hands the demodulator: the squelches' reader model designs the same
+ * bank from it, to model the noise the reader shapes (issue #899).
+ *
  * One thread at a time; a resampler is plain storage the caller owns. Configuring one resampler never touches another,
  * so a caller can design a candidate next to the one it runs and swap them with dsd_iq_resampler_swap() when it
  * commits.
@@ -173,6 +177,37 @@ void dsd_iq_resampler_swap(dsd_iq_resampler* a, dsd_iq_resampler* b);
 
 /** A short reason for a dsd_iq_resampler_status, for a log line. */
 const char* dsd_iq_resampler_status_text(int status);
+
+/**
+ * @brief The resampler a replay or a network I/Q stream's reader runs ahead of the half-band cascade (issues #701,
+ * #743), as the dsd_iq_resampler_configure() arguments that design it: from the source's rate in_hz to the DSP input
+ * rate out_hz, protecting +-protect_hz. Those three name its bank bit for bit (L/M, the edges and the taps follow from
+ * them), so equal plans are the same filter. enabled is 0, and every field 0, when the reader passes the source
+ * through. The auto and noise squelch plans model it (issue #899).
+ */
+typedef struct dsd_iq_reader_plan {
+    int enabled;
+    int in_hz;
+    int out_hz;
+    int protect_hz;
+} dsd_iq_reader_plan;
+
+/**
+ * @brief The reader's plan for a source at @p source_hz read into a chain that takes @p dsp_in_hz, whose final DSP rate
+ * (after the half-band cascade, before any post-demod decimation) is @p final_dsp_hz: none at equal rates, else a
+ * resampler protecting 0.45 of the final DSP rate.
+ *
+ * @return 0 (the plan in @p out, disabled at equal rates), or -1 for a NULL @p out or rates a resampler cannot take
+ * (0, or past INT_MAX, the final DSP rate's included), with @p out zeroed. The rates are checked before the equal-rate
+ * pass-through, so equal rates no reader could take are refused as well.
+ */
+int dsd_iq_reader_plan_for(dsd_iq_reader_plan* out, uint32_t source_hz, uint32_t dsp_in_hz, uint64_t final_dsp_hz);
+
+/** Whether @p a and @p b are the same reader: both disabled, or every field equal. Two NULLs are not. */
+int dsd_iq_reader_plan_equal(const dsd_iq_reader_plan* a, const dsd_iq_reader_plan* b);
+
+/** Design @p r as @p plan's reader resampler (dsd_iq_resampler_configure() with its fields); -1 for a disabled plan. */
+int dsd_iq_reader_plan_configure(const dsd_iq_reader_plan* plan, dsd_iq_resampler* r, size_t max_in_complex);
 
 /** The most complex outputs @p in_complex inputs make, from any phase: ceil(in_complex x L / M). 0 unconfigured. */
 size_t dsd_iq_resampler_max_out(const dsd_iq_resampler* r, size_t in_complex);

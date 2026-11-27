@@ -19,6 +19,10 @@
  * - The filter domain the planner takes: none for the analog monitor and for TETRA where its own filter runs at the
  *   recorded rate; the digital ceiling for every other digital mode, and for TETRA under an override its filter does
  *   not run with or with the channel filter off.
+ * - Issue #899: the reader's resampler and the step never run together. Every stepped open reads the capture at its
+ *   own rate (no reader); a resampled one (48 kHz TETRA to 72 kHz) publishes its reader's plan, builds the
+ *   squelches' noise model for it and designs the auto squelch's plan from it before samples arrive, and runs no step;
+ *   a stepped open right after it drops both.
  */
 
 #include <cstdio>
@@ -145,6 +149,8 @@ expect_stepped(const char* label, const rtl_stream_test_post_chain_result* r, in
     rc |= expect_eq(sub, r->step_enabled && r->step_l == L && r->step_m == M, 1);
     DSD_SNPRINTF(sub, sizeof sub, "%s: the squelches' noise model is the step's", label);
     rc |= expect_eq(sub, r->squelch_step_model, 1);
+    DSD_SNPRINTF(sub, sizeof sub, "%s: no reader resampler with the step, nor its model", label);
+    rc |= expect_eq(sub, r->reader_enabled == 0 && r->reader_in_hz == 0 && r->squelch_reader_model == 0, 1);
     DSD_SNPRINTF(sub, sizeof sub, "%s: forced", label);
     rc |= expect_eq(sub, r->forced, 1);
     DSD_SNPRINTF(sub, sizeof sub, "%s: complex rate", label);
@@ -338,6 +344,50 @@ test_filter_domain_input(void) {
 
 } // namespace
 
+/* Issue #899: a 48 kHz TETRA capture replays resampled to 72 kHz: the reader's plan (48 kHz to 72 kHz, protecting
+   0.45 x 72 kHz) is published, with no squelch noise model for a digital chain that never runs a dynamic squelch (it
+   would hold memory for nothing), and no step runs. An Airspy capture opened next
+   steps with the reader off and its model released. */
+static int
+test_reader_and_step_never_together(void) {
+    int rc = 0;
+    const dsd_iq_replay_config resampled = sidecar(48000U, 1U, 1U, 48);
+    dsd_iq_replay_rate_plan plan;
+    rtl_stream_test_post_chain_result r{};
+    rc |= run("TETRA 48 kHz resampled", tetra, &resampled, &plan, &r);
+    rc |= expect_eq("TETRA 48 kHz resampled: resampled", plan.resample, 1);
+    rc |= expect_eq("TETRA 48 kHz resampled: the reader's plan",
+                    r.reader_enabled == 1 && r.reader_in_hz == 48000 && r.reader_out_hz == 72000
+                        && r.reader_protect_hz == 32400,
+                    1);
+    rc |= expect_eq("TETRA 48 kHz resampled: no squelch noise model on a digital chain", r.squelch_reader_model, 0);
+    rc |= expect_eq("TETRA 48 kHz resampled: no step", r.step_enabled, 0);
+    rc |= expect_eq("TETRA 48 kHz resampled: no floor plan for a chain the auto squelch never runs on",
+                    r.squelch_plan_designs, 0);
+
+    /* The NFM monitor on an 8 kHz capture with 16 kHz asked for: resampled, and the auto squelch's plan designed at
+       the open from the reader's model, before samples arrive. */
+    static dsd_opts opts;
+    DSD_MEMSET(&opts, 0, sizeof opts);
+    nfm(&opts);
+    opts.digital_resample_mode = DSD_DIGITAL_RESAMPLE_AUTO;
+    dsd_opts_set_rtl_dsp_bw(&opts, 16, DSD_RTL_DSP_BW_SOURCE_EXPLICIT);
+    const dsd_iq_replay_config narrow = sidecar(8000U, 1U, 1U, 8);
+    rc |= expect_eq("NFM 8 kHz read into 16 kHz: planned and opened",
+                    rtl_stream_test_replay_planned_chain(&opts, &narrow, 10, 80, &plan, &r), 0);
+    rc |= expect_eq("NFM 8 kHz read into 16 kHz: the reader's plan",
+                    r.reader_enabled == 1 && r.reader_in_hz == 8000 && r.reader_out_hz == 16000
+                        && r.reader_protect_hz == 7200 && r.squelch_reader_model == 1 && r.step_enabled == 0,
+                    1);
+    rc |= expect_eq("NFM 8 kHz read into 16 kHz: the floor plan designed at the open, before samples",
+                    r.squelch_plan_designs == 1 && r.squelch_plan_valid == 1, 1);
+
+    const dsd_iq_replay_config forced = sidecar(2500000U, 32U, 1U, 48);
+    rc |= run("DMR 2.5 MS/s after the resampled replay", dmr, &forced, &plan, &r);
+    rc |= expect_stepped("DMR 2.5 MS/s after the resampled replay", &r, 384, 625, 48000);
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -346,6 +396,7 @@ main(void) {
     rc |= test_tetra_through_step();
     rc |= test_derived_forced_edacs();
     rc |= test_filter_domain_input();
+    rc |= test_reader_and_step_never_together();
     if (rc == 0) {
         std::printf("IO_RTL_REPLAY_STEP: OK\n");
     }

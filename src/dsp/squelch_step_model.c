@@ -16,6 +16,7 @@
 #include <stddef.h>
 #include <stdint.h>
 #include <stdlib.h>
+#include "squelch_cascade_noise.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -31,11 +32,6 @@ static const double k_factor_residual = 1e-6;
 static const double k_factor_kaiser_beta = 3.3952;
 /* The most doubles the floor model's covariance table may take (64 MB): a ratio past any device's would need more. */
 static const size_t k_max_cov_doubles = (size_t)8 << 20;
-/* The floor plan takes the phase-averaged covariance while the bound on how far any output phase's covariance strays
-   from it after the channel taps stays under this (relative): the per-phase results then average to its results within
-   about the square of it (1e-4). The bound reaches 1.1e-3 on the Airspy grid (72 kHz, NFM 25k), where the two plans
-   differ by under 2e-8; a step past it takes every output phase in full. */
-static const double k_cyclo_negligible = 1e-2;
 
 void
 dsd_squelch_step_model_init(dsd_squelch_step_model* m) {
@@ -66,46 +62,19 @@ dsd_squelch_step_model_matches(const dsd_squelch_step_model* m, const dsd_live_i
 
 /* ------------------------------------------------------------------------------------------- the cascade's noise */
 
-/* R_hb: white complex noise of variance 2^(count - 1) (1 with no stage) at the capture rate through every stage. A
-   stage maps R to R'[k] = sum_j g[j] R[2k - j], g its taps' autocorrelation; the support after it is
-   (support + taps - 1) / 2 lags. */
+/* R_hb: white complex noise of variance 2^(count - 1) (1 with no stage) at the capture rate through every stage, the
+   half-band recursion the floor plan without a step runs too (dsd_squelch_cascade_noise()). */
 static int
 ssm_halfband_recursion(dsd_squelch_step_model* m, const dsd_noise_squelch_stage* stages, int count) {
-    double r[DSD_SQUELCH_STEP_MAX_HB_LAGS];
-    double next[DSD_SQUELCH_STEP_MAX_HB_LAGS];
-    double g[64];
-    DSD_MEMSET(r, 0, sizeof(r));
-    r[0] = count > 0 ? ldexp(1.0, count - 1) : 1.0;
-    int support = 0;
-    for (int i = 0; i < count; i++) {
-        const int len = stages[i].len;
-        for (int j = 0; j < len; j++) {
-            double sum = 0.0;
-            for (int t = 0; t + j < len; t++) {
-                sum += (double)stages[i].taps[t] * (double)stages[i].taps[t + j];
-            }
-            g[j] = sum;
-        }
-        const int out_support = (support + len - 1) / 2;
-        if (out_support >= DSD_SQUELCH_STEP_MAX_HB_LAGS) {
-            return -1;
-        }
-        for (int k = 0; k <= out_support; k++) {
-            double sum = 0.0;
-            for (int j = -(len - 1); j <= len - 1; j++) {
-                const int at = abs(2 * k - j);
-                if (at <= support) {
-                    sum += g[abs(j)] * r[at];
-                }
-            }
-            next[k] = sum;
-        }
-        support = out_support;
-        DSD_MEMCPY(r, next, (size_t)(support + 1) * sizeof(double));
+    double work[2 * DSD_SQUELCH_STEP_MAX_HB_LAGS];
+    dsd_squelch_floor_periodic_noise r;
+    if (dsd_squelch_cascade_noise(NULL, stages, count, work, sizeof(work) / sizeof(work[0]), &r) != 0 || r.period != 1
+        || r.lags > DSD_SQUELCH_STEP_MAX_HB_LAGS) {
+        return -1;
     }
     DSD_MEMSET(m->r_hb, 0, sizeof(m->r_hb));
-    DSD_MEMCPY(m->r_hb, r, (size_t)(support + 1) * sizeof(double));
-    m->hb_lags = support + 1;
+    DSD_MEMCPY(m->r_hb, r.cov, (size_t)r.lags * sizeof(double));
+    m->hb_lags = r.lags;
     return 0;
 }
 
@@ -469,33 +438,24 @@ dsd_squelch_step_model_floor_plan_exact(dsd_squelch_step_model* m, dsd_squelch_f
 
 /* The phase-averaged covariance behind the channel taps into chan (@p lags of it), exact because the channel taps are
    time-invariant: R(m) = sum_d R_c(d) R_y(m - d), R_c the taps' autocorrelation and R_y the step's averaged covariance.
-   Returns the bound on how far any output phase's covariance can be from it, relative to its power: the step's largest
-   per-phase distance times (sum |c|)^2, over R(0). */
-static double
+   Returns whether it may stand for every output phase (dsd_squelch_cascade_mean_suffices(): the step's largest
+   per-phase distance times (sum |c|)^2 under 1e-2 of R(0)). */
+static int
 ssm_mean_cov_through_taps(dsd_squelch_step_model* m, const float* taps, int len, int lags) {
-    double abs_sum = 0.0;
-    for (int d = 0; d < len; d++) {
-        double r = 0.0;
-        for (int i = 0; i + d < len; i++) {
-            r += (double)taps[i] * (double)taps[i + d];
-        }
-        m->rc[d] = r;
-        abs_sum += fabs((double)taps[d]);
+    dsd_squelch_floor_periodic_noise ry;
+    ry.period = 1;
+    ry.lags = m->resp_len;
+    ry.cov = m->ry_mean;
+    dsd_squelch_floor_periodic_noise chan;
+    /* Not reachable (the scratch holds DSD_NOISE_SQUELCH_MAX_TAPS taps, which ssm_floor_args() holds them to): should
+       it happen, the plan takes every output phase in full. */
+    if (dsd_squelch_cascade_noise_through_taps(&ry, taps, len, m->rc, sizeof(m->rc) / sizeof(m->rc[0]), m->chan,
+                                               (size_t)m->cov_lags, &chan)
+            != 0
+        || chan.lags != lags) {
+        return 0;
     }
-    const int ry_lags = m->resp_len;
-    for (int lag = 0; lag < lags; lag++) {
-        double sum = 0.0;
-        const int lo = lag - (len - 1);
-        const int hi = lag + (len - 1);
-        for (int k = lo; k <= hi; k++) {
-            const int at = abs(k);
-            if (at < ry_lags) {
-                sum += m->ry_mean[at] * m->rc[abs(lag - k)];
-            }
-        }
-        m->chan[lag] = sum;
-    }
-    return m->chan[0] > 0.0 ? m->cyclo_dev * abs_sum * abs_sum / m->chan[0] : INFINITY;
+    return dsd_squelch_cascade_mean_suffices(m->cyclo_dev, taps, len, m->chan[0]);
 }
 
 int
@@ -511,7 +471,7 @@ dsd_squelch_step_model_floor_plan(dsd_squelch_step_model* m, dsd_squelch_floor_p
         return -1;
     }
     const int lags = m->resp_len + run_len - 1;
-    if (ssm_mean_cov_through_taps(m, run_taps, run_len, lags) > k_cyclo_negligible) {
+    if (!ssm_mean_cov_through_taps(m, run_taps, run_len, lags)) {
         return dsd_squelch_step_model_floor_plan_exact(m, out, taps, taps_len, rate_hz);
     }
     dsd_squelch_floor_periodic_noise noise;

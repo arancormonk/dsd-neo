@@ -134,6 +134,56 @@ user_config_parse_double_value(const char* val, double* out_value) {
     return 0;
 }
 
+/* One byte of a physical line into @p line: past @p line_size - 1 bytes, or a NUL, the line turns invalid and keeps
+   nothing more. */
+static void
+read_line_put(char* line, size_t line_size, size_t* used, int c, int* invalid) {
+    if (*invalid || c == '\0' || *used + 1U >= line_size) {
+        *invalid = 1;
+        return;
+    }
+    line[(*used)++] = (char)c;
+}
+
+int
+user_config_read_line(FILE* stream, char* line, size_t line_size, int* invalid_out) {
+    if (invalid_out) {
+        *invalid_out = 0;
+    }
+    if (!stream || !line || line_size < 2U) {
+        return 0;
+    }
+    int c = getc(stream);
+    if (c == EOF) {
+        line[0] = '\0';
+        return ferror(stream) ? -1 : 0;
+    }
+    size_t used = 0U;
+    int invalid = 0;
+    while (c != EOF && c != '\n') {
+        if (c == '\r') {
+            const int next = getc(stream);
+            if (next == '\n') {
+                break; /* CRLF ends the line as LF does: the CR is no content byte */
+            }
+            read_line_put(line, line_size, &used, c, &invalid);
+            c = next;
+            continue;
+        }
+        read_line_put(line, line_size, &used, c, &invalid);
+        c = getc(stream);
+    }
+    if (c == EOF && ferror(stream)) {
+        line[0] = '\0'; /* a read error, not the end: no part of the line is kept (issue #931) */
+        return -1;
+    }
+    line[invalid ? 0U : used] = '\0';
+    if (invalid_out) {
+        *invalid_out = invalid;
+    }
+    return 1;
+}
+
 char*
 user_config_trim_ascii_whitespace(char* text) {
     if (!text) {
@@ -220,6 +270,7 @@ user_cfg_reset(dsdneoUserConfig* cfg) {
     cfg->rdio_analog_system_id = 0;
     cfg->rdio_analog_talkgroup = 0;
     cfg->rdio_unknown_talkgroup = 0;
+    cfg->rdio_system_by_frequency = 0;
     cfg->unknown_talkgroups_only = 0;
     cfg->analog_max_gap_ms = DSD_ANALOG_RECORD_MAX_GAP_DEFAULT_MS;
     cfg->analog_preroll_ms = DSD_ANALOG_RECORD_PREROLL_DEFAULT_MS;
@@ -928,9 +979,13 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
 
 /* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. A level a snapshot rounded to rtl_sql's
    whole dB is said (issue #899 B15): the fixed gate compares the level itself, so the reload decides a little
-   differently. */
+   differently. None while the session's analog default stands (issue #899): any key is an explicit squelch, which
+   would end the default on the next start. */
 static void
 render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_sql_analog_default) {
+        return;
+    }
     if (cfg->rtl_sql_rounded) {
         LOG_WARN(
             "WARNING: The squelch level %.2f dB is saved as rtl_sql = %d: the key holds whole dB, so it is rounded "
@@ -1394,6 +1449,9 @@ render_recording_section(FILE* out, const dsdneoUserConfig* cfg) {
     }
     if (cfg->rdio_unknown_talkgroup > 0) {
         DSD_FPRINTF(out, "rdio_unknown_talkgroup = %d\n", cfg->rdio_unknown_talkgroup);
+    }
+    if (cfg->rdio_system_by_frequency) {
+        DSD_FPRINTF(out, "rdio_system_by_frequency = true\n");
     }
     DSD_FPRINTF(out, "\n");
 }
@@ -2207,6 +2265,7 @@ apply_recording_config(const dsdneoUserConfig* cfg, dsd_opts* opts) {
     opts->rdio_analog_system_id = cfg->rdio_analog_system_id;
     opts->rdio_analog_talkgroup = cfg->rdio_analog_talkgroup;
     opts->rdio_unknown_talkgroup = cfg->rdio_unknown_talkgroup;
+    opts->rdio_system_by_frequency = cfg->rdio_system_by_frequency ? 1 : 0;
     opts->record_unknown_only = cfg->unknown_talkgroups_only ? 1 : 0;
     opts->analog_record_max_gap_ms = cfg->analog_max_gap_ms;
     opts->analog_record_preroll_ms = cfg->analog_preroll_ms;
@@ -2696,6 +2755,7 @@ snapshot_recording_config(const dsd_opts* opts, dsdneoUserConfig* cfg) {
     cfg->rdio_analog_system_id = opts->rdio_analog_system_id;
     cfg->rdio_analog_talkgroup = opts->rdio_analog_talkgroup;
     cfg->rdio_unknown_talkgroup = opts->rdio_unknown_talkgroup;
+    cfg->rdio_system_by_frequency = opts->rdio_system_by_frequency ? 1 : 0;
     cfg->unknown_talkgroups_only = opts->record_unknown_only ? 1 : 0;
     cfg->analog_max_gap_ms = opts->analog_record_max_gap_ms;
     cfg->analog_preroll_ms = opts->analog_record_preroll_ms;
@@ -2780,6 +2840,10 @@ dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* s
 
     user_cfg_reset(cfg);
     snapshot_input_config(opts, state, cfg);
+    /* While --squelch-analog-default stands (no squelch set this session, issue #899) the save writes no squelch key,
+       for any input and a replay's retained [input] alike: a config that never set one, so the next start runs the
+       default again. Once a squelch was set explicitly it writes the session's, as without the option. */
+    cfg->rtl_sql_analog_default = dsd_squelch_analog_default_pending(opts);
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, state, cfg);

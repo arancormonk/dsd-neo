@@ -13,6 +13,7 @@
 #include <dsd-neo/dsp/rate_converter.h>
 #include <dsd-neo/runtime/mem.h>
 
+#include <limits.h>
 #include <math.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -348,6 +349,47 @@ dsd_iq_resampler_swap(dsd_iq_resampler* a, dsd_iq_resampler* b) {
     DSD_MEMCPY(&t, a, sizeof(t));
     DSD_MEMCPY(a, b, sizeof(*a));
     DSD_MEMCPY(b, &t, sizeof(*b));
+}
+
+int
+dsd_iq_reader_plan_for(dsd_iq_reader_plan* out, uint32_t source_hz, uint32_t dsp_in_hz, uint64_t final_dsp_hz) {
+    if (!out) {
+        return -1;
+    }
+    DSD_MEMSET(out, 0, sizeof(*out));
+    /* The rates first: equal rates no reader could take are refused too, not passed through. */
+    if (source_hz == 0U || dsp_in_hz == 0U || source_hz > (uint32_t)INT_MAX || dsp_in_hz > (uint32_t)INT_MAX
+        || final_dsp_hz == 0U || final_dsp_hz > (uint64_t)INT_MAX) {
+        return -1;
+    }
+    if (source_hz == dsp_in_hz) {
+        return 0;
+    }
+    out->enabled = 1;
+    out->in_hz = (int)source_hz;
+    out->out_hz = (int)dsp_in_hz;
+    /* The band the decoder needs at the final DSP rate (see the header's protect_hz). */
+    out->protect_hz = (int)(0.45 * (double)final_dsp_hz);
+    return 0;
+}
+
+int
+dsd_iq_reader_plan_equal(const dsd_iq_reader_plan* a, const dsd_iq_reader_plan* b) {
+    if (!a || !b) {
+        return 0;
+    }
+    if (!a->enabled || !b->enabled) {
+        return !a->enabled && !b->enabled;
+    }
+    return a->in_hz == b->in_hz && a->out_hz == b->out_hz && a->protect_hz == b->protect_hz;
+}
+
+int
+dsd_iq_reader_plan_configure(const dsd_iq_reader_plan* plan, dsd_iq_resampler* r, size_t max_in_complex) {
+    if (!plan || !plan->enabled || !r) {
+        return DSD_IQ_RESAMPLER_ERR_ARGS;
+    }
+    return dsd_iq_resampler_configure(r, plan->in_hz, plan->out_hz, plan->protect_hz, max_in_complex);
 }
 
 size_t

@@ -463,6 +463,26 @@ test_rdio_unknown_talkgroup_long_opt_is_removed(void) {
     return 0;
 }
 
+/* Issue #931: --rdio-system-by-frequency and --no-rdio-system-by-frequency take no value: the pre-getopt pass removes
+   them alone and keeps the option after each. */
+static int
+test_rdio_system_by_frequency_opts_are_removed(void) {
+    char arg0[] = "dsd-neo";
+    char arg1[] = "--rdio-system-by-frequency";
+    char arg2[] = "-fA";
+    char arg3[] = "--no-rdio-system-by-frequency";
+    char arg4[] = "-P";
+    char* argv[] = {arg0, arg1, arg2, arg3, arg4, NULL};
+
+    int new_argc = dsd_cli_compact_args(5, argv);
+    if (new_argc != 3 || argv[1] == NULL || strcmp(argv[1], "-fA") != 0 || argv[2] == NULL
+        || strcmp(argv[2], "-P") != 0) {
+        DSD_FPRINTF(stderr, "expected -fA and -P to remain, got %d args\n", new_argc);
+        return 1;
+    }
+    return 0;
+}
+
 static int
 test_dmr_debug_burst_long_option_is_removed(void) {
     char arg0[] = "dsd-neo";
@@ -646,23 +666,31 @@ test_rtl_udp_control_consumes_port_and_leaves_short_opts(void) {
     return 0;
 }
 
+/* Issue #931: the parser takes the next argument as the port whatever it starts with (and refuses "-T" as one), so
+   compaction drops it too: getopt never reads a value the long-option pass already took ("--api -T --api 0" turns no
+   trunking on). */
 static int
-test_rtl_udp_control_missing_port_does_not_consume_next_option(void) {
-    char arg0[] = "dsd-neo";
-    char arg1[] = "--rtl-udp-control";
-    char arg2[] = "-fi";
-    char* argv[] = {arg0, arg1, arg2, NULL};
-
-    int new_argc = dsd_cli_compact_args(3, argv);
-    if (new_argc != 2) {
-        DSD_FPRINTF(stderr, "expected new_argc=2, got %d\n", new_argc);
-        return 1;
+test_rtl_udp_control_takes_next_argument_whatever_it_is(void) {
+    static const char* const options[] = {
+        "--lrrp-extra-port", "--dmr-udp-comp-port", "--rtl-udp-control", "--rtl-udp-control-bind", "--api",
+        "--api-bind",        "--tetra-net",         "--tetra-key"};
+    int rc = 0;
+    for (size_t i = 0; i < sizeof options / sizeof options[0]; i++) {
+        char arg0[] = "dsd-neo";
+        char arg1[32];
+        DSD_SNPRINTF(arg1, sizeof arg1, "%s", options[i]);
+        char arg2[] = "-T";
+        char arg3[] = "-fi";
+        char* argv[] = {arg0, arg1, arg2, arg3, NULL};
+        const int new_argc = dsd_cli_compact_args(4, argv);
+        if (new_argc != 2 || argv[1] == NULL || strcmp(argv[1], "-fi") != 0
+            || dsd_cli_long_option_arity(options[i]) != DSD_CLI_LONG_NEXT) {
+            DSD_FPRINTF(stderr, "%s -T -fi: new_argc=%d argv[1]=\"%s\"\n", options[i], new_argc,
+                        argv[1] ? argv[1] : "(null)");
+            rc = 1;
+        }
     }
-    if (argv[1] == NULL || strcmp(argv[1], "-fi") != 0) {
-        DSD_FPRINTF(stderr, "expected argv[1] to be \"-fi\", got \"%s\"\n", argv[1] ? argv[1] : "(null)");
-        return 1;
-    }
-    return 0;
+    return rc;
 }
 
 static int
@@ -869,6 +897,8 @@ test_option_arity_matches_the_parser(void) {
         {"--rdio-analog-system-id", DSD_CLI_LONG_NEXT},
         {"--rdio-analog-talkgroup", DSD_CLI_LONG_NEXT},
         {"--rdio-unknown-talkgroup", DSD_CLI_LONG_NEXT},
+        {"--rdio-system-by-frequency", DSD_CLI_LONG_ALONE},
+        {"--no-rdio-system-by-frequency", DSD_CLI_LONG_ALONE},
         {"--iq-replay", DSD_CLI_LONG_NEXT},
         {"--api-token", DSD_CLI_LONG_NEXT},
         {"--config", DSD_CLI_LONG_NEXT_NON_OPTION},
@@ -938,6 +968,69 @@ test_option_arity_matches_the_parser(void) {
     return rc;
 }
 
+/* Issue #931 (B10): how many elements a long option spans as the parser reads it, for the raw-argv passes (bootstrap,
+   the one-shot check): every long option's value counts, a secret's or a path's that reads like an option included. */
+static int
+test_long_option_span(void) {
+    char a0[] = "dsd-neo";
+    char key[] = "--rdio-api-key";
+    char print_config[] = "--print-config";
+    char config[] = "--config";
+    char path[] = "x.ini";
+    char dashes[] = "--";
+    char url[] = "--rdio-api-url";
+    char frame_log[] = "--frame-log";
+    char frontend_eq[] = "--frontend=none";
+    char unknown[] = "--no-such-option";
+    char short_opt[] = "-o";
+    char api[] = "--api";
+    char validate[] = "--validate-config";
+
+    struct {
+        char* argv[4];
+        int argc;
+        int i;
+        int want;
+    } const cases[] = {
+        {{a0, key, print_config, NULL}, 3, 1, 2},
+        {{a0, key, dashes, NULL}, 3, 1, 2},
+        {{a0, url, config, NULL}, 3, 1, 2},
+        {{a0, frame_log, print_config, NULL}, 3, 1, 2},
+        {{a0, key, NULL, NULL}, 2, 1, 1},
+        {{a0, config, path, NULL}, 3, 1, 2},
+        {{a0, config, print_config, NULL}, 3, 1, 1},
+        {{a0, config, NULL, NULL}, 2, 1, 1},
+        {{a0, validate, key, NULL}, 3, 1, 1},
+        {{a0, api, key, NULL}, 3, 1, 2},
+        {{a0, api, short_opt, NULL}, 3, 1, 2},
+        {{a0, print_config, key, NULL}, 3, 1, 1},
+        {{a0, frontend_eq, path, NULL}, 3, 1, 1},
+        {{a0, unknown, path, NULL}, 3, 1, 0},
+        {{a0, short_opt, path, NULL}, 3, 1, 0},
+        {{a0, dashes, path, NULL}, 3, 1, 0},
+        {{a0, key, path, NULL}, 3, 3, 0},
+    };
+
+    int rc = 0;
+    for (size_t i = 0; i < sizeof cases / sizeof cases[0]; i++) {
+        char* argv[4];
+        for (int k = 0; k < 4; k++) {
+            argv[k] = cases[i].argv[k];
+        }
+        const int got = dsd_cli_long_option_span(cases[i].argc, argv, cases[i].i);
+        if (got != cases[i].want) {
+            DSD_FPRINTF(stderr, "FAIL: case %zu (%s) spans %d, want %d\n", i, argv[cases[i].i] ? argv[cases[i].i] : "-",
+                        got, cases[i].want);
+            rc = 1;
+        }
+    }
+    if (dsd_cli_long_option_span(2, NULL, 1) != 0) {
+        DSD_FPRINTF(stderr, "FAIL: a NULL argv spans something\n");
+        rc = 1;
+    }
+    return rc;
+}
+
 int
 main(void) {
     int rc = 0;
@@ -957,7 +1050,7 @@ main(void) {
     rc |= test_dmr_udp_comp_port_consumes_value_and_leaves_short_opts();
     rc |= test_dmr_udp_comp_port_equals_form_is_removed();
     rc |= test_rtl_udp_control_consumes_port_and_leaves_short_opts();
-    rc |= test_rtl_udp_control_missing_port_does_not_consume_next_option();
+    rc |= test_rtl_udp_control_takes_next_argument_whatever_it_is();
     rc |= test_rtl_udp_control_bind_consumes_address_and_leaves_short_opts();
     rc |= test_iq_capture_and_replay_long_options_are_removed();
     rc |= test_iq_capture_equals_form_is_removed();
@@ -977,7 +1070,9 @@ main(void) {
     rc |= test_analog_record_preroll_long_opts_are_removed();
     rc |= test_rdio_analog_long_opts_are_removed();
     rc |= test_rdio_unknown_talkgroup_long_opt_is_removed();
+    rc |= test_rdio_system_by_frequency_opts_are_removed();
     rc |= test_option_arity_matches_the_parser();
+    rc |= test_long_option_span();
     rc |= test_rtl_list_long_opt_is_removed();
     return rc;
 }

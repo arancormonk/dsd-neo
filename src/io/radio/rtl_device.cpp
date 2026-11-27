@@ -10425,12 +10425,14 @@ int
 rtl_iq_resampler_open(const char* who, const char* source_noun, uint32_t source_hz, uint32_t dsp_in_hz,
                       uint64_t final_dsp_hz, size_t max_in, struct dsd_iq_resampler** out) {
     *out = nullptr;
-    if (dsp_in_hz == source_hz) {
-        return 0;
-    }
-    if (source_hz > INT_MAX || dsp_in_hz > INT_MAX || final_dsp_hz == 0U || final_dsp_hz > INT_MAX) {
+    /* The plan the demodulator's squelch models name this reader by (controller_apply_replay_rates()): one rule. */
+    dsd_iq_reader_plan plan;
+    if (dsd_iq_reader_plan_for(&plan, source_hz, dsp_in_hz, final_dsp_hz) != 0) {
         LOG_ERROR("%s: cannot resample %u Hz to %u Hz.\n", who, (unsigned)source_hz, (unsigned)dsp_in_hz);
         return -1;
+    }
+    if (!plan.enabled) {
+        return 0;
     }
     dsd_iq_resampler* r = static_cast<dsd_iq_resampler*>(malloc(sizeof(dsd_iq_resampler)));
     if (!r) {
@@ -10438,8 +10440,7 @@ rtl_iq_resampler_open(const char* who, const char* source_noun, uint32_t source_
         return -1;
     }
     dsd_iq_resampler_init(r);
-    const int protect_hz = (int)(0.45 * (double)final_dsp_hz);
-    const int rc = dsd_iq_resampler_configure(r, (int)source_hz, (int)dsp_in_hz, protect_hz, max_in > 0U ? max_in : 1U);
+    const int rc = dsd_iq_reader_plan_configure(&plan, r, max_in > 0U ? max_in : 1U);
     if (rc != DSD_IQ_RESAMPLER_OK) {
         LOG_ERROR("%s: cannot resample %u Hz to %u Hz: %s.\n", who, (unsigned)source_hz, (unsigned)dsp_in_hz,
                   dsd_iq_resampler_status_text(rc));

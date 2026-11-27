@@ -2661,7 +2661,7 @@ test_extra_incomplete(void) {
          {QStringLiteral("--squelch off --"), QStringLiteral("--squelch off --api-token"), QStringLiteral("-c"),
           QStringLiteral("-Z -c"), QStringLiteral("-c --"), QStringLiteral("--"),
           QStringLiteral("-- --squelch noise+17"), QStringLiteral("--api-bind"), QStringLiteral("--tetra-key"),
-          QStringLiteral("-Z --api"), QStringLiteral("--api-bind --squelch off")}) {
+          QStringLiteral("-Z --api"), QStringLiteral("--squelch off --api-bind")}) {
         expect("an extra-options field that hides what follows it is incomplete",
                dsd_qt::session_args_extra_incomplete(bad));
         QVariantMap sys = usb_system();
@@ -2701,6 +2701,11 @@ test_extra_incomplete(void) {
                                  QStringLiteral("--tetra-key 262,1001,00112233445566778899")}) {
         expect("a required value given is complete", !dsd_qt::session_args_extra_incomplete(given));
     }
+    /* Issue #931: the parser takes --api-bind's value whatever it starts with, so "--api-bind --squelch off" hides
+       nothing after the field: its value is the field's own "--squelch", which the decoder then refuses as an
+       address. */
+    expect("a value taken whatever it starts with stays in the field",
+           !dsd_qt::session_args_extra_incomplete(QStringLiteral("--api-bind --squelch off")));
     QVariantMap sys = usb_system();
     sys["extraArgs"] = "-c";
     QVariantMap result = dsd_qt::SessionArgsBuilder(nullptr).build(sys);
