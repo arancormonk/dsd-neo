@@ -51,10 +51,11 @@ struct PlaybackStatusRecord {
     int skipNoticeCall = -1;  // the call that played after skips, while it is current; -1: none
     int skipNoticeCount = 0;  // the skips said on it
     int seeksLanded = 0;      // the seeks this play's player confirmed (R56): moves only on a landing
+    bool canNext = false;     // Next would act (ACTION_NEXT: a later call not already failed, r13)
 };
 
 /** @brief How many tab-separated fields a status record has. */
-constexpr int kPlaybackStatusFields = 22;
+constexpr int kPlaybackStatusFields = 23;
 
 namespace detail {
 
@@ -111,7 +112,7 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
     static constexpr Range kNumbers[] = {{0, 0, kInt},  {1, 0, 5},      {2, 0, kLong}, {3, 0, kLong}, {5, -1, kInt},
                                          {6, 0, kLong}, {7, -1, kInt},  {8, 0, kInt},  {9, 0, kInt},  {10, 0, kInt},
                                          {11, 0, 1},    {12, 0, 1},     {13, 0, 1},    {16, 0, kInt}, {17, 0, kLong},
-                                         {18, 0, kInt}, {19, -1, kInt}, {20, 0, kInt}, {21, 0, kInt}};
+                                         {18, 0, kInt}, {19, -1, kInt}, {20, 0, kInt}, {21, 0, kInt}, {22, 0, 1}};
     qint64 n[kPlaybackStatusFields] = {};
     const bool numbers = std::all_of(std::begin(kNumbers), std::end(kNumbers), [&fields, &n](const Range& range) {
         return detail::playback_status_number(fields.at(range.index), range.low, range.high, &n[range.index]);
@@ -145,6 +146,7 @@ parse_playback_status(const QString& text, PlaybackStatusRecord* out) {
     record.skipNoticeCall = static_cast<int>(n[19]);
     record.skipNoticeCount = static_cast<int>(n[20]);
     record.seeksLanded = static_cast<int>(n[21]);
+    record.canNext = n[22] != 0;
     *out = std::move(record);
     return true;
 }

@@ -492,7 +492,7 @@ playback_shown(const DecoderHost::PlaybackReading& r) {
     return std::tie(r.generation, r.state, r.durationMs, r.error, r.mode, r.origin, r.path, r.title, r.key, r.size,
                     r.mtimeSec, r.mtimeNanos, r.token, r.callIndex, r.callCount, r.partOrdinal, r.partCount, r.gap,
                     r.interrupted, r.canSeek, r.pausedReason, r.endedReason, r.skipped, r.refusals, r.skipNoticeCall,
-                    r.skipNoticeCount, r.seeksLanded);
+                    r.skipNoticeCount, r.seeksLanded, r.canNext);
 }
 
 } // namespace

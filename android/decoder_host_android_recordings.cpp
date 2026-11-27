@@ -345,6 +345,7 @@ DecoderHostAndroid::applyPlaybackRecord(const PlaybackStatusRecord& record) {
     reading.skipNoticeCall = record.skipNoticeCall;
     reading.skipNoticeCount = record.skipNoticeCount;
     reading.seeksLanded = record.seeksLanded;
+    reading.canNext = record.canNext;
     const bool failed = record.state == PlaybackFailed;
     if (failed) {
         reading.positionMs = 0;

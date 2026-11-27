@@ -534,9 +534,9 @@ private fun aPlayStartsOncePreparedAndHoldsTheFocus() {
     rig.nowMs += 1_500
     check(rig.position == 1_500L) { "the position runs while it plays: ${rig.position}" }
     val token = rig.status.playToken
-    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0\t0\t-1\t0\t0"
+    val record = "$generation\t$PLAYING\t1500\t60000\t\t0\t$token\t0\t1\t1\t1\t0\t0\t1\t\t\t0\t0\t0\t-1\t0\t0\t0"
     check(rig.status.record(rig.nowMs) == record) { "the record is what the host parses: ${rig.status.record(rig.nowMs)}" }
-    check(rig.status.record(rig.nowMs).split('\t').size == 22) { "the record has its 22 fields" }
+    check(rig.status.record(rig.nowMs).split('\t').size == 23) { "the record has its 23 fields" }
 
     rig.machine.pause()
     check(rig.state == PAUSED && !rig.last.started && !rig.focus.held) { "a pause pauses and gives the focus back" }
@@ -889,6 +889,21 @@ private fun aFailedRestartKeepsSearchingBackward() {
         check(rig.status.call == 0 && rig.state == PLAYING && rig.service.ends.isEmpty()) {
             "last $last: A plays, and the playlist goes on (${rig.state}, ${rig.service.ends})"
         }
+        if (last) {
+            // r13: every later call already known failed: Next is not offered, nor delivered, and A goes on.
+            val token = rig.status.playToken
+            check(!rig.status.allows(RecordingPlayer.ACTION_NEXT) && rig.status.record(rig.nowMs).endsWith("\t0")) {
+                "Next is not offered, in the record either"
+            }
+            rig.machine.next()
+            rig.turn()
+            check(rig.state == PLAYING && rig.status.call == 0 && rig.status.playToken == token &&
+                rig.service.ends.isEmpty()) { "a Next not offered changes nothing (${rig.state}, ${rig.status.call})" }
+        } else {
+            check(rig.status.allows(RecordingPlayer.ACTION_NEXT) && rig.status.record(rig.nowMs).endsWith("\t1")) {
+                "C still to play: Next is offered, in the record too"
+            }
+        }
     }
 }
 
@@ -1002,7 +1017,7 @@ private fun nextOpensTheNextCallAtOnceAlsoFromTheGap() {
     check(rig.state == PLAYING && rig.players.size == 3) { "a Next at the last call is dropped" }
 }
 
-private fun nextPastOnlyFailedCallsFinishes() {
+private fun nextPastOnlyFailedCallsIsRefused() {
     // A, B good; C gone and D damaged while it plays: Previous from D, before its skip turn, lands on B.
     val rig = Rig()
     rig.fail(path(2, 1), RecordingPlayer.REASON_GONE)
@@ -1021,11 +1036,17 @@ private fun nextPastOnlyFailedCallsFinishes() {
     check(rig.status.actions and ACTION_NEXT == 0) { "the session offers no Next" }
     val b = rig.current
     rig.machine.next()
-    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
-        "Next with only failed calls ahead finishes, as the advance at the end does"
+    rig.turn()
+    // r13: delivered by the rule that offers it, a Next not offered changes nothing: B goes on.
+    check(rig.state == PLAYING && rig.status.call == 1 && rig.current === b && !b.released) {
+        "a Next with only failed calls ahead is refused, and B goes on (${rig.state})"
     }
-    check(rig.status.call == 1 && b.released && rig.opener.opened.count { it == path(2, 1) } == 1) {
-        "on the call that played, nothing failed tried again"
+    check(rig.opener.opened.count { it == path(2, 1) } == 1 && rig.service.ends.isEmpty()) {
+        "nothing failed tried again, nothing ended"
+    }
+    rig.playOut()
+    check(rig.state == STOPPED && rig.status.endedReason == RecordingPlayer.ENDED_FINISHED) {
+        "B's end finishes the play, as the advance at the end does"
     }
     check(rig.service.ends == listOf(generation to RecordingPlayer.ENDED_FINISHED)) { "the service is told once" }
 }
@@ -4115,7 +4136,7 @@ fun main() {
     aPlaylistPlaysCallsAndPartsInOrderWithAGapBetweenCalls()
     theGapReadsFrozenAndPausesWithIt()
     nextOpensTheNextCallAtOnceAlsoFromTheGap()
-    nextPastOnlyFailedCallsFinishes()
+    nextPastOnlyFailedCallsIsRefused()
     previousFollowsTheThreeSecondRule()
     aPendingStartHasAWatchdog()
     aSeekTakesAPendingStartBack()

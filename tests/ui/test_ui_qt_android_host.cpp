@@ -2617,6 +2617,7 @@ struct StatusFields {
     int skipCall = -1;
     int skipCount = 0;
     int seeksLanded = 0;
+    int canNext = 0;
 
     QString
     text() const {
@@ -2634,7 +2635,7 @@ struct StatusFields {
         f.append(ended);
         f.append(QString::number(skipped));
         f.append(QString::number(serial));
-        for (const int n : {refusals, skipCall, skipCount, seeksLanded}) {
+        for (const int n : {refusals, skipCall, skipCount, seeksLanded, canNext}) {
             f.append(QString::number(n));
         }
         return f.join(QLatin1Char('\t'));
@@ -3093,6 +3094,20 @@ check_playlist_record() {
     r.status = f.text() + QStringLiteral("\t0");
     host.refresh();
     check(host.playbackSeeksLanded() == 1, "a record with a field too many is no record");
+    f.seeksLanded = 1;
+    f.canNext = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackCanNext() && host.property("playbackCanNext").toBool() && seen.changed == refusedChanges + 5,
+          "#909 r13: Next as the player offers it is published, as a change");
+    f.canNext = 2;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackCanNext(), "a can-next flag that is neither 0 nor 1 is no record");
+    f.canNext = 0;
+    r.status = f.text();
+    host.refresh();
+    check(!host.playbackCanNext(), "no Next offered: none published");
 
     f.item = 3;
     f.paused.clear();

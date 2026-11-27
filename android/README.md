@@ -809,7 +809,7 @@ in place of its play mark (TalkBack: "playing" or "paused"), in History, the Mon
 activity.
 
 - **Next call** goes to the next call at once, also during the second between calls. It is not offered on the last
-  call.
+  call, nor while every later call has already failed to play.
 - **Previous call** goes back to the start of the call playing when more than 3 seconds of it have played or a later
   part plays; otherwise it goes to the previous call (on the first call, it starts it again). During the second after
   a call, it plays that call again.

@@ -882,6 +882,13 @@ Item {
             playing({item: 1});
             verify(!next.enabled, "the last call: no Next");
             verify(previous.enabled);
+            // r13: Next follows the player's own rule: on the first call with every later one already known failed
+            // (a restart that fell back to it), the player offers no Next, and neither does the bar.
+            playing({item: 0, playbackCanNext: false});
+            compare(bar(screen).callIndex, 0);
+            verify(!next.enabled, "every later call failed: no Next, as the player offers none");
+            playing({item: 0, playbackCanNext: true});
+            verify(next.enabled, "offered again once the player offers it");
         }
 
         // ✕ while it plays stops this playlist, and only it; the bar goes with it.

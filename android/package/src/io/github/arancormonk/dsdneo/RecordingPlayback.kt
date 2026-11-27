@@ -226,7 +226,7 @@ object RecordingPlayback {
         post { machine -> PlayPauseTaps.scoped(serviceTaps, machine, machine.status.generation, token, command) }
 
     /**
-     * The player's status record ([RecordingPlayer.Status.record], 22 fields), which DecoderHostAndroid parses; the
+     * The player's status record ([RecordingPlayer.Status.record], 23 fields), which DecoderHostAndroid parses; the
      * idle record before the first play.
      */
     @JvmStatic
@@ -503,7 +503,9 @@ object RecordingPlayback {
 
     /** The record [status] gives before the first play, as after a host stop. */
     private fun idleRecord(): String =
-        listOf(0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial, 0, -1, 0, 0).joinToString("\t")
+        listOf(
+            0, 0, 0, 0, "", -1, 0, -1, 0, 0, 0, 0, 0, 0, "", "", 0, recheck.serial, 0, -1, 0, 0, 0,
+        ).joinToString("\t")
 
     /** Once per state change, coalesced: the service shows the player's current status on the main thread. */
     private fun requestRender() {

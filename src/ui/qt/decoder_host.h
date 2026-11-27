@@ -116,6 +116,7 @@ class DecoderHost : public QObject {
     Q_PROPERTY(int playbackSkipNoticeCall READ playbackSkipNoticeCall NOTIFY playbackChanged)
     Q_PROPERTY(int playbackSkipNoticeCount READ playbackSkipNoticeCount NOTIFY playbackChanged)
     Q_PROPERTY(int playbackSeeksLanded READ playbackSeeksLanded NOTIFY playbackChanged)
+    Q_PROPERTY(bool playbackCanNext READ playbackCanNext NOTIFY playbackChanged)
     Q_PROPERTY(QString playbackHoldPath READ playbackHoldPath NOTIFY playbackChanged)
     Q_PROPERTY(bool recordingExportSupported READ recordingExportSupported CONSTANT)
     Q_PROPERTY(bool recordingTransferActive READ recordingTransferActive NOTIFY recordingTransferChanged)
@@ -216,6 +217,7 @@ class DecoderHost : public QObject {
         int skipNoticeCall = -1;
         int skipNoticeCount = 0;
         int seeksLanded = 0;
+        bool canNext = false;
     };
 
     /**
@@ -459,9 +461,10 @@ class DecoderHost : public QObject {
      * how many, while that call is the one playing (-1 and 0: none); the player keeps it, so it names the right call
      * whatever was seen in between. playbackSeeksLanded: the seeks this play's player has confirmed landing (#909
      * R56), which moves only when the latest seek lands, so a position read before a seek reached the player is never
-     * taken for its landing (0 on a host whose seeks have no confirmation). playbackHoldPath: the file the recording
-     * store holds from deletes while it
-     * plays; only a single recording's play holds one (empty for parts and playlists, which hold no files).
+     * taken for its landing (0 on a host whose seeks have no confirmation). playbackCanNext: whether Next would act,
+     * by the player's own rule (a later call not already known failed, #909 r13); false with no queue.
+     * playbackHoldPath: the file the recording store holds from deletes while it plays; only a single recording's play
+     * holds one (empty for parts and playlists, which hold no files).
      */
     virtual bool
     playbackSupported() const {
@@ -596,6 +599,11 @@ class DecoderHost : public QObject {
     int
     playbackSeeksLanded() const {
         return m_playback.seeksLanded;
+    }
+
+    bool
+    playbackCanNext() const {
+        return m_playback.canNext;
     }
 
     int

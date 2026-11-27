@@ -303,7 +303,7 @@ and withdrawn fragments, notices, interleaved timestamps, 1,000 rows with multi-
 result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row order in one reader lock, the map's
 identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
 identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
-(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 22-field status record and malformed ones ignored (a
+(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 23-field status record and malformed ones ignored (a
 reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
 reading unchanged), the recheck paths on a serial change, on a foreground return (Inactive included, an end between
 polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative

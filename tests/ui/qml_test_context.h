@@ -3792,6 +3792,7 @@ class ReadingMap : public QQmlPropertyMap {
                 {QStringLiteral("playbackSkipNoticeCall"), -1},
                 {QStringLiteral("playbackSkipNoticeCount"), 0},
                 {QStringLiteral("playbackSeeksLanded"), 0},
+                {QStringLiteral("playbackCanNext"), false},
                 {QStringLiteral("playbackHoldPath"), QString()}};
     }
 
@@ -3826,6 +3827,9 @@ class ReadingMap : public QQmlPropertyMap {
         }
         if (!readings.contains(QStringLiteral("playbackHoldPath"))) {
             followHold();
+        }
+        if (!readings.contains(QStringLiteral("playbackCanNext"))) {
+            followNext();
         }
         QVariantMap after = playbackReadings();
         const QString position = QStringLiteral("playbackPositionMs");
@@ -4063,6 +4067,7 @@ class ReadingMap : public QQmlPropertyMap {
         insert(QStringLiteral("playbackState"), 1);
         showItem(0);
         followHold();
+        followNext();
         Q_EMIT playbackChanged();
         Q_EMIT playbackPositionChanged();
         return generation;
@@ -4086,6 +4091,17 @@ class ReadingMap : public QQmlPropertyMap {
                playedItems.last().toMap().value(QStringLiteral("call")).toInt() + 1);
         insert(QStringLiteral("playbackPartOrdinal"), item.value(QStringLiteral("partOrdinal")).toInt());
         insert(QStringLiteral("playbackPartCount"), item.value(QStringLiteral("partCount")).toInt());
+    }
+
+    /* playbackCanNext as the player derives it with no call already failed: a queue's call before its last (#909 r13);
+     * a case sets it itself for a later call already known failed. */
+    void
+    followNext() {
+        const int call = value(QStringLiteral("playbackCallIndex")).toInt();
+        const bool queue = value(QStringLiteral("playbackMode")).toInt() != dsd_qt::DecoderHost::PlaybackSingle;
+        insert(QStringLiteral("playbackCanNext"), value(QStringLiteral("playbackGeneration")).toInt() != 0 && queue
+                                                      && call >= 0
+                                                      && call < value(QStringLiteral("playbackCallCount")).toInt() - 1);
     }
 
     /* playbackHoldPath as the host derives it: a single recording's path while it is open. */
