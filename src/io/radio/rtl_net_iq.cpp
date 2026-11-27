@@ -11,9 +11,9 @@
  * block being filled, the resampler and the level scratch need no lock. The reader never waits on the ring: a block
  * the ring cannot take whole is dropped whole and leaves a gap mark, as a SoapySDR or Airspy device drops what a full
  * ring cannot take, so the queued samples and the decoder's generation stay as they are. The demod starts its filters
- * over at the gap mark, so a resampler starts over there too, with the rest of its output for that slice let go: its
- * first output after the gap is the cascade's first input after its reset, the alignment the squelch's reader model
- * describes (issue #899).
+ * over at the gap mark, so a resampler starts over there too, with the input after the dropped block (its calls end
+ * where a block does, so the drop costs that block alone): its first output after the gap is the cascade's first input
+ * after its reset, the alignment the squelch's reader model describes (issue #899).
  */
 
 #include "rtl_net_iq.h"
@@ -173,7 +173,8 @@ net_iq_write_block(struct rtl_net_iq* n) {
 
 /* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. Returns 1 when a block was
  * dropped behind a resampler, which then starts over: the rest of @p iq, made before the gap, is let go (counted as
- * dropped), so the resampler's next output is the first after the gap mark. */
+ * dropped), so the resampler's next output is the first after the gap mark. The resampler's calls end where a block
+ * does (net_iq_resample_slice()), so that rest is at most a few outputs of one input. */
 static int
 net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     while (pairs > 0U) {
@@ -197,6 +198,24 @@ net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
     return 0;
 }
 
+/* The inputs the resampler takes next: at most a slice, and no more than can fill the block being filled
+   (floor(room M / L), at least one input), so a block the ring drops ends a resampler call. The resampler then starts
+   over with the input after it, and nothing else the call made is lost (at most ceil(L / M) - 1 outputs of that input
+   when one input makes more than the room left, an upsampling reader). */
+static size_t
+net_iq_resample_slice(const struct rtl_net_iq* n, size_t pairs) {
+    const uint64_t room = (uint64_t)n->chunk_pairs - (uint64_t)n->fill;
+    uint64_t fit = room * (uint64_t)n->resampler->M / (uint64_t)n->resampler->L;
+    if (fit < 1U) {
+        fit = 1U;
+    }
+    size_t slice = pairs < kNetIqResampleSliceSamples ? pairs : kNetIqResampleSliceSamples;
+    if ((uint64_t)slice > fit) {
+        slice = (size_t)fit;
+    }
+    return slice;
+}
+
 static void
 net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
     struct rtl_net_iq* n = static_cast<struct rtl_net_iq*>(ctx);
@@ -211,7 +230,7 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
         return;
     }
     while (pairs > 0U) {
-        const size_t slice = pairs < kNetIqResampleSliceSamples ? pairs : kNetIqResampleSliceSamples;
+        const size_t slice = net_iq_resample_slice(n, pairs);
         const int made = dsd_iq_resampler_process(n->resampler, iq, slice, n->resampled, n->resampled_cap);
         if (made > 0) {
             (void)net_iq_append(n, n->resampled, (size_t)made);

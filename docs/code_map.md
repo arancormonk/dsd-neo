@@ -12476,14 +12476,14 @@ Key public headers:
     x256 and cs16 as 16-bit samples, cs32/cf32 as floats) is published over at least one block, short reads collected
     until they span one; the reader-side resampler
     (`rtl_iq_resampler_open()`, the design a resampled replay uses: protected band 0.45 of the final DSP rate) takes
-    4096-sample slices; a one-block accumulator of `dsd_iq_live_block_samples()` writes whole blocks only. A block the
-    ring cannot take is dropped whole: producer drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log
-    (queued samples and the generation stay; a PCM input in front leaves the stream running this way). Behind a
-    resampler the resampler starts over there (exact for an isolated drop: fewer than 33 gap marks pending), the rest of
-    that slice's output dropped with the block (`rtl_net_iq_state::drop_clears`), as the demod's filters start over at
-    the gap mark: its first output after the gap is the cascade's first input, the alignment the squelch's reader model
-    describes (issue #899; left running, the decimators could keep another coset of the reader's phases, 5e-5 off the
-    plan at 112 kHz into 64 kHz).
+    slices of at most 4096 samples, each ending where the block being filled does; a one-block accumulator of
+    `dsd_iq_live_block_samples()` writes whole blocks only. A block the ring cannot take is dropped whole: producer
+    drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log (queued samples and the generation stay; a
+    PCM input in front leaves the stream running this way). Behind a resampler the resampler starts over there with the
+    input after the block, which alone is lost (exact for an isolated drop: fewer than 33 gap marks pending;
+    `rtl_net_iq_state::drop_clears`), as the demod's filters start over at the gap mark: its first output after the gap
+    is the cascade's first input, the alignment the squelch's reader model describes (issue #899; left running, the
+    decimators could keep another coset of the reader's phases, 5e-5 off the plan at 112 kHz into 64 kHz).
     `dsd_iq_net_reader_note_written()` follows each block written. KNOWN_LOSS discards the partial block, clears the
     resampler and marks a gap; DISCONNECTED discards the partial block.
   - Boundary: RECONNECT (a new TCP connection, a new UDP sender) and RESUME (samples after a stall) discard the

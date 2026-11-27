@@ -1007,6 +1007,8 @@ test_ring_full_restarts_the_reader(void) {
            && reader.M == 7);
     const size_t block_pairs = (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
     const size_t block_floats = 2U * block_pairs;
+    rtl_stream_test_live_sequence live_before{};
+    rtl_stream_test_get_live_sequence(&live_before);
 
     std::vector<float> src;
     uint64_t seed = 0x899C5EEDULL;
@@ -1030,6 +1032,15 @@ test_ring_full_restarts_the_reader(void) {
         assert(0);
     }
     assert(st.boundaries == 0U && st.input_restarts == 0U && st.resampler_clears == 0U);
+    /* Each drop cost its block alone: the resampler's calls end where a block does, so nothing after it went too. */
+    rtl_stream_test_live_sequence live_after{};
+    rtl_stream_test_get_live_sequence(&live_after);
+    if (live_after.producer_drops - live_before.producer_drops != st.blocks_dropped * block_floats) {
+        DSD_FPRINTF(stderr, "%llu blocks dropped took %llu floats, not %llu\n", (unsigned long long)st.blocks_dropped,
+                    (unsigned long long)(live_after.producer_drops - live_before.producer_drops),
+                    (unsigned long long)(st.blocks_dropped * block_floats));
+        assert(0);
+    }
     assert(rtl_stream_discontinuity_seq() == seq);
     assert(rtl_stream_output_generation() == gen);
     /* Every block written before the first drop, taken; then the known noise after the drops. */
