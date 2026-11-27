@@ -25,7 +25,9 @@
 #include <dsd-neo/io/rtl_stream_fwd.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/log.h>
+#include <dsd-neo/runtime/rtl_stream_io_hooks.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <memory>
 #include <mutex>
@@ -143,16 +145,22 @@ class Feeder {
     std::thread thread_;
 };
 
-/* Read @p ctx's output until @p done, for at most kWaitNs. */
+/* One read of @p ctx's output that waits at most 100 ms for samples (DSD_RTL_READ_WANT_IDLE_BOUND); whether it read any. */
+bool
+read_bounded(RtlSdrContext* ctx, float* block, size_t count) {
+    int got = 0;
+    return rtl_stream_read_ex2(ctx, block, nullptr, count, &got, DSD_RTL_READ_WANT_IDLE_BOUND) == 0 && got > 0;
+}
+
+/* Read @p ctx's output until @p done, for at most kWaitNs (each read bounded, so a stalled stream meets the deadline). */
 template <typename Done>
 void
 read_until(RtlSdrContext* ctx, Done done) {
-    const uint64_t start_ns = dsd_time_monotonic_ns();
+    const uint64_t start_ns = dsd_realtime_mono_ns();
     float block[2048];
     while (!done()) {
-        CHECK(dsd_time_monotonic_ns() - start_ns < kWaitNs);
-        int got = 0;
-        if (rtl_stream_read(ctx, block, sizeof(block) / sizeof(block[0]), &got) != 0 || got == 0) {
+        CHECK(dsd_realtime_mono_ns() - start_ns < kWaitNs);
+        if (!read_bounded(ctx, block, sizeof(block) / sizeof(block[0]))) {
             dsd_sleep_ms(1);
         }
     }
@@ -270,7 +278,8 @@ test_tap_capture_geometry() {
 }
 
 /* Reads @p ctx's output on its own thread until destroyed, so the demod never waits on a full output ring while the test
-   feeds the SDK's callback itself. Stop the stream before destroying it: a read waits for output until then. */
+   feeds the SDK's callback itself. Each read gives up after 100 ms without samples, so the destructor's join returns
+   while the stream still runs: destroy the reader before stopping the stream, which no read may overlap. */
 class OutputReader {
   public:
     explicit OutputReader(RtlSdrContext* ctx) : ctx_(ctx), thread_([this] { run(); }) {}
@@ -288,8 +297,7 @@ class OutputReader {
     run() {
         float block[2048];
         while (!stop_.load()) {
-            int got = 0;
-            if (rtl_stream_read(ctx_, block, sizeof(block) / sizeof(block[0]), &got) != 0 || got == 0) {
+            if (!read_bounded(ctx_, block, sizeof(block) / sizeof(block[0]))) {
                 dsd_sleep_ms(1);
             }
         }
@@ -304,14 +312,14 @@ class OutputReader {
    (the paced feeder's boundary: the tap has taken what the transfer committed). */
 void
 deliver_paced(const float* iq, int pairs) {
-    const uint64_t start_ns = dsd_time_monotonic_ns();
+    const uint64_t start_ns = dsd_realtime_mono_ns();
     while (!deliver(iq, pairs)) {
-        CHECK(dsd_time_monotonic_ns() - start_ns < kWaitNs);
+        CHECK(dsd_realtime_mono_ns() - start_ns < kWaitNs);
         dsd_sleep_ms(1);
     }
     const uint64_t produced = live_sequence().input_produced;
     while (live_sequence().demod_idle_consumed < produced) {
-        CHECK(dsd_time_monotonic_ns() - start_ns < kWaitNs);
+        CHECK(dsd_realtime_mono_ns() - start_ns < kWaitNs);
         dsd_sleep_ms(1);
     }
 }
@@ -396,8 +404,8 @@ test_retune_lead_after_the_mute() {
         CHECK(result.capture.generation == capture.generation);
         CHECK(result.max_ratio_db < 10.0f); /* the noise's reading: the carrier would stand tens of dB over it */
     }
-    CHECK(rtl_stream_stop(ctx) == 0);
     reader.reset();
+    CHECK(rtl_stream_stop(ctx) == 0);
     CHECK(rtl_stream_destroy(ctx) == 0);
 }
 

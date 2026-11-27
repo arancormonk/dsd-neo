@@ -123,7 +123,9 @@ int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int*
 int rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune,
                                      int buffered_backend, uint32_t min_bytes);
 /* The retune mute, in bytes, the stream arms on @p dev at @p sample_rate_hz with the configured window (a buffered
- * backend when @p buffered_backend), as controller_arm_retune_mute() sizes it. */
+ * backend when @p buffered_backend), as controller_arm_retune_mute() sizes it. A running stream's own device
+ * (rtl_stream_test_device()) is read in place; any other stands in for the open device during the call, so only while
+ * no stream runs. */
 int rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
                                                  int buffered_backend);
 /* While @p on, the open's input-ring sizing fails as when its memory is not there. Set while no stream runs. */

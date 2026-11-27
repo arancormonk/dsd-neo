@@ -16002,6 +16002,10 @@ extern "C" int
 rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
                                              int buffered_backend) {
     struct rtl_device* const outer = rtl_device_handle;
+    if (dev == outer) {
+        /* A running stream's own device: read in place, never writing the handle its threads read. */
+        return retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
+    }
     rtl_device_handle = dev;
     const int bytes = retune_mute_bytes(sample_rate_hz, post_retune, buffered_backend);
     rtl_device_handle = outer;
