@@ -1287,9 +1287,11 @@ test_ring_full_restarts_the_reader(void) {
     assert(after.blocks_dropped == st.blocks_dropped);
     assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
     std::vector<float> taken;
+    std::vector<size_t> cuts;
     {
         const std::lock_guard<std::mutex> hold(g_blocks.lock);
         taken = g_blocks.samples;
+        cuts = g_blocks.floats;
     }
     assert(taken.size() > before_gap + ((size_t)2U * 2048U));
     const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
@@ -1316,17 +1318,9 @@ test_ring_full_restarts_the_reader(void) {
     assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
     /* And the half-bands started over at that first sample, keeping the reader phases a fresh start keeps: the demod's
        post-decimation output from the gap on is a fresh cascade over the fresh reader, sample for sample, right after
-       the outputs the pre-gap input makes from the stream's start. A reset a block late would keep another phase. */
-    std::vector<float> cascade;
-    {
-        const std::lock_guard<std::mutex> hold(g_cascade_lock);
-        cascade = g_cascade;
-    }
-    std::vector<size_t> cuts;
-    {
-        const std::lock_guard<std::mutex> hold(g_blocks.lock);
-        cuts = g_blocks.floats;
-    }
+       the outputs the pre-gap input makes from the stream's start. A reset a block late would keep another phase. The
+       expected outputs come from the blocks' cuts; the tap runs after the block hook, so the copy waits for it to have
+       published that many. */
     FreshCascade from_open;
     FreshCascade from_gap;
     std::vector<float> pre_cascade;
@@ -1342,6 +1336,18 @@ test_ring_full_restarts_the_reader(void) {
         at += k;
     }
     const size_t pre_out = pre_cascade.size();
+    const size_t expected = pre_out + want.size();
+    (void)wait_until(
+        [&] {
+            const std::lock_guard<std::mutex> hold(g_cascade_lock);
+            return g_cascade.size() >= expected;
+        },
+        kWaitMs);
+    std::vector<float> cascade;
+    {
+        const std::lock_guard<std::mutex> hold(g_cascade_lock);
+        cascade = g_cascade;
+    }
     assert(cascade.size() >= pre_out && std::equal(pre_cascade.begin(), pre_cascade.end(), cascade.begin()));
     const size_t have = cascade.size() > pre_out ? cascade.size() - pre_out : 0U;
     if (have < want.size() || want.size() < (size_t)2U * 512U
