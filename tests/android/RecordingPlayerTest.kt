@@ -1201,10 +1201,6 @@ private fun theQueueIsLetGoAtTheEnd() {
 }
 
 /**
- * A move keeps its direction until its candidate plays (R46): a candidate that prepared but failed before its first
- * start was acknowledged is a candidate that failed, so the search goes on the way the move was going, with no gap.
- */
-/**
  * The emulator's Previous burst (D1, evidence emu-r10): five Previous from Call 6 of 7 (two parts, the first 1.44 s
  * long). While its first part plays, each press moves one call and the burst ends on Call 1. In the failing runs that
  * part had completed just as the burst arrived (its player released unpaused), so the first press found the second
@@ -1250,6 +1246,30 @@ private fun aPreviousBurstAtAPartBoundaryRestartsTheCallFirst() {
     }
 }
 
+/**
+ * An opening that is wanted but interrupted (the focus, held across the parts, lost for a while before the next part
+ * prepared) reads PAUSED on the session, not BUFFERING: the interruption ranks above the wish (m5).
+ */
+private fun anInterruptedOpeningReadsPausedOnTheSession() {
+    val rig = Rig()
+    rig.queue(2, 1)
+    rig.prepared()
+    rig.complete()
+    check(rig.status.partOrdinal == 2 && rig.status.state == PREPARING) { "part 2 opens" }
+    check(rig.status.sessionState == SESSION_BUFFERING) { "a wanted opening buffers" }
+    rig.machine.onFocusChange(rig.focus.epoch, FocusChange.LOST_TRANSIENT)
+    check(rig.status.interrupted && rig.status.state == PREPARING) {
+        "interrupted while it opens (${rig.status.interrupted}, ${rig.status.state})"
+    }
+    check(rig.status.sessionState == SESSION_PAUSED) { "interrupted, it reads paused: ${rig.status.sessionState}" }
+    rig.machine.onFocusChange(rig.focus.epoch, FocusChange.GAINED)
+    check(rig.status.sessionState == SESSION_BUFFERING) { "the focus back: buffering again" }
+}
+
+/**
+ * A move keeps its direction until its candidate plays (R46): a candidate that prepared but failed before its first
+ * start was acknowledged is a candidate that failed, so the search goes on the way the move was going, with no gap.
+ */
 private fun aMoveKeepsItsWayUntilItsCandidatePlays() {
     // Previous from C: B prepares, then fails before its start is acknowledged: A plays, not C again.
     val back = Rig()
@@ -3456,6 +3476,7 @@ fun main() {
     aSeekTakesAPendingStartBack()
     aMoveKeepsItsWayUntilItsCandidatePlays()
     aPreviousBurstAtAPartBoundaryRestartsTheCallFirst()
+    anInterruptedOpeningReadsPausedOnTheSession()
     theQueueIsLetGoAtTheEnd()
     aStartPlaysFromItsAcknowledgement()
     eachMoveMakesOnlyTheCandidatesItTries()
