@@ -5122,6 +5122,43 @@ test_session_start_remembers_storage_away(void) {
            all.value(QStringLiteral("count")).toInt() == 2);
 }
 
+/* One recording of row @p row listed, available or not as @p available says. */
+bool
+listed_as(const RecordingStore& store, qint64 row, bool available) {
+    const QVariantList list = store.recordingsForFragments({fragment(row)});
+    return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
+}
+
+/* I1: a root whose recordings folder is missing at a cold start (its parent there) holds nothing, and is looked at
+ * again each pass: once the folder is there, holding recordings, it is listed in full and they are indexed. A fresh
+ * install records into it as before: the session's start makes the folder, and its recordings are indexed. */
+void
+test_folder_missing_at_a_cold_start(void) {
+    {
+        const Roots roots;
+        Store s(roots.list());
+        expect("cold start, folder missing: the store is there to record into", s.store.available());
+        const QString staged = roots.dir.path() + QStringLiteral("/staged");
+        const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+        expect("cold start: a folder made elsewhere",
+               write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+        record(owner, QStringLiteral("0000000000000961-1"), QStringLiteral("a.wav"), 1754000000, 1);
+        expect("cold start: the folder put in place", QDir().rename(staged, roots.external));
+        s.pass();
+        expect("cold start: its recording is indexed and available", listed_as(s.store, 1, true));
+    }
+    {
+        const Roots roots;
+        Store s(roots.list());
+        const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        expect("fresh install: the session made its folder", made.startsWith(roots.external + QLatin1Char('/')));
+        record(made, QStringLiteral("0000000000000961-2"), QStringLiteral("b.wav"), 1754000100, 2);
+        s.store.endSession();
+        s.pass();
+        expect("fresh install: its recording is indexed and available", listed_as(s.store, 2, true));
+    }
+}
+
 /* Issue #902: a delete whose root a session start found missing between the delete's checks and its unlink (back by
  * then) is held for the root's listing in full, which drops it: the file stays. */
 void
@@ -6520,6 +6557,7 @@ main(int argc, char** argv) {
     test_owner_lookup_failure_ends_a_read_in_flight();
     test_marker_retry_takes_the_label_on_disk();
     test_session_start_remembers_storage_away();
+    test_folder_missing_at_a_cold_start();
     test_delete_held_when_its_root_was_seen_away();
     test_owner_lookup_failure_ends_a_tail_in_flight();
 #ifndef _WIN32

@@ -20647,16 +20647,20 @@ Qt Quick frontend (`src/ui/qt`):
     again until a restart. `rootAvailableNow()`'s rule that a root that can be made is there stays for a session start
     alone (`usableRootsLocked()`), which also records into a root held away only because its directory is missing; its
     next read again finds the folder made anew, and the old rows go then (`test_playlist_admission_checks_roots_live`).
-    A root found gone is marked away (`markRootAwayLocked()`: its recordings' fragments are announced, so History rows
-    read them as away); nothing in it leaves the index, a request it interrupted (a delete whose storage left as it ran)
-    stays queued while it is away and is dropped when the root is read again (the B12 backstop above); a delete asked
-    while it is away is refused at once; and the pass decides nothing more about it: a root marked away reads as gone to
-    `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was gone (a short
-    listing, a journal or files not found) is dropped, not applied. A root that comes back is listed, then has its
-    folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps them
-    (`Folder::rereading`) until its read completes and replaces them, so storage that leaves again during that read
-    drops nothing. Decided limit: storage that leaves and comes back between a read and the check after it is not seen,
-    and that read stands (a recording it found missing stays out of the index until its root is next read whole).
+    A root whose directory is missing at a cold start holds nothing and reads as there and empty, so a fresh install's
+    screens never say its storage is away; it is remembered as missing (`m_rootDirMissing`), looked at each pass and by
+    an export's or delete's look at away roots (`awayRootsBackLocked()`), and listed in full once it is a readable
+    directory (I1, `test_folder_missing_at_a_cold_start`). A root found gone is marked away (`markRootAwayLocked()`: its
+    recordings' fragments are announced, so History rows read them as away); nothing in it leaves the index, a request
+    it interrupted (a delete whose storage left as it ran) stays queued while it is away and is dropped when the root is
+    read again (the B12 backstop above); a delete asked while it is away is refused at once; and the pass decides
+    nothing more about it: a root marked away reads as gone to `rootStillAvailable()` until a later pass reads it whole
+    again. A read made while the root was gone (a short listing, a journal or files not found) is dropped, not applied.
+    A root that comes back is listed, then has its folders read: a folder its listing no longer has leaves with its
+    recordings, and one it still has keeps them (`Folder::rereading`) until its read completes and replaces them, so
+    storage that leaves again during that read drops nothing. Decided limit: storage that leaves and comes back between
+    a read and the check after it is not seen, and that read stands (a recording it found missing stays out of the index
+    until its root is next read whole).
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass

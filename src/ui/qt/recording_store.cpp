@@ -396,6 +396,7 @@ RecordingStore::setRoots(const QStringList& roots) {
         }
     }
     m_rootAvailable = QList<bool>(m_roots.size(), false);
+    m_rootDirMissing = QList<bool>(m_roots.size(), false);
 }
 
 void
@@ -707,6 +708,11 @@ RecordingStore::rootThereForIndexLocked(int root) const {
     return rootPlayableNow(path) || (rootAvailableNow(path) && !rootHoldsFoldersLocked(root));
 }
 
+void
+RecordingStore::noteRootMadeLocked(int root) {
+    m_rootDirMissing[root] = false; // made here: nothing appeared that a listing must find
+}
+
 bool
 RecordingStore::rootHoldsFoldersLocked(int root) const {
     return std::any_of(m_folders.cbegin(), m_folders.cend(),
@@ -717,20 +723,30 @@ void
 RecordingStore::refreshRoots(bool first, Pass* pass) {
     QStringList roots;
     QList<bool> was;
+    QList<bool> dirMissing;
     QSet<int> seenAway;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         roots = m_roots;
         was = m_rootAvailable;
+        dirMissing = m_rootDirMissing;
         seenAway.swap(m_rootsSeenAway);
         m_rootsRereading = seenAway; // still seen away to the readers until this read is done (R74)
     }
     for (int i = 0; i < roots.size(); i++) {
         // Its directory missing while it holds folders is away (R83): the rows stay, unavailable, until it is back.
-        const bool now = rootThereForIndex(i, roots.at(i));
+        // Missing with nothing indexed on it (I1: a cold start) it is there and empty, and remembered as missing, so
+        // its directory found since is listed in full, as a root back from away is.
+        const bool playable = rootPlayableNow(roots.at(i));
+        const bool now = playable || rootThereForIndex(i, roots.at(i));
+        const bool appeared = playable && dirMissing.value(i);
+        {
+            const std::lock_guard<std::mutex> lock(m_mutex);
+            m_rootDirMissing[i] = now && !playable;
+        }
         // A root a delete request found missing is listed again in full, even when it is back before this pass: it
         // may have come back changed (two owners' folders swapped) with journals as long as the ones read.
-        if (now && (first || !was.at(i) || seenAway.contains(i))) {
+        if (now && (first || !was.at(i) || seenAway.contains(i) || appeared)) {
             if (!rebuildRoot(i, pass) && was.at(i)) {
                 // Gone again as it was listed: away, so its return is read in full too.
                 const std::lock_guard<std::mutex> lock(m_mutex);
@@ -2722,8 +2738,12 @@ RecordingStore::newFolderLocked(const QString& kind, const QString& uid, const Q
     const QString base = recording_folder_base_name(kind, uid, name);
     for (int i = 0; i < m_roots.size(); i++) {
         // Never a parent: an available root's parent is there, and one gone since is not made again in its place.
-        if (!usable.at(i) || (!QFileInfo(m_roots.at(i)).isDir() && !QDir().mkdir(m_roots.at(i)))) {
+        const bool missing = usable.at(i) && !QFileInfo(m_roots.at(i)).isDir();
+        if (!usable.at(i) || (missing && !QDir().mkdir(m_roots.at(i)))) {
             continue;
+        }
+        if (missing) {
+            noteRootMadeLocked(i);
         }
         for (int n = 1; n <= kMaxFolderCandidates; n++) {
             const QString dirName = n == 1 ? base : QStringLiteral("%1 %2").arg(base, QString::number(n));
@@ -3489,14 +3509,21 @@ RecordingStore::awayRootsBackLocked() {
         return false; // the first pass reads every root
     }
     QList<int> away;
+    bool appeared = false;
     for (int i = 0; i < m_rootAvailable.size(); i++) {
-        if (!m_rootAvailable.at(i) && !m_listing.contains(i)) {
-            away.append(i); // one being listed now is being read already
+        if (m_listing.contains(i)) {
+            continue; // one being listed now is being read already
+        }
+        if (!m_rootAvailable.at(i)) {
+            away.append(i);
+        } else if (m_rootDirMissing.value(i) && rootPlayableNow(m_roots.at(i))) {
+            noteRootSeenAwayLocked(i); // I1: its directory, missing when it was listed, is there now
+            appeared = true;
         }
     }
     bool missing = false;
     bool unread = false;
-    if (away.isEmpty() || !checkRootsLocked(away, &missing, &unread)) {
+    if (!appeared && (away.isEmpty() || !checkRootsLocked(away, &missing, &unread))) {
         return false;
     }
     m_passRequested = true;
