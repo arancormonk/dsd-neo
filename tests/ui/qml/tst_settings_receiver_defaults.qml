@@ -76,6 +76,9 @@ Item {
         function note() {
             return control("settingsBandwidthNote");
         }
+        function meaning() {
+            return control("settingsBandwidthMeaning");
+        }
 
         // B9: the engine holds PPM to +-200; a value outside shows its error
         // and is never written (an older build saved any whole number).
@@ -172,6 +175,30 @@ Item {
             pick(combo, "25 kHz");
             compare(prefs.bandwidthKhz, 25, "the stored width can be picked back");
             verify(note().visible);
+        }
+
+        // Issue #899 (D5): the bandwidth was taken for the NFM channel width.
+        // A line under the choice says what it is and where that width is
+        // set, wrapped to the card, read by a screen reader as its own words,
+        // and kept under the odd-width note when that shows.
+        function test_settingsBandwidthMeaning() {
+            var line = meaning();
+            var combo = control("settingsBandwidth");
+            verify(line.visible);
+            compare(line.text, "The slice of spectrum the decoder processes. The NFM channel width is set in the Radio sheet.");
+            compare(line.wrapMode, Text.Wrap);
+            verify(line.lineCount > 1, "the line wraps at a phone's width");
+            compare(line.width, combo.width);
+            verify(line.contentWidth <= line.width, "the line runs past the card");
+            compare(line.Accessible.name, line.text);
+            compare(line.Accessible.role, Accessible.StaticText);
+            verify(line.y > combo.y + combo.height, "the line is not under the choice");
+            prefs.bandwidthKhz = 25;
+            verify(note().visible);
+            verify(line.visible, "the line went when the odd-width note showed");
+            verify(line.y > note().y + note().height, "the line is not under the odd-width note");
+            pick(combo, "16 kHz");
+            verify(line.visible);
         }
 
         // An odd width written from elsewhere (a restore) shows as it is too.

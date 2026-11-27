@@ -2,7 +2,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 """Design gate for a floor-relative ("auto") analog squelch: can a per-window classifier tell
 "noise only" from "carrier present" on the channel-filtered complex baseband, at every channel
-plan the analog monitor runs?
+plan the analog monitor runs? And, with --frozen, does the shipped classifier meet its targets on
+the chains the decoder runs?
 
 The classifier sees z, the complex baseband after the half-band cascade and the channel low-pass
 (full_demod(): halfband -> channel_lpf_apply()), before any demodulation. Per sample-exact 20 ms
@@ -17,59 +18,104 @@ window it measures
 
 and decides CARRIER when CV2 <= t1 or C >= t2, NOISE when CV2 >= t3 and C <= t4, else UNDECIDED.
 
-Everything comes from the repository, not from invented numbers:
+Everything comes from the repository, not from invented numbers (the chain model below lives in
+tools/squelch_chain_model.py, which tools/squelch_paths_model.py and tools/noise_squelch_model.py import too):
 
   - The channel taps are the plans full_demod() designs, printed by tools/squelch_model_taps.cpp,
     which this script compiles against the static DSP/runtime/IQ/platform libraries of a configured
     build tree (default build/dev-debug, the link line of dsd-neo_test_dsp_channel_filters). The
     half-band taps come from the same harness. A numpy port of dsd_firdes_low_pass() cross-checks
-    every designed plan.
-  - Which (kind, width, DSP rate, post_downsample) runs, and with which plan, follows the stream
-    rules in src/io/radio/rtl_demod_config.cpp and src/runtime/analog_channel.c: an explicit NFM
-    width and every AM width need dsd_analog_width_realizable() at the demod rate and
-    post_downsample 1; the unset NFM default runs everywhere, with the 16 kHz design where the rate
-    realizes it, the legacy WIDE profile plan (288-tap cap, 63-tap fallback prototype) where it does
-    not, and no channel filter at all where the channel LPF is off (rate_in below 20 kHz, or
-    DSD_NEO_CHANNEL_LPF=0). With post_downsample above 1 the plan designed at the demod rate runs
-    at rate_out x post_downsample; every window and lag here is at that pre-post-decimation rate.
-  - DSP rates: the RTL DSP bandwidths (4, 6, 8, 12, 16, 24, 48, 72 kHz), the rates a fixed-grid device
-    forces (rtl_choose_passes_for_actual_rate() on 2.5, 6 and 2 MS/s captures: Airspy R2, Airspy
-    Mini, RX-888/SDDC), and I/Q replay chains (the fixtures' 48 kHz, the squelch captures' native
-    39,062 Hz, a 125 kHz capture past the analog tap capacity, and post_downsample 2 and 4).
+    every designed plan. The harness also runs each chain through full_demod() under AUTO and
+    prints the auto squelch plan the decoder installs there (issue #899).
+  - Each rate chain is the production chain identity: the capture rate into the half-band cascade,
+    the passes (hb31 first, hb15 after), the live step, the replay or network reader's resampler
+    (iq_resampler) and the complex rate the channel filter, the plan and the tracker run at. RTL-SDR
+    rows take the capture rate and passes the RTL-SDR planner gives each DSP bandwidth
+    (rtl_downsample_passes_for_rate_in(), rate_plan_passes(): 4 to 8 passes); I/Q replay rows run
+    the recorded base decimation's passes (none, or 3 to 5) at the recorded complex rate; reader
+    rows run the general replay plan (D x 2^k): the reader from the source rate to D x 2^k (a port
+    of iq_resampler.c's design), then k passes. Post-decimation acts after the tracker, so a
+    post_downsample row is its base row's chain. Fixed-grid device rows (Airspy, Airspy Mini,
+    RX-888/SDDC) step to the DSP bandwidth (a polyphase step after the passes): this script has
+    no port of the live step, so those rows are listed and scoped out of every verdict here;
+    DSP_SQUELCH_STEP_MODEL(_MATRIX) holds the stepped chain (the real step through full_demod())
+    to the floor and noise squelch bounds instead.
+  - Which (kind, width, chain) runs, and with which plan, follows the stream rules in
+    src/io/radio/rtl_demod_config.cpp and src/runtime/analog_channel.c: an explicit NFM width and
+    every AM width need dsd_analog_width_realizable() at the complex rate; the unset NFM default
+    runs everywhere, with the 16 kHz design where the rate realizes it, the legacy WIDE profile plan
+    (288-tap cap, 63-tap fallback prototype) where it does not, and no channel filter at all where
+    the channel LPF is off (rate_in below 20 kHz, or DSD_NEO_CHANNEL_LPF=0).
+  - Generation, normalization and deduplication follow the chain identity. Noise is white complex
+    Gaussian noise of unit variance at the chain's source rate (the capture rate, or a reader's
+    source rate), streamed through numpy ports of the chain's own stages (the reader's polyphase
+    bank, the half-band decimators, the channel FIR) with every stage's history, the reader's phase
+    and the windows' fractional boundaries kept across chunks. Carriers are synthesized at the same
+    source rate and run through the same chain; CNR is the carrier power over the noise power, both
+    at the channel filter's output. The normalization (beta, N_eff) and the windows' lag come from
+    the chain's noise covariance at the channel output: the half-band recursion (R'[k] = sum_j
+    g[j] R[2k - j]) through the channel taps for chains without a reader, every output phase of the
+    reader's chain (impulses through the ported chain) otherwise, designed as
+    dsd_squelch_floor_plan_design_periodic_mean() designs it, choosing the averaged or the full
+    periodic design on the C reader model's bound (mean_bound()). Every row is classified with the
+    plan the decoder installs (a reader row's through the reader: src/dsp/squelch_reader_model.c),
+    and the script's own plan is held to it.
+    Reader rows qualify the wanted modulation and offset against the source band too: a variant
+    whose occupied band passes the reader's pass edge is reported as "edge", not gated.
+  - Rate chains: the RTL DSP bandwidths (4, 6, 8, 12, 16, 24, 48, 72 kHz), I/Q replay chains (the
+    fixtures' 48 kHz, the squelch captures' native 39,062 Hz, a 125 kHz capture past the analog tap
+    capacity, 16 and 48 kHz recorded through 3 to 5 passes, and post_downsample 2 and 4), reader
+    chains (8 kHz upsampled to 16 kHz, 40 kHz to 32 kHz then one pass to 16 kHz, 250 kHz to 192 kHz
+    then two passes to 48 kHz, 48,001 Hz at L/M 1/1 to 48 kHz, 112 kHz to 64 kHz then two passes to
+    16 kHz, where the passes keep one of the reader's four phases, 12 kHz upsampled to 48 kHz,
+    where the reader's guarded pass edge leaves the noise squelch no band, and 16 kHz upsampled to
+    48 kHz, where it clips the band short of the channel's edge) and the device rows above.
 
-Signals (fixed seeds) are built at the channel rate: channel-filtered complex Gaussian noise (white
-at twice the rate through the last half-band stage for live and device chains, white at the rate
-for replay with base_decimation 1); FM carriers (dead carrier, tones 300/1000/3000 Hz, real speech
-taken from the discriminator of tests/fixtures/iq/nfm_*_real.iq) at half and full rated deviation;
-AM carriers (dead carrier, the same tones, real airband speech from am_airband_real.iq and the
-nfm_squelch_real_a speech, at 30, 60 and 100 % depth); each at 0, +/-1 and +/-2.5 kHz offset; and
-the real captures themselves (nfm_ctcss_real without its 12.5 kHz neighbour). CNR is
-the carrier power over the noise power at the channel filter's output (so the noise bandwidth is
-the filter's own), at 0, 3, 6, 10 and 20 dB. A CARRIER window is any window of an in-channel
-carrier at CNR >= 6 dB (3 and 0 dB are reported separately); a NOISE window is noise alone.
+Signals (fixed seeds): channel noise as above; FM carriers (dead carrier, tones 300/1000/3000 Hz,
+real speech taken from the discriminator of tests/fixtures/iq/nfm_*_real.iq) at half and full rated
+deviation; AM carriers (dead carrier, the same tones, real airband speech from am_airband_real.iq
+and the nfm_squelch_real_a speech, at 30, 60 and 100 % depth); each at 0, +/-1 and +/-2.5 kHz
+offset; and the real captures themselves (nfm_ctcss_real without its 12.5 kHz neighbour), at 0, 3,
+6, 10 and 20 dB CNR. A CARRIER window is any window of an in-channel carrier at CNR >= 6 dB (3 and
+0 dB are reported separately); a NOISE window is noise alone.
 
 Rated FM deviation for a width W is the Carson-rule fit for 3 kHz audio, min(5 kHz, W/2 - 3 kHz),
 floored at W/8: 1 kHz at 8 kHz, 2 kHz at 10 kHz, 3.25 kHz at 12.5 kHz, 5 kHz from 16 kHz (the
 25 kHz-plan rating; 12.5 kHz plans rate 2.5 kHz, inside this). A variant whose occupied band
 (|offset| + deviation + highest audio frequency for FM, |offset| + highest audio frequency for AM)
-passes the protected half-width is reported as "edge" and kept out of the gating rates.
+passes the protected half-width (or a reader's pass edge) is reported as "edge" and kept out of the
+gating rates.
 
 Decision targets per window: false CARRIER on noise <= 1e-4; an in-channel carrier at 6 dB not called CARRIER
 <= 1e-2; a carrier at >= 6 dB called NOISE (it would raise the floor) <= 1e-4; noise not called NOISE <= 0.25.
-Thresholds are chosen on a grid, globally over every plan that can meet the targets on its own, deepest inside the
-region all of them accept. Besides the planned classifier (fixed thresholds, 20 ms, C) the script evaluates the
-smallest changes, alone and together: a 40 ms window (two sample-exact 20 ms windows pooled), C less its expected
-value on noise (beta = (pi/4) rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), rho_n the noise autocorrelation with the
-half-band stage), thresholds normalised by sqrt(N_eff), and an amplitude-weighted coherence Cz. It recommends the
-first scheme, in order of how far it departs from the plan, that passes the most plans.
+
+Two modes:
+
+  design (the default) chooses thresholds on a grid, globally over every plan that can meet the targets on its own,
+  deepest inside the region all of them accept. Besides the planned classifier (fixed thresholds, 20 ms, C) it
+  evaluates the smallest changes, alone and together: a 40 ms window (two sample-exact 20 ms windows pooled), C less
+  its expected value on noise (beta = (pi/4) rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), rho_n the noise autocorrelation
+  at the channel output), thresholds normalised by sqrt(N_eff), and an amplitude-weighted coherence Cz. It recommends
+  the first scheme, in order of how far it departs from the plan, that passes the most plans. This is how the shipped
+  scheme (norm/40ms/cdb) was chosen; it explores, and exits 0 whatever it finds.
+
+  --frozen confirms the shipped classifier with its thresholds frozen (src/dsp/squelch_floor.c: CARRIER at
+  X <= -7.0 or Y >= 3.3, NOISE at X >= -3.8 and Y <= 2.1, X = (CV2 - 1) sqrt(N_eff), Y = |mean(u_k conj(u_{k-L})) -
+  beta| sqrt(N_eff)), deciding each 40 ms window as the tracker does before anything is counted: the window is two
+  20 ms sub-windows whose boundaries fall at floor(k fs / 50) samples from the stream's start, the first L samples of a
+  stream carry no coherence term, a window of fewer than 2 samples or no power is UNDECIDED, and a NOISE window whose
+  sub-windows' powers differ by 3 dB or more is UNDECIDED. It reports, per installed plan, the counts and denominators
+  behind each target with a 95 % Clopper-Pearson interval, lists the known marginal plans the maintainer accepted apart
+  (ACCEPTED_MARGINAL: one plan and one bound each, up to an allowance just above the interval measured), breaks the
+  6 dB misses down by modulation family and offset, and exits 1 when a plan misses a target that no entry accepts.
 
 Usage:
-    python3 tools/squelch_model.py [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
-                                   [--noise-windows N]
+    python3 tools/squelch_model.py [--frozen] [--quick] [--out DIR] [--build-dir build/dev-debug] [--jobs N]
+                                   [--noise-windows N] [--segments N] [--chains TEXT]
 
-Writes report.md and report.json under DIR (default build/squelch_model/) and prints the verdict. The full run takes
-about 25 minutes on 8 workers; --quick (5000 noise windows per filter, short carriers) about one minute, too few
-windows to resolve 1e-4. Offline; CI does not run it.
+Writes report.md and report.json under DIR (default build/squelch_model/, build/squelch_model_frozen/ with --frozen)
+and prints the verdict. --quick (5000 noise windows per filter, short carriers) runs in a few minutes, too few windows
+to resolve 1e-4. Offline; CI does not run it.
 """
 
 from __future__ import annotations
@@ -90,8 +136,45 @@ from pathlib import Path
 
 import numpy as np
 import scipy
-from scipy import ndimage, optimize, special
+from scipy import ndimage, optimize, special, stats
 from scipy import signal as sps
+
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from squelch_chain_model import (
+    CARRIER,
+    LAG_RHO_LIMIT,
+    NOISE,
+    WINDOW_PER_S,
+    ChainStream,
+    FirStream,
+    FrozenStream,
+    RatePlan,
+    SubWindowStream,
+    autocorr,
+    chain_cov,
+    chain_lead,
+    chain_noise,
+    chain_signal,
+    channel_filter,
+    device_step,
+    filter_model,
+    frozen_classes,
+    general_rate,
+    impulse_cov,
+    lag_rule,
+    merge_windows,
+    plan_distance,
+    plan_from_cov,
+    rate_plan_passes,
+    reader_for,
+    rtl_passes,
+    source_count,
+    stream_sums,
+    taps_key,
+    through_taps_cov,
+    white_noise,
+    window_features,
+)
 
 ROOT = Path(__file__).resolve().parent.parent
 FIXTURES = ROOT / "tests" / "fixtures" / "iq"
@@ -100,8 +183,6 @@ LINK_TEMPLATE_TARGET = "dsd-neo_test_dsp_channel_filters"
 
 BASE_SEED = 20261004
 FIXTURE_RATE_HZ = 48000
-WINDOW_PER_S = 50  # 20 ms windows
-LAG_RHO_LIMIT = 0.1
 CNRS_DB = (0.0, 3.0, 6.0, 10.0, 20.0)
 CARRIER_MIN_CNR_DB = 6.0
 FM_KIND = 0
@@ -121,19 +202,33 @@ LPF_DEFAULT_ENABLE_RATE_IN_HZ = 20000  # demod_channel_lpf_default_enable()
 NFM_WIDTHS_HZ = (8000, 10000, 12500, 16000, 20000, 25000)
 AM_WIDTHS_HZ = (5000, 6000, 8000, 12500, 20000)
 RTL_DSP_BW_KHZ = (4, 6, 8, 12, 16, 24, 48, 72)  # dsd_analog_rtl_dsp_bw_is_selectable()
-# Fixed-grid device capture rates (Airspy R2 2.5/10 MS/s give the same chain; Airspy Mini 3/6 MS/s; RX-888/SDDC 2/4/8).
+# Fixed-grid device capture rates (Airspy R2 2.5/10 MS/s give the same chain; Airspy Mini 3/6 MS/s; RX-888/SDDC 2/4/8):
+# they step to the DSP bandwidth, so their rows are listed and scoped out (no port of the live step here).
 DEVICE_CAPTURES_HZ = {"airspy": 2500000, "airspy-mini": 6000000, "sddc": 2000000}
-MAX_DOWNSAMPLE_PASSES = 10  # kMaxDownsamplePasses
-# I/Q replay chains: name, rate_in (sample_rate / base_decimation), post_downsample, half-band stage before the channel.
+# I/Q replay chains with no reader: name, complex rate (sample_rate / base_decimation), passes (log2 of the base
+# decimation), post_downsample. Post-decimation acts after the tracker, so a pd row is its base row's chain.
 REPLAY_CHAINS = (
-    ("replay-48k", 48000, 1, None),
-    ("replay-39062", 39062, 1, None),
-    ("replay-125k", 125000, 1, None),
-    ("replay-48k/pd2", 48000, 2, None),
-    ("replay-48k/pd4", 48000, 4, None),
-    ("replay-96k/pd2", 96000, 2, None),
-    ("replay-24k/pd2", 24000, 2, None),
-    ("replay-16k/pd2", 16000, 2, None),
+    ("replay-48k", 48000, 0, 1),
+    ("replay-39062", 39062, 0, 1),
+    ("replay-125k", 125000, 0, 1),
+    ("replay-48k/pd2", 48000, 0, 2),
+    ("replay-48k/pd4", 48000, 0, 4),
+    ("replay-96k/pd2", 96000, 0, 2),
+    ("replay-24k/pd2", 24000, 0, 2),
+    ("replay-16k/pd2", 16000, 0, 2),
+    ("replay-16k/b8", 16000, 3, 1),
+    ("replay-16k/b16", 16000, 4, 1),
+    ("replay-48k/b16", 48000, 4, 1),
+)
+# Replay and network I/Q chains through the reader (the general plan, D x 2^k): name, source rate, DSP rate D.
+READER_CHAINS = (
+    ("reader-8k>16k", 8000, 16000),
+    ("reader-40k>32k>16k", 40000, 16000),
+    ("reader-250k>192k>48k", 250000, 48000),
+    ("reader-48001>48k", 48001, 48000),
+    ("reader-112k>64k>16k", 112000, 16000),
+    ("reader-12k>48k", 12000, 48000),
+    ("reader-16k>48k", 16000, 48000),
 )
 
 TONES_HZ = (300.0, 1000.0, 3000.0)
@@ -149,20 +244,6 @@ NOISE_UNDECIDED_TARGET = 0.25  # NOISE windows not called NOISE: they leave the 
 PERCENTILES = (0.01, 1.0, 50.0, 99.0, 99.99)
 FULL_NOISE_WINDOWS = 200000  # 1e-4 per window is then 20 events at 20 ms and 10 at 40 ms
 QUICK_NOISE_WINDOWS = 5000
-
-
-@dataclasses.dataclass(frozen=True)
-class RatePlan:
-    name: str
-    source: str  # rtl | device | replay
-    rate_in: int  # decides the unset NFM default's channel-LPF enable
-    rate_out: int  # demod rate the channel plan is designed at
-    post_downsample: int
-    hb: str | None  # last half-band stage ahead of the channel filter
-
-    @property
-    def channel_rate(self) -> int:
-        return self.rate_out * self.post_downsample
 
 
 @dataclasses.dataclass(frozen=True)
@@ -183,34 +264,32 @@ class Config:
 # --------------------------------------------------------------------------------------------- rate plans
 
 
-def choose_passes_for_actual_rate(actual_rate_hz: int, rate_in_hz: int) -> int:
-    """rtl_choose_passes_for_actual_rate(): the decimation landing closest at or above the requested DSP bandwidth."""
-    best_p, best_err = 0, None
-    for p in range(MAX_DOWNSAMPLE_PASSES + 1):
-        out = actual_rate_hz >> p
-        if out < rate_in_hz:
-            break
-        err = out - rate_in_hz
-        if best_err is None or err < best_err:
-            best_err, best_p = err, p
-    return best_p
-
-
 def rate_plans() -> list[RatePlan]:
-    plans = [RatePlan(f"rtl-{bw}k", "rtl", bw * 1000, bw * 1000, 1, "hb15") for bw in RTL_DSP_BW_KHZ]
+    plans = []
+    for bw in RTL_DSP_BW_KHZ:
+        rate = bw * 1000
+        capture = rate << rtl_passes(rate)
+        passes = rate_plan_passes(capture, rate)
+        plans.append(RatePlan(f"rtl-{bw}k", "rtl", rate, capture, passes, capture >> passes))
     seen = set()
     for device, capture in DEVICE_CAPTURES_HZ.items():
         for bw in RTL_DSP_BW_KHZ:
-            rate_in = bw * 1000
-            passes = choose_passes_for_actual_rate(capture, rate_in)
-            rate_out = capture >> passes
-            key = (rate_in >= LPF_DEFAULT_ENABLE_RATE_IN_HZ, rate_out)
-            if rate_out == rate_in or key in seen:
-                continue  # same chain as an RTL plan, or as another device's
+            target = bw * 1000
+            passes = rate_plan_passes(capture, target)
+            if target << passes == capture:
+                continue  # on target: the RTL-SDR chain at this rate
+            step = device_step(capture, target, passes)
+            key = (capture, passes, step, target)
+            if key in seen:
+                continue
             seen.add(key)
-            plans.append(RatePlan(f"{device}-bw{bw}k->{rate_out}", "device", rate_in, rate_out, 1, "hb15"))
-    for name, rate_in, pd, hb in REPLAY_CHAINS:
-        plans.append(RatePlan(name, "replay", rate_in, rate_in // pd, pd, hb))
+            plans.append(RatePlan(f"{device}-bw{bw}k", "device", target, capture, passes, target, 1, step))
+    for name, rate, passes, pd in REPLAY_CHAINS:
+        plans.append(RatePlan(name, "replay", rate, rate << passes, passes, rate, pd))
+    for name, source, dsp in READER_CHAINS:
+        r_hz, k = general_rate(source, dsp)
+        reader = reader_for(source, r_hz, dsp)
+        plans.append(RatePlan(name, "reader", dsp, r_hz, k, dsp, 1, None, reader))
     return plans
 
 
@@ -320,23 +399,25 @@ def port_plan(rate_out: int, width_hz: int) -> np.ndarray | None:
 
 
 def resolve(config: Config, plan: RatePlan, harness_plans: dict) -> dict:
-    """The channel filter the stream runs for this configuration and chain, or why it refuses to run."""
+    """The channel filter the stream runs for this configuration and chain, or why it refuses to run. Everything is at
+    the complex rate (post-decimation acts after the channel filter and the tracker). "request" is the harness chain
+    request (width, channel filter) that designs the same taps on the analog monitor."""
     kind, width = config.kind, config.width_hz
+    rate = plan.complex_rate
     if width > 0:
-        rec = harness_plans[(plan.rate_out, width, kind)]
-        if plan.post_downsample > 1:
-            return {"runs": False, "why": f"post_downsample {plan.post_downsample} refuses an explicit/AM width"}
+        rec = harness_plans[(rate, width, kind)]
         if not rec["realizable"]:
             return {
                 "runs": False,
-                "why": f"{width} Hz not realizable at {plan.rate_out} Hz (max {rec['max_width_for_rate']})",
+                "why": f"{width} Hz not realizable at {rate} Hz (max {rec['max_width_for_rate']})",
             }
         return {
             "runs": True,
             "filter": f"analog {width}",
             "taps": rec["taps"],
-            "design_rate": plan.rate_out,
-            "protected_hz": width * plan.post_downsample,
+            "design_rate": rate,
+            "protected_hz": width,
+            "request": (width, -1),
         }
     enable = plan.rate_in >= LPF_DEFAULT_ENABLE_RATE_IN_HZ
     if config.lpf_env == "1":
@@ -348,139 +429,30 @@ def resolve(config: Config, plan: RatePlan, harness_plans: dict) -> dict:
             "runs": True,
             "filter": "none (channel LPF off)",
             "taps": np.ones(1),
-            "design_rate": plan.rate_out,
-            "protected_hz": plan.channel_rate,
+            "design_rate": rate,
+            "protected_hz": rate,
+            "request": (0, -2),
         }
-    rec16 = harness_plans[(plan.rate_out, NFM_WIDTH_DEFAULT_HZ, FM_KIND)]
+    rec16 = harness_plans[(rate, NFM_WIDTH_DEFAULT_HZ, FM_KIND)]
     if rec16["realizable"]:
         return {
             "runs": True,
             "filter": "analog 16000 (unset default)",
             "taps": rec16["taps"],
-            "design_rate": plan.rate_out,
-            "protected_hz": NFM_WIDTH_DEFAULT_HZ * plan.post_downsample,
+            "design_rate": rate,
+            "protected_hz": NFM_WIDTH_DEFAULT_HZ,
+            "request": (NFM_WIDTH_DEFAULT_HZ, -1),
         }
-    rec0 = harness_plans[(plan.rate_out, 0, FM_KIND)]
-    fallback = port_plan(plan.rate_out, 0) is None
+    rec0 = harness_plans[(rate, 0, FM_KIND)]
+    fallback = port_plan(rate, 0) is None
     name = "legacy WIDE 63-tap fallback" if fallback else "legacy WIDE"
     return {
         "runs": True,
         "filter": name,
         "taps": rec0["taps"],
-        "design_rate": plan.rate_out,
-        "protected_hz": rec0["legacy_wide_width_hz"] * plan.post_downsample,
-    }
-
-
-# --------------------------------------------------------------------------------------------- DSP helpers
-
-
-def autocorr(taps: np.ndarray) -> np.ndarray:
-    """Full autocorrelation of real taps, lag 0 at the centre."""
-    return np.correlate(taps, taps, mode="full")
-
-
-def noise_autocorr(taps: np.ndarray, hb: np.ndarray | None) -> np.ndarray:
-    """Autocorrelation of the channel-filter output for unit-variance white complex noise at the half-band input."""
-    if hb is not None:
-        r_hb = autocorr(hb)
-        r_in = r_hb[(len(hb) - 1) % 2 :: 2]  # even lags only, still centred: the decimation by 2
-    else:
-        r_in = np.ones(1)
-    return np.convolve(autocorr(taps), r_in)
-
-
-def lag_rule(taps: np.ndarray) -> tuple[int, float]:
-    """The planned lag: smallest L >= 1 with |R_h(L)| / R_h(0) < LAG_RHO_LIMIT, and R_h(L) / R_h(0)."""
-    r = autocorr(taps)
-    centre = len(taps) - 1
-    rho = r[centre:] / r[centre]
-    for lag in range(1, len(rho)):
-        if abs(rho[lag]) < LAG_RHO_LIMIT:
-            return lag, float(rho[lag])
-    return len(rho), 0.0
-
-
-def channel_filter(x: np.ndarray, taps: np.ndarray) -> np.ndarray:
-    """The streaming channel FIR's steady-state output ('valid' part): len(x) - len(taps) + 1 samples."""
-    taps32 = taps.astype(np.float32)
-    if len(taps) == 1:
-        return (x * taps32[0]).astype(np.complex64)
-    return sps.oaconvolve(x.astype(np.complex64), taps32, mode="valid").astype(np.complex64)
-
-
-def white_noise(rng: np.random.Generator, count: int) -> np.ndarray:
-    scale = np.float32(math.sqrt(0.5))
-    re = rng.standard_normal(count, dtype=np.float32)
-    im = rng.standard_normal(count, dtype=np.float32)
-    return (re * scale) + 1j * (im * scale)
-
-
-def filtered_noise(rng: np.random.Generator, count: int, taps: np.ndarray, hb: np.ndarray | None) -> np.ndarray:
-    """count samples of channel-filter output for white complex noise (unit variance at the half-band input)."""
-    need = count + len(taps) - 1
-    if hb is not None:
-        wide = white_noise(rng, 2 * need + len(hb) - 1)
-        y = sps.oaconvolve(wide, hb.astype(np.float32), mode="valid")[::2][:need]
-    else:
-        y = white_noise(rng, need)
-    return channel_filter(y, taps)
-
-
-def window_bounds(fs: int, n_windows: int, start: int) -> np.ndarray:
-    """Sample-exact 20 ms windows: boundary k at floor(k * fs / 50), offset by start."""
-    return start + (np.arange(n_windows + 1, dtype=np.int64) * fs) // WINDOW_PER_S
-
-
-def window_sums(z: np.ndarray, bounds: np.ndarray, lag: int) -> dict:
-    """Per-20 ms-window sums the features are built from; z holds lag samples before bounds[0] (streaming history).
-
-    n count, sa sum |z|^2, sa2 sum |z|^4, su sum u_k conj(u_{k-L}) (u = z/|z|), sz sum z_k conj(z_{k-L}).
-    """
-    first, last = int(bounds[0]), int(bounds[-1])
-    idx = (bounds[:-1] - first).astype(np.int64)
-    seg = z[first:last]
-    a = (seg.real.astype(np.float64) ** 2) + (seg.imag.astype(np.float64) ** 2)
-    hist = z[first - lag : last]
-    prod_z = hist[lag:] * np.conj(hist[:-lag])
-    mag = np.abs(hist)
-    mag_prod = mag[lag:] * mag[:-lag]
-    prod_u = np.divide(prod_z, mag_prod, out=np.zeros_like(prod_z), where=mag_prod > 0)
-    return {
-        "n": np.diff(bounds).astype(np.float64),
-        "sa": np.add.reduceat(a, idx),
-        "sa2": np.add.reduceat(a * a, idx),
-        "su": np.add.reduceat(prod_u.astype(np.complex128), idx),
-        "sz": np.add.reduceat(prod_z.astype(np.complex128), idx),
-    }
-
-
-def merge_windows(sums: dict, multiple: int) -> dict:
-    """Sums over consecutive groups of `multiple` 20 ms windows (a sample-exact 20 x multiple ms window)."""
-    if multiple == 1:
-        return sums
-    count = len(sums["n"]) // multiple * multiple
-    return {k: v[:count].reshape(-1, multiple).sum(axis=1) for k, v in sums.items()}
-
-
-def window_features(sums: dict, beta_c: float, rho_n: float) -> dict:
-    """The features of each window.
-
-    cv2   (mean |z|^4 - P^2) / P^2, P = mean |z|^2
-    c     |mean(u_k conj(u_{k-L}))|                     the planned phase coherence
-    cdb   |mean(u_k conj(u_{k-L})) - beta|              C less its expected value on noise (beta, from rho_n(L))
-    cz    |sum z_k conj(z_{k-L})| / sum |z_k|^2         amplitude-weighted coherence
-    czdb  |sum z_k conj(z_{k-L}) / sum |z_k|^2 - rho_n(L)|  the same less its expected value on noise
-    """
-    p = sums["sa"] / sums["n"]
-    mean_u = sums["su"] / sums["n"]
-    ratio_z = sums["sz"] / sums["sa"]
-    return {
-        "cv2": (sums["sa2"] / sums["n"]) / (p * p) - 1.0,
-        "c": np.abs(mean_u),
-        "cdb": np.abs(mean_u - beta_c),
-        "cz": np.abs(ratio_z),
-        "czdb": np.abs(ratio_z - rho_n),
+        "design_rate": rate,
+        "protected_hz": rec0["legacy_wide_width_hz"],
+        "request": (0, -1),
     }
 
 
@@ -553,11 +525,15 @@ def rated_deviation_hz(protected_hz: float) -> float:
     return min(5000.0, max(protected_hz / 2.0 - VOICE_TOP_HZ, protected_hz / 8.0))
 
 
-def carrier_variants(kind: int, protected_hz: float, quick: bool) -> list[dict]:
-    """The carrier set for one channel: kind, modulation, deviation or depth, offset, length and in-channel flag."""
+def carrier_variants(
+    kind: int, protected_hz: float, quick: bool, in_channel_half_hz: float | None = None
+) -> list[dict]:
+    """The carrier set for one channel: kind, modulation, deviation or depth, offset, length and in-channel flag. A
+    variant is in the channel when its occupied band fits @p in_channel_half_hz either side of the centre (default the
+    protected half-width; a reader row's pass edge when it is narrower, the band its source carries)."""
     tone_s = 0.2 if quick else 0.6
     speech_s = 0.6 if quick else 4.0
-    half = protected_hz / 2.0
+    half = protected_hz / 2.0 if in_channel_half_hz is None else in_channel_half_hz
     variants = []
     sources = real_sources()
     for offset in OFFSETS_HZ:
@@ -646,13 +622,20 @@ def carrier_variants(kind: int, protected_hz: float, quick: bool) -> list[dict]:
     return variants
 
 
+_RATE_CACHE: dict = {}
+
+
 def source_at_rate(name: str, field: str, fs: int) -> np.ndarray:
-    """A real capture's channel ("iq") or audio ("audio") resampled to fs. Cached per process."""
+    """A real capture's channel ("iq") or audio ("audio") resampled to fs. Cached per process for the last rate asked
+    only: a worker's jobs run one chain at a time, and the captures at a MHz source rate take hundreds of MB, so a
+    cache of every rate would grow by that much with each one."""
     key = (name, field, fs)
-    if key not in _SOURCE_CACHE:
+    if key not in _RATE_CACHE:
+        if any(k[2] != fs for k in _RATE_CACHE):
+            _RATE_CACHE.clear()
         src = real_sources()[name]
-        _SOURCE_CACHE[key] = resample(src[field], src["fs"], fs)
-    return _SOURCE_CACHE[key]
+        _RATE_CACHE[key] = resample(src[field], src["fs"], fs)
+    return _RATE_CACHE[key]
 
 
 def synth_carrier(variant: dict, fs: int, count: int, rng: np.random.Generator) -> np.ndarray:
@@ -716,20 +699,12 @@ def edge_hist(x: np.ndarray, y: np.ndarray, x_edges: np.ndarray, y_edges: np.nda
     return np.bincount(i * len(y_edges) + j, minlength=len(x_edges) * len(y_edges)).reshape(len(x_edges), -1)
 
 
-def noise_job(job: dict) -> dict:
-    """Feature percentiles and sparse grid histograms of n_windows 20 ms windows of channel-filtered noise."""
-    taps, hb, fs, lag, norm = job["taps"], job["hb"], job["fs"], job["lag"], job["norm"]
-    rng = np.random.default_rng(job_seed("noise", job["key"]))
-    per_chunk = max(2, 400000 // max(1, fs // WINDOW_PER_S)) // 2 * 2
-    chunks = []
-    done = 0
-    while done < job["n_windows"]:
-        n_w = min(per_chunk, job["n_windows"] - done)
-        bounds = window_bounds(fs, n_w, lag)
-        chunks.append(window_sums(filtered_noise(rng, int(bounds[-1]), taps, hb), bounds, lag))
-        done += n_w
-    sums = {k: np.concatenate([c[k] for c in chunks]) for k in chunks[0]}
-    out = {"key": job["key"], "n": {}, "pct": {}, "hist": {}}
+SOURCE_CHUNK = 1 << 21  # source samples per chunk of a long noise stream
+
+
+def design_noise_stats(key: str, sums: dict, norm: dict) -> dict:
+    """Feature percentiles and sparse grid histograms of a filter's noise sub-windows (design mode)."""
+    out = {"key": key, "n": {}, "pct": {}, "hist": {}}
     for multiple in WINDOW_MULTIPLES:
         feats = window_features(merge_windows(sums, multiple), norm["beta_c"], norm["rho_n"])
         out["n"][multiple] = len(feats["cv2"])
@@ -747,120 +722,262 @@ def noise_job(job: dict) -> dict:
     return out
 
 
+def noise_job(job: dict) -> dict:
+    """One noise stream through a chain, every channel filter on it fed the same cascade output: per filter, the
+    shipped decisions' class counts (frozen) or the design mode's feature statistics. White unit-variance noise at the
+    source rate, in chunks: every stage's history, the reader's phase and the windows' boundaries carry across them."""
+    plan, hb_taps, frozen = job["plan"], job["hb"], job["frozen"]
+    rate = plan.complex_rate
+    rng = np.random.default_rng(job_seed("noise", plan.chain_key, job["segment"]))
+    chain = ChainStream(plan, hb_taps)
+    chunk = max(chain.unit, SOURCE_CHUNK // chain.unit * chain.unit)
+    need_subs = job["n_windows"]
+    # The stream ends where its last sub-window does: floor(need fs / 50) channel samples past the lead.
+    need_out = (need_subs * rate) // WINDOW_PER_S
+    chunk = min(
+        chunk, source_count(plan, need_out + chain_lead(plan, max((f["taps"] for f in job["filters"]), key=len)))
+    )
+    state = []
+    for f in job["filters"]:
+        state.append(
+            {
+                "f": f,
+                "fir": FirStream(f["taps"]),
+                "skip": chain_lead(plan, f["taps"]),
+                "left": need_out,
+                "stream": FrozenStream(rate, f["plan"]) if frozen else SubWindowStream(rate, f["lag"]),
+                "parts": [],
+                "counts": np.zeros(3, dtype=np.int64),
+            }
+        )
+    while any(s["left"] > 0 for s in state):
+        cascade = chain.push(white_noise(rng, chunk))
+        for s in state:
+            if s["left"] <= 0:
+                continue
+            y = s["fir"].push(cascade)
+            if s["skip"] > 0:
+                drop = min(s["skip"], len(y))
+                y = y[drop:]
+                s["skip"] -= drop
+            y = y[: s["left"]]
+            s["left"] -= len(y)
+            if not len(y):
+                continue
+            if frozen:
+                s["counts"] += np.bincount(s["stream"].push(y), minlength=3)
+            else:
+                s["parts"].append(s["stream"].push(y))
+    out = {"kind": "noise", "chain": plan.chain_key, "segment": job["segment"], "filters": {}}
+    for s in state:
+        f = s["f"]
+        if frozen:
+            out["filters"][f["fkey"]] = {"counts": s["counts"].tolist()}
+            continue
+        sums = {k: np.concatenate([p[k] for p in s["parts"]]) for k in s["parts"][0] if k != "k"}
+        out["filters"][f["fkey"]] = design_noise_stats(f["fkey"], sums, f["norm"])
+    return out
+
+
 def carrier_job(job: dict) -> dict:
-    """Features of every carrier variant at every CNR for one (kind, filter, protected width)."""
-    taps, hb, fs, lag, norm = job["taps"], job["hb"], job["fs"], job["lag"], job["norm"]
+    """Every carrier variant at every CNR for one (kind, filter, protected width): the carrier and the noise each made
+    at the chain's source rate and run through the chain and the channel filter, mixed at the channel output at each
+    CNR (the carrier's measured power over the noise model's power there), each mix a stream of its own. Frozen: the
+    shipped decisions' class counts per (variant, CNR); design: the windows' features."""
+    plan, hb_taps, taps, frozen = job["plan"], job["hb"], job["taps"], job["frozen"]
+    rate, lag, norm = plan.complex_rate, job["lag"], job["norm"]
     rng = np.random.default_rng(job_seed("carrier", job["key"]))
-    variants = carrier_variants(job["kind"], job["protected_hz"], job["quick"])
+    variants = carrier_variants(job["kind"], job["protected_hz"], job["quick"], job["source_half_hz"])
+    source_hz = plan.source_hz
+    rows = []
     parts = {m: {name: [] for name in ("cv2", *COHERENCES, "variant", "cnr")} for m in WINDOW_MULTIPLES}
     for vi, variant in enumerate(variants):
-        n_w = max(2, round(variant["seconds"] * WINDOW_PER_S))
-        bounds = window_bounds(fs, n_w, lag)
-        count = int(bounds[-1])
-        s = channel_filter(synth_carrier(variant, fs, count + len(taps) - 1, rng), taps)
-        n = filtered_noise(rng, count, taps, hb)
-        sig_power = float(np.mean(np.abs(s[lag:].astype(np.complex128)) ** 2))
+        n_sub = 2 * max(1, round(variant["seconds"] * WINDOW_PER_S / 2))
+        outputs = (n_sub * rate) // WINDOW_PER_S
+        s = chain_signal(plan, hb_taps, taps, lambda n, v=variant: synth_carrier(v, source_hz, n, rng), outputs)
+        noise = chain_noise(plan, hb_taps, taps, rng, outputs)
+        sig_power = float(np.mean(np.abs(s[lag:]) ** 2))
         for ci, cnr in enumerate(CNRS_DB):
-            gain = np.float32(math.sqrt(sig_power / (job["noise_power"] * 10.0 ** (cnr / 10.0))))
-            sums = window_sums(s + gain * n, bounds, lag)
+            gain = math.sqrt(sig_power / (job["noise_power"] * 10.0 ** (cnr / 10.0)))
+            mix = s + gain * noise
+            if frozen:
+                cls = frozen_classes(mix, rate, job["plan_constants"])
+                rows.append({"variant": vi, "cnr": cnr, "counts": np.bincount(cls, minlength=3).tolist()})
+                continue
+            sums = stream_sums(mix, rate, lag)
             for multiple in WINDOW_MULTIPLES:
                 feats = window_features(merge_windows(sums, multiple), norm["beta_c"], norm["rho_n"])
                 for name in ("cv2", *COHERENCES):
                     parts[multiple][name].append(feats[name].astype(np.float32))
                 parts[multiple]["variant"].append(np.full(len(feats["cv2"]), vi, dtype=np.int32))
                 parts[multiple]["cnr"].append(np.full(len(feats["cv2"]), ci, dtype=np.int8))
-    out = {"key": job["key"], "variants": variants}
+    out = {"kind": "carrier", "key": job["key"], "variants": variants}
+    if frozen:
+        out["rows"] = rows
+        return out
     for multiple in WINDOW_MULTIPLES:
         out[multiple] = {name: np.concatenate(v) for name, v in parts[multiple].items()}
     return out
 
 
-def run_job(job: dict) -> tuple[str, dict]:
-    if "n_windows" in job:
-        return "noise", noise_job(job)
-    return "carrier", carrier_job(job)
+def run_job(job: dict) -> dict:
+    if job["type"] == "noise":
+        return noise_job(job)
+    return carrier_job(job)
 
 
 # --------------------------------------------------------------------------------------------- combos
 
 
-def filter_info(taps: np.ndarray, hb: np.ndarray | None, fs: int) -> dict:
-    """Lag rule, noise correlation, bias and effective window size for one filter at its channel rate."""
+def filter_info(taps: np.ndarray, cov: np.ndarray, plan: dict, fs: int) -> dict:
+    """Lag rule, noise correlation, bias and effective window size for one filter at its channel rate, from the
+    channel noise covariance and the plan designed from it."""
     lag, rho_h = lag_rule(taps)
+    if len(taps) == 1:
+        lag = 1
     r_h = autocorr(taps)
     rho_taps = r_h / r_h[len(taps) - 1]
-    r_n = noise_autocorr(taps, hb)
-    centre = len(r_n) // 2
-    rho_all = r_n / r_n[centre]
-    rho_n = float(rho_all[centre + lag]) if centre + lag < len(rho_all) else 0.0
     n_mean = fs / WINDOW_PER_S
-    neff = n_mean / float(np.sum(rho_all**2))
-    # E[u_k conj(u_{k-L})] on complex Gaussian noise with correlation rho: (pi/4) rho 2F1(1/2, 1/2; 2; rho^2).
-    beta_c = (math.pi / 4.0) * rho_n * float(special.hyp2f1(0.5, 0.5, 2.0, rho_n * rho_n))
     return {
         "lag": lag,
         "rho_taps_lag": rho_h,
-        "rho_noise_lag": rho_n,
+        "rho_noise_lag": plan["rho_lag"],
         "window_samples": n_mean,
-        "neff": neff,
+        "neff": plan["neff"] / 2.0,  # per 20 ms window; the plan's is per 40 ms
         "neff_taps": n_mean / float(np.sum(rho_taps**2)),
-        "noise_power": float(r_n[centre]),
+        "noise_power": float(np.mean(cov[:, 0])),
         "enbw_hz": fs * float(np.sum(taps**2)) / float(np.sum(taps)) ** 2,
         "norm": {
-            "neff": neff,
-            "beta_c": beta_c,
-            "rho_n": rho_n,
-            "bias": {"c": abs(beta_c), "cdb": 0.0, "cz": abs(rho_n), "czdb": 0.0},
+            "neff": plan["neff"] / 2.0,
+            "beta_c": plan["beta"],
+            "rho_n": plan["rho_lag"],
+            "bias": {"c": abs(plan["beta"]), "cdb": 0.0, "cz": abs(plan["rho_lag"]), "czdb": 0.0},
         },
     }
 
 
-def taps_key(taps: np.ndarray) -> str:
-    return f"{len(taps)}:{zlib.crc32(taps.astype(np.float64).tobytes()):08x}"
+def chain_request(config: Config, plan: RatePlan, res: dict) -> tuple:
+    """The harness chain request whose installed plan is this combination's (analog monitor, no step; a reader row
+    reads its source through the reader)."""
+    width, profile = res["request"]
+    reader = plan.reader.source_hz if plan.reader else 0
+    return (plan.complex_rate, width, config.kind if width > 0 else FM_KIND, 0, profile, plan.passes, reader)
 
 
-def build_combos(plans: list[RatePlan], harness_plans: dict, hb_taps: dict) -> list[dict]:
+def build_combos(plans: list[RatePlan], harness_plans: dict, hb_taps: dict) -> list:
+    """Every (configuration, chain), with its filter, its plan identity (fkey: chain and taps; ckey: kind, fkey and
+    protected width) and its noise model (the channel covariance and the plan designed from it); stepped rows are kept
+    but scoped out."""
     combos = []
+    models: dict = {}
     for config in configs():
         for plan in plans:
             res = resolve(config, plan, harness_plans)
             combo = {"config": config, "plan": plan, **res}
+            if res["runs"] and plan.stepped:
+                combo["scoped"] = "stepped: no port of the live step (DSP_SQUELCH_STEP_MODEL holds it)"
             if res["runs"]:
-                fkey = f"{plan.channel_rate}:{plan.hb}:{taps_key(res['taps'])}"
+                fkey = f"{plan.chain_key}:{taps_key(res['taps'])}"
                 combo["fkey"] = fkey
                 combo["ckey"] = f"{KIND_LABEL[config.kind]}:{fkey}:{res['protected_hz']}"
-                combo.update(filter_info(res["taps"], hb_taps.get(plan.hb), plan.channel_rate))
+                combo["source_half_hz"] = res["protected_hz"] / 2.0
+                if plan.reader:
+                    combo["source_half_hz"] = min(combo["source_half_hz"], plan.reader.pass_hz)
+                if "scoped" not in combo:
+                    cov, model = filter_model(plan, res["taps"], hb_taps, models)
+                    combo["model_plan"] = model
+                    combo.update(filter_info(res["taps"], cov, model, plan.complex_rate))
             combos.append(combo)
     return combos
 
 
-def make_jobs(combos: list[dict], hb_taps: dict, quick: bool, noise_windows: int) -> list[dict]:
-    noise_jobs, carrier_jobs = {}, {}
+def modelled(combo: dict) -> bool:
+    return combo["runs"] and "scoped" not in combo
+
+
+def segment_windows(noise_windows: int, segments: int) -> list[int]:
+    """The 20 ms sub-windows each of a chain's noise streams (segments) runs: the requested 40 ms decisions
+    (noise_windows / 2) split over the segments by quotient and remainder, the empty segments left out, so the streams
+    run exactly the noise_windows asked for. Segment i keeps its seed whatever the split."""
+    q, r = divmod(noise_windows // 2, max(1, segments))
+    return [2 * (q + (1 if i < r else 0)) for i in range(max(1, segments)) if q + (1 if i < r else 0) > 0]
+
+
+def make_jobs(
+    combos: list[dict], hb_taps: dict, quick: bool, noise_windows: int, frozen: bool, segments: int
+) -> list[dict]:
+    """Noise jobs per chain (and segment): every filter on the chain; carrier jobs per carrier plan."""
+    chains: dict = {}
+    carrier_jobs: dict = {}
     for combo in combos:
-        if not combo["runs"]:
+        if not modelled(combo):
             continue
         plan = combo["plan"]
-        base = {
-            "taps": combo["taps"],
-            "hb": hb_taps.get(plan.hb),
-            "fs": plan.channel_rate,
-            "lag": combo["lag"],
-            "norm": combo["norm"],
-        }
-        noise_jobs.setdefault(combo["fkey"], {**base, "key": combo["fkey"], "n_windows": noise_windows})
+        entry = chains.setdefault(plan.chain_key, {"plan": plan, "filters": {}})
+        constants = combo["classify_plan"] if frozen else combo["model_plan"]
+        entry["filters"].setdefault(
+            combo["fkey"],
+            {
+                "fkey": combo["fkey"],
+                "taps": combo["taps"],
+                "lag": constants["lag"],
+                "plan": constants,
+                "norm": combo["norm"],
+            },
+        )
         carrier_jobs.setdefault(
             combo["ckey"],
             {
-                **base,
+                "type": "carrier",
                 "key": combo["ckey"],
+                "plan": plan,
+                "hb": hb_taps,
+                "taps": combo["taps"],
+                "lag": constants["lag"],
+                "norm": combo["norm"],
+                "plan_constants": constants,
                 "kind": combo["config"].kind,
                 "protected_hz": combo["protected_hz"],
+                "source_half_hz": combo["source_half_hz"],
                 "quick": quick,
                 "noise_power": combo["noise_power"],
+                "frozen": frozen,
             },
         )
-    jobs = list(noise_jobs.values()) + list(carrier_jobs.values())
-    return sorted(jobs, key=lambda j: -j["fs"] * (2 * j.get("n_windows", 0) + 15000))
+    jobs = []
+    split = segment_windows(noise_windows, segments if frozen else 1)
+    for entry in chains.values():
+        plan = entry["plan"]
+        for segment, per in enumerate(split):
+            jobs.append(
+                {
+                    "type": "noise",
+                    "plan": plan,
+                    "hb": hb_taps,
+                    "filters": list(entry["filters"].values()),
+                    "n_windows": per,
+                    "segment": segment,
+                    "frozen": frozen,
+                    "cost": plan.source_hz * (len(entry["filters"]) + 4) * per,
+                }
+            )
+    for job in carrier_jobs.values():
+        job["cost"] = job["plan"].source_hz * 4000
+        jobs.append(job)
+    return sorted(jobs, key=lambda j: -j["cost"])
+
+
+def merge_noise(results: list[dict], frozen: bool) -> dict:
+    """Noise results by filter key: frozen class counts summed over segments, or the design statistics."""
+    out: dict = {}
+    for res in results:
+        for fkey, value in res["filters"].items():
+            if not frozen:
+                out[fkey] = value
+                continue
+            counts = np.asarray(value["counts"], dtype=np.int64)
+            out[fkey] = {"counts": (out[fkey]["counts"] + counts) if fkey in out else counts}
+    return out
 
 
 # --------------------------------------------------------------------------------------------- decision rates
@@ -1102,7 +1219,7 @@ def analyse(combos: list[dict], noise_results: dict, carrier_results: dict) -> d
     """Thresholds and per-plan verdicts for every scheme; slack and worst variants for the planned and best."""
     unique = {}
     for combo in combos:
-        if combo["runs"]:
+        if modelled(combo):
             unique.setdefault(combo["ckey"], combo)
 
     def evaluate(scheme: str, with_slack: bool) -> dict:
@@ -1196,13 +1313,12 @@ def signal_sanity(harness_plans: dict) -> dict:
         out[f"{name}_depth_p99_pct"] = float(100.0 * np.percentile(np.abs(audio), 99.0))
     z, _ = load_cu8("noise_floor")
     zf = channel_filter(z, nfm)
-    info = filter_info(nfm, None, fs)
-    n_w = (len(zf) - info["lag"]) * WINDOW_PER_S // fs
-    feats = window_features(
-        window_sums(zf, window_bounds(fs, n_w, info["lag"]), info["lag"]), info["norm"]["beta_c"], info["norm"]["rho_n"]
-    )
+    cov = through_taps_cov(np.ones(1), nfm)[None, :]
+    info = filter_info(nfm, cov, plan_from_cov(cov, nfm, fs, 1.0), fs)
+    sums = stream_sums(zf, fs, info["lag"])
+    feats = window_features({k: v for k, v in sums.items() if k != "k"}, info["norm"]["beta_c"], info["norm"]["rho_n"])
     out["noise_floor_fixture"] = {
-        "windows": int(n_w),
+        "windows": len(sums["n"]),
         "cv2": np.percentile(feats["cv2"], (1, 50, 99)).tolist(),
         "c": np.percentile(feats["c"], (1, 50, 99)).tolist(),
     }
@@ -1339,10 +1455,11 @@ def lag_section(lines: list[str], unique: dict, noise_results: dict) -> None:
         (
             f"L = smallest lag with |R_h(L)| / R_h(0) < {LAG_RHO_LIMIT} on the channel taps: L {min(c['lag'] for c in rows)} "
             f"to {max(c['lag'] for c in rows)} samples ({min(lag_us):.0f} to {max(lag_us):.0f} us); rho_h(L) "
-            f"{min(rho_h):+.3f} to {max(rho_h):+.3f}. The noise the classifier sees also carries the last half-band "
-            f"stage, so its correlation at L, rho_n(L), runs {min(rho_n):+.3f} to {max(rho_n):+.3f}; noise C (20 ms) has "
-            f"its median at {min(med):.3f} to {max(med):.3f} and its 99.99 % point at {min(top):.3f} to {max(top):.3f}, "
-            f"the bias (pi/4) rho_n(L) plus the window's own scatter, about 1/sqrt(N_eff)."
+            f"{min(rho_h):+.3f} to {max(rho_h):+.3f}. The noise the classifier sees also carries the chain ahead of "
+            f"the channel filter (the reader, the half-band cascade), so its correlation at L, rho_n(L), runs "
+            f"{min(rho_n):+.3f} to {max(rho_n):+.3f}; noise C (20 ms) has its median at {min(med):.3f} to "
+            f"{max(med):.3f} and its 99.99 % point at {min(top):.3f} to {max(top):.3f}, the bias (pi/4) rho_n(L) plus "
+            f"the window's own scatter, about 1/sqrt(N_eff)."
         ),
         "",
     ]
@@ -1351,11 +1468,20 @@ def lag_section(lines: list[str], unique: dict, noise_results: dict) -> None:
 
 
 def sanity_section(lines: list[str], sanity: dict, combos: list[dict], noise_results: dict) -> None:
+    """The ports' sanity checks; the receiver-noise fixture against the synthetic noise of the 48 kHz replay chain's
+    unset NFM plan, when the run (a --chains selection may leave it out) measured that plan."""
     ref = next(
-        c for c in combos if c["runs"] and c["config"] == Config(FM_KIND, 0, "") and c["plan"].name == "replay-48k"
+        (c for c in combos if c["runs"] and c["config"] == Config(FM_KIND, 0, "") and c["plan"].name == "replay-48k"),
+        None,
     )
-    synth = noise_results[ref["fkey"]]["pct"][1]
     fixture = sanity["noise_floor_fixture"]
+    if ref is not None and ref.get("fkey") in noise_results:
+        synth = noise_results[ref["fkey"]]["pct"][1]
+        synth_text = (
+            f"the synthetic noise for that plan: CV2 {fmt_list(synth['cv2'][1:4])}, C {fmt_list(synth['c'][1:4])}."
+        )
+    else:
+        synth_text = "this run's selection leaves that plan out, so its synthetic noise is not compared."
     real = "; ".join(
         f"{name} {sanity[f'{name}_dev_rms_hz']:.0f} Hz RMS / {sanity[f'{name}_dev_p99_9_hz']:.0f} Hz at 99.9 %"
         for name in REAL_FM
@@ -1373,8 +1499,8 @@ def sanity_section(lines: list[str], sanity: dict, combos: list[dict], noise_res
         "",
         (
             f"tests/fixtures/iq/noise_floor.iq (cu8 receiver noise, {fixture['windows']} windows) through the 48 kHz "
-            f"replay chain's unset NFM plan: CV2 1/50/99 % {fmt_list(fixture['cv2'])}, C {fmt_list(fixture['c'])}; the "
-            f"synthetic noise for that plan: CV2 {fmt_list(synth['cv2'][1:4])}, C {fmt_list(synth['c'][1:4])}."
+            f"replay chain's unset NFM plan: CV2 1/50/99 % {fmt_list(fixture['cv2'])}, C {fmt_list(fixture['c'])}; "
+            f"{synth_text}"
         ),
         "",
     ]
@@ -1476,11 +1602,30 @@ def rates_table(lines: list[str], name: str, sch: dict, unique: dict, noise_wind
     ]
 
 
+def json_clean(value):
+    """A report value as JSON takes it: infinities as null, keys as text, numpy scalars as Python ones."""
+    if isinstance(value, float) and math.isinf(value):
+        return None
+    if isinstance(value, dict):
+        return {str(k): json_clean(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [json_clean(v) for v in value]
+    if isinstance(value, np.generic):
+        return value.item()
+    return value
+
+
+def scoped_text(combos: list[dict]) -> str:
+    """The stepped chains a run scopes out, each with its chain identity ("none" when there are none)."""
+    names = sorted({c["plan"].name + " (" + c["plan"].chain_label + ")" for c in combos if c["runs"] and "scoped" in c})
+    return "; ".join(names) or "none"
+
+
 def write_report(
     out_dir: Path, meta: dict, combos: list[dict], noise_results: dict, carrier_results: dict, analysis: dict
 ) -> tuple[Path, Path]:
     schemes, best, unique = analysis["schemes"], analysis["recommended"], analysis["unique"]
-    runnable = [c for c in combos if c["runs"]]
+    runnable = [c for c in combos if modelled(c)]
     refused = [c for c in combos if not c["runs"]]
     cpct = {ck: {m: carrier_percentiles(carrier_results[ck], m) for m in WINDOW_MULTIPLES} for ck in unique}
     planned = schemes[PLANNED_SCHEME]
@@ -1517,12 +1662,12 @@ def write_report(
         (
             "space: raw = CARRIER if CV2 <= t1 or coherence >= t2, NOISE if CV2 >= t3 and coherence <= t4; norm = the "
             "same rule on X = (CV2 - 1) sqrt(N_eff) and Y = (coherence - bias) sqrt(N_eff), N_eff = N / sum rho_n(m)^2 "
-            "and the bias from the noise model (both computable at plan time from the channel and half-band taps). "
+            "and the bias from the noise model (both computable at plan time from the chain and the channel taps). "
             "Window: 20 ms, or 40 ms (two sample-exact 20 ms windows pooled). Coherence: C = |mean(u_k conj(u_{k-L}))|, "
             "u = z/|z| (planned); C-beta = |mean(...) - beta|, beta = (pi/4) rho_n(L) 2F1(1/2,1/2;2;rho_n(L)^2), its "
             "value on noise; Cz = |sum z_k conj(z_{k-L})| / sum |z_k|^2; Cz-rho = |sum z_k conj(z_{k-L}) / sum |z_k|^2 - "
-            "rho_n(L)|. rho_n is the noise autocorrelation at the channel output (channel taps with the last half-band "
-            "stage)."
+            "rho_n(L)|. rho_n is the noise autocorrelation at the channel output (the whole chain: the "
+            "reader, the half-band cascade and the channel taps)."
         ),
         "",
         (
@@ -1559,24 +1704,24 @@ def write_report(
         "## Supported combinations",
         "",
         (
-            "Chains: rtl = RTL-SDR/rtl_tcp at its DSP bandwidth; device = the rate a fixed-grid device forces (rate_in "
-            "stays the requested bandwidth, which decides the unset NFM default's channel LPF); replay = I/Q replay "
-            "(rate_in = sample_rate / base_decimation, demod rate = rate_in / post_downsample). Every window and lag is "
-            "at the channel rate (rate_out x post_downsample). L is the planned lag; rho_h(L) the channel taps' "
-            "normalised autocorrelation there, rho_n(L) the noise's (with the half-band stage); N the mean 20 ms window "
-            "length, N_eff = N / sum rho_n(m)^2."
+            "Chains: rtl = RTL-SDR/rtl_tcp at its DSP bandwidth (its capture rate and passes); replay = I/Q replay "
+            "(the recorded complex rate and base decimation's passes; post_downsample acts after the tracker); reader = "
+            "a replay or network source through the reader's resampler, then its passes. Every window and lag is at the "
+            "channel (complex) rate. L is the planned lag; rho_h(L) the channel taps' normalised autocorrelation there, "
+            "rho_n(L) the noise's at the channel output (the whole chain); N the mean 20 ms window length, N_eff its "
+            "effective sample count from the chain's covariance."
         ),
         "",
         (
-            "| config | chain | rate_in | rate_out | pd | channel rate | filter | taps | protected Hz | L | L us | "
-            "rho_h(L) | rho_n(L) | N | N_eff |"
+            "| config | chain | identity | rate_in | pd | filter | taps | protected Hz | L | L us | rho_h(L) | "
+            "rho_n(L) | N | N_eff |"
         ),
-        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
     ]
     for c in runnable:
         p = c["plan"]
         lines.append(
-            f"| {c['config'].label} | {p.name} | {p.rate_in} | {p.rate_out} | {p.post_downsample} | {p.channel_rate} | "
+            f"| {c['config'].label} | {p.name} | {p.chain_label} | {p.rate_in} | {p.post_downsample} | "
             f"{c['filter']} | {len(c['taps'])} | {c['protected_hz']} | {c['lag']} | "
             f"{1e6 * c['lag'] / p.channel_rate:.0f} | {c['rho_taps_lag']:+.3f} | {c['rho_noise_lag']:+.3f} | "
             f"{c['window_samples']:.1f} | {c['neff']:.0f} |"
@@ -1587,7 +1732,15 @@ def write_report(
         by_config.setdefault(c["config"].label, []).append(f"{c['plan'].name} ({c['why']})")
     for label, items in by_config.items():
         lines.append(f"- {label}: {'; '.join(items)}")
-    lines.append("")
+    lines += [
+        "",
+        (
+            "Scoped out (stepped: no port of the live step here; DSP_SQUELCH_STEP_MODEL holds the real step): "
+            + scoped_text(combos)
+            + "."
+        ),
+        "",
+    ]
     lag_section(lines, unique, noise_results)
     lines += [
         "## Feature distributions (20 ms)",
@@ -1631,11 +1784,17 @@ def write_report(
             "rate_out": p.rate_out,
             "post_downsample": p.post_downsample,
             "channel_rate": p.channel_rate,
-            "half_band": p.hb,
+            "capture_hz": p.capture_hz,
+            "passes": p.passes,
+            "step": p.step,
+            "reader": dataclasses.asdict(p.reader) if p.reader else None,
             "runs": c["runs"],
         }
         if not c["runs"]:
             out["why"] = c["why"]
+            return out
+        if "scoped" in c:
+            out["scoped"] = c["scoped"]
             return out
         out.update(
             {
@@ -1656,17 +1815,6 @@ def write_report(
         )
         out.update({"taps": len(c["taps"]), "plan_key": c["ckey"]})
         return out
-
-    def clean(value):
-        if isinstance(value, float) and math.isinf(value):
-            return None
-        if isinstance(value, dict):
-            return {str(k): clean(v) for k, v in value.items()}
-        if isinstance(value, (list, tuple)):
-            return [clean(v) for v in value]
-        if isinstance(value, np.generic):
-            return value.item()
-        return value
 
     report = {
         "meta": meta,
@@ -1694,68 +1842,594 @@ def write_report(
         },
     }
     json_path = out_dir / "report.json"
-    json_path.write_text(json.dumps(clean(report), indent=1))
+    json_path.write_text(json.dumps(json_clean(report), indent=1))
     return md_path, json_path
+
+
+# --------------------------------------------------------------------------------------------- frozen confirmation
+
+# Known marginal plans the maintainer accepted after the frozen-threshold run of issue #899 (docs/testing.md), listed
+# apart: each entry is one plan (any member's configuration and chain) and the one bound it misses, accepted up to an
+# allowance just above the 95 % interval's upper end that run measured, and why. Any other bound of the plan, a rate
+# past the allowance, or any other plan still fails the gate.
+ACCEPTED_MARGINAL = {
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=1", "rtl-8k"): {
+        "miss_cnr6": (
+            0.038,
+            (
+                "the channel LPF forced on at the 8 kHz RTL rate, where the legacy WIDE design is all the channel there "
+                "is; measured 2.16 % (12 / 555; 95 % 1.1 %..3.7 %), every miss on the real captures (accepted at 1.1 % in "
+                "the design run)"
+            ),
+        )
+    },
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=0", "replay-48k"): {
+        "false_carrier": (
+            2.0e-4,
+            (
+                "an unfiltered replay with no pass: its plan and noise are unchanged by issue #899, a tail near 1e-4 "
+                "(the design run's worst, 1.0e-4); measured 1.1e-4 (11 / 100,000; 95 % 5.5e-5..2.0e-4)"
+            ),
+        )
+    },
+    ("NFM unset, DSD_NEO_CHANNEL_LPF=0", "replay-125k"): {
+        "false_carrier": (
+            2.3e-4,
+            (
+                "an unfiltered replay with no pass: its plan and noise are unchanged by issue #899, a tail near 1e-4; "
+                "measured 1.3e-4 (13 / 100,000; 95 % 6.9e-5..2.2e-4)"
+            ),
+        )
+    },
+}
+TARGET_KEYS = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
+
+
+def accepted_marginal(ids: set, verdict: dict) -> str | None:
+    """Why @p verdict's misses are accepted (ACCEPTED_MARGINAL), or None: every failing target must be one an entry
+    for one of the plan's @p ids (configuration label, chain name) accepts, at a rate within its allowance, and the
+    plan must fail nothing else."""
+    failing = verdict["failing_keys"]
+    if not failing or verdict["other_reasons"]:
+        return None
+    for plan_id in sorted(ids):
+        entry = ACCEPTED_MARGINAL.get(plan_id)
+        if entry and all(k in entry and verdict[k]["rate"] <= entry[k][0] for k in failing):
+            return "; ".join(f"{k} accepted up to {entry[k][0]:g}: {entry[k][1]}" for k in failing)
+    return None
+
+
+def clopper_pearson(k: int, n: int, level: float = 0.95) -> tuple[float, float]:
+    """The exact two-sided interval for k events in n trials."""
+    if n <= 0:
+        return 0.0, 1.0
+    a = (1.0 - level) / 2.0
+    lo = 0.0 if k == 0 else float(stats.beta.ppf(a, k, n - k + 1))
+    hi = 1.0 if k == n else float(stats.beta.ppf(1.0 - a, k + 1, n - k))
+    return lo, hi
+
+
+def rate_entry(k: int, n: int, bound: float, interval: bool = True) -> dict:
+    """k events in n decisions against @p bound, with their 95 % Clopper-Pearson interval; @p interval False for
+    decisions that are not independent trials (the same windows counted at several CNRs): no interval, and no "near"
+    flag drawn from one."""
+    lo, hi = clopper_pearson(k, n) if interval else (None, None)
+    rate = k / n if n else None
+    return {
+        "k": int(k),
+        "n": int(n),
+        "rate": rate,
+        "lo": lo,
+        "hi": hi,
+        "bound": bound,
+        "pass": rate is not None and rate <= bound,
+        "near": interval and rate is not None and lo <= bound <= hi,
+    }
+
+
+def variant_family(v: dict) -> str:
+    if v["family"] in ("fm", "am"):
+        return f"{v['family']} {'tone' if v['mod'].startswith('tone') else 'speech'}"
+    return v["family"]
+
+
+def frozen_verdict(combo: dict, noise: dict, carrier: dict, ids: set | None = None) -> dict:
+    """One plan's frozen-threshold rates, counts and denominators, and its verdict; @p ids are its members'
+    (configuration label, chain name), for ACCEPTED_MARGINAL."""
+    c = noise["counts"]
+    total = int(sum(c))
+    variants = carrier["variants"]
+    sel: dict = {}
+    for r in carrier["rows"]:
+        v = variants[r["variant"]]
+        cnt = r["counts"]
+        groups = []
+        if v["in_channel"]:
+            groups.append(f"in{int(r['cnr'])}")
+            if r["cnr"] >= CARRIER_MIN_CNR_DB:
+                groups.append("in_ge6")
+            if r["cnr"] == CARRIER_MIN_CNR_DB:
+                groups += [f"fam:{variant_family(v)}", f"off:{v['offset']:+.0f}"]
+        elif r["cnr"] == CARRIER_MIN_CNR_DB:
+            groups.append("edge6")
+        for g in groups:
+            acc = sel.setdefault(g, np.zeros(3, dtype=np.int64))
+            acc += np.asarray(cnt, dtype=np.int64)
+
+    def misses(g: str) -> tuple[int, int]:
+        acc = sel.get(g, np.zeros(3, dtype=np.int64))
+        return int(acc.sum() - acc[CARRIER]), int(acc.sum())
+
+    def as_noise(g: str) -> tuple[int, int]:
+        acc = sel.get(g, np.zeros(3, dtype=np.int64))
+        return int(acc[NOISE]), int(acc.sum())
+
+    out = {
+        "false_carrier": rate_entry(c[CARRIER], total, FALSE_CARRIER_TARGET),
+        "noise_undecided": rate_entry(total - c[NOISE], total, NOISE_UNDECIDED_TARGET),
+        "miss_cnr6": rate_entry(*misses("in6"), MISS_TARGET),
+        # Every CNR from 6 dB up mixes the same carrier and noise windows, so the grouped target has no interval; each
+        # CNR's own windows are independent of one another and carry theirs.
+        "pollution_ge6": rate_entry(*as_noise("in_ge6"), POLLUTION_TARGET, interval=False),
+        **{
+            f"pollution_cnr{int(cnr)}": rate_entry(*as_noise(f"in{int(cnr)}"), POLLUTION_TARGET)
+            for cnr in CNRS_DB
+            if cnr >= CARRIER_MIN_CNR_DB
+        },
+        "miss_cnr3": rate_entry(*misses("in3"), 1.0),
+        "miss_cnr0": rate_entry(*misses("in0"), 1.0),
+        "pollution_cnr3": rate_entry(*as_noise("in3"), 1.0),
+        "miss_edge6": rate_entry(*misses("edge6"), 1.0),
+        "families": {g[4:]: rate_entry(*misses(g), MISS_TARGET) for g in sel if g.startswith("fam:")},
+        "offsets": {g[4:]: rate_entry(*misses(g), MISS_TARGET) for g in sel if g.startswith("off:")},
+    }
+    reasons, failing, other = [], [], []
+    for key in TARGET_KEYS:
+        e = out[key]
+        if e["n"] == 0:
+            if key != "miss_cnr6" and key != "pollution_ge6":
+                other.append(f"{key}: no windows")
+            continue
+        if not e["pass"]:
+            failing.append(key)
+            reasons.append(f"{key} {e['rate']:.3g} ({e['k']}/{e['n']}) over {e['bound']:g}")
+    if combo.get("model_off") is not None and combo["model_off"] > 1e-6:
+        other.append(f"the model's plan is {combo['model_off']:.2e} off the decoder's")
+    out["failing_keys"] = failing
+    out["other_reasons"] = other
+    out["reasons"] = reasons + other
+    ids = ids if ids is not None else {(combo["config"].label, combo["plan"].name)}
+    out["listed"] = any(i in ACCEPTED_MARGINAL for i in ids)
+    out["accepted"] = accepted_marginal(ids, out)
+    out["pass"] = not out["reasons"] or out["accepted"] is not None
+    return out
+
+
+def worst_frozen_variants(carrier: dict, count: int = 3) -> list:
+    """The in-channel variants the shipped rule misses most at 6 dB."""
+    rows = []
+    for r in carrier["rows"]:
+        v = carrier["variants"][r["variant"]]
+        if v["in_channel"] and r["cnr"] == CARRIER_MIN_CNR_DB and sum(r["counts"]):
+            miss = 1.0 - r["counts"][CARRIER] / sum(r["counts"])
+            if miss > 0.0:
+                rows.append((miss, variant_label(v)))
+    rows.sort(reverse=True)
+    return [{"miss": m, "variant": label} for m, label in rows[:count]]
+
+
+def fmt_entry(e: dict, digits: int = 2) -> str:
+    if e["n"] == 0:
+        return "-"
+    rate = e["rate"]
+    text = "0" if rate == 0.0 else (f"{rate:.{digits}e}" if rate < 0.01 else f"{100.0 * rate:.{digits}f} %")
+    if e["hi"] is None:
+        return f"{text} ({e['k']}/{e['n']}; no interval)"
+    return f"{text} ({e['k']}/{e['n']}; {e['hi']:.1e})"
+
+
+NOISE_TARGETS = ("false_carrier", "noise_undecided")
+
+
+def pooled_text(key: str, unique: dict, verdicts: dict) -> str:
+    """A target's windows pooled over the plans. A noise target counts each filter (fkey) once: plans that share their
+    taps (AM and NFM at one width on one chain) read the same noise decisions. Its pooled rate has no interval: every
+    filter on a chain reads the same source noise, so the windows of different filters are not independent trials. A
+    carrier target pools every plan's own streams (each carrier plan draws its signals and noise from its own seed),
+    with its Clopper-Pearson interval, but one counting the same windows at several CNRs (pollution_ge6) has none."""
+    if key in NOISE_TARGETS:
+        by_filter = {}
+        for ck, combo in unique.items():
+            e = verdicts[ck][key]
+            if e["n"]:
+                by_filter.setdefault(combo["fkey"], (e["k"], e["n"]))
+        k = sum(v[0] for v in by_filter.values())
+        n = sum(v[1] for v in by_filter.values())
+        if not n:
+            return "-"
+        rate = k / n
+        text = "0" if rate == 0.0 else (f"{rate:.2e}" if rate < 0.01 else f"{100.0 * rate:.2f} %")
+        return f"{text} ({k}/{n} over {len(by_filter)} filters; no interval: shared source noise)"
+    entries = [verdicts[ck][key] for ck in unique if verdicts[ck][key]["n"]]
+    if not entries:
+        return "-"
+    k, n = sum(e["k"] for e in entries), sum(e["n"] for e in entries)
+    return fmt_entry(rate_entry(k, n, entries[0]["bound"], interval=entries[0]["hi"] is not None))
+
+
+def frozen_report(out_dir: Path, meta: dict, combos: list[dict], verdicts: dict, carrier_results: dict) -> tuple:
+    unique = {}
+    for c in combos:
+        if modelled(c):
+            unique.setdefault(c["ckey"], c)
+    runnable = [c for c in combos if c["runs"]]
+    scoped = [c for c in combos if c["runs"] and "scoped" in c]
+    failing = [ck for ck, v in verdicts.items() if not v["pass"]]
+    lines = [
+        "# Auto squelch classifier, frozen-threshold confirmation (issue #899)",
+        "",
+        (
+            f"Generated by `{meta['command']}` at {meta['git']} ({meta['mode']} mode, {meta['noise_windows']} noise "
+            f"sub-windows of 20 ms per filter in {meta['segments']} streams, base seed {BASE_SEED}, numpy "
+            f"{np.__version__}, scipy {meta['scipy']}, {meta['elapsed_s']:.0f} s)."
+        ),
+        "",
+        (
+            "Thresholds frozen at the shipped -7.0 / 3.3 / -3.8 / 2.1 (src/dsp/squelch_floor.c), 40 ms decisions "
+            "with the unsteady-halves rule applied to every window before any count. Targets per window: noise read as "
+            f"CARRIER <= {FALSE_CARRIER_TARGET:g}; an in-channel 6 dB carrier not read as CARRIER <= {MISS_TARGET:g}; "
+            f"a carrier at >= 6 dB read as NOISE <= {POLLUTION_TARGET:g}; noise not read as NOISE <= "
+            f"{NOISE_UNDECIDED_TARGET:g}. Each rate is given as rate (events / windows; upper end of its 95 % "
+            "Clopper-Pearson interval)."
+        ),
+        "",
+        "## Verdict",
+        "",
+        f"{verdict_counts(verdicts)} (of {len(unique)} distinct plans).",
+        "",
+    ]
+    for ck in failing:
+        lines.append(f"- FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
+    accepted = [ck for ck, v in verdicts.items() if v["accepted"]]
+    for ck in accepted:
+        lines.append(f"- accepted {'; '.join(members(runnable, ck))}: {verdicts[ck]['accepted']}")
+    if failing or accepted:
+        lines.append("")
+    targets = ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
+    pollution_cnrs = tuple(f"pollution_cnr{int(cnr)}" for cnr in CNRS_DB if cnr >= CARRIER_MIN_CNR_DB)
+    lines += [
+        (
+            "Each target's 95 % interval against its bound, plan by plan, and every plan's windows pooled (a noise "
+            "target once per filter, with no interval: the filters on one chain read the same source noise). "
+            "pollution_ge6 counts each carrier window once at every CNR from 6 dB up, so it has no interval; the "
+            "pollution_cnrN rows give each CNR's own windows with theirs:"
+        ),
+        "",
+        (
+            "| target | resolved under the bound | unresolved, no event (too few windows) | unresolved, with events | "
+            "over the bound | pooled over every plan |"
+        ),
+        "| --- | --- | --- | --- | --- | --- |",
+    ]
+    for key in (*targets, *pollution_cnrs):
+        entries = [verdicts[ck][key] for ck in unique if verdicts[ck][key]["n"]]
+        over = sum(1 for e in entries if not e["pass"])
+        if any(e["hi"] is None for e in entries):
+            lines.append(f"| {key} | - | - | - | {over} | {pooled_text(key, unique, verdicts)} |")
+            continue
+        resolved = sum(1 for e in entries if e["hi"] <= e["bound"])
+        zero = sum(1 for e in entries if e["k"] == 0 and e["hi"] > e["bound"])
+        events = sum(1 for e in entries if e["k"] > 0 and e["pass"] and e["hi"] > e["bound"])
+        lines.append(f"| {key} | {resolved} | {zero} | {events} | {over} | {pooled_text(key, unique, verdicts)} |")
+    lines += ["", "Plans with events whose interval holds the bound:", ""]
+    held = [
+        f"- {key}: {fmt_entry(verdicts[ck][key])} at {combo_id(unique[ck])}"
+        for ck in unique
+        for key in targets
+        if verdicts[ck][key]["k"] > 0 and verdicts[ck][key]["pass"] and verdicts[ck][key]["near"]
+    ]
+    lines += held or ["- none"]
+    lines.append("")
+    worst = {
+        key: max(unique, key=lambda ck: verdicts[ck][key]["rate"] or 0.0)
+        for key in ("false_carrier", "miss_cnr6", "pollution_ge6", "noise_undecided")
+    }
+    lines += ["| target | worst plan | rate |", "| --- | --- | --- |"]
+    for key, ck in worst.items():
+        lines.append(f"| {key} | {'; '.join(members(runnable, ck))} | {fmt_entry(verdicts[ck][key])} |")
+    lines.append("")
+    lines += ["## Accepted marginal plans", ""]
+    for ck in [ck for ck, v in verdicts.items() if v["listed"]]:
+        v = verdicts[ck]
+        state = "accepted: " + v["accepted"] if v["accepted"] else ("pass" if v["pass"] else "FAIL")
+        lines.append(
+            f"- {'; '.join(members(runnable, ck))}: noise->CARRIER {fmt_entry(v['false_carrier'])}, 6 dB miss "
+            f"{fmt_entry(v['miss_cnr6'])}; {state}"
+        )
+    lines += ["", "## Scoped out", ""]
+    lines.append(
+        "Stepped chains (no port of the live step here; DSP_SQUELCH_STEP_MODEL and its --matrix hold the real step "
+        "through full_demod() to the floor and noise squelch bounds): " + scoped_text(combos) + "."
+    )
+    lines += ["", "## 6 dB misses by modulation family and offset (all plans pooled)", ""]
+    pooled: dict = {}
+    for v in verdicts.values():
+        for group in ("families", "offsets"):
+            for name, e in v[group].items():
+                acc = pooled.setdefault((group, name), [0, 0, 0.0, None])
+                acc[0] += e["k"]
+                acc[1] += e["n"]
+                if e["n"] and (acc[2] < e["rate"]):
+                    acc[2], acc[3] = e["rate"], name
+    lines += ["| group | misses / windows | worst plan's rate |", "| --- | --- | --- |"]
+    label = {"families": "family", "offsets": "offset"}
+    for (group, name), (k, n, w, _) in sorted(pooled.items(), key=lambda kv: (kv[0][0], str(kv[0][1]))):
+        lines.append(f"| {label[group]} {name} | {k} / {n} | {100.0 * w:.2f} % |")
+    lines += ["", "## Reader rows", ""]
+    lines += [
+        (
+            "The reader rows are classified with the plan the decoder installs behind the reader. Beside it, the "
+            "script's own plan from its port of the reader: the period it designs at (1: the phase mean, chosen on the "
+            "C model's bound), that bound, the exact phase deviation after the channel taps, and its distance from the "
+            "decoder's plan."
+        ),
+        "",
+        (
+            "| chain | filter | period | bound | phase dev | model lag / beta / N_eff | decoder lag / beta / N_eff | "
+            "distance |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for ck, c in unique.items():
+        if not c["plan"].reader:
+            continue
+        m, d = c["model_plan"], c["decoder_plan"]
+        lines.append(
+            f"| {c['plan'].name} | {c['filter']} | {m['period']} | {m['mean_bound']:.2e} | {m['phase_dev']:.2e} | "
+            f"{m['lag']} / {m['beta']:.4f} / {m['neff']:.1f} | {d['lag']} / {d['beta']:.4f} / {d['neff']:.1f} | "
+            f"{c['model_off']:.1e} |"
+        )
+    lines += [
+        "",
+        "## Per plan",
+        "",
+        (
+            "| plan (first chain) | chain | taps | plan from | lag | beta | N_eff (40 ms) | noise->CARRIER | noise not "
+            "NOISE | 6 dB missed | >=6 dB ->NOISE | 3 dB missed | edge 6 dB missed | verdict | most-missed 6 dB |"
+        ),
+        "| --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- | --- |",
+    ]
+    for ck, c in sorted(unique.items(), key=lambda kv: (kv[1]["config"].kind, kv[1]["classify_plan"]["neff"])):
+        v = verdicts[ck]
+        p = c["classify_plan"]
+        worst_v = "; ".join(
+            f"{w['variant']} {100.0 * w['miss']:.1f} %" for w in worst_frozen_variants(carrier_results[ck])
+        )
+        verdict = "pass" if v["pass"] and not v["accepted"] else ("accepted" if v["accepted"] else "**FAIL**")
+        lines.append(
+            f"| {combo_id(c)} | {c['plan'].chain_label} | {len(c['taps'])} | {c['plan_source']} | {p['lag']} | "
+            f"{p['beta']:.4f} | {p['neff']:.1f} | {fmt_entry(v['false_carrier'])} | {fmt_entry(v['noise_undecided'])} | "
+            f"{fmt_entry(v['miss_cnr6'])} | {fmt_entry(v['pollution_ge6'])} | {fmt_entry(v['miss_cnr3'])} | "
+            f"{fmt_entry(v['miss_edge6'])} | {verdict} | {worst_v or '-'} |"
+        )
+    lines.append("")
+    model_off = [c["model_off"] for c in unique.values() if c.get("model_off") is not None]
+    lines += [
+        "## Model against the decoder",
+        "",
+        (
+            f"Every row classifies with the plan full_demod() installs (the harness's chain requests, a reader row's "
+            f"through the reader); the script's own plan (the half-band recursion, or its port of the reader, and the "
+            f"channel taps) agrees with it within {max(model_off) if model_off else 0.0:.2e} (lag equal; beta, rho "
+            f"absolute; N_eff, gain relative) over {len(model_off)} plans. The streamed chain (unit impulses at every "
+            f"input phase through the ported stages) gives the recursion's covariance within "
+            f"{meta['generator_check']:.1e} of the power on every chain "
+            "without a reader."
+        ),
+        "",
+    ]
+    md = out_dir / "report.md"
+    md.write_text("\n".join(lines))
+
+    js = out_dir / "report.json"
+    payload = {
+        "meta": meta,
+        "plans": {
+            ck: {
+                "members": members(runnable, ck),
+                "chain": c["plan"].chain_label,
+                "taps": len(c["taps"]),
+                "plan_source": c["plan_source"],
+                "classify_plan": c["classify_plan"],
+                "decoder_plan": c["decoder_plan"],
+                "model_plan": c["model_plan"],
+                "verdict": verdicts[ck],
+            }
+            for ck, c in unique.items()
+        },
+        "scoped": sorted({c["plan"].name for c in scoped}),
+    }
+    js.write_text(json.dumps(json_clean(payload), indent=1, default=str))
+    return md, js
 
 
 # --------------------------------------------------------------------------------------------- main
 
 
-def main(argv: list[str] | None = None) -> int:
-    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
-    parser.add_argument("--quick", action="store_true", help="short run: fewer noise windows, shorter carriers")
-    parser.add_argument("--out", type=Path, default=ROOT / "build" / "squelch_model", help="report directory")
-    parser.add_argument(
-        "--build-dir",
-        type=Path,
-        default=ROOT / "build" / "dev-debug",
-        help="configured and built tree whose static libraries the tap harness links",
-    )
-    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="worker processes")
-    parser.add_argument(
-        "--noise-windows",
-        type=int,
-        default=0,
-        help=f"20 ms noise windows per filter (default {FULL_NOISE_WINDOWS}, {QUICK_NOISE_WINDOWS} with --quick)",
-    )
-    args = parser.parse_args(argv)
-    noise_windows = args.noise_windows or (QUICK_NOISE_WINDOWS if args.quick else FULL_NOISE_WINDOWS)
-    started = time.time()
-    out_dir = args.out.resolve()
-    out_dir.mkdir(parents=True, exist_ok=True)
-
-    exe = build_harness(args.build_dir.resolve(), out_dir)
-    plans = rate_plans()
+def harness_requests(plans: list[RatePlan]) -> list[tuple]:
+    """The analog-family tap requests every chain's complex rate needs."""
     requests = set()
     for plan in plans:
         for width in (*NFM_WIDTHS_HZ, NFM_WIDTH_DEFAULT_HZ, 0):
-            requests.add((plan.rate_out, width, FM_KIND))
+            requests.add((plan.complex_rate, width, FM_KIND))
         for width in AM_WIDTHS_HZ:
-            requests.add((plan.rate_out, width, AM_KIND))
-    header, harness_plans = run_harness(exe, sorted(requests))
+            requests.add((plan.complex_rate, width, AM_KIND))
+    return sorted(requests)
+
+
+def run_chain_requests(exe: Path, requests: list[tuple]) -> dict:
+    """The plans full_demod() installs on each chain request (rate, width, kind, path, profile, passes, reader)."""
+    stdin = "".join(" ".join(str(v) for v in r) + "\n" for r in requests)
+    proc = subprocess.run([str(exe)], input=stdin, capture_output=True, text=True, check=True)
+    out = {}
+    for line in proc.stdout.splitlines()[1:]:
+        rec = json.loads(line)
+        key = (
+            rec["rate_out"],
+            rec["width_hz"],
+            rec["kind"],
+            rec["path"],
+            rec["profile"],
+            rec["passes"],
+            rec["reader_source_hz"],
+        )
+        if not rec["installed"]:
+            raise SystemExit(f"the tracker did not run on chain request {key}")
+        out[key] = rec["floor_plan"]
+    return out
+
+
+def load_chain_model(args, out_dir: Path) -> dict:
+    """The harness, the chains, the taps and the plans: what both modes start from."""
+    exe = build_harness(args.build_dir.resolve(), out_dir)
+    plans = rate_plans()
+    header, harness_plans = run_harness(exe, harness_requests(plans))
     if (header["transition_hz"], header["guard_hz"], header["max_taps"]) != (TRANSITION_HZ, GUARD_HZ, ANALOG_MAX_TAPS):
         raise SystemExit(f"analog channel constants changed ({header}); update tools/squelch_model.py")
-    xcheck = cross_check(harness_plans)
     hb_taps = {name: np.asarray(header[name], dtype=np.float64) for name in ("hb15", "hb31")}
     combos = build_combos(plans, harness_plans, hb_taps)
-    jobs = make_jobs(combos, hb_taps, args.quick, noise_windows)
-    n_noise = sum(1 for j in jobs if "n_windows" in j)
+    requests = sorted({chain_request(c["config"], c["plan"], c) for c in combos if modelled(c)})
+    chain_plans = run_chain_requests(exe, requests)
+    for c in combos:
+        if modelled(c):
+            decoder = chain_plans[chain_request(c["config"], c["plan"], c)]
+            c["decoder_plan"] = decoder
+            c["plan_source"] = "decoder"
+            c["classify_plan"] = decoder
+            c["model_off"] = plan_distance(c["model_plan"], decoder)
+    return {
+        "exe": exe,
+        "plans": plans,
+        "harness_plans": harness_plans,
+        "hb_taps": hb_taps,
+        "combos": combos,
+        "generator_check": generator_check(plans, hb_taps),
+    }
+
+
+def generator_check(plans: list[RatePlan], hb_taps: dict) -> float:
+    """The streamed chain against the recursion: unit impulses at every input phase through the ported stages (with
+    no channel filter) give each chain's covariance, which must be the half-band recursion's. The largest distance,
+    relative to the power, over every chain without a reader or a step."""
+    worst = 0.0
+    seen = set()
+    for plan in plans:
+        if plan.stepped or plan.reader or plan.chain_key in seen:
+            continue
+        seen.add(plan.chain_key)
+        unit = np.ones(1)
+        streamed = impulse_cov(plan, hb_taps, unit)[0]
+        recursion = chain_cov(plan, hb_taps, unit)[0]
+        n = max(len(streamed), len(recursion))
+        a = np.pad(streamed, (0, n - len(streamed)))
+        b = np.pad(recursion, (0, n - len(recursion)))
+        worst = max(worst, float(np.max(np.abs(a - b))) / float(b[0]))
+    return worst
+
+
+def run_pool(jobs: list[dict], workers: int, started: float) -> list[dict]:
+    results = []
+    with ProcessPoolExecutor(max_workers=workers) as pool:
+        for done, result in enumerate(pool.map(run_job, jobs, chunksize=1), start=1):
+            results.append(result)
+            if done % 20 == 0 or done == len(jobs):
+                print(f"  {done}/{len(jobs)} jobs ({time.time() - started:.0f} s)", flush=True)
+    return results
+
+
+def verdict_counts(verdicts: dict) -> str:
+    """The plans that meet every target, those an ACCEPTED_MARGINAL entry accepts (they miss a bound, within its
+    allowance; the gate still exits 0 on them, per D7) and those that fail, counted apart."""
+    accepted = sum(1 for v in verdicts.values() if v["accepted"])
+    failing = sum(1 for v in verdicts.values() if not v["pass"])
+    strict = len(verdicts) - accepted - failing
+    return f"{strict} meet every target, {accepted} accepted as known marginals, {failing} fail"
+
+
+def plan_ids(combos: list[dict]) -> dict:
+    """Every physical plan's (ckey) members as (configuration label, chain name), for ACCEPTED_MARGINAL: taken over
+    every combination before a --chains selection, so a scoped run of one member (replay-48k/pd2) finds the entry of
+    another (replay-48k) for the same plan. Each entry still covers one plan and one bound."""
+    ids: dict = {}
+    for c in combos:
+        if modelled(c):
+            ids.setdefault(c["ckey"], set()).add((c["config"].label, c["plan"].name))
+    return ids
+
+
+def main_frozen(args, model: dict, noise_windows: int, started: float, out_dir: Path) -> int:
+    combos = model["combos"]
+    jobs = make_jobs(combos, model["hb_taps"], args.quick, noise_windows, True, args.segments)
+    n_noise = sum(1 for j in jobs if j["type"] == "noise")
+    unique = {c["ckey"]: c for c in combos if modelled(c)}
     print(
-        f"{len(combos)} combinations, {sum(1 for c in combos if c['runs'])} run: {n_noise} filters x "
+        f"{len(combos)} combinations, {len(unique)} distinct plans ({sum(1 for c in combos if 'scoped' in c)} "
+        f"stepped combinations scoped out): {n_noise} noise streams, {len(jobs) - n_noise} carrier plans, "
+        f"{args.jobs} workers",
+        flush=True,
+    )
+    real_sources()
+    results = run_pool(jobs, args.jobs, started)
+    noise = merge_noise([r for r in results if r["kind"] == "noise"], True)
+    carriers = {r["key"]: r for r in results if r["kind"] == "carrier"}
+    ids = model["plan_ids"]
+    verdicts = {ck: frozen_verdict(c, noise[c["fkey"]], carriers[ck], ids[ck]) for ck, c in unique.items()}
+    command = ["python3", "tools/squelch_model.py", *(sys.argv[1:] if args.argv is None else args.argv)]
+    meta = {
+        "command": " ".join(command),
+        "git": git_describe(),
+        "mode": "quick" if args.quick else "full",
+        "noise_windows": noise_windows,
+        "segments": len(segment_windows(noise_windows, args.segments)),
+        "generator_check": model["generator_check"],
+        "scipy": scipy.__version__,
+        "python": platform.python_version(),
+        "elapsed_s": time.time() - started,
+    }
+    md, js = frozen_report(out_dir, meta, combos, verdicts, carriers)
+    runnable = [c for c in combos if c["runs"]]
+    failing = [ck for ck, v in verdicts.items() if not v["pass"]]
+    for ck, v in verdicts.items():
+        if v["accepted"]:
+            print(f"  accepted {'; '.join(members(runnable, ck))}: {'; '.join(v['reasons'])} ({v['accepted']})")
+        elif v["listed"]:
+            state = "meets every bound in this run" if v["pass"] else "FAILS"
+            print(f"  accepted-marginal entry {'; '.join(members(runnable, ck))}: {state}")
+    for ck in failing:
+        print(f"  FAIL {'; '.join(members(runnable, ck))}: {'; '.join(verdicts[ck]['reasons'])}")
+    print(f"verdict: of {len(unique)} plans, {verdict_counts(verdicts)}")
+    print(f"report: {md}\n        {js}")
+    return 0 if not failing else 1
+
+
+def main_design(args, model: dict, noise_windows: int, started: float, out_dir: Path) -> int:
+    combos = model["combos"]
+    jobs = make_jobs(combos, model["hb_taps"], args.quick, noise_windows, False, 1)
+    n_noise = sum(1 for j in jobs if j["type"] == "noise")
+    print(
+        f"{len(combos)} combinations, {sum(1 for c in combos if modelled(c))} modelled: {n_noise} chains x "
         f"{noise_windows} noise windows, {len(jobs) - n_noise} carrier plans, {args.jobs} workers",
         flush=True,
     )
     real_sources()  # fail early on a missing fixture
-    noise_results, carrier_results = {}, {}
-    with ProcessPoolExecutor(max_workers=args.jobs) as pool:
-        for done, (kind, result) in enumerate(pool.map(run_job, jobs, chunksize=1), start=1):
-            (noise_results if kind == "noise" else carrier_results)[result["key"]] = result
-            if done % 50 == 0 or done == len(jobs):
-                print(f"  {done}/{len(jobs)} jobs ({time.time() - started:.0f} s)", flush=True)
-    sanity = signal_sanity(harness_plans)
+    results = run_pool(jobs, args.jobs, started)
+    noise_results = merge_noise([r for r in results if r["kind"] == "noise"], False)
+    carrier_results = {r["key"]: r for r in results if r["kind"] == "carrier"}
+    sanity = signal_sanity(model["harness_plans"])
     print("schemes:", flush=True)
     analysis = analyse(combos, noise_results, carrier_results)
-    command = ["python3", "tools/squelch_model.py", *(sys.argv[1:] if argv is None else argv)]
+    command = ["python3", "tools/squelch_model.py", *(sys.argv[1:] if args.argv is None else args.argv)]
+    xcheck = cross_check(model["harness_plans"])
     meta = {
         "command": " ".join(command),
         "git": git_describe(),
@@ -1766,14 +2440,14 @@ def main(argv: list[str] | None = None) -> int:
         "elapsed_s": time.time() - started,
         "harness": str(HARNESS_SRC.relative_to(ROOT)),
         "build_dir": str(args.build_dir),
-        "harness_plans": len(harness_plans),
-        "hb15_len": len(header["hb15"]),
-        "hb31_len": len(header["hb31"]),
+        "harness_plans": len(model["harness_plans"]),
+        "hb15_len": len(model["hb_taps"]["hb15"]),
+        "hb31_len": len(model["hb_taps"]["hb31"]),
         "xcheck": xcheck,
         "sanity": sanity,
     }
     md_path, json_path = write_report(out_dir, meta, combos, noise_results, carrier_results, analysis)
-    runnable = [c for c in combos if c["runs"]]
+    runnable = [c for c in combos if modelled(c)]
     best = analysis["recommended"]
     print(f"taps: {xcheck['compared']} designed plans match the numpy port to {xcheck['max_abs_diff']:.1e}")
     for name in dict.fromkeys((PLANNED_SCHEME, best)):
@@ -1792,10 +2466,57 @@ def main(argv: list[str] | None = None) -> int:
     verdict = analysis["schemes"][PLANNED_SCHEME]["passing"] == analysis["schemes"][PLANNED_SCHEME]["total"]
     print(
         f"verdict: the planned classifier {'separates' if verdict else 'does NOT separate'} the classes at every "
-        f"supported combination"
+        f"modelled combination"
     )
     print(f"report: {md_path}\n        {json_path}")
     return 0
+
+
+def main(argv: list[str] | None = None) -> int:
+    parser = argparse.ArgumentParser(description=__doc__.split("\n", 1)[0])
+    parser.add_argument("--frozen", action="store_true", help="confirm the shipped thresholds (exit 1 on a miss)")
+    parser.add_argument("--quick", action="store_true", help="short run: fewer noise windows, shorter carriers")
+    parser.add_argument("--out", type=Path, default=None, help="report directory")
+    parser.add_argument(
+        "--build-dir",
+        type=Path,
+        default=ROOT / "build" / "dev-debug",
+        help="configured and built tree whose static libraries the tap harness links",
+    )
+    parser.add_argument("--jobs", type=int, default=min(8, os.cpu_count() or 1), help="worker processes")
+    parser.add_argument(
+        "--noise-windows",
+        type=int,
+        default=0,
+        help=f"20 ms noise windows per filter (default {FULL_NOISE_WINDOWS}, {QUICK_NOISE_WINDOWS} with --quick)",
+    )
+    parser.add_argument(
+        "--segments", type=int, default=4, help="--frozen: independent noise streams per chain (run in parallel)"
+    )
+    parser.add_argument(
+        "--chains", default="", help="run only the chains whose name contains this text (a partial run, same seeds)"
+    )
+    args = parser.parse_args(argv)
+    args.argv = argv
+    noise_windows = args.noise_windows or (QUICK_NOISE_WINDOWS if args.quick else FULL_NOISE_WINDOWS)
+    noise_windows += noise_windows % 2
+    started = time.time()
+    default_out = "squelch_model_frozen" if args.frozen else "squelch_model"
+    out_dir = (args.out or (ROOT / "build" / default_out)).resolve()
+    out_dir.mkdir(parents=True, exist_ok=True)
+    model = load_chain_model(args, out_dir)
+    model["plan_ids"] = plan_ids(model["combos"])
+    if args.chains:
+        model["combos"] = [c for c in model["combos"] if args.chains in c["plan"].name]
+    if not any(modelled(c) for c in model["combos"]):
+        names = sorted({c["plan"].name for c in model["combos"]})
+        raise SystemExit(
+            f"--chains {args.chains!r} selects no modelled plan (chains matched: {', '.join(names) or 'none'}; stepped "
+            "chains are scoped out)"
+        )
+    if args.frozen:
+        return main_frozen(args, model, noise_windows, started, out_dir)
+    return main_design(args, model, noise_windows, started, out_dir)
 
 
 if __name__ == "__main__":

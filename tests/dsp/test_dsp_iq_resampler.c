@@ -15,6 +15,7 @@
 #include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/rate_converter.h>
 
+#include <limits.h>
 #include <math.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1813,6 +1814,48 @@ test_clear_silent(void) {
     dsd_iq_resampler_free(&r);
 }
 
+/* dsd_iq_reader_plan_for(): a resampler for unequal rates, none for equal ones, and -1 with the plan zeroed for rates
+   no reader takes (0, or past INT_MAX, the final DSP rate's included), the equal-rate pass-through as well. */
+static int
+reader_plan_zero(const dsd_iq_reader_plan* p) {
+    return p->enabled == 0 && p->in_hz == 0 && p->out_hz == 0 && p->protect_hz == 0;
+}
+
+static void
+test_reader_plan_for(void) {
+    dsd_iq_reader_plan p;
+    CHECK(dsd_iq_reader_plan_for(&p, 8000U, 16000U, 16000U) == 0 && p.enabled == 1 && p.in_hz == 8000
+              && p.out_hz == 16000 && p.protect_hz == 7200,
+          "8 kHz into 16 kHz: rc, enabled %d, %d to %d, protect %d", p.enabled, p.in_hz, p.out_hz, p.protect_hz);
+    DSD_MEMSET(&p, 0x5a, sizeof p);
+    CHECK(dsd_iq_reader_plan_for(&p, 48000U, 48000U, 12000U) == 0 && reader_plan_zero(&p),
+          "equal valid rates: no reader");
+
+    static const struct {
+        uint32_t source_hz;
+        uint32_t dsp_in_hz;
+        uint64_t final_dsp_hz;
+        const char* name;
+    } kRefused[] = {
+        {0U, 0U, 0U, "all zero"},
+        {0U, 0U, 48000U, "equal zero rates"},
+        {0x80000000U, 0x80000000U, 48000U, "equal rates past INT_MAX"},
+        {48000U, 48000U, 0U, "equal rates, no final DSP rate"},
+        {48000U, 48000U, (uint64_t)INT_MAX + 1U, "equal rates, final DSP rate past INT_MAX"},
+        {8000U, 16000U, 0U, "unequal rates, no final DSP rate"},
+        {0U, 16000U, 16000U, "no source rate"},
+    };
+
+    for (size_t i = 0; i < sizeof(kRefused) / sizeof(kRefused[0]); i++) {
+        DSD_MEMSET(&p, 0x5a, sizeof p);
+        const int rc =
+            dsd_iq_reader_plan_for(&p, kRefused[i].source_hz, kRefused[i].dsp_in_hz, kRefused[i].final_dsp_hz);
+        CHECK(rc == -1 && reader_plan_zero(&p), "%s: rc %d (want -1), plan zeroed %d", kRefused[i].name, rc,
+              reader_plan_zero(&p));
+    }
+    CHECK(dsd_iq_reader_plan_for(NULL, 8000U, 16000U, 16000U) == -1, "NULL plan");
+}
+
 int
 main(void) {
     test_design();
@@ -1839,6 +1882,7 @@ main(void) {
     test_prime_leading_silence();
     test_prime_phasor();
     test_clear_silent();
+    test_reader_plan_for();
     if (g_failures) {
         DSD_FPRINTF(stderr, "%d failure(s)\n", g_failures);
         return 1;

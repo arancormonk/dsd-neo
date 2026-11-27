@@ -225,7 +225,8 @@ nsq_ring_fir_d(const nsq_cplx* ring, int pos, const double* h, int len) {
     return nsq_c(re, im);
 }
 
-/* One noise sample at twice the rate, through the cascade FIR when the plan has one. */
+/* One noise sample at the cascade FIR's rate (twice the channel rate ahead of a last stage, the channel rate with no
+   stage: a reader's FIR alone), through that FIR when the plan has one. */
 static nsq_cplx
 nsq_noise_wide(nsq_noise_source* src) {
     const nsq_cplx x = nsq_rng_complex(&src->rng);
@@ -273,7 +274,7 @@ nsq_noise_next(nsq_noise_source* src) {
         }
         in = nsq_ring_fir(src->hb_ring, src->hb_pos, src->hb, src->hb_len);
     } else {
-        in = nsq_rng_complex(&src->rng);
+        in = nsq_noise_wide(src);
     }
     nsq_ring_push(src->ch_ring, &src->ch_pos, src->taps_len, in);
     return nsq_ring_fir(src->ch_ring, src->ch_pos, src->taps, src->taps_len);
@@ -330,7 +331,8 @@ nsq_calibrate(dsd_noise_squelch_plan* plan, const float* taps, int taps_len, con
     src.hb = hb;
     src.hb_len = hb ? hb_len : 0;
     src.pre = plan->cascade;
-    src.pre_len = src.hb_len > 0 ? plan->cascade_len : 0;
+    /* Ahead of the last stage at twice the rate, or with no stage (a reader's alone) at the rate itself. */
+    src.pre_len = plan->cascade_len;
     src.taps = taps ? taps : k_unit_tap;
     src.taps_len = taps ? taps_len : 1;
     nsq_calibrate_from(plan, &src, src.taps_len + src.hb_len + src.pre_len);
@@ -349,26 +351,67 @@ nsq_stage_gain(const dsd_noise_squelch_stage* stage, double f, double rate) {
     return fabs(dc) > 0.0 ? fabs(re) / fabs(dc) : 0.0;
 }
 
-/* The stages ahead of the last as one linear-phase FIR at twice the rate (tools/noise_squelch_model.py
-   cascade_fir()): DSD_NOISE_SQUELCH_CASCADE_TAPS taps sampled from their composite response on 0..fs (type I
-   frequency sampling), unit DC gain. Stage i (top first) runs at fs * 2^(count - i). */
+/* |H(f)| of the reader's prototype (L x taps per phase taps at L times its input rate), against its DC gain: the
+   bank holds phase p's taps p, p + L, ... in reverse. The phasor turns one tap at a time and is set again exactly every
+   1024 taps, so a bank of a million taps keeps it on the unit circle. */
+static double
+nsq_reader_gain(const dsd_iq_resampler* r, double f) {
+    const int L = r->L;
+    const int T = r->taps_per_phase;
+    const double w = 2.0 * M_PI * f / (dsd_iq_resampler_in_rate_hz(r) * (double)L);
+    const double sr = cos(w);
+    const double si = -sin(w);
+    double re = 0.0;
+    double im = 0.0;
+    double dc = 0.0;
+    double pr = 1.0;
+    double pi = 0.0;
+    int64_t n = 0;
+    /* Tap n = j L + p, in order: phase p's tap j is bank[p T + T - 1 - j]. */
+    for (int j = 0; j < T; j++) {
+        for (int p = 0; p < L; p++, n++) {
+            if ((n & 1023) == 0) {
+                pr = cos(w * (double)n);
+                pi = -sin(w * (double)n);
+            }
+            const double h = (double)r->bank[((size_t)p * (size_t)T) + (size_t)(T - 1 - j)];
+            dc += h;
+            re += h * pr;
+            im += h * pi;
+            const double t = (pr * sr) - (pi * si);
+            pi = (pr * si) + (pi * sr);
+            pr = t;
+        }
+    }
+    return fabs(dc) > 0.0 ? hypot(re, im) / fabs(dc) : 0.0;
+}
+
+/* The stages ahead of the last, and a reader's resampler ahead of them, as one linear-phase FIR at twice the rate (at
+   the rate with no stage) (tools/noise_squelch_model.py cascade_fir()): DSD_NOISE_SQUELCH_CASCADE_TAPS taps sampled
+   from their composite response on 0..fs (type I frequency sampling), unit DC gain. Stage i (top first) runs at
+   fs * 2^(count - i). With no reader and fewer than two stages there is none. */
 static void
-nsq_design_cascade(dsd_noise_squelch_plan* plan, const dsd_noise_squelch_stage* stages, int count) {
+nsq_design_cascade(dsd_noise_squelch_plan* plan, const dsd_noise_squelch_stage* stages, int count,
+                   const dsd_iq_resampler* reader) {
     plan->cascade_len = 0;
-    if (count < 2) {
+    if (count < 2 && !reader) {
         return;
     }
 
     enum { N = DSD_NOISE_SQUELCH_CASCADE_TAPS, HALF = (DSD_NOISE_SQUELCH_CASCADE_TAPS - 1) / 2 };
 
     const double fs = (double)plan->rate_hz;
+    const double fir_rate = count > 0 ? 2.0 * fs : fs;
     double g[HALF + 1];
     g[0] = 1.0;
     for (int k = 1; k <= HALF; k++) {
-        const double f = (double)k * 2.0 * fs / (double)N;
+        const double f = (double)k * fir_rate / (double)N;
         double v = 1.0;
         for (int i = 0; i + 1 < count; i++) {
             v *= nsq_stage_gain(&stages[i], f, fs * pow(2.0, (double)(count - i)));
+        }
+        if (reader) {
+            v *= nsq_reader_gain(reader, f);
         }
         g[k] = v;
     }
@@ -406,7 +449,8 @@ nsq_design_args_ok(int taps_len, const dsd_noise_squelch_stage* stages, int stag
 /* The band for the channel taps (NULL: no channel filter) behind @p stage_count half-band stages at @p rate_hz: the
    rate, edge, band edges and band-pass counts into @p out; -1 when no band fits. */
 static int
-nsq_design_band(dsd_noise_squelch_plan* out, const float* taps, int taps_len, int stage_count, int rate_hz) {
+nsq_design_band(dsd_noise_squelch_plan* out, const float* taps, int taps_len, int stage_count, int rate_hz,
+                double reader_edge_hz) {
     const double fs = (double)rate_hz;
     if (!taps && stage_count > 0 && 0.5 * fs <= k_unfiltered_signal_edge_hz) {
         return -1;
@@ -415,6 +459,12 @@ nsq_design_band(dsd_noise_squelch_plan* out, const float* taps, int taps_len, in
     double hi = edge - k_edge_guard_hz;
     if (hi > k_nyquist_fraction * fs) {
         hi = k_nyquist_fraction * fs;
+    }
+    /* A reader's resampler passes nothing past its passband edge (0 with none), and its transition band below that
+       cuts the sidebands of an in-band carrier into the band's top: the band ends the channel edge's guard under it
+       (issue #899; flush with the edge, wanted FM read 33-36 dB of quieting at 12 kHz read into 48 kHz). */
+    if (reader_edge_hz > 0.0 && hi > reader_edge_hz - k_edge_guard_hz) {
+        hi = reader_edge_hz - k_edge_guard_hz;
     }
     const double width = hi - k_band_lo_hz;
     if (width < k_min_band_hz) {
@@ -453,8 +503,9 @@ nsq_design_band_passes(dsd_noise_squelch_plan* out) {
 }
 
 int
-dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
-                              const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
+dsd_noise_squelch_plan_design_reader(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                                     const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz,
+                                     const dsd_iq_resampler* reader) {
     if (!out) {
         return -1;
     }
@@ -463,19 +514,19 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
         stages = NULL;
         stage_count = 0;
     }
-    if (!nsq_design_args_ok(taps_len, stages, stage_count, rate_hz)) {
+    if (!nsq_design_args_ok(taps_len, stages, stage_count, rate_hz) || (reader && !reader->configured)) {
         return -1;
     }
     if (!taps || taps_len <= 0) {
         taps = NULL;
         taps_len = 0;
     }
-    if (nsq_design_band(out, taps, taps_len, stage_count, rate_hz) != 0) {
+    if (nsq_design_band(out, taps, taps_len, stage_count, rate_hz, reader ? reader->passband_hz : 0.0) != 0) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }
     nsq_design_band_passes(out);
-    nsq_design_cascade(out, stages, stage_count);
+    nsq_design_cascade(out, stages, stage_count, reader);
     const dsd_noise_squelch_stage* last = stage_count > 0 ? &stages[stage_count - 1] : NULL;
     nsq_calibrate(out, taps, taps_len, last ? last->taps : NULL, last ? last->len : 0);
     if (!(out->p_ref_sum > k_min_power)) {
@@ -484,6 +535,12 @@ dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, in
     }
     out->valid = 1;
     return 0;
+}
+
+int
+dsd_noise_squelch_plan_design(dsd_noise_squelch_plan* out, const float* taps, int taps_len,
+                              const dsd_noise_squelch_stage* stages, int stage_count, int rate_hz) {
+    return dsd_noise_squelch_plan_design_reader(out, taps, taps_len, stages, stage_count, rate_hz, NULL);
 }
 
 /* Whether the arguments describe a stepped plan the squelch can take: a factor it can ring, a configured step that
@@ -535,7 +592,7 @@ dsd_noise_squelch_plan_design_stepped(dsd_noise_squelch_plan* out, const float* 
     }
     /* With no channel filter the step's edge is the channel's, and it truncates a wide signal as the cascade's roll-off
        does: the same rule. The band's 0.45 fs cap is the step's protected band. */
-    if (nsq_design_band(out, taps, taps_len, 1, rate_hz) != 0) {
+    if (nsq_design_band(out, taps, taps_len, 1, rate_hz, 0.0) != 0) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }

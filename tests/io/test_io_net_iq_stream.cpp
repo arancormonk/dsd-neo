@@ -4,9 +4,10 @@
  * iqtcp:/iqudp: spec) whose reader talks to senders on loopback in this test.
  *
  * Pinned: every block the demod takes is exactly one block of dsd_iq_live_block_samples() under a backlog, across the
- * ring's wrap, with the reader's resampler and after a gap; a ring the demod leaves full drops whole blocks with a gap
- * mark only; a TCP reconnect, a UDP sender's re-lock and a resume after a stall run the stream boundary (the
- * discontinuity count and the output generation move, the resampler starts over, the demod resets with StreamGap);
+ * ring's wrap, with the reader's resampler (whose plan the demodulator's squelches model, issue #899) and after a gap;
+ * a ring the demod leaves full drops whole blocks with a gap mark only; a TCP reconnect, a UDP sender's re-lock and a
+ * resume after a stall run the stream boundary (the discontinuity count and the output generation move, the resampler
+ * starts over, the demod resets with StreamGap);
  * the stream has no stream while it reconnects or stalls, so a read waiting for samples gives way to a queued command,
  * and has one again once the first block after the boundary is written; stops are prompt in a silent read, a backoff
  * and a reconnect that hangs; every tuner setter refuses (an unchanged PPM too) and a tune fails; the samples are
@@ -17,12 +18,17 @@
  * stall on (rtl_net_iq_test_set_clock()), which a case advances by hand.
  */
 
+#include <algorithm>
 #include <assert.h>
 #include <atomic>
+#include <cstddef>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/halfband.h>
+#include <dsd-neo/dsp/iq_resampler.h>
+#include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/io/iq_net.h>
 #include <dsd-neo/io/iq_net_spec.h>
 #include <dsd-neo/io/rate_plan.h>
@@ -31,6 +37,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -49,11 +56,13 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include "demod_pipeline_test_support.h"
 #include "dsd-neo/core/opts_fwd.h"
 #include "dsd-neo/io/rtl_stream_fwd.h"
 #include "dsd-neo/platform/platform.h"
 #include "rtl_net_iq.h"
 #include "rtl_stream_test_support.h"
+#include "test_env.h"
 
 #if !DSD_PLATFORM_WIN_NATIVE
 #include <arpa/inet.h>
@@ -292,6 +301,8 @@ free_udp_port(void) {
 struct block_log {
     std::mutex lock;
     std::vector<size_t> floats; /* each block's float count */
+    std::vector<float> samples; /* every block's floats, in order, while keep is set */
+    std::atomic<int> keep{0};
     std::atomic<int> paused{0}; /* the demod waits in its next block until this is 0 */
     std::atomic<int> waiting{0};
 };
@@ -304,6 +315,12 @@ on_block(const rtl_stream_test_replay_block* block, void* ctx) {
     {
         const std::lock_guard<std::mutex> hold(g_blocks.lock);
         g_blocks.floats.push_back(block->float_count);
+        if (g_blocks.keep.load() != 0) {
+            g_blocks.samples.insert(g_blocks.samples.end(), block->p1, block->p1 + block->n1);
+            if (block->p2 != nullptr) {
+                g_blocks.samples.insert(g_blocks.samples.end(), block->p2, block->p2 + block->n2);
+            }
+        }
     }
     if (g_blocks.paused.load() != 0) {
         g_blocks.waiting.store(1);
@@ -314,10 +331,28 @@ on_block(const rtl_stream_test_replay_block* block, void* ctx) {
     }
 }
 
+/* Every block's samples after the half-band decimation (dsd_demod_test_set_post_step_tap()), on the demod thread, while
+   g_blocks.keep is set. */
+std::mutex g_cascade_lock;
+std::vector<float> g_cascade;
+
+void
+on_cascade(const float* iq, int pairs, void* ctx) {
+    (void)ctx;
+    if (g_blocks.keep.load() == 0 || iq == nullptr || pairs <= 0) {
+        return;
+    }
+    const std::lock_guard<std::mutex> hold(g_cascade_lock);
+    g_cascade.insert(g_cascade.end(), iq, iq + (2U * (size_t)pairs));
+}
+
 void
 blocks_reset(void) {
     const std::lock_guard<std::mutex> hold(g_blocks.lock);
     g_blocks.floats.clear();
+    g_blocks.samples.clear();
+    const std::lock_guard<std::mutex> cascade(g_cascade_lock);
+    g_cascade.clear();
 }
 
 size_t
@@ -393,7 +428,7 @@ struct stream_rig {
 };
 
 void
-stream_open(stream_rig& r, const char* spec, int reader) {
+stream_open(stream_rig& r, const char* spec, int reader, void (*decoder)(dsd_opts*) = nullptr) {
     r.opts = std::make_unique<dsd_opts>();
     dsd_opts* opts = r.opts.get();
     DSD_MEMSET(opts, 0, sizeof *opts);
@@ -404,6 +439,9 @@ stream_open(stream_rig& r, const char* spec, int reader) {
     opts->rtl_dsp_bw_khz = 48;
     opts->rtl_gain_value = 24;
     opts->frame_dmr = 1;
+    if (decoder != nullptr) {
+        decoder(opts);
+    }
     dsd_input_failure_clear();
     dsd_exitflag_store(0);
     rtl_stream_test_set_live_block_hook(on_block, nullptr);
@@ -603,6 +641,11 @@ test_blocks_after_upsampling_and_gaps(void) {
     assert(rtl_net_iq_resample_info(rtl_device_net_iq(s.dev), &l, &m, nullptr) == 1);
     assert(l == 2 && m == 1);
     assert(rtl_device_rate_plan_backend(s.dev) == DSD_RATE_PLAN_BACKEND_REPLAY_RESAMPLED);
+    /* The demodulator's squelches model the stream reader's resampler (issue #899): published at the open, with no
+       model on this DMR session's digital chain, which never runs a dynamic squelch. */
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_out_hz == 48000 && opened.reader_model == 0);
     blocks_reset();
     udp_sender tx = udp_sender_open(port);
     uint64_t phase = 0U;
@@ -628,6 +671,424 @@ test_blocks_after_upsampling_and_gaps(void) {
     const rtl_net_iq_state st = ingest(s);
     assert(st.resampler_clears == 1U && st.boundaries == 0U);
     expect_blocks_exactly(kBlockFloats);
+    /* A switch to the NFM monitor prepares the model before it is queued, with the demod parked, so the monitor's
+       first blocks find it built. */
+    assert(rtl_stream_request_analog_profile(DSD_RX_FAMILY_ANALOG, DSD_ANALOG_DEMOD_FM, 12500) == 0);
+    rtl_stream_test_replay_state switched{};
+    assert(dsd_rtl_stream_test_get_replay_state(&switched) == 0);
+    assert(switched.reader_in_hz == 24000 && switched.reader_model == 1);
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+}
+
+/* A ProVoice-only session (9600 bit/s, two levels), opened with CQPSK on by DSD_NEO_CQPSK=1. */
+void
+provoice_cqpsk(dsd_opts* opts) {
+    opts->frame_dmr = 0;
+    opts->frame_provoice = 1;
+}
+
+/* cqpsk_off_onto_fsk9600_prepares_the_model: a resampled ProVoice stream opened on CQPSK (DSD_NEO_CQPSK=1) runs no
+ * dynamic squelch, so
+ * the commit builds no reader model (issue #899). A request that only turns CQPSK off ((0, 0, 0), as a CQPSK toggle
+ * queues it) keeps the 9600/2 profile and so puts the FSK path, which runs one, in force: the model is built before
+ * the request is queued, whatever the request leaves out. */
+void
+test_cqpsk_off_onto_fsk9600_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "1", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1, provoice_cqpsk);
+    int rate = 0;
+    int levels = 0;
+    assert(rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr) == 0);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    if (rate != 9600 || levels != 2 || opened.reader_in_hz != 24000 || opened.reader_model != 0) {
+        DSD_FPRINTF(stderr, "ProVoice on CQPSK: profile %d/%d, reader %d Hz, model %d (want 9600/2, 24000, 0)\n", rate,
+                    levels, opened.reader_in_hz, opened.reader_model);
+        assert(0);
+    }
+    assert(rtl_stream_request_decode_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state switched{};
+    assert(dsd_rtl_stream_test_get_replay_state(&switched) == 0);
+    if (switched.reader_model != 1) {
+        DSD_FPRINTF(stderr, "CQPSK off onto 9600/2: the reader model was not built before the request was queued\n");
+        assert(0);
+    }
+    (void)stream_close(s);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
+}
+
+/* hunt_over_a_replaced_cqpsk_request_prepares_the_model: two requests inside one demod block. On a resampled DMR stream
+ * (4800/4, CQPSK off, no reader model), with the demod held between blocks, a CQPSK-on request is queued and a hunt
+ * step (-1, 9600, 2) replaces it before the demod takes it. The demod keeps its own CQPSK (off) for the -1, so the
+ * step lands the 9600 bit/s FSK path: the model must be built when the step returns, not judged against the CQPSK-on
+ * request the step replaced (issue #899). */
+void
+test_hunt_over_a_replaced_cqpsk_request_prepares_the_model(void) {
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    blocks_reset();
+    g_blocks.paused.store(1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    for (int i = 0; i < 4 && g_blocks.waiting.load() == 0; i++) {
+        const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+        udp_send(tx, d.data(), d.size());
+    }
+    assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
+    assert(rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0) == 0);
+    assert(rtl_stream_request_demod_profile(-1, 9600, 2, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    g_blocks.paused.store(0);
+    for (int i = 0; i < 40; i++) {
+        const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+        udp_send(tx, d.data(), d.size());
+    }
+    int rate = 0;
+    int levels = 0;
+    int cqpsk = 1;
+    const bool landed = wait_until(
+        [&] {
+            (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return rate == 9600 && levels == 2 && cqpsk == 0;
+        },
+        kWaitMs);
+    if (!landed || prepared != 1) {
+        DSD_FPRINTF(stderr,
+                    "hunt step over a replaced CQPSK-on request: landed %d/%d CQPSK %d, model %d (want 9600/2, 0, 1)\n",
+                    rate, levels, cqpsk, prepared);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+}
+
+/* What hunt_over_a_taken_cqpsk_off_request_prepares_the_model holds the demod on. */
+std::atomic<int> g_taken_held{0};
+std::atomic<int> g_idle_wait_begun{0};
+
+/* The demod took a symbol profile: it waits there, the request taken and not applied, until a thread waits for it to
+   go idle (a reader model build parking it), or 3 s. */
+void
+hold_taken_request(int has_demod, void* ctx) {
+    (void)ctx;
+    if (!has_demod || g_taken_held.exchange(1) != 0) {
+        return;
+    }
+    const uint64_t until = now_ms() + 3000U;
+    while (g_idle_wait_begun.load() == 0 && now_ms() < until) {
+        dsd_sleep_ms(1U);
+    }
+}
+
+void
+note_idle_wait(int event, void* ctx) {
+    (void)ctx;
+    if (event == RTL_STREAM_TEST_DEMOD_IDLE_WAIT_BEGIN) {
+        g_idle_wait_begun.store(1);
+    }
+}
+
+/* hunt_over_a_taken_cqpsk_off_request_prepares_the_model: a request taken and not yet applied counts (issue #899).
+ * On a resampled DMR stream opened on CQPSK (DSD_NEO_CQPSK=1: 4800/4, no reader model), a CQPSK-off request (0, 0, 0)
+ * is queued and the demod takes it, then holds it unapplied (rtl_stream_test_set_profile_taken_hook()). A hunt step
+ * (-1, 9600, 2) made then keeps the demod's CQPSK, which that request turns off, so it lands the 9600 bit/s FSK path:
+ * the published CQPSK still reads on, and the step must build the model all the same, before it returns. Its build
+ * parks the demod, whose wait releases the held request (the idle-wait probe). */
+void
+test_hunt_over_a_taken_cqpsk_off_request_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "1", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    int cqpsk = 0;
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(cqpsk == 1 && opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    g_taken_held.store(0);
+    g_idle_wait_begun.store(0);
+    rtl_stream_test_set_profile_taken_hook(hold_taken_request, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(note_idle_wait, nullptr);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            return g_taken_held.load() != 0;
+        },
+        kWaitMs));
+    assert(rtl_stream_request_demod_profile(-1, 9600, 2, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const int released = g_idle_wait_begun.load();
+    rtl_stream_test_set_profile_taken_hook(nullptr, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    int rate = 0;
+    int levels = 0;
+    const bool landed = wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return rate == 9600 && levels == 2 && cqpsk == 0;
+        },
+        kWaitMs);
+    if (!landed || prepared != 1 || released != 1) {
+        DSD_FPRINTF(stderr,
+                    "hunt step over a taken CQPSK-off request: landed %d/%d CQPSK %d, model %d, demod released by the "
+                    "build %d (want 9600/2, 0, 1, 1)\n",
+                    rate, levels, cqpsk, prepared, released);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
+}
+
+/* hunt_behind_a_digital_landing_prepares_the_model: a request the take pairs with a queued digital landing has its
+ * CQPSK resolved as the landing's (issue #899). With DSD_NEO_CQPSK=0 a resampled DMR stream turned onto CQPSK by an
+ * explicit request runs 4800/4 on CQPSK with no reader model. With the demod held between blocks, a digital family
+ * landing (not the target's own CQPSK) is queued, then a hunt step (-1, 9600, 2): the consume resolves the step's -1
+ * through DSD_NEO_CQPSK to off and lands the 9600 bit/s FSK path, so the step must build the model, though the stream
+ * still publishes CQPSK on. */
+void
+test_hunt_behind_a_digital_landing_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "0", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0) == 0);
+    int cqpsk = 0;
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return cqpsk == 1;
+        },
+        kWaitMs));
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    blocks_reset();
+    g_blocks.paused.store(1);
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            return g_blocks.waiting.load() != 0;
+        },
+        kWaitMs));
+    assert(rtl_stream_request_digital_family_landing(0) == 0);
+    assert(rtl_stream_request_demod_profile(-1, 9600, 2, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    g_blocks.paused.store(0);
+    int rate = 0;
+    int levels = 0;
+    const bool landed = wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return rate == 9600 && levels == 2 && cqpsk == 0;
+        },
+        kWaitMs);
+    if (!landed || prepared != 1) {
+        DSD_FPRINTF(stderr, "hunt step behind a digital landing: landed %d/%d CQPSK %d, model %d (want 9600/2, 0, 1)\n",
+                    rate, levels, cqpsk, prepared);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
+}
+
+/* hunt_over_a_taken_digital_landing_prepares_the_model: the same resolution for a landing the demod took and holds
+ * unapplied (rtl_stream_test_set_profile_taken_hook()). With DSD_NEO_CQPSK=0, on the CQPSK-on DMR stream, a digital
+ * landing (not the target's own CQPSK) and a profile (1, 0, 0) are taken together: the consume will resolve that 1 to
+ * off. A hunt step (-1, 9600, 2) made meanwhile keeps that, so it lands the FSK path and must build the model. */
+void
+test_hunt_over_a_taken_digital_landing_prepares_the_model(void) {
+    assert(dsd_test_setenv("DSD_NEO_CQPSK", "0", 1) == 0);
+    dsd_neo_config_init();
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0) == 0);
+    int cqpsk = 0;
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return cqpsk == 1;
+        },
+        kWaitMs));
+    g_taken_held.store(0);
+    g_idle_wait_begun.store(0);
+    rtl_stream_test_set_profile_taken_hook(hold_taken_request, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(note_idle_wait, nullptr);
+    assert(rtl_stream_request_digital_family_landing(0) == 0);
+    assert(rtl_stream_request_demod_profile(1, 0, 0, -1, -1, 0) == 0);
+    assert(wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            return g_taken_held.load() != 0;
+        },
+        kWaitMs));
+    assert(rtl_stream_request_demod_profile(-1, 9600, 2, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    rtl_stream_test_set_profile_taken_hook(nullptr, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    int rate = 0;
+    int levels = 0;
+    const bool landed = wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, &phase);
+            udp_send(tx, d.data(), d.size());
+            (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+            (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+            return rate == 9600 && levels == 2 && cqpsk == 0;
+        },
+        kWaitMs);
+    if (!landed || prepared != 1) {
+        DSD_FPRINTF(stderr,
+                    "hunt step over a taken digital landing: landed %d/%d CQPSK %d, model %d (want 9600/2, 0, 1)\n",
+                    rate, levels, cqpsk, prepared);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+    assert(dsd_test_unsetenv("DSD_NEO_CQPSK") == 0);
+    dsd_neo_config_init();
+}
+
+/* Send tone blocks until @p done holds (kWaitMs). */
+template <typename Done>
+bool
+send_until(udp_sender& tx, uint64_t* phase, Done done) {
+    return wait_until(
+        [&] {
+            const std::vector<uint8_t> d = cs16_tone(300U, phase);
+            udp_send(tx, d.data(), d.size());
+            return done();
+        },
+        kWaitMs);
+}
+
+/* Whether the stream runs @p rate / @p levels with CQPSK @p cqpsk_want. */
+bool
+profile_is(int rate_want, int levels_want, int cqpsk_want) {
+    int rate = 0;
+    int levels = 0;
+    int cqpsk = -1;
+    (void)rtl_stream_get_symbol_profile_full(&rate, &levels, nullptr);
+    (void)rtl_stream_get_cqpsk_status(&cqpsk, nullptr);
+    return rate == rate_want && levels == levels_want && cqpsk == cqpsk_want;
+}
+
+/* ted_only_onto_fsk9600_prepares_the_model: a request that sets only the TED (-1, 0, 0, -1, 5, 0) changes the symbol
+ * rate too: both TED setters set the profile to the complex rate over the TED, keeping two levels two (issue #899).
+ * On a resampled DMR stream (24 kHz read up to a 48 kHz demod) put on 4800/2 with CQPSK off (TED 10, no reader model:
+ * 4800/2 runs no dynamic squelch), the request lands 48000 / 5 = 9600/2, the FSK path that runs one: the model must be
+ * built before the request returns. */
+void
+test_ted_only_onto_fsk9600_prepares_the_model(void) {
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(-1, 4800, 2, -1, -1, 0) == 0);
+    assert(send_until(tx, &phase, [] { return profile_is(4800, 2, 0); }));
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0 && rtl_stream_get_ted_sps() == 10);
+    assert(rtl_stream_request_demod_profile(-1, 0, 0, -1, 5, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const bool landed = send_until(tx, &phase, [] { return profile_is(9600, 2, 0); });
+    if (!landed || prepared != 1) {
+        DSD_FPRINTF(stderr, "TED 5 onto 4800/2 at 48 kHz: landed 9600/2 %d, model %d (want 1, 1)\n", landed ? 1 : 0,
+                    prepared);
+        assert(0);
+    }
+    (void)stream_close(s);
+    (void)dsd_socket_close(tx.sock);
+}
+
+/* cqpsk_off_over_a_taken_ted_only_request_prepares_the_model: the same rate for a TED-only request the demod took and
+ * holds unapplied (issue #899). On the resampled DMR stream put on CQPSK at 4800/2 ((1, 4800, 2): CQPSK on, so no
+ * reader model), a TED-only request (-1, 0, 0, -1, 5, 0) keeps CQPSK on and lands no FSK path; the demod takes it and
+ * holds it. A CQPSK-off request (0, 0, 0) made then keeps the rate that request lands, 9600/2, so it lands the FSK
+ * path: the published profile still reads 4800, and the request must build the model all the same. */
+void
+test_cqpsk_off_over_a_taken_ted_only_request_prepares_the_model(void) {
+    const int port = free_udp_port();
+    stream_rig s;
+    stream_open(s, udp_spec(port, 24000U, "cs16").c_str(), 1);
+    udp_sender tx = udp_sender_open(port);
+    uint64_t phase = 0U;
+    assert(rtl_stream_request_demod_profile(1, 4800, 2, -1, -1, 0) == 0);
+    assert(send_until(tx, &phase, [] { return profile_is(4800, 2, 1); }));
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == 24000 && opened.reader_model == 0);
+    g_taken_held.store(0);
+    g_idle_wait_begun.store(0);
+    rtl_stream_test_set_profile_taken_hook(hold_taken_request, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(note_idle_wait, nullptr);
+    assert(rtl_stream_request_demod_profile(-1, 0, 0, -1, 5, 0) == 0);
+    rtl_stream_test_replay_state ted_queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&ted_queued) == 0);
+    assert(ted_queued.reader_model == 0);
+    assert(send_until(tx, &phase, [] { return g_taken_held.load() != 0; }));
+    assert(rtl_stream_request_demod_profile(0, 0, 0, -1, -1, 0) == 0);
+    rtl_stream_test_replay_state queued{};
+    assert(dsd_rtl_stream_test_get_replay_state(&queued) == 0);
+    const int prepared = queued.reader_model;
+    const int released = g_idle_wait_begun.load();
+    rtl_stream_test_set_profile_taken_hook(nullptr, nullptr);
+    rtl_stream_test_set_demod_idle_wait_probe(nullptr, nullptr);
+    const bool landed = send_until(tx, &phase, [] { return profile_is(9600, 2, 0); });
+    if (!landed || prepared != 1 || released != 1) {
+        DSD_FPRINTF(stderr,
+                    "CQPSK off over a taken TED 5 request: landed 9600/2 %d, model %d, demod released by the build %d "
+                    "(want 1, 1, 1)\n",
+                    landed ? 1 : 0, prepared, released);
+        assert(0);
+    }
     (void)stream_close(s);
     (void)dsd_socket_close(tx.sock);
 }
@@ -672,6 +1133,309 @@ test_ring_full_drops_whole_blocks(void) {
     assert(dsd_rtl_stream_test_get_replay_state(&gaps_after) == 0);
     assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
     tcp_close(t);
+}
+
+/* The NFM monitor at a 16 kHz DSP bandwidth: a 112 kHz stream is read into 64 kHz ahead of two passes. */
+void
+nfm_16k(dsd_opts* opts) {
+    opts->frame_dmr = 0;
+    opts->analog_only = 1;
+    opts->rtl_dsp_bw_khz = 16;
+}
+
+/* @p pairs complex cf32 samples of noise from @p seed (xorshift, uniform in +-0.25), appended to @p src. */
+void
+cf32_noise(std::vector<float>* src, size_t pairs, uint64_t* seed) {
+    for (size_t k = 0U; k < 2U * pairs; k++) {
+        *seed ^= *seed << 13;
+        *seed ^= *seed >> 7;
+        *seed ^= *seed << 17;
+        src->push_back((float)((double)(*seed >> 11) * (1.0 / 9007199254740992.0) - 0.5) * 0.5f);
+    }
+}
+
+void
+tcp_send_floats(tcp_rig& t, const float* f, size_t pairs) {
+    send_all(t.conn, reinterpret_cast<const uint8_t*>(f), pairs * 2U * sizeof(float));
+}
+
+/* The ingest done with @p pairs received samples: their callbacks returned, so the counts are final. */
+rtl_net_iq_state
+ingest_after(const stream_rig& s, uint64_t pairs) {
+    assert(wait_until([&] { return ingest(s).samples_ingested >= pairs; }, kWaitMs));
+    return ingest(s);
+}
+
+/* A reader of @p plan started fresh (cleared, as the ingest restarts it) on @p src from pair @p from, cut as the ingest
+   cuts it: its first @p n outputs into @p out. @p r is configured for the plan once and reused. */
+void
+fresh_reader(dsd_iq_resampler* r, const std::vector<float>& src, size_t from, size_t n, std::vector<float>* out) {
+    dsd_iq_resampler_clear(r);
+    out->clear();
+    std::vector<float> buf(2U * dsd_iq_resampler_max_out(r, 4096U));
+    size_t at = from;
+    while (at < src.size() / 2U && out->size() < 2U * n) {
+        /* Enough inputs for the outputs still wanted, at most a slice: the output bits do not depend on the cut. */
+        const size_t want_in =
+            (((n - out->size() / 2U) * (size_t)r->M) / (size_t)r->L) + (size_t)r->taps_per_phase + 2U;
+        const size_t k = std::min<size_t>(std::min<size_t>(4096U, want_in), src.size() / 2U - at);
+        const int made = dsd_iq_resampler_process(r, src.data() + 2U * at, k, buf.data(), buf.size() / 2U);
+        assert(made >= 0);
+        out->insert(out->end(), buf.begin(), buf.begin() + (std::ptrdiff_t)(2U * (size_t)made));
+        at += k;
+    }
+    if (out->size() > 2U * n) {
+        out->resize(2U * n);
+    }
+}
+
+/* The decoder's half-band cascade of @p passes passes (0 to 2) from its start (zero history, nothing pending), fed block
+   by block as the demod is (its SIMD sums round by where a block ends). */
+struct FreshCascade {
+    int passes = 0;
+    float hist_i[2][30] = {}; /* the longest stage, 31 taps */
+    float hist_q[2][30] = {};
+    int pending[2] = {0, 0};
+
+    explicit FreshCascade(int n) : passes(n) { assert(n >= 0 && n <= 2); }
+
+    void
+    run(const float* in, size_t floats, std::vector<float>* out) {
+        std::vector<float> cur(in, in + floats);
+        for (int i = 0; i < passes; i++) {
+            std::vector<float> next(cur.size() / 2U + 2U);
+            const int len =
+                simd_hb_decim2_complex(cur.data(), (int)cur.size(), next.data(), hist_i[i], hist_q[i], &pending[i],
+                                       i == 0 ? hb31_q15_taps : hb_q15_taps, i == 0 ? 31 : HB_TAPS);
+            assert(len >= 0);
+            next.resize((size_t)len);
+            cur.swap(next);
+        }
+        out->insert(out->end(), cur.begin(), cur.end());
+    }
+};
+
+/* Where the ingest last started @p r over when it wrote @p written blocks of @p block_pairs from @p inputs inputs of
+   @p src and dropped every full block after them: the input whose outputs a dropped block ends inside (its outputs
+   past the block start the next one), else the input after the block. Fed one input at a time, as the slices end where
+   a block does. */
+size_t
+last_restart_input(dsd_iq_resampler* r, const std::vector<float>& src, size_t inputs, size_t block_pairs,
+                   uint64_t written) {
+    dsd_iq_resampler_clear(r);
+    std::vector<float> buf(2U * dsd_iq_resampler_max_out(r, 1U));
+    size_t fill = 0U;
+    uint64_t blocks = 0U;
+    size_t restart = 0U;
+    size_t i = 0U;
+    while (i < inputs) {
+        const int made = dsd_iq_resampler_process(r, src.data() + 2U * i, 1U, buf.data(), buf.size() / 2U);
+        assert(made >= 0);
+        if (fill + (size_t)made < block_pairs) {
+            fill += (size_t)made;
+            i++;
+            continue;
+        }
+        const size_t surplus = fill + (size_t)made - block_pairs;
+        blocks++;
+        fill = surplus;
+        if (blocks > written) {
+            dsd_iq_resampler_clear(r);
+            restart = surplus > 0U ? i : i + 1U;
+            if (surplus > 0U) {
+                fill = 0U;
+                continue; /* the cleared reader takes this input again */
+            }
+        }
+        i++;
+    }
+    return restart;
+}
+
+/* One ring-full restart case: a reader of @p in_hz into @p out_hz (L/M as given) ahead of @p passes half-bands, @p held
+   pairs of noise sent while the demod is held. */
+struct ring_case {
+    uint32_t in_hz;
+    int out_hz;
+    int L;
+    int M;
+    int passes;
+    void (*decoder)(dsd_opts*);
+    size_t held;
+};
+
+/* Each block the full ring drops starts the reader over (issue #899), as the demod starts its half-bands over at the
+ * drop's gap mark. With the demod held, noise fills the ring and drops blocks; once it drains, known noise follows.
+ * Everything the demod takes after the drops' gap mark is then the output of a reader started fresh on the source where
+ * the last drop left it, sample for sample, which a reader that kept running across the drops is not: the decimators,
+ * started over at the mark, keep the reader phases the squelch's model describes. The counts are read once every
+ * callback returned: every drop started the reader over and cost its block alone, with no boundary, restart or output
+ * generation move. */
+void
+ring_full_restart_case(const ring_case& c) {
+    tcp_rig t;
+    t.listener = open_listener(8, &t.port);
+    dsd_demod_test_set_post_step_tap(on_cascade, nullptr);
+    stream_open(t.s, tcp_spec(t.port, c.in_hz, "cf32", 0U).c_str(), 1, c.decoder);
+    t.conn = accept_within(t.listener, kWaitMs);
+    assert(t.conn != DSD_INVALID_SOCKET);
+    rtl_stream_test_replay_state opened{};
+    assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
+    assert(opened.reader_in_hz == (int)c.in_hz && opened.reader_out_hz == c.out_hz);
+    dsd_iq_reader_plan plan;
+    assert(
+        dsd_iq_reader_plan_for(&plan, c.in_hz, (uint32_t)c.out_hz, (uint64_t)((uint32_t)c.out_hz >> (unsigned)c.passes))
+            == 0
+        && plan.enabled);
+    dsd_iq_resampler reader;
+    dsd_iq_resampler_init(&reader);
+    assert(dsd_iq_reader_plan_configure(&plan, &reader, 4096U) == DSD_IQ_RESAMPLER_OK && reader.L == c.L
+           && reader.M == c.M);
+    const size_t block_pairs = (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
+    const size_t block_floats = 2U * block_pairs;
+    rtl_stream_test_live_sequence live_before{};
+    rtl_stream_test_get_live_sequence(&live_before);
+
+    std::vector<float> src;
+    uint64_t seed = 0x899C5EEDULL;
+    blocks_reset();
+    g_blocks.keep.store(1);
+    g_blocks.paused.store(1);
+    cf32_noise(&src, 4096U, &seed);
+    tcp_send_floats(t, src.data(), 4096U);
+    assert(wait_until([] { return g_blocks.waiting.load() != 0; }, kWaitMs));
+    const uint64_t seq = rtl_stream_discontinuity_seq();
+    const uint32_t gen = rtl_stream_output_generation();
+    rtl_stream_test_replay_state gaps_before{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_before) == 0);
+    cf32_noise(&src, c.held, &seed);
+    tcp_send_floats(t, src.data() + ((size_t)2U * 4096U), c.held);
+    const rtl_net_iq_state st = ingest_after(t.s, 4096U + c.held);
+    if (st.blocks_dropped == 0U || st.drop_clears != st.blocks_dropped) {
+        DSD_FPRINTF(stderr, "resampled stream, ring full: %llu blocks dropped, the resampler started over %llu times\n",
+                    (unsigned long long)st.blocks_dropped, (unsigned long long)st.drop_clears);
+        assert(0);
+    }
+    assert(st.boundaries == 0U && st.input_restarts == 0U && st.resampler_clears == 0U);
+    /* Each drop cost its block alone: the resampler's calls end where a block does, and an input whose outputs run
+       past a dropped block starts the next one, so nothing after the block went too. */
+    rtl_stream_test_live_sequence live_after{};
+    rtl_stream_test_get_live_sequence(&live_after);
+    if (live_after.producer_drops - live_before.producer_drops != st.blocks_dropped * block_floats) {
+        DSD_FPRINTF(stderr, "%llu blocks dropped took %llu floats, not %llu\n", (unsigned long long)st.blocks_dropped,
+                    (unsigned long long)(live_after.producer_drops - live_before.producer_drops),
+                    (unsigned long long)(st.blocks_dropped * block_floats));
+        assert(0);
+    }
+    assert(rtl_stream_discontinuity_seq() == seq);
+    assert(rtl_stream_output_generation() == gen);
+    /* Every block written before the first drop, taken; then the known noise after the drops. */
+    const size_t before_gap = (size_t)st.blocks_written * block_floats;
+    g_blocks.paused.store(0);
+    assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
+    const size_t tail = c.in_hz / 2U;
+    const size_t known_from = src.size() / 2U;
+    cf32_noise(&src, tail, &seed);
+    tcp_send_floats(t, src.data() + 2U * known_from, tail);
+    const rtl_net_iq_state after = ingest_after(t.s, 4096U + c.held + tail);
+    assert(after.blocks_dropped == st.blocks_dropped);
+    assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
+    std::vector<float> taken;
+    std::vector<size_t> cuts;
+    {
+        const std::lock_guard<std::mutex> hold(g_blocks.lock);
+        taken = g_blocks.samples;
+        cuts = g_blocks.floats;
+    }
+    assert(taken.size() > before_gap + ((size_t)2U * 2048U));
+    const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
+    /* The reader started over where the last drop left it, and less than a block followed it before the known noise (a
+       whole one would have dropped too): search that one partial block's inputs, at the reader's M/L inputs per
+       output, then hold the whole post-gap stream to the start found, which must be the one the drops make. */
+    std::vector<float> fresh;
+    size_t found = SIZE_MAX;
+    const size_t span = (block_pairs * (size_t)reader.M) / (size_t)reader.L + 2U;
+    for (size_t from = known_from > span ? known_from - span : 0U; from <= known_from && found == SIZE_MAX; from++) {
+        fresh_reader(&reader, src, from, 32U, &fresh);
+        if (fresh.size() == 64U && std::equal(fresh.begin(), fresh.end(), post.begin())) {
+            found = from;
+        }
+    }
+    const size_t restart = last_restart_input(&reader, src, known_from, block_pairs, st.blocks_written);
+    if (found != restart) {
+        DSD_FPRINTF(stderr,
+                    "after the drops the demod took a fresh reader's output from input %zu, not %zu (SIZE_MAX: none, "
+                    "the reader kept running)\n",
+                    found, restart);
+        assert(0);
+    }
+    fresh_reader(&reader, src, found, post.size() / 2U, &fresh);
+    assert(fresh.size() == post.size() && std::equal(fresh.begin(), fresh.end(), post.begin()));
+    rtl_stream_test_replay_state gaps_after{};
+    assert(dsd_rtl_stream_test_get_replay_state(&gaps_after) == 0);
+    assert(gaps_after.input_gap_reset_count > gaps_before.input_gap_reset_count);
+    /* And the half-bands started over at that first sample, keeping the reader phases a fresh start keeps: the demod's
+       post-decimation output from the gap on is a fresh cascade over the fresh reader, sample for sample, right after
+       the outputs the pre-gap input makes from the stream's start. A reset a block late would keep another phase. The
+       expected outputs come from the blocks' cuts; the tap runs after the block hook, so the copy waits for it to have
+       published that many. */
+    FreshCascade from_open(c.passes);
+    FreshCascade from_gap(c.passes);
+    std::vector<float> pre_cascade;
+    std::vector<float> want;
+    size_t at = 0U;
+    for (const size_t k : cuts) {
+        if (at < before_gap) {
+            assert(at + k <= before_gap); /* a read stops at the gap mark */
+            from_open.run(taken.data() + at, k, &pre_cascade);
+        } else {
+            from_gap.run(fresh.data() + (at - before_gap), k, &want);
+        }
+        at += k;
+    }
+    const size_t pre_out = pre_cascade.size();
+    const size_t expected = pre_out + want.size();
+    (void)wait_until(
+        [&] {
+            const std::lock_guard<std::mutex> hold(g_cascade_lock);
+            return g_cascade.size() >= expected;
+        },
+        kWaitMs);
+    std::vector<float> cascade;
+    {
+        const std::lock_guard<std::mutex> hold(g_cascade_lock);
+        cascade = g_cascade;
+    }
+    assert(cascade.size() >= pre_out && std::equal(pre_cascade.begin(), pre_cascade.end(), cascade.begin()));
+    const size_t have = cascade.size() > pre_out ? cascade.size() - pre_out : 0U;
+    if (have < want.size() || want.size() < (size_t)2U * 512U
+        || !std::equal(want.begin(), want.end(), cascade.begin() + (std::ptrdiff_t)pre_out)) {
+        DSD_FPRINTF(stderr,
+                    "the decimated stream after the gap (%zu floats from %zu) is not a fresh cascade over the fresh "
+                    "reader (%zu floats)\n",
+                    have, pre_out, want.size());
+        assert(0);
+    }
+    g_blocks.keep.store(0);
+    dsd_iq_resampler_free(&reader);
+    tcp_close(t);
+    dsd_demod_test_set_post_step_tap(nullptr, nullptr);
+}
+
+/* ring_full_restarts_the_reader: a reader whose decimation keeps a coset of its phases (112 kHz read into 64 kHz ahead
+ * of two passes: L/M 4/7, every fourth output kept). Its slices never make more than the block's room. */
+void
+test_ring_full_restarts_the_reader(void) {
+    ring_full_restart_case(ring_case{112000U, 64000, 4, 7, 2, nfm_16k, (size_t)112000U * 3U});
+}
+
+/* ring_full_restarts_an_upsampling_reader: a reader that makes six outputs of each input (8 kHz read into 48 kHz for a
+ * ProVoice session, its FSK path at 9600 bit/s, no half-band pass). A 256-pair block ends inside an input two times in
+ * three: those outputs past the block start the next one, from the reader started over on that input, so a drop costs
+ * its block alone (not its block and the 2 or 4 outputs after it) and the input is not lost. */
+void
+test_ring_full_restarts_an_upsampling_reader(void) {
+    ring_full_restart_case(ring_case{8000U, 48000, 6, 1, 0, provoice_cqpsk, (size_t)8000U * 8U});
 }
 
 /* What a boundary must have moved since @p seq / @p gen. */
@@ -1122,6 +1886,18 @@ const named_test kTests[] = {
     {"level_waits_for_a_block", test_level_waits_for_a_block},
     {"blocks_after_upsampling_and_gaps", test_blocks_after_upsampling_and_gaps},
     {"ring_full_drops_whole_blocks", test_ring_full_drops_whole_blocks},
+    {"ring_full_restarts_the_reader", test_ring_full_restarts_the_reader},
+    {"ring_full_restarts_an_upsampling_reader", test_ring_full_restarts_an_upsampling_reader},
+    {"cqpsk_off_onto_fsk9600_prepares_the_model", test_cqpsk_off_onto_fsk9600_prepares_the_model},
+    {"hunt_over_a_replaced_cqpsk_request_prepares_the_model",
+     test_hunt_over_a_replaced_cqpsk_request_prepares_the_model},
+    {"hunt_over_a_taken_cqpsk_off_request_prepares_the_model",
+     test_hunt_over_a_taken_cqpsk_off_request_prepares_the_model},
+    {"hunt_behind_a_digital_landing_prepares_the_model", test_hunt_behind_a_digital_landing_prepares_the_model},
+    {"hunt_over_a_taken_digital_landing_prepares_the_model", test_hunt_over_a_taken_digital_landing_prepares_the_model},
+    {"ted_only_onto_fsk9600_prepares_the_model", test_ted_only_onto_fsk9600_prepares_the_model},
+    {"cqpsk_off_over_a_taken_ted_only_request_prepares_the_model",
+     test_cqpsk_off_over_a_taken_ted_only_request_prepares_the_model},
     {"tcp_reconnect_runs_the_boundary", test_tcp_reconnect_runs_the_boundary},
     {"level_starts_over_at_a_reconnect", test_level_starts_over_at_a_reconnect},
     {"tcp_stall_resume_runs_the_boundary", test_tcp_stall_resume_runs_the_boundary},

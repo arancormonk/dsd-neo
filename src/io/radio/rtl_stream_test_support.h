@@ -922,6 +922,11 @@ enum {
 /* Call @p probe(event, @p ctx) on the waiting thread as each such wait starts and returns; NULL removes it. */
 void rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx);
 
+/* Call @p hook(has_demod, @p ctx) on the demod thread each time it takes a queued demod profile request, before it
+ * applies it (rtl_stream_consume_demod_profile_request()), with whether the request holds a symbol profile; NULL
+ * removes it. A hook that waits holds the request taken and not yet applied (issue #899). */
+void rtl_stream_test_set_profile_taken_hook(void (*hook)(int has_demod, void* ctx), void* ctx);
+
 /* A live block's output write into a full output ring once the stream stops, with no decoder reading
  * (rtl_stream_test_full_output_write_on_stop()). */
 typedef struct {
@@ -1019,6 +1024,15 @@ typedef struct {
     int step_l;
     int step_m;
     int squelch_step_model; /* the squelches' noise model is the running step's (dsd_demod_squelch_step_model_sync()) */
+    /* The reader's resampler ahead of the cascade (demod_state::iq_reader, issue #899): on, its plan, and the
+       squelches' noise model built for it (dsd_demod_squelch_reader_model_sync()). Never on with the step. */
+    int reader_enabled;
+    int reader_in_hz;
+    int reader_out_hz;
+    int reader_protect_hz;
+    int squelch_reader_model;
+    long long squelch_plan_designs; /* the auto squelch's floor plans the open designed (behind a reader: its first) */
+    int squelch_plan_valid;         /* the floor plan's validity after the open, -1 while none was designed */
     int complex_rate_hz;
     int rate_out_hz;
     int ted_sps;
@@ -1903,7 +1917,8 @@ void rtl_stream_test_session_boundary(void);
  *   8-11 the output ring: a block's samples and flags go in at the same positions across the ring's wrap and come out
  *        together through the live and the replay reads; a block with no flags reads open, not the flags left from
  *        before; a read without flags takes the samples alone;
- *   12   the status the demod thread publishes. */
+ *   12   the status the demod thread publishes;
+ *   16   a replay or I/Q stream reader's resampler names the context while it resamples (issue #899). */
 int rtl_stream_test_squelch_plumbing(void);
 
 /* The device part of the auto squelch's floor context for input spec @p spec (NULL: none), as a stream open stores it
@@ -2476,6 +2491,11 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
     uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
     uint64_t input_gap_reset_count;   /* demod resets at producer gaps in the input (issue #806 X12), process-wide */
+    /* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899): its source and DSP
+       input rates (0 and 0 with none), and whether its squelch model is built. */
+    int reader_in_hz;
+    int reader_out_hz;
+    int reader_model;
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);

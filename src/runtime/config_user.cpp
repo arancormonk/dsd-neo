@@ -979,9 +979,13 @@ render_input_source(FILE* out, dsdneoUserInputSource source) {
 
 /* The squelch keys: rtl_sql always, and the mode and margin under auto or noise. A level a snapshot rounded to rtl_sql's
    whole dB is said (issue #899 B15): the fixed gate compares the level itself, so the reload decides a little
-   differently. */
+   differently. None while the session's analog default stands (issue #899): any key is an explicit squelch, which
+   would end the default on the next start. */
 static void
 render_input_squelch(FILE* out, const dsdneoUserConfig* cfg) {
+    if (cfg->rtl_sql_analog_default) {
+        return;
+    }
     if (cfg->rtl_sql_rounded) {
         LOG_WARN(
             "WARNING: The squelch level %.2f dB is saved as rtl_sql = %d: the key holds whole dB, so it is rounded "
@@ -2836,6 +2840,10 @@ dsd_snapshot_opts_to_user_config_as_run(const dsd_opts* opts, const dsd_state* s
 
     user_cfg_reset(cfg);
     snapshot_input_config(opts, state, cfg);
+    /* While --squelch-analog-default stands (no squelch set this session, issue #899) the save writes no squelch key,
+       for any input and a replay's retained [input] alike: a config that never set one, so the next start runs the
+       default again. Once a squelch was set explicitly it writes the session's, as without the option. */
+    cfg->rtl_sql_analog_default = dsd_squelch_analog_default_pending(opts);
     snapshot_output_config(opts, cfg);
     snapshot_mode_config(opts, state, cfg);
     snapshot_demod_config(opts, state, cfg);

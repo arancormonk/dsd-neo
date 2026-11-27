@@ -15510,6 +15510,21 @@ add_test(
 )
 set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 300)
 
+# The dynamic squelches behind a replay or network I/Q reader's resampler (issue #899): the installed floor plan against
+# the impulses of the production reader and full_demod() at every output phase, the reader model against them, cold
+# start under AUTO, NOISE on reader chains, and the reader in the plan key and the floor's context.
+add_executable(dsd-neo_test_dsp_squelch_reader dsp/test_dsp_squelch_reader.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SQUELCH_READER COMMAND dsd-neo_test_dsp_squelch_reader)
+set_tests_properties(DSP_SQUELCH_READER PROPERTIES TIMEOUT 120)
+
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
 target_include_directories(
@@ -21980,20 +21995,37 @@ if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_net_iq_stream io/test_io_net_iq_stream.cpp)
     target_include_directories(
         dsd-neo_test_io_net_iq_stream
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${PROJECT_SOURCE_DIR}/src/dsp
     )
     target_compile_definitions(
         dsd-neo_test_io_net_iq_stream
         PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     )
-    target_link_libraries(
-        dsd-neo_test_io_net_iq_stream
-        PRIVATE
-            dsd-neo_io_radio_private_test_support
-            dsd-neo_io_iq
-            dsd-neo_core
-            ${LIBS}
-    )
+    # The radio and DSP test archives reach into each other (the post-step tap): GNU-style linkers take them as one
+    # group, Apple's and MSVC's linkers search every archive again on their own.
+    if(NOT APPLE AND NOT MSVC AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_core
+                ${LIBS}
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                ${LIBS}
+        )
+    endif()
     add_test(NAME IO_NET_IQ_STREAM COMMAND dsd-neo_test_io_net_iq_stream)
     set_tests_properties(IO_NET_IQ_STREAM PROPERTIES TIMEOUT 180)
 
@@ -26213,7 +26245,16 @@ add_test(
 # means every audio bound held. not_expected is a regex that must not appear.
 # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected [audio_out]]]): audio_out is the
 # --analog-audio-out file the run must write, passed apart from mode so a path holding a space stays whole.
+# An empty fixture names no capture: the host makes its own (--analog-synth-burst).
+# A seventh argument, config, is a config file the run loads with --config, passed apart
+# from mode as audio_out is.
 function(dsd_neo_add_analog_replay_test test_name fixture mode)
+    set(_fixture_path "")
+    if(NOT "${fixture}" STREQUAL "")
+        set(_fixture_path
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
+        )
+    endif()
     set(_expected "ANALOG AUDIO OK")
     if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
         set(_expected "${ARGV3}")
@@ -26226,14 +26267,18 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
     if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
         set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV5}")
     endif()
+    set(_config_arg)
+    if(ARGC GREATER 6 AND NOT "${ARGV6}" STREQUAL "")
+        set(_config_arg "-DCONFIG=${ARGV6}")
+    endif()
     add_test(
         NAME ${test_name}
         COMMAND
             ${CMAKE_COMMAND}
             "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
-            "-DMODE=${mode}"
-            "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg} -P
+            "-DMODE=${mode}" "-DFIXTURE=${_fixture_path}"
+            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg}
+            ${_config_arg} -P
             "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
     set_tests_properties(
@@ -27752,6 +27797,85 @@ if(DSD_HAS_RADIO)
         "-fs -C ${_scan_sql_default_csv} --analog-scan-row 0 --squelch-analog-default noise ${_sql_noise_burst_bounds}"
         "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
         "${_analog_off_path}|squelch noise [+]10 dB [(]row[)]"
+    )
+    # The analog default on a multi-pass chain (issue #899 follow-up): the host makes the
+    # capture at run time (--analog-synth-burst; no fixture is committed), 3.0 s of white
+    # noise at the capture rate with one NFM burst from 1.0 to 2.0 s, 25 dB over the noise
+    # the channel can pass, and a sidecar that records the chain. 1.024 MS/s recorded at
+    # 16 kHz through base 64 runs six half-band passes with no channel filter, where the
+    # floor plan used to model one: idle noise read as carrier, the tracker never left
+    # learning and the hiss played (2900 of the 3000 ms audible from 40 ms). Now the gate
+    # stays shut on the noise, opens 20 ms into the burst and closes within a window of
+    # its end (1020 ms to the first audible block, 2040 ms to the last, 1020 ms audible).
+    # The bounds hold it silent before the burst and after the close delay, audible
+    # inside. The host's ANALOG SQUELCH line shows the floor tracker ran, the noise
+    # squelch never did, and the floor ended known. Noise runs as auto on that channel
+    # (no band above voice): its line is auto's, and it measures the same. 1.536 MS/s at
+    # 24 kHz through base 64 with a 12.5 kHz NFM filter (six passes, filtered) used to open
+    # on noise too (from 80 ms, 1140 ms audible); it measures the same as the 16 kHz
+    # chain. With the squelch off the made noise plays throughout, and no dynamic squelch
+    # runs.
+    set(_sql_default_synth_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 2900 --analog-max-total-ms 3100 --analog-min-first-audible-ms 1000 --analog-max-first-audible-ms 1060 --analog-min-last-audible-ms 1980 --analog-max-last-audible-ms 2100 --analog-min-audible-ms 940 --analog-max-audible-ms 1100 --analog-max-clip 0"
+    )
+    set(_sql_default_synth_16k "--analog-synth-burst 1024000:16:64 -fA")
+    set(_sql_default_chain_16k
+        "Rate chain: capture=1024000 Hz, base_decim=64, post=1 -> demod=16000 Hz"
+    )
+    set(_sql_default_tracker_known
+        "ANALOG SQUELCH: tracker_ms=[1-9][0-9.]* noise_ms=0[.]00 state=known"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_16K_6PASS
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "${_sql_default_chain_16k}.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NOISE_16K_6PASS
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default noise+10 ${_sql_default_synth_bounds}"
+        "${_sql_default_chain_16k}.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_24K_NFM12K5_6PASS
+        ""
+        "--analog-synth-burst 1536000:24:64 -fA --nfm-bandwidth-hz 12500 --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "Rate chain: capture=1536000 Hz, base_decim=64, post=1 -> demod=24000 Hz.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_16K_6PASS_EXPLICIT_OFF
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default auto+10 --squelch off --analog-audible-dbfs -40 --analog-min-audible-ms 2800 --analog-min-total-ms 2900"
+        "${_sql_default_chain_16k}.*ANALOG AUDIO OK"
+        "${_analog_off_path}|ANALOG SQUELCH:"
+    )
+    # Through the replay reader: an 8 kHz capture with 16 kHz asked for explicitly
+    # ([input] rtl_bw_khz = 16, analog decode; a sidecar alone keeps 8 kHz and skips the
+    # reader), so the reader resamples it 2:1 ahead of the chain and the floor plan has
+    # to model the band it leaves. The rate chain line shows the reader ran. Loaded as a
+    # profile, the config is never autosaved over, and its path is passed apart from the
+    # mode, so a path holding a space stays whole. It used to hiss from 40 ms (2960 ms
+    # audible); it holds the 16 kHz chain's bounds and ends known once the plan models
+    # the reader.
+    set(_sql_default_reader_ini
+        "${CMAKE_CURRENT_BINARY_DIR}/analog_sql_default_reader_16k.ini"
+    )
+    file(
+        WRITE "${_sql_default_reader_ini}"
+        "[input]\nsource = \"rtl\"\nrtl_bw_khz = 16\n\n[mode]\ndecode = \"analog\"\n\n[profile.reader]\nmode.decode = \"analog\"\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_8K_READER_16K
+        ""
+        "--profile reader --analog-synth-burst 8000:8:1 --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "Rate chain: capture=8000 Hz resampled to 16000 Hz [(]L/M=2/1, .*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+        ""
+        "${_sql_default_reader_ini}"
     )
 
     # Negative controls: bounds that must NOT hold, run through

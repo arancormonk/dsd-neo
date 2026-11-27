@@ -3086,6 +3086,7 @@ write or two).
 | `--analog-raw-wav-min-rms-dbfs DB` | Lower bound on the RMS level of the run's `-6` raw WAV (issue #643), which this option has the host record: it adds `-6 FILE` for a private temporary file, reads the WAV back when live processing ends (closing it first, which the engine would only do after the stop hook), prints `ANALOG RAW WAV: frames=N rate_hz=R rms_dbfs=X peak_dbfs=Y clip=C` after the `ANALOG METRIC:` line, and removes the file at exit. Fails as not measured when the WAV holds no frames. |
 | `--analog-scan-row ROW` | Enter row `ROW` of the `-C` channel map before the replay, the way the conventional scanner commits it (its class, then its own options), and print `Scan row applied: ROW <class>; width <W>; squelch <S>`, each with `(row)` when the row sets it. I/Q replay cannot retune, so one row is all a run visits (issue #526). |
 | `--analog-synth-pauses SEED` | Make the NFM recording cases' capture at run time (issue #756) and replay it: five voice-like bursts with pauses of 0.3, 0.6, 1.5 and 3.0 s between them, 0.8 s of noise after the last; see [NFM recordings through pauses](#nfm-recordings-through-pauses-issue-756). The case names no `--iq-replay` of its own (the host refuses one). With `-P` the host also prints an `ANALOG CALL ROW: start=S end=E tone=T` line per analog history row after the run (`T` the row's tone as its text names it, such as `CTCSS 100.0 Hz`, or `none`). |
+| `--analog-synth-burst RATE_HZ:DSP_KHZ:BASE` | Make an idle channel with one NFM burst at run time (issue #899) and replay it: 3.0 s of white noise at `RATE_HZ` (3 LSB a component), the burst from 1.0 to 2.0 s at 25 dB over the noise the channel can pass, 700 and 1300 Hz at up to 1.5 kHz deviation, and a sidecar that records `DSP_KHZ` through `BASE` half-band decimation (post 1), so the replay runs the multi-pass chain a dongle at that rate runs. `BASE` is a power of two dividing `RATE_HZ`. The case names no `--iq-replay` of its own, and the option takes no other one that makes or replaces the input. |
 | `--analog-gap-join AT_MS:GAP_MS:FIXTURE:THEN_MS` | Replay the first `AT_MS` of the `--iq-replay` capture, a `GAP_MS` gap in the radio stream as a capture records a USB recovery (a `RETUNE` to the same centre, the gap's samples as a `MUTE` and a `RESET`, each `usb_recovery`), then the first `THEN_MS` of `FIXTURE`, another committed 48 kHz capture named without `.iq.json` and found by its directory entry in `tests/fixtures/iq`, never as a path (issue #667). The joined copy goes to the private directory, as the scaled copy does, and no fixture is committed. |
 | `--analog-scene NAME` | Make one of the host's scenes at run time and take it as the input (issue #668): bursts of voice-band noise that never repeats, so each recording can be found in it; see [Where an NFM recording starts](#where-an-nfm-recording-starts-issue-668). The `pcm` and `udp` scenes need `--analog-pcm-tap RATE` for their rate. With `-P` and `--wav-journal` the host reads every published recording after the run and prints `ANALOG RECORDING: n=N burst=B score=S start_ms=X audio_ms=Y ms=L`. |
 | `--analog-record-{min,max}-start-ms MS` | Bounds on `start_ms`, where each recording's first sample was against its burst's start (negative: before it). |
@@ -3110,8 +3111,11 @@ it. Sub-audible tones 20-30 Hz apart need a longer, phase-continuous window than
 When live processing ends the host prints `ANALOG METRIC:` (`rate_hz`, `total_ms`, `captured_ms`, `audible_ms`,
 `first_audible_ms`, `rms_dbfs`, `p56_dbfs` with a P.56 bound, `peak_dbfs`, `clip`, `inband_db`, `tone_hz`,
 `tone_dbfs`, `tone_snr_db`, and the received-tone fields `tone`, `tone_lock_ms` and `tone_lock_pct` described under
-[Analog A/B](#analog-ab); `NA` where a value was not measured), the `ANALOG RAW WAV:` line when the run recorded
-one, one `ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one `ANALOG AUDIO FAIL:` line per missed bound
+[Analog A/B](#analog-ab); `NA` where a value was not measured), on a radio input whose stream ran a dynamic squelch
+`ANALOG SQUELCH: tracker_ms=MS noise_ms=MS state=NAME` (issue #899: stream time read while the floor tracker ran, AUTO
+or NOISE run as AUTO, and while the noise squelch ran, and the tracker's floor state after the last such read:
+`learning`, `known`, `seeded` or `provisional`), the `ANALOG RAW WAV:` line when the run recorded one, one
+`ANALOG PROBE:` line per probe, and then `ANALOG AUDIO OK`, or one `ANALOG AUDIO FAIL:` line per missed bound
 and exit status 1. Without bounds it only reports, which is how `tools/replay_ab.sh --metric analog` uses it. Every
 bound is absolute and per case, so "narrower is cleaner" becomes two cases with their own limits, not a comparison
 between runs. Measured on the commit that added them:
@@ -3361,8 +3365,10 @@ fixed thresholds) met every target on 162 of the 196 filters: narrow plans (unde
 window) missed 1-5% of 6 dB carriers, among them the fading real capture and AM with full-depth tones, and the
 unfiltered NFM default at the 4 kHz RTL rate read noise as carrier 3.4-3.9 times in 10,000. The scheme the auto
 squelch uses passes 195: 40 ms windows; coherence measured against its expected value on noise, beta = (pi/4)
-rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), with rho_n the noise autocorrelation through the channel taps and the last
-half-band stage; and both features normalised by the window's effective sample count N_eff = N / sum rho_n(m)^2,
+rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2), with rho_n the autocorrelation of the noise that reaches the classifier (that
+run took white noise through the last half-band stage and the channel taps; the decoder's plan, and the tool since
+issue #899, carry it through the whole chain, which matters from two passes on); and both features normalised by the
+window's effective sample count N_eff = N / sum rho_n(m)^2,
 X = (CV^2 - 1) sqrt(N_eff) and Y = |mean(u_k conj(u_{k-L})) - beta| sqrt(N_eff). A window is a carrier when X <= -7.0
 or Y >= 3.3, and noise when X >= -3.8 and Y <= 2.1. Worst cases over the 195: noise read as carrier 1.0e-4 per window
 (about 10 events, so about +/-32%), a 6 dB carrier missed 1.1%, no carrier of 6 dB or more read as noise (0.4% at
@@ -3370,11 +3376,95 @@ or Y >= 3.3, and noise when X >= -3.8 and Y <= 2.1. Worst cases over the 195: no
 forcing the legacy filter on at the 8 kHz RTL rate, misses 1.1% of 6 dB carriers; it is accepted as marginal. The
 model does not cover spurs or adjacent channels: a steady tone inside the channel is a carrier to the coherence test,
 and with these thresholds a birdie from -12 dB (widest plans) to -3.6 dB (narrowest) against the noise reads as one.
-`python3 tools/squelch_model.py` reproduces the report (`build/squelch_model/report.md`) in about 25 minutes on 8
-workers; `--quick` takes about a minute. The 72 kHz RTL DSP bandwidth, selectable since TETRA needs it, came after that
-run, and the model now plans it too (an SDDC at 2 MS/s then runs 125 kHz): `--quick` counts 448 combinations, 270 that
-run and 210 carrier plans, and the scheme the squelch uses (`norm/40ms/cdb` in the report) passes all 210, as it passes
-all 196 of a `--quick` run without 72 kHz.
+`python3 tools/squelch_model.py` wrote that report (`build/squelch_model/report.md`) in about 25 minutes on 8 workers
+with the one-stage noise model; it now runs the chain model below, and `--quick` takes a few minutes. The 72 kHz RTL
+DSP bandwidth, selectable since TETRA needs it, came after that run, and the model then planned it too (an SDDC at
+2 MS/s then ran 125 kHz): `--quick` counted 448 combinations, 270 that ran and 210 carrier plans, and the scheme the
+squelch uses (`norm/40ms/cdb` in the report) passed all 210, as it passed all 196 of a `--quick` run without 72 kHz.
+
+That run modelled every chain as one half-band stage at twice the channel rate. The decoder's RTL-SDR chains run 4 to 8
+passes, so the tool now takes each chain's production identity (issue #899): the capture rate, the passes, the replay
+reader's resampler (a port of `iq_resampler.c`'s design) and the complex rate the plan and the tracker run at. RTL-SDR
+rows use the planner's capture rate and passes for each DSP bandwidth. I/Q replay rows use the recorded base
+decimation's passes, and reader rows the general plan (8 to 16 kHz, 40 to 32 kHz then one pass, 250 to 192 kHz then two,
+48,001 to 48,000 Hz, 112 to 64 kHz then two, 12 and 16 to 48 kHz). A post-decimated row is its base row's chain. Noise
+and carriers are made at the chain's source rate and run through ports of its stages. Each half-band stage is centred as
+`simd_hb_decim2_complex()` centres it: output q on input 2q, made once the look-ahead is in. Behind a periodic reader
+the centring decides which of the reader's phases the passes keep; the earlier causal port kept another phase at 112 to
+64 kHz then two passes (unfiltered noise gain 0.19805232 against the decoder's 0.19804155). Every stage keeps its
+history, and the reader's phase and the windows' fractional boundaries carry across chunks. A reader row's noise
+covariance comes from impulses streamed through the ported chain in pushes of 2^20 source samples. Its workspace stays
+bounded, about 250 MB: 864,058 Hz read at 576 kHz to 72 kHz (32,752 input phases, 201 taps) takes 8 s. The largest
+supported period, 3,199,970 Hz read at 2,048 kHz to 4 kHz (2,093,568 input phases), takes about 2 to 3.5 hours at under
+400 MB. CNR is set at the channel output. Wanted variants on a reader row must also fit the band the source carries.
+Every row is classified with the plan `full_demod()` installs (the tap harness prints it per chain, a reader row's
+through the reader and its C model). The tool's own plan matches it within 4.2e-9 on all 146 plans without a reader,
+from the half-band recursion. On the 75 reader plans it matches within 3.6e-9, from its port of the reader, choosing the
+averaged or the full periodic design on the C model's bound. At 8 to 16 kHz unfiltered both give beta 0.5418 and N_eff
+317.8, where a plan without the reader has 0 and 640 (Y bias 13.7). The full run below classified the reader rows with
+the tool's plan, before the decoder had one, and through the causal half-band port; the reader rows were rerun after
+both changes (below). Fixed-grid device rows (Airspy, Airspy Mini, RX-888/SDDC) step after their passes. The tool has no
+port of the live step, so they stay out of this gate and of the EDACS and M17 encoder gate below, listed as scoped out.
+What covers them is `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows: the real step through `full_demod()` at the
+post-half-band rates of 2.5 and 3 MS/s at every selectable DSP bandwidth, held to the floor, noise squelch and
+window-statistics bounds.
+
+**Frozen-threshold confirmation (issue #899).** `python3 tools/squelch_model.py --frozen` keeps the shipped thresholds
+and decides every 40 ms window as `src/dsp/squelch_floor.c` does before anything is counted: two 20 ms sub-windows
+ending at floor(k fs / 50) samples from the stream's start, no coherence term for a stream's first L samples, and the
+3 dB unsteady-halves rule. It reports each target per plan with its events, its windows and a 95 % Clopper-Pearson
+interval, lists the accepted marginal plans apart (`ACCEPTED_MARGINAL`), and exits 1 on a missed target no entry
+accepts. The run covered 188
+distinct plans on 21 chains (8 RTL-SDR, 9 replay, 4 reader). Each plan had 100,000 noise windows (200,000 sub-windows in
+four streams) and the carrier set above; it took 103 minutes on 8 workers.
+
+| Target (bound) | Plans over the bound | Worst plan | Pooled |
+| --- | --- | --- | --- |
+| Noise read as carrier (1e-4) | 2 | 1.3e-4 (13 / 100,000; 95 % upper 2.2e-4): unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 7.6e-6 (109 / 14,400,000 over the 144 distinct filters) |
+| 6 dB carrier missed (1 %) | 1 | 2.16 % (12 / 555): unset NFM, `DSD_NEO_CHANNEL_LPF=1`, rtl-8k | 6.3e-5 (34 / 537,875) |
+| Carrier of 6 dB or more read as noise (1e-4) | 0 | none in any plan (at most 5,025 windows a plan at each CNR, so no plan alone resolves 1e-4) | 0 (0 / 1,613,625 decisions: 537,875 windows, each at 6, 10 and 20 dB; at each CNR 0 / 537,875, 95 % upper 6.9e-6) |
+| Noise left undecided (25 %) | 0 | 3.65 %: unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | 1.29 % (over the 144 filters) |
+
+The noise rows pool each filter once: plans that share their taps (AM and NFM at one width on one chain) read the same
+noise decisions. They carry no interval, because every filter on a chain reads the same source noise, so the windows of
+different filters are not independent trials. The carrier rows pool every plan, each from its own seeded signals and
+noise, with their 95 % interval. The "6 dB or more" row mixes the same carrier and noise windows at 6, 10 and 20 dB, so
+its three decisions per window are not independent trials either. Its interval is given at each CNR (0 / 537,875 windows
+each), not over the grouped 1,613,625, which would have given an upper end of 2.3e-6. (Pooling by plan had counted the
+shared filters twice: 6.8e-6, 127 / 18,800,000, and 1.27 %.)
+
+Three plans miss a bound. The thresholds stay as shipped, and these plans are accepted as known marginals. Each entry
+in the tool covers one plan and one bound. Its allowance sits just above the 95 % interval's upper end, so another
+plan, another bound of the same plan, or a worse rate still fails:
+
+| Plan | Bound | Measured (events / windows; 95 % interval) | Accepted up to | Why |
+| --- | --- | --- | --- | --- |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=1`, rtl-8k (legacy WIDE, 23 taps) | 6 dB carrier missed, 1 % | 2.16 % (12 / 555; 1.1 % to 3.7 %) | 3.8 % | The channel LPF forced on at 8 kHz, where the legacy design is all the channel there is; the design run accepted it at 1.1 %. Every miss is on the real captures (`nfm_squelch_real_b` 11 %, `nfm_squelch_real_a` 1 %). |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 48 kHz replay (and its post-decimated rows) | Noise read as carrier, 1e-4 | 1.1e-4 (11 / 100,000; 5.5e-5 to 2.0e-4) | 2.0e-4 | An unfiltered chain with no pass. This issue leaves its plan bit for bit, and the design run already put its tail at 1.0e-4. |
+| Unset NFM, `DSD_NEO_CHANNEL_LPF=0`, 125 kHz replay | Noise read as carrier, 1e-4 | 1.3e-4 (13 / 100,000; 6.9e-5 to 2.2e-4) | 2.3e-4 | As above. |
+
+Outside the real captures no family (dead carrier, FM and AM tones, FM and AM speech) and no offset misses a 6 dB
+window; the real captures miss 34 of 167,300 pooled. The reader rows pass every target. `--quick` (5,000 noise
+windows, short carriers) runs in about 2 minutes; the full report is `build/squelch_model_frozen/report.md`.
+
+**Reader rows rerun.** The decoder's half-band centring changes which reader phases the passes keep, so the reader rows
+were rerun alone with the same seeds (`--frozen --chains reader`, 9 minutes on 8 workers), the new reader chains with
+them (16 to 48 kHz in a run of its own: 12 plans, all pass): 75 distinct plans on 7 reader chains, 100,000 noise windows
+each. All 75 meet every target. The worst are noise read as carrier 7e-5 (7 / 100,000, unset NFM with
+`DSD_NEO_CHANNEL_LPF=0` at 250 to 192 kHz), a 6 dB carrier missed 0.12 % (2 / 1,710, the same unfiltered plan at 12 to
+48 kHz), noise undecided 3.3 % and no carrier read as noise. The rows with no pass (8 to 16 kHz and 48,001 Hz) reproduce
+the full run's counts exactly. The rows with passes moved within sampling error: noise read as carrier 6 to 10 events in
+900,000 windows at 40 kHz, and 5 to 9 in 1,200,000 at 250 kHz. A chain without a reader is stationary at every stage, so
+the centring only delays it. Its noise has the same distribution at either phase, and its plan streamed at the old and
+the new centring agrees within 5.4e-15 (rtl-12k, -16k, -24k and -48k, filtered and not). The deterministic carriers and
+the real captures shift by one input sample against the output grid, which is not a whole-output delay. Two targeted
+full reruns measured that effect on the chains whose accepted plans sit closest to their bounds. `--frozen --chains
+rtl-8k`: 3 of the 4 plans meet every target, and the fourth, the forced legacy filter, is accepted as before: its 6 dB
+miss reads 1.62 % (9 / 555; 2.16 % before), inside its 3.8 % allowance and its only miss. The EDACS/M17 gate's `--chains
+rtl-12k`: PROVOICE `LPF=1` holds 600 ms, inside its 620 ms, and WIDE `LPF=1` reads 360 ms (its entry below). Neither
+plan misses a second bound, and the others move within sampling error. So the full run's verdicts on the rows without a
+reader stand. `--noise-windows` splits the requested 40 ms decisions over the `--segments` streams by quotient and
+remainder and leaves the empty streams out, so a run measures the windows it reports.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (design gate)
 
@@ -3382,9 +3472,9 @@ Issue #625 runs the same tracker, thresholds unchanged, on two more paths: the 9
 analog voice reads, and the M17 encoder's monitor. Neither path's channel plans were in the run above.
 `tools/squelch_paths_model.py` (numpy/scipy, offline; CI does not run it) checks them before any C reads the gate. It
 imports `tools/squelch_model.py`'s chains, noise and carriers, and takes each plan's taps and classifier constants
-from C: `tools/squelch_model_taps.cpp` designs a profile's plan off the analog family and prints
-`dsd_squelch_floor_plan_design()`'s lag, beta and N_eff. It classifies exactly as `src/dsp/squelch_floor.c` does,
-with the same 40 ms windows, thresholds and 3 dB halves rule.
+from C: `tools/squelch_model_taps.cpp` runs the FSK path or the encoder's monitor on the chain through `full_demod()`
+and prints the plan the tracker installs. It classifies exactly as `src/dsp/squelch_floor.c` does, with the same
+40 ms windows, thresholds and 3 dB halves rule.
 
 The plans and signals:
 - **EDACS:** every plan its FSK path runs at post-decimation 1 and a channel rate of 12 kHz or more (under it a symbol
@@ -3422,8 +3512,8 @@ channel filter designs at; without it every plan it printed was the fallback.
 
 - **Accepted plan:** the encoder's legacy WIDE filter forced on by `DSD_NEO_CHANNEL_LPF=1` at an SDDC's 7.8 kHz channel
   misses 1.26 % of 6 dB carriers. The run above accepted the analog monitor's forced 8 kHz plan at 1.1 %, and this
-  plan's longest closed run is one window, far under the VOX's 440 ms hang. The tool (`ACCEPTED_MISS`) relaxes only
-  that target for that plan, up to 1.5 %; any other failure there still fails the run.
+  plan's longest closed run is one window, far under the VOX's 440 ms hang. That run relaxed only that target for that
+  plan, up to 1.5 %. The SDDC chain steps after its passes, so the rerun below scopes it out and the entry is gone.
 - **The bound:** the 78 ms worst closing delay is what EDACS budgets as `DSD_SQUELCH_CLOSE_DELAY_MS` (85 ms) in its
   release hold. While the floor is learned, a window holding the drop can still read CARRIER, so the next one closes it.
 - **The floor:** the 40 ms a call's first decision takes and the 60 ms of a carrier's onset over a known floor are what
@@ -3435,8 +3525,50 @@ channel filter designs at; without it every plan it printed was the fallback.
   percentile 62.4 dB against the gate's 36, no false open on noise). Now WIDE designs there, bit for bit the 16 kHz NFM
   plan, so the NFM run covers them and `--encoder-only` finds no plan of its own. EDACS runs NOISE as auto, so its
   plans need no noise-model run.
-- **Reproducing:** `python3 tools/squelch_paths_model.py` writes `build/squelch_paths_model/report.md` in about 20
-  minutes on 14 workers; `--quick` takes under a minute.
+- **Reproducing:** `python3 tools/squelch_paths_model.py` wrote that report (`build/squelch_paths_model/report.md`) in
+  about 20 minutes on 14 workers with the one-stage noise model.
+
+**Rerun on the decoder's chains (issue #899).** The paths now run on `tools/squelch_model.py`'s chain model: the
+RTL-SDR bandwidths at their capture rates through their 4 to 8 passes, the replay and reader chains, noise and
+carriers made at the source rate through the chain, and the plan `full_demod()` installs on each path. Stepped chains
+are scoped out. Each plan had 100,000 noise windows, with the frozen classification of the run above. Every
+non-reader plan matches the tool's own within 2e-9; since the decoder models the reader, the 20 reader plans do too
+(within 2.5e-9), and the gate now classifies them with the decoder's plan. The run took 69 minutes on 16 workers.
+
+| Path | Plans | Noise read as carrier | 6 dB carrier missed | Carrier read as noise | Noise undecided | Longest closed run in a call (learning / known) | Closing delay (learning / known) |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| EDACS | 45 of 45 pass, 3 accepted | 1.4e-4 at worst (1.0e-4 on the others) | 0.72 % | none | 3.8 % | 600 / 40 ms (40 / 40 ms on the others) | 77 / 39 ms |
+| M17 encoder | 46 of 46 pass, 3 accepted | 1.7e-4 (1.0e-4) | 1.26 % (0.54 %) | none | 3.8 % | 80 / 40 ms | 78 / 39 ms |
+
+Six plans miss a bound. The thresholds stay as shipped, and the tool's `ACCEPTED_MARGINAL` accepts these plans as known
+marginals, one plan and one bound each. A rate's allowance sits just above its 95 % interval's upper end; a closed run's
+sits one 20 ms sub-window above the run measured. The gate exits 0 and prints each accepted plan and why; another plan,
+another bound or a worse value still fails it.
+
+| Plan | Bound | Measured | Accepted up to | Why |
+| --- | --- | --- | --- | --- |
+| EDACS, rtl-12k, PROVOICE, `DSD_NEO_CHANNEL_LPF=1` | Longest closed run while learning, under the 155 ms hold | 600 ms (a 300 Hz tone at 5 kHz deviation, 1 kHz off centre, 6 dB) | 620 ms | The channel LPF forced on at 12 kHz: the real 7-pass cascade and the filter truncate that carrier hard (the design run tested it without the cascade). EDACS presets run 24 kHz, and the default 12 kHz chain, channel LPF off, passes. |
+| EDACS, rtl-12k, WIDE after a live switch, `DSD_NEO_CHANNEL_LPF=1` | As above | 360 ms (the same carrier; 240 ms before the rerun below) | 380 ms | As above, a plan only the override makes. The targeted rerun (`--chains rtl-12k`) was the first full run with fresh timing noise for every case and the decoder's half-band centring. It measured 360 ms, still the only bound this plan misses, and the allowance follows it by one sub-window. |
+| M17 encoder, rtl-8k, legacy WIDE, `DSD_NEO_CHANNEL_LPF=1` | 6 dB carrier missed, 1 % | 1.26 % (7 / 555; 0.51 % to 2.58 %) | 2.6 % | The forced 8 kHz legacy filter, as on the analog monitor above. |
+| EDACS, 125 kHz replay, no channel filter (`DSD_NEO_CHANNEL_LPF=0`) | Noise read as carrier, 1e-4 | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | An unfiltered chain with no pass, whose plan this issue leaves bit for bit; its tail sits near 1e-4. |
+| M17 encoder, 125 kHz replay, no channel filter | As above | 1.4e-4 (14 / 100,000; 7.7e-5 to 2.3e-4) | 2.4e-4 | As above. |
+| M17 encoder, 96 kHz replay (post-decimated by 2), no channel filter | As above | 1.7e-4 (17 / 100,000; 9.9e-5 to 2.7e-4) | 2.8e-4 | As above; the same plan read 5e-5 in the analog run. |
+
+The stepped chains stay out of this gate, as out of the analog one; `DSP_SQUELCH_STEP_MODEL_MATRIX`'s stepped rows cover
+them.
+
+`python3 tools/squelch_paths_model.py` writes the report; the saved run's verdicts were re-evaluated against the lists
+(all 91 plans pass, 6 accepted). `--quick` takes about 10 minutes, mostly in the C tracker
+of the timing checks.
+
+**Reader rows rerun.** After the half-band centring fix the reader rows were rerun alone with the same seeds (`--chains
+reader`, 15 minutes on 8 workers), the new reader chains with them (16 to 48 kHz in a run of its own): 21 EDACS and 14
+encoder plans on 7 reader chains. All 35 pass, none through an accepted entry. Every decoder plan matches the model's
+within 2.5e-9. The worst figures are noise read as carrier 6e-5, a 6 dB carrier missed 0.23 %, no carrier read as noise,
+and noise undecided 3.2 %. The longest closed run in a call is 40 ms learning and 40 ms known, and the closing delay 78
+/ 39 ms. The rows with no pass reproduce the full run's counts. The rows with passes moved within sampling error: noise
+read as carrier 1 to 3 events in 100,000 at 40 kHz, where the full run had 3 to 5, and 6 at 250 kHz with no filter,
+where it had 2.
 
 #### Auto squelch on EDACS analog voice and the M17 encoder (regression cases)
 
@@ -3497,10 +3629,10 @@ Other issue #899 cases:
 
 | Case | What it pins |
 | --- | --- |
-| `RUNTIME_SQUELCH_ANALOG_DEFAULT` | The analog default in and out of force: the -fA/-fM monitor of a radio input takes it, a digital decoder, audio input and the M17 encoder put the session's own back exactly; every explicit source ends it (a live edit, an Off or a value equal to the default as much as another; a spec's `sql` field other than `0`; a config's squelch keys); a scan row's own squelch overrides only that row; a suspended scope moves nothing until its resume; the scope's configured squelch and a save never hold the default; a config's `[mode]` and a decode change under a suspended scope reach it; the AM notice at each start of noise as auto. |
+| `RUNTIME_SQUELCH_ANALOG_DEFAULT` | The analog default in and out of force: the -fA/-fM monitor of a radio input takes it, a digital decoder, audio input and the M17 encoder put the session's own back exactly; every explicit source ends it (a live edit, an Off or a value equal to the default as much as another; a spec's `sql` field other than `0`; a config's squelch keys); a scan row's own squelch overrides only that row; a suspended scope moves nothing until its resume; the scope's configured squelch and a save never hold the default; a save while it stands (a live radio input, an I/Q replay's retained `source = "rtl"` `[input]`, audio input) writes no squelch key and its reload, the spec it builds applied as the start does, still runs it with Off beneath it (no squelch, as the startup -110 dB is), while one after an explicit Off or `auto+12` writes `rtl_sql = 0` (with the mode and margin) and its reload ends it, and without the option `rtl_sql = 0` is written as before; a config's `[mode]` and a decode change under a suspended scope reach it; the AM notice at each start of noise as auto. |
 | `RUNTIME_CLI_PARSE`, `RUNTIME_CLI_COMPACT` | `--squelch-analog-default` in both spellings, `--squelch` before or after it ending it, `off` (any spelling), a level and bad margins refused without repeating the text; the option's arity, and which options that take the next argument do without it (`--config`, `--validate-config`). |
 | `APP_COMMAND_QUEUE` default case | A live `DECODE_MODE_SET` to NFM puts the default in the options, and the switch's family request starts the monitor closed (rounds 6 and 7: the receiver, here the shared stand-in for its gate, `tests/test_support/channel_gate_fake.c`, starts it closed; the decoder writes noise +10 after the command), and keeps the switch's message; AM keeps it, P25 hands back Off; a switch refused at the check or at its landing leaves Off; an explicit Off ends it; a refused edit ends nothing; an input change to a WAV file takes it out. |
-| `DECODE_IQ_ANALOG_SQL_DEFAULT_*`, `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` | What the monitor plays under the option: the NFM burst gates exactly as under `--squelch noise`, noise never opens it, `--squelch off` ends it, AM runs it as auto with the notice, and a `-Y` nfm row with no squelch of its own on a DMR session runs it. |
+| `DECODE_IQ_ANALOG_SQL_DEFAULT_*`, `DECODE_IQ_SCAN_SQL_DEFAULT_ROW` | What the monitor plays under the option: the NFM burst gates exactly as under `--squelch noise`, noise never opens it, `--squelch off` ends it, AM runs it as auto with the notice, and a `-Y` nfm row with no squelch of its own on a DMR session runs it. The `_6PASS` cases and `_AUTO_8K_READER_16K` replay `--analog-synth-burst` captures (issue #899 follow-up): on six half-band passes at 16 kHz unfiltered (auto, and noise, which runs as auto there) and at 24 kHz with a 12.5 kHz NFM filter, and through the replay reader (8 kHz resampled to an explicit 16 kHz), the gate stays shut on the idle noise, opens inside the burst and closes within a bounded delay after it (first and last audible time and audible duration), and the `ANALOG SQUELCH:` line shows the floor tracker ran (never the noise squelch, so noise ran as auto) and ended `known`; `_16K_6PASS_EXPLICIT_OFF` shows the made noise plays with the squelch off and no dynamic squelch ran. |
 | `UI_QT_SESSION_ARGS` | Every radio start (RTL-SDR, rtl_tcp, Airspy; NFM, AM, Auto and digital decodes; Explore, saved and search starts) passes the Settings default as `--squelch-analog-default`, its spec's squelch field `0`; audio, network and file sources pass none; a saved squelch goes last as `--squelch`; an Advanced `--squelch` or default of its own comes after it. A bare `--`, or an option missing its value at the end of an Advanced field (by the CLI's own tables: `--api-bind`, `--tetra-key` and `--api` need one, `--config` does not), is a typed start error. |
 | `UI_QT_SESSION_ARGS_PARSE` squelch cases | Live decode switches through the real bridge, queue and engine options, one command each: Explore Auto to NFM or AM brings the default in (AM keeps the configured Noise, which it runs as Auto), P25, DMR or TETRA leaves it exactly off; a refused switch, a squelch the user set, one a saved system or the Advanced arguments name, and one set from outside the app (an Off, the default's own value, a level) are never touched; a recreated bridge needs nothing to take back. A generated scan list's NFM row carries no squelch and the parsed session holds the default. |
 | `UI_QT_SCAN_LIST_TARGETS`, `ENGINE_TRUNK_SCAN_SCAN_LIST` | Each generated row's squelch: saved Noise on an AM row as Auto, a saved dynamic squelch on a digital row as `off`, saved levels as whole dB, and none on a row with none of its own. The generated lists load through the real parser and coordinator and rotate once and back: on audio input each row runs its own or the session's; on a test radio (an RTL input whose retunes a rigctl peer makes) the plain analog rows run the default, the receiver hears each row's setting, and the readout marks the default. |
@@ -3587,6 +3719,11 @@ still pass, because the AM detector writes silence for a closed sample itself (`
 the envelope over the held carrier, means nothing without a carrier), so on AM they pin the detector's handling of
 the flags instead.
 
+The floor plan's model of the whole half-band cascade and the reader's resampler (issue #899) was A/B'd on a real
+multi-pass capture too: `tools/replay_ab.sh --metric analog` on a 269 s off-air recording read at 16 kHz through six
+passes, against `main` over 4 realizations (the determinism control read +0.00 on every metric), played 3.3 s from the
+transmission 120.7 s in, where `main` played 267 s of idle noise from 40 ms.
+
 #### Level squelch replay cases
 
 The level squelch (`--squelch <dB>`, a row's `--squelch-db`) gates each demod block whole on its channel power, and a
@@ -3615,11 +3752,59 @@ quiets by N dB. The question before any C was written: does a quieting statistic
 follow the carrier-to-noise ratio, and stay well above the highest threshold while a strong carrier carries wanted
 modulation, at every plan the FM monitor runs? `tools/noise_squelch_model.py` (numpy/scipy, offline; CI does not run it)
 answers it on `tools/squelch_model.py`'s tap harness and rate chains, with `dsd_fm_demod()`'s discriminator modelled
-exactly. It covers 365 distinct plans:
+exactly. The design run whose results follow covered 365 distinct plans on the one-stage chains of that time
+(historical; the tool no longer enumerates them):
 
-- 119 plans from the 171 NFM combinations the harness runs: every width, the unset default and every rate chain.
+- 119 plans from the 171 NFM combinations the harness then ran: every width, the unset default and every rate chain.
 - 246 plans at custom widths: 11.0-12.4 kHz in 100 Hz steps and 13-25 kHz in 1 kHz steps, on every chain at 24 kHz or
   above.
+
+Since issue #899 its chains are the shared chain identities, and the tool now enumerates 374 distinct plans:
+
+- 231 on the chains without a reader: the 128 NFM combinations collapse to 85 plans, and 146 more at the custom widths.
+- 143 on the seven reader chains (a replay or network source through the reader's resampler): the 54 NFM combinations
+  collapse to 43 plans, and 100 more at the custom widths on the four 48 kHz reader chains.
+
+It leaves out the stepped chains: it does not port the live step, and `DSP_SQUELCH_STEP_MODEL` holds their noise plans.
+A reader row runs the shared chain model (`tools/squelch_chain_model.py`): the noise and every signal are made at the
+source rate and run through the reader and the half-bands as the decoder centres them. A wanted signal is made as a
+recording carries it, faster and low-passed to just under the source's Nyquist. The calibration is the C core's: the
+reader's magnitude is folded into the cascade FIR, and the measurement band ends 800 Hz under the reader's pass edge,
+the same guard as under the channel's edge (the reader's transition truncates a wanted signal's outer FM sidebands as a
+channel filter's edge does). A wanted signal whose band (offset, deviation and highest audio frequency) passes the
+reader's pass edge is measured as "edge", outside the gate. Where that edge is narrower than the channel, each tone's
+offsets are taken against it too (its edge and half way, either side), so a passing plan covers wanted signals up to the
+reader's edge as well as the channel's. `DSP_SQUELCH_READER` (`tests/dsp/test_dsp_squelch_reader.cpp`) checks the
+reader's noise plan in C, on the 16 and 12 to 48 kHz chains below among others. `--chains TEXT` runs only the plans of
+the chains whose name holds the text.
+
+The shipped candidate is scored against the decoder's own calibration references: the tap harness's `noise` mode prints
+the plan `squelch_noise_design()` makes for each chain (its band, held to the tool's, and every band-pass's p_ref from
+the C core's 2 s calibration). The measurement windows keep the tool's independent noise, and the other candidates keep
+the tool's own 2 s draw, which differs from the decoder's by at most 0.79 dB in a band-pass. The current full run of all
+374 plans (46 minutes on 8 workers) passes every plan with a band. The 231 plans without a reader have 180 with a band,
+and all pass: wanted 1st percentile 37.0 dB at worst (a 565 Hz tone at its Carson edge, 11.7 kHz at 39062 Hz), speech
+39.0 dB, noise reaching N = 3 in at most 6.7e-5 of evaluations. The reader rows:
+
+| Reader chain | Plans | With a band | Worst wanted p1 | Worst noise false-open at N = 3 | Calibration |
+| --- | --- | --- | --- | --- | --- |
+| 8 to 16 kHz (reader edge 3.6 kHz) | 5 | none: all run as auto | | | |
+| 12 to 48 kHz (edge 5.4 kHz, band at most 3.8-4.6 kHz) | 32 | none: all run as auto | | | |
+| 16 to 48 kHz (edge 7.2 kHz, band at most 3.8-6.4 kHz) | 32 | 28, all pass | 36.4 dB | 3.3e-5 | 0.36 dB |
+| 40 to 32 kHz, one pass | 5 | 2, both pass | 43.2 dB | 0 | 0.29 dB |
+| 112 to 64 kHz, two passes | 5 | 2, both pass | 41.1 dB | 0 | 0.19 dB |
+| 250 to 192 kHz, two passes | 32 | 28, all pass | 38.5 dB | 3.3e-5 | 0.46 dB |
+| 48,001 Hz at L/M 1/1 to 48 kHz | 32 | 28, all pass | 37.2 dB | 6.7e-5 | 0.43 dB |
+
+All 88 reader plans with a band pass the gate. The worst at 16 to 48 kHz, 36.4 dB, is a 480 Hz tone 2220 Hz off centre
+on a 15 kHz channel, an offset taken against the reader's edge. At 16 to 48 kHz the guarded reader edge, not the
+channel's, ends the band for NFM 16 kHz and wider and with no channel filter (3800-6400 Hz). NFM 12.5 kHz keeps its own
+channel guard (3800-5650 Hz). At 12 to 48 kHz NFM 12.5 kHz and no channel filter run as auto, as every 12 kHz row does.
+The calibration column is the decoder's references' largest distance from the long-run reference through the real chain,
+in any band-pass of the shipped candidate. Noise's loudest window is 3.38 dB on 16 to 48 kHz and 3.64 dB at worst
+(48,001 Hz). Before the guard, the band ended at the reader's edge, and 12 to 48 kHz kept a 3800-5400 Hz band on 28
+plans. Twelve of them held a wanted tone to 33.1-35.7 dB: tones whose band fits the source's 5400 Hz still have outer
+sidebands that the reader's 5400-6600 Hz transition cuts.
 
 Each chain's decimation runs ahead of its channel filter: a cascade of half-band stages, the 31-tap one first and
 15-tap ones after, and the 15-tap stage droops inside the band. The model runs everything through the cascade as the

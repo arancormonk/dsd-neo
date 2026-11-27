@@ -8,7 +8,9 @@
  * the plan of the channel filter in force, flags each sample instead of zeroing anything, and the flags follow the
  * samples through the AM detector, the post-decimator (both paths) and the resampler. The same input cut into other
  * blocks gives the same flags. It also runs on the 9600 bit/s FSK path EDACS analog voice reads and on the M17
- * encoder's monitor (issue #625), and closes within DSD_SQUELCH_CLOSE_DELAY_MS of a carrier dropping.
+ * encoder's monitor (issue #625), and closes within DSD_SQUELCH_CLOSE_DELAY_MS of a carrier dropping. Without a step
+ * its plan models the whole half-band cascade, so white noise through 4 to 8 passes stays shut from cold start, and a
+ * pass-count or width change moves the floor on the cascade's gain (issue #899).
  */
 
 #include <cmath>
@@ -161,6 +163,69 @@ run_block(demod_state* s, const float* iq, int pairs) {
     return b;
 }
 
+/* The covariance white complex noise of unit variance at the capture rate shows behind the half-band cascade of
+   @p passes (hb31, then hb15, each decimating by 2, as full_demod_apply_halfband_decimation() runs them) and the
+   channel taps, worked out here on its own (issue #899): the cascade is one filter at the capture rate,
+   H31(z) H15(z^2) ... H15(z^(2^(passes - 1))), read every 2^passes inputs, so R_y(m) = sum_i h(i) h(i + 2^passes m),
+   then R(m) = sum_d R_c(d) R_y(m - d) with R_c the taps' autocorrelation. Scaled by 2^(passes - 1), the noise_gain
+   convention. */
+std::vector<double>
+cascade_noise_cov(int passes, const float* taps, int len) {
+    std::vector<double> h(1, 1.0);
+    for (int i = 0; i < passes; i++) {
+        const float* g = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        const int glen = i == 0 ? 31 : HB_TAPS;
+        const size_t up = (size_t)1 << i;
+        std::vector<double> next(h.size() + ((size_t)(glen - 1) * up), 0.0);
+        for (size_t a = 0; a < h.size(); a++) {
+            for (int b = 0; b < glen; b++) {
+                next[a + ((size_t)b * up)] += h[a] * (double)g[b];
+            }
+        }
+        h.swap(next);
+    }
+    const size_t step = (size_t)1 << passes;
+    const int hb_lags = (int)(h.size() / step) + 1;
+    std::vector<double> ry((size_t)hb_lags, 0.0);
+    for (int m = 0; m < hb_lags; m++) {
+        for (size_t i = 0; i + (step * (size_t)m) < h.size(); i++) {
+            ry[(size_t)m] += h[i] * h[i + (step * (size_t)m)];
+        }
+        ry[(size_t)m] = ldexp(ry[(size_t)m], passes > 0 ? passes - 1 : 0);
+    }
+    std::vector<double> cov((size_t)(hb_lags + len - 1), 0.0);
+    for (int m = 0; m < (int)cov.size(); m++) {
+        for (int d = -(len - 1); d <= len - 1; d++) {
+            const int at = m - d < 0 ? d - m : m - d;
+            if (at >= hb_lags) {
+                continue;
+            }
+            double rc = 0.0;
+            const int ad = d < 0 ? -d : d;
+            for (int t = 0; t + ad < len; t++) {
+                rc += (double)taps[t] * (double)taps[t + ad];
+            }
+            cov[(size_t)m] += rc * ry[(size_t)at];
+        }
+    }
+    return cov;
+}
+
+/* The floor plan of that covariance (cascade_noise_cov()) for the channel taps (NULL or 0: none), at a rate 25 divides
+   (the 40 ms window a whole number of samples). */
+dsd_squelch_floor_plan
+cascade_plan(int passes, const float* taps, int len, int rate) {
+    static const float k_unit[1] = {1.0f};
+    const std::vector<double> cov = cascade_noise_cov(passes, len > 0 ? taps : k_unit, len > 0 ? len : 1);
+    dsd_squelch_floor_periodic_noise noise;
+    noise.period = 1;
+    noise.lags = (int)cov.size();
+    noise.cov = cov.data();
+    dsd_squelch_floor_plan plan;
+    (void)dsd_squelch_floor_plan_design_periodic(&plan, len > 0 ? taps : NULL, len, &noise, rate);
+    return plan;
+}
+
 int
 fail(const char* what) {
     DSD_FPRINTF(stderr, "squelch auto demod: %s\n", what);
@@ -252,8 +317,8 @@ fm_flags_follow_the_tracker(void) {
     return rc;
 }
 
-/* The plan follows the channel: another width keeps the floor, rescaled; a half-band stage and no channel filter design
-   their own plans. */
+/* The plan follows the channel: another width keeps the floor, rescaled; one half-band stage, two and no channel filter
+   design their own plans. */
 int
 plan_follows_the_channel(void) {
     const int rate = 24000;
@@ -288,12 +353,12 @@ plan_follows_the_channel(void) {
     if (!dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)) {
         rc |= fail("the plan left out the half-band stage");
     }
+    /* Two passes: the plan of both stages, hb31 and then hb15 (issue #899). */
     s->downsample_passes = 2;
     (void)run_block(s, iq.data(), 1000);
-    (void)dsd_squelch_floor_plan_design(&want, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, hb_q15_taps,
-                                        HB_TAPS, rate);
-    if (!dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)) {
-        rc |= fail("the plan took the wrong half-band stage");
+    want = cascade_plan(2, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, rate);
+    if (!want.valid || !dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)) {
+        rc |= fail("the plan did not take both half-band stages");
     }
     s->downsample_passes = 0;
     s->channel_lpf_enable = 0;
@@ -1387,6 +1452,232 @@ airspy_rates_run_the_step_model(void) {
     }
     return rc;
 }
+
+/* ---------------------------------------------------------------------- the cascade from cold start (issue #899) */
+
+/* A chain with no step: the cascade of passes ahead of the channel filter at width (0: none) and the channel rate. */
+struct CascadeChain {
+    int passes;
+    int rate;
+    int width;
+    int mode;
+};
+
+/* A monitor on @p c's chain under its mode, margin 10 dB, its context's chain the cascade's (as the IO layer keys it). */
+demod_state*
+new_cascade_monitor(const CascadeChain& c) {
+    demod_state* s = new_monitor(0, c.rate, 1, c.width);
+    if (!s) {
+        return NULL;
+    }
+    s->channel_lpf_enable = c.width > 0 ? 1 : 0;
+    s->downsample_passes = c.passes;
+    s->squelch_mode = c.mode;
+    s->squelch_context.chain = c.passes;
+    return s;
+}
+
+/* Complex Gaussian noise of variance @p var at the capture rate, and an FM carrier (1 kHz tone, 1.5 kHz deviation) of
+   amplitude @p amp from @p on_s to @p off_s seconds: one block of @p pairs from capture sample @p at. */
+struct CaptureNoise {
+    Rng rng;
+    double sd;
+    double amp;
+    double on_s;
+    double off_s;
+    double mod;
+
+    void
+    fill(float* out, long at, int pairs, int capture) {
+        for (int k = 0; k < pairs; k++) {
+            const double t = (double)(at + k) / (double)capture;
+            double re = sd * rng.gauss();
+            double im = sd * rng.gauss();
+            if (t >= on_s && t < off_s) {
+                mod += 2.0 * M_PI * 1000.0 / (double)capture;
+                re += amp * cos(1.5 * sin(mod));
+                im += amp * sin(1.5 * sin(mod));
+            }
+            out[(size_t)k * 2U] = (float)re;
+            out[((size_t)k * 2U) + 1U] = (float)im;
+        }
+    }
+};
+
+/* @p seconds of the capture through @p s in 10 ms blocks; each block's flags appended to @p flags (may be NULL). The
+   first time the tracker has closed 8 windows, whether its floor is known lands in @p known_by_8 (may be NULL). */
+void
+run_capture(demod_state* s, CaptureNoise* src, long* at, double seconds, std::vector<uint8_t>* flags, int* known_by_8) {
+    const int capture = s->complex_rate << s->downsample_passes;
+    const int pairs = (s->complex_rate / 100) << s->downsample_passes;
+    std::vector<float> block((size_t)pairs * 2U);
+    const long end = *at + (long)(seconds * (double)capture);
+    while (*at < end) {
+        const int n = end - *at < pairs ? (int)(end - *at) : pairs;
+        src->fill(block.data(), *at, n, capture);
+        *at += n;
+        Block b = run_block(s, block.data(), n);
+        if (flags) {
+            flags->insert(flags->end(), b.flags.begin(), b.flags.end());
+        }
+        dsd_squelch_floor_status st;
+        dsd_squelch_floor_get_status(&s->squelch_floor, &st);
+        if (known_by_8 && *known_by_8 < 0 && st.windows >= 8U) {
+            *known_by_8 = st.state == DSD_SQUELCH_FLOOR_KNOWN ? 1 : 0;
+        }
+    }
+}
+
+/* White complex noise through the real cascade with no step, from cold start on a fixed seed (issue #899; RTL-SDR and
+   rtl_tcp run 4 to 8 passes): not one sample opens on the idle channel, the floor is known by the 8th window, an FM
+   carrier 25 dB over the most noise the channel can pass (the capture's variance over 2^passes) opens the gate inside
+   it, the gate closes within the close delay bound (and 10 ms of chain delay) after it drops, and not one sample opens
+   on the idle channel after. Unfiltered NFM at 16 kHz (6 passes), 12 and 8 kHz (7), NFM 12.5k at 24 kHz (6) and NFM 25k
+   at 48 kHz (5) under AUTO; NOISE at 16 kHz unfiltered, where the noise squelch has no band and the tracker runs it. */
+int
+cold_start_stays_shut(void) {
+    const CascadeChain chains[] = {
+        {6, 16000, 0, DSD_SQUELCH_MODE_AUTO},     {7, 12000, 0, DSD_SQUELCH_MODE_AUTO},
+        {7, 8000, 0, DSD_SQUELCH_MODE_AUTO},      {6, 24000, 12500, DSD_SQUELCH_MODE_AUTO},
+        {5, 48000, 25000, DSD_SQUELCH_MODE_AUTO}, {6, 16000, 0, DSD_SQUELCH_MODE_NOISE},
+    };
+
+    int rc = 0;
+    for (const CascadeChain& c : chains) {
+        demod_state* s = new_cascade_monitor(c);
+        if (!s) {
+            return fail("alloc");
+        }
+        const double var = 1e-3;
+        CaptureNoise src{Rng{0x899B0000ULL + (uint64_t)c.rate + (uint64_t)c.passes + (uint64_t)c.mode},
+                         sqrt(var / 2.0),
+                         sqrt(pow(10.0, 2.5) * ldexp(var, -c.passes)),
+                         1.0,
+                         1.5,
+                         0.0};
+        long at = 0;
+        std::vector<uint8_t> flags;
+        int known_by_8 = -1;
+        run_capture(s, &src, &at, 3.0, &flags, &known_by_8);
+        const size_t burst_from = (size_t)(1.05 * c.rate);
+        const size_t burst_to = (size_t)(1.5 * c.rate);
+        const size_t tail_from = burst_to + (size_t)((DSD_SQUELCH_CLOSE_DELAY_MS + 10) * c.rate / 1000);
+        long idle_open = 0;
+        long burst_open = 0;
+        long tail_open = 0;
+        for (size_t k = 0; k < flags.size(); k++) {
+            const int open = (flags[k] & DSD_SQUELCH_FLAG_CLOSED) == 0U;
+            if (k < (size_t)c.rate) {
+                idle_open += open;
+            } else if (k >= burst_from && k < burst_to) {
+                burst_open += open;
+            } else if (k >= tail_from) {
+                tail_open += open;
+            }
+        }
+        const char* mode = c.mode == DSD_SQUELCH_MODE_AUTO ? "AUTO" : "NOISE";
+        printf("DSP_SQUELCH_AUTO_DEMOD: %d passes to %d Hz, width %d, %s from cold start: %ld idle samples open, known "
+               "by window 8 %d, carrier %.1f %% open, %ld samples open after the drop\n",
+               c.passes, c.rate, c.width, mode, idle_open, known_by_8,
+               100.0 * (double)burst_open / (double)(burst_to - burst_from), tail_open);
+        if (flags.size() < tail_from + (size_t)c.rate || idle_open != 0 || known_by_8 != 1
+            || burst_open < (long)((burst_to - burst_from) * 95U / 100U) || tail_open != 0) {
+            DSD_FPRINTF(stderr,
+                        "squelch auto demod: %d passes to %d Hz, width %d, %s: the idle channel opened, or the "
+                        "carrier did not\n",
+                        c.passes, c.rate, c.width, mode);
+            rc |= 1;
+        }
+        if (c.mode == DSD_SQUELCH_MODE_NOISE && (s->noise_squelch.plan.valid || !s->squelch_auto_ran)) {
+            rc |= fail("NOISE at 16 kHz unfiltered did not run as auto");
+        }
+        free_monitor(s);
+    }
+    return rc;
+}
+
+/* A pass-count change is a context change (the IO layer's chain key, issue #899): the plan of the new cascade is taken
+   first, rescaling the old floor, and the floor stored for the context left is that floor over the new plan's gain, so
+   the gain cancels; the new context learns, and back on the first its floor seeds from the stored density times its
+   gain, the floor it left. 6 passes to 16 kHz unfiltered (noise_gain 0.23852161 for unit capture variance x 32) and 7. */
+int
+pass_change_moves_the_floor(void) {
+    const CascadeChain a = {6, 16000, 0, DSD_SQUELCH_MODE_AUTO};
+    demod_state* s = new_cascade_monitor(a);
+    if (!s) {
+        return fail("alloc");
+    }
+    int rc = 0;
+    CaptureNoise src{Rng{0x899C0DEULL}, sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0, 0.0};
+    long at = 0;
+    run_capture(s, &src, &at, 1.0, NULL, NULL);
+    const dsd_squelch_floor_key key_a = s->squelch_context;
+    const double floor_a = s->squelch_floor.floor_power;
+    const double gain_a = s->squelch_floor.plan.noise_gain;
+    if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN || fabs(gain_a / 0.23852161 - 1.0) > 1e-6) {
+        rc |= fail("6 passes to 16 kHz: no floor, or the plan's gain is not the cascade's");
+    }
+    /* Seven passes: 100 channel samples, under a window, so no window moves the floor. */
+    s->downsample_passes = 7;
+    s->squelch_context.chain = 7;
+    run_capture(s, &src, &at, 100.0 / 16000.0, NULL, NULL);
+    const dsd_squelch_floor_plan want_b = cascade_plan(7, NULL, 0, 16000);
+    double density = 0.0;
+    const int stored = dsd_squelch_floor_cache_find(&s->squelch_cache, &key_a, &density);
+    if (!want_b.valid || !dsd_squelch_floor_plan_equal(&want_b, &s->squelch_floor.plan)
+        || s->squelch_floor.state != DSD_SQUELCH_FLOOR_LEARNING || !stored
+        || fabs(density - (floor_a / gain_a)) > 1e-12 * (floor_a / gain_a)) {
+        rc |= fail("7 passes: not the 7-pass plan, not learning, or the 6-pass floor stored off its density");
+    }
+    /* Back to six: seeded from the density times the 6-pass gain. */
+    s->downsample_passes = 6;
+    s->squelch_context.chain = 6;
+    run_capture(s, &src, &at, 100.0 / 16000.0, NULL, NULL);
+    if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_SEEDED
+        || fabs(s->squelch_floor.floor_power - floor_a) > 1e-12 * floor_a) {
+        rc |= fail("back to 6 passes: the floor did not seed from its density");
+    }
+    free_monitor(s);
+    return rc;
+}
+
+/* A width change at the same context keeps a known floor, rescaled by the plans' gains, both the cascade's (6 passes
+   to 24 kHz, NFM 12.5k to 20k; issue #899). The plan is designed once for each key: a second of blocks at one key
+   designs it once, the width change once more. */
+int
+width_change_rescales_the_cascade_floor(void) {
+    const CascadeChain c = {6, 24000, 12500, DSD_SQUELCH_MODE_AUTO};
+    demod_state* s = new_cascade_monitor(c);
+    if (!s) {
+        return fail("alloc");
+    }
+    int rc = 0;
+    CaptureNoise src{Rng{0x899D0DEULL}, sqrt(1e-3 / 2.0), 0.0, 0.0, 0.0, 0.0};
+    long at = 0;
+    run_capture(s, &src, &at, 1.0, NULL, NULL);
+    const double floor_a = s->squelch_floor.floor_power;
+    const double gain_a = s->squelch_floor.plan.noise_gain;
+    const dsd_squelch_floor_plan want_a =
+        cascade_plan(6, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, 24000);
+    if (s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN
+        || !dsd_squelch_floor_plan_equal(&want_a, &s->squelch_floor.plan) || s->squelch_plan_designs != 1U) {
+        rc |=
+            fail("NFM 12.5k at 24 kHz: no floor, not the cascade's plan, or a block of the same key designed it again");
+    }
+    s->channel_lpf_width_hz = 20000;
+    run_capture(s, &src, &at, 100.0 / 24000.0, NULL, NULL);
+    if (s->squelch_plan_designs != 2U) {
+        rc |= fail("a width change did not design the plan once");
+    }
+    const dsd_squelch_floor_plan want = cascade_plan(6, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, 24000);
+    if (!want.valid || !dsd_squelch_floor_plan_equal(&want, &s->squelch_floor.plan)
+        || s->squelch_floor.state != DSD_SQUELCH_FLOOR_KNOWN
+        || fabs(s->squelch_floor.floor_power - (floor_a * want.noise_gain / gain_a)) > 1e-12 * floor_a) {
+        rc |= fail("a width change did not keep the floor rescaled to the cascade's new plan");
+    }
+    free_monitor(s);
+    return rc;
+}
 } // namespace
 
 int
@@ -1410,6 +1701,9 @@ main(void) {
     rc |= encoder_monitor_runs_the_tracker();
     rc |= gate_closes_within_the_delay_bound();
     rc |= airspy_rates_run_the_step_model();
+    rc |= cold_start_stays_shut();
+    rc |= pass_change_moves_the_floor();
+    rc |= width_change_rescales_the_cascade_floor();
     if (rc == 0) {
         printf("DSP_SQUELCH_AUTO_DEMOD: OK\n");
     }

@@ -26,6 +26,7 @@
 #include <dsd-neo/dsp/simd_fir.h>
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/runtime/analog_channel.h>
@@ -41,6 +42,7 @@
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/dsp/fsk_modem.h"
 #include "dsd-neo/dsp/tetra_uplink_timing.h"
+#include "squelch_cascade_noise.h"
 #ifdef DSD_NEO_TEST_HOOKS
 #include "demod_pipeline_test_support.h"
 #endif
@@ -2103,7 +2105,8 @@ squelch_auto_wanted(const struct demod_state* d) {
     return dsd_squelch_mode_is_dynamic(d->squelch_mode) && dsd_demod_dynamic_squelch_path(d);
 }
 
-/* What the squelch plans follow: the channel filter in force, the half-band stage ahead of it and the channel rate. */
+/* What the squelch plans follow: the channel filter in force, the half-band cascade ahead of it (its pass count), the
+   live step after it or the reader's resampler ahead of it, and the channel rate. */
 static dsd_demod_squelch_plan_key
 squelch_plan_key_of(const struct demod_state* d) {
     const int filtered = d->channel_lpf_enable && d->channel_lpf_plan_taps_len >= 3;
@@ -2121,6 +2124,9 @@ squelch_plan_key_of(const struct demod_state* d) {
     if (d->live_iq_step.enabled) {
         k.step = d->live_iq_step.plan;
     }
+    if (d->iq_reader.enabled) {
+        k.reader = d->iq_reader;
+    }
     k.set = 1;
     return k;
 }
@@ -2130,7 +2136,8 @@ squelch_plan_key_same(const dsd_demod_squelch_plan_key* a, const dsd_demod_squel
     return a->set && b->set && a->rate_hz == b->rate_hz && a->taps_len == b->taps_len && a->hb_taps == b->hb_taps
            && a->passes == b->passes && a->rate_out == b->rate_out && a->profile == b->profile
            && a->width_hz == b->width_hz && a->step.enabled == b->step.enabled
-           && (!a->step.enabled || dsd_live_iq_step_plan_equal(&a->step, &b->step));
+           && (!a->step.enabled || dsd_live_iq_step_plan_equal(&a->step, &b->step))
+           && dsd_iq_reader_plan_equal(&a->reader, &b->reader);
 }
 
 /* The half-band cascade as full_demod_apply_halfband_decimation() runs it: the 31-tap stage first, the 15-tap ones
@@ -2164,8 +2171,8 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
         return 0;
     }
     /* A new model, or none after a failed build: the plans taken under this key (from no model, or another one) are
-       taken again at the next block. The floor plan is designed again; the noise plan is designed again, or taken from
-       the kept plans, which hold only valid plans designed from the model their key's step names. */
+       taken again at the next block: each is designed again, or taken from its kept plans, which hold only valid plans
+       designed from the model their key's step names, taken only while that model is the one built. */
     d->squelch_plan.set = 0;
     d->noise_plan.set = 0;
     dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
@@ -2173,32 +2180,159 @@ dsd_demod_squelch_step_model_sync(struct demod_state* d) {
     return dsd_squelch_step_model_build(&d->squelch_step_model, &d->live_iq_step.plan, stages, count);
 }
 
-static const float*
-squelch_plan_hb(const dsd_demod_squelch_plan_key* k) {
-    return k->hb_taps == 31 ? hb31_q15_taps : (k->hb_taps > 0 ? hb_q15_taps : NULL);
+/* The reader model for a key's reader, or NULL when it is not the one built (not reachable: the rate plan's commit
+   builds it, dsd_demod_squelch_reader_model_sync()); the plans are then not valid and the gate stays open. */
+static dsd_squelch_reader_model*
+squelch_reader_model_for(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    return dsd_squelch_reader_model_matches(&d->squelch_reader_model, &k->reader, k->passes) ? &d->squelch_reader_model
+                                                                                             : NULL;
 }
 
+/* A model is built for the reader and passes in force, or released: whichever, the plans taken under this key are
+   taken again at the next block. */
+static int
+squelch_reader_model_build_for(struct demod_state* d, int build) {
+    const int passes = d->downsample_passes > 0 ? d->downsample_passes : 0;
+    if (!d->iq_reader.enabled) {
+        dsd_squelch_reader_model_release(&d->squelch_reader_model);
+        return 0;
+    }
+    if (dsd_squelch_reader_model_matches(&d->squelch_reader_model, &d->iq_reader, passes)) {
+        return 0;
+    }
+    d->squelch_plan.set = 0;
+    d->noise_plan.set = 0;
+    if (!build) {
+        dsd_squelch_reader_model_release(&d->squelch_reader_model);
+        return 0;
+    }
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = squelch_cascade_stages(passes, stages);
+    return dsd_squelch_reader_model_build(&d->squelch_reader_model, &d->iq_reader, stages, count);
+}
+
+extern "C" int
+dsd_demod_squelch_reader_model_sync(struct demod_state* d) {
+    if (!d) {
+        return -1;
+    }
+    /* A chain no dynamic squelch runs on (a digital decoder's) never reads the model: a model for another reader
+       goes, and none is built for this one until a switch onto such a chain prepares it. */
+    return squelch_reader_model_build_for(d, dsd_demod_dynamic_squelch_path(d));
+}
+
+extern "C" int
+dsd_demod_squelch_reader_model_prepare(struct demod_state* d) {
+    if (!d) {
+        return -1;
+    }
+    return squelch_reader_model_build_for(d, 1);
+}
+
+/* The floor plan for @p k (not valid when it cannot be designed). Behind the live rate step it comes from the noise
+   through the step itself (issue #806), behind the reader's resampler from the noise through the reader, the cascade
+   and the channel taps (issue #899). With neither it comes from white noise at the capture rate through the whole
+   cascade (issue #899; RTL-SDR runs 4 to 8 passes): with no pass or one that is the stage's own design, as before, bit
+   for bit. */
+static void
+squelch_floor_design(struct demod_state* d, const dsd_demod_squelch_plan_key* k, dsd_squelch_floor_plan* plan) {
+    const float* taps = k->taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
+    DSD_MEMSET(plan, 0, sizeof *plan);
+    if (k->reader.enabled) {
+        /* The reader and the live step never run together (a chain the reader resamples runs no step): should both
+           be on, the plan is not valid and the gate stays open. */
+        dsd_squelch_reader_model* model = k->step.enabled ? NULL : squelch_reader_model_for(d, k);
+        if (model != NULL) {
+            (void)dsd_squelch_reader_model_floor_plan(model, plan, taps, k->taps_len, k->rate_hz);
+        }
+    } else if (k->step.enabled) {
+        dsd_squelch_step_model* model = squelch_step_model_for(d, k);
+        if (model != NULL) {
+            (void)dsd_squelch_step_model_floor_plan(model, plan, taps, k->taps_len, k->rate_hz);
+        }
+    } else if (k->passes <= 1) {
+        (void)dsd_squelch_floor_plan_design(plan, taps, k->taps_len, k->passes == 1 ? hb31_q15_taps : NULL,
+                                            k->passes == 1 ? 31 : 0, k->rate_hz);
+    } else {
+        dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+        const int count = squelch_cascade_stages(k->passes, stages);
+        (void)dsd_squelch_cascade_noise_floor_plan(plan, taps, k->taps_len, stages, count, k->rate_hz);
+    }
+}
+
+/* Whether the model a key's plan comes from is the one built: none needed without a step or a reader. A kept plan is
+   taken only then, so a model that failed to build leaves the plan not valid, as a design would. */
+static int
+squelch_plan_model_ready(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    if (k->reader.enabled) {
+        return !k->step.enabled && squelch_reader_model_for(d, k) != NULL;
+    }
+    return !k->step.enabled || squelch_step_model_for(d, k) != NULL;
+}
+
+/* The kept floor plan designed for @p k, now taken; NULL when none is kept. */
+static const dsd_squelch_floor_plan*
+squelch_floor_cached_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k) {
+    for (int i = 0; i < DSD_DEMOD_FLOOR_PLAN_CACHE; i++) {
+        dsd_demod_floor_plan_entry* e = &d->floor_plan_cache[i];
+        if (e->used != 0U && squelch_plan_key_same(&e->key, k)) {
+            e->used = ++d->floor_plan_cache_clock;
+            return &e->plan;
+        }
+    }
+    return NULL;
+}
+
+/* Keep @p plan, designed for @p k, in an empty entry or in place of the one taken longest ago. */
+static void
+squelch_floor_keep_plan(struct demod_state* d, const dsd_demod_squelch_plan_key* k,
+                        const dsd_squelch_floor_plan* plan) {
+    dsd_demod_floor_plan_entry* slot = &d->floor_plan_cache[0];
+    for (int i = 1; i < DSD_DEMOD_FLOOR_PLAN_CACHE && slot->used != 0U; i++) {
+        dsd_demod_floor_plan_entry* e = &d->floor_plan_cache[i];
+        if (e->used < slot->used) {
+            slot = e;
+        }
+    }
+    slot->key = *k;
+    slot->plan = *plan;
+    slot->used = ++d->floor_plan_cache_clock;
+}
+
+/* The tracker takes the plan for the channel plan in force: the one it has, one kept from before (a channel alternating
+   widths), or one designed now and kept. */
 static void
 squelch_floor_ensure_plan(struct demod_state* d) {
     const dsd_demod_squelch_plan_key k = squelch_plan_key_of(d);
     if (squelch_plan_key_same(&d->squelch_plan, &k)) {
         return;
     }
+    const dsd_squelch_floor_plan* kept = squelch_plan_model_ready(d, &k) ? squelch_floor_cached_plan(d, &k) : NULL;
+    if (kept != NULL) {
+        dsd_squelch_floor_set_plan(&d->squelch_floor, kept);
+        d->squelch_plan = k;
+        return;
+    }
+    /* A plan that cannot be designed is not valid (not kept), and the tracker then keeps the gate open. */
     dsd_squelch_floor_plan plan;
-    const float* taps = k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
-    /* A plan that cannot be designed is not valid, and the tracker then keeps the gate open. Behind the live rate
-       step the plan comes from the noise through the step itself (issue #806). */
-    if (k.step.enabled) {
-        dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
-        DSD_MEMSET(&plan, 0, sizeof plan);
-        if (model != NULL) {
-            (void)dsd_squelch_step_model_floor_plan(model, &plan, taps, k.taps_len, k.rate_hz);
-        }
-    } else {
-        (void)dsd_squelch_floor_plan_design(&plan, taps, k.taps_len, squelch_plan_hb(&k), k.hb_taps, k.rate_hz);
+    squelch_floor_design(d, &k, &plan);
+    d->squelch_plan_designs++;
+    if (plan.valid) {
+        squelch_floor_keep_plan(d, &k, &plan);
     }
     dsd_squelch_floor_set_plan(&d->squelch_floor, &plan);
     d->squelch_plan = k;
+}
+
+/* Whatever the squelch setting: it is taken at every block from the IO layer's word, so one switched to AUTO or NOISE
+   after the open finds its plan designed rather than stalling a block for it. */
+extern "C" void
+dsd_demod_squelch_prime_reader_plan(struct demod_state* d) {
+    if (!d || !d->iq_reader.enabled || !dsd_demod_dynamic_squelch_path(d)) {
+        return;
+    }
+    channel_lpf_ensure_plan(d);
+    squelch_floor_ensure_plan(d);
 }
 
 /* The kept noise squelch plan designed for @p k, now taken; NULL when none is kept. */
@@ -2230,6 +2364,33 @@ squelch_noise_keep_plan(struct demod_state* d, const dsd_demod_squelch_plan_key*
     slot->used = ++d->noise_plan_cache_clock;
 }
 
+/* The noise squelch's plan for @p k (not valid when none can be designed: a channel with no band above voice, whose
+   tracker runs the setting instead). Behind the live rate step the calibration noise runs through the step itself
+   (issue #806); behind the reader's resampler its passband edge bounds the band and its magnitude shapes the noise
+   (issue #899), and a reader that is on with the step has no plan (never: see squelch_floor_design()). */
+static void
+squelch_noise_design(struct demod_state* d, const dsd_demod_squelch_plan_key* k, dsd_noise_squelch_plan* plan) {
+    const float* taps = k->taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
+    DSD_MEMSET(plan, 0, sizeof *plan);
+    if (k->step.enabled && !k->reader.enabled) {
+        dsd_squelch_step_model* model = squelch_step_model_for(d, k);
+        if (model != NULL) {
+            (void)dsd_squelch_step_model_noise_plan(model, plan, taps, k->taps_len, k->rate_hz);
+        }
+        return;
+    }
+    dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
+    const int count = squelch_cascade_stages(k->passes, stages);
+    if (!k->reader.enabled) {
+        (void)dsd_noise_squelch_plan_design(plan, taps, k->taps_len, stages, count, k->rate_hz);
+        return;
+    }
+    const dsd_squelch_reader_model* model = k->step.enabled ? NULL : squelch_reader_model_for(d, k);
+    if (model != NULL) {
+        (void)dsd_squelch_reader_model_noise_plan(model, plan, taps, k->taps_len, stages, count, k->rate_hz);
+    }
+}
+
 /* The noise squelch takes the plan for the channel plan in force: the one it has, one kept from before (a scan
    alternating widths), or one designed now and kept. A plan that cannot be designed is not kept (that costs little). */
 static void
@@ -2245,20 +2406,7 @@ squelch_noise_ensure_plan(struct demod_state* d) {
         return;
     }
     dsd_noise_squelch_plan plan;
-    const float* taps = k.taps_len > 0 ? d->channel_lpf_plan_taps : NULL;
-    /* A channel with no band above voice has no valid plan: the tracker runs the setting instead. Behind the live
-       rate step the calibration noise runs through the step itself (issue #806). */
-    if (k.step.enabled) {
-        dsd_squelch_step_model* model = squelch_step_model_for(d, &k);
-        DSD_MEMSET(&plan, 0, sizeof plan);
-        if (model != NULL) {
-            (void)dsd_squelch_step_model_noise_plan(model, &plan, taps, k.taps_len, k.rate_hz);
-        }
-    } else {
-        dsd_noise_squelch_stage stages[DSD_NOISE_SQUELCH_MAX_STAGES];
-        const int count = squelch_cascade_stages(k.passes, stages);
-        (void)dsd_noise_squelch_plan_design(&plan, taps, k.taps_len, stages, count, k.rate_hz);
-    }
+    squelch_noise_design(d, &k, &plan);
     d->noise_plan_designs++;
     if (plan.valid) {
         squelch_noise_keep_plan(d, &k, &plan);

@@ -24,10 +24,12 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/dsp/tetra_uplink_timing.h>
@@ -111,8 +113,9 @@ enum DSD_ATTR_PACKED dsd_digital_resample_mode {
  */
 // NOLINTBEGIN(clang-analyzer-optin.performance.Padding)
 /* What a squelch plan is designed for (issue #518 follow-up): the channel rate, the channel filter's plan, the
-   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs, and the live I/Q rate
-   step between them (issue #806; zeroed with no step). set is 0 until a plan was designed. */
+   half-band stage ahead of it (0 none, else its tap count), how many stages the cascade runs (both plans model every
+   stage, issue #899), the live I/Q rate step between them (issue #806; zeroed with no step), and the replay or network
+   reader's resampler ahead of the cascade (issue #899; zeroed with none). set is 0 until a plan was designed. */
 typedef struct {
     int rate_hz;
     int rate_out;
@@ -123,6 +126,7 @@ typedef struct {
     int passes; /* half-band stages ahead of the channel filter */
     int set;
     dsd_live_iq_step_plan step;
+    dsd_iq_reader_plan reader;
 } dsd_demod_squelch_plan_key;
 
 /* Noise squelch plans kept for the channel plans run last (issue #899): designing one calibrates on 2 s of noise (tens
@@ -135,6 +139,18 @@ typedef struct {
     dsd_noise_squelch_plan plan;
     uint64_t used;
 } dsd_demod_noise_plan_entry;
+
+/* Floor plans kept for the channel plans run last (issue #899): behind a reader with thousands of output phases a
+   design takes tens of milliseconds on the demod thread (8,046 Hz read into 72 kHz: about 41 ms), so a channel
+   alternating NFM widths designs each one once. Bounded like the noise squelch's. */
+enum { DSD_DEMOD_FLOOR_PLAN_CACHE = 4 };
+
+/* One kept floor plan: what it was designed for, and when it was last taken (0: empty). */
+typedef struct {
+    dsd_demod_squelch_plan_key key;
+    dsd_squelch_floor_plan plan;
+    uint64_t used;
+} dsd_demod_floor_plan_entry;
 
 struct demod_state {
 #ifdef __cplusplus
@@ -251,6 +267,11 @@ struct demod_state {
        swaps them (dsd_demod_live_step_prepare(), dsd_live_iq_step_commit()) while the demod thread is paused, and
        dsd_demod_reset_filter_state() clears it with the cascade. */
     dsd_live_iq_step live_iq_step;
+    /* The replay or network I/Q reader's resampler ahead of the cascade (issues #701, #743): what the IO layer's reader
+       runs, published by the controller when the rate plan commits, before samples arrive, and cleared for a chain
+       with no reader (controller_apply_replay_rates(), rate_chain_run_plan()). Never on with the live step: a chain
+       the reader resamples runs no step. The squelch plans model it (issue #899). */
+    dsd_iq_reader_plan iq_reader;
 
     /* Fixed channel low-pass (post-HB) to bound noise bandwidth at higher Fs.
      * At 48 kHz with 1200 Hz transition, Blackman needs 135 taps.
@@ -344,8 +365,14 @@ struct demod_state {
     dsd_squelch_floor_key squelch_context_applied;
     /* The floor cache's clock when the tracker last ran: its floor ages from there while it does not. */
     double squelch_floor_active_s;
-    /* What the tracker's plan was designed for. */
+    /* What the tracker's plan was designed for, and how many plans it designed (a count for tests and the bench; a
+       block whose key is the same designs none, nor one whose key a kept plan was designed for). */
     dsd_demod_squelch_plan_key squelch_plan;
+    uint64_t squelch_plan_designs;
+    /* The valid floor plans designed for the last channel plans, the one taken longest ago giving way. Demod thread
+       only (and the rate plan's commit, with the demod thread idle). */
+    dsd_demod_floor_plan_entry floor_plan_cache[DSD_DEMOD_FLOOR_PLAN_CACHE];
+    uint64_t floor_plan_cache_clock;
     dsd_squelch_floor squelch_floor;
     dsd_squelch_floor_cache squelch_cache;
     /* The NFM noise squelch: a NOISE setting on the FM monitor whose channel plan has a band above voice runs it on
@@ -368,6 +395,10 @@ struct demod_state {
        the rate chain's transaction (dsd_demod_squelch_step_model_sync()), and the source of both plans while the
        step runs. Released by rtl_demod_cleanup(). */
     dsd_squelch_step_model squelch_step_model;
+    /* The noise both squelches see through the reader's resampler (issue #899): built for iq_reader and the passes
+       when the rate plan commits (dsd_demod_squelch_reader_model_sync()), and the source of both plans while the reader
+       resamples. Released by rtl_demod_cleanup(). */
+    dsd_squelch_reader_model squelch_reader_model;
     /* The flags of the post-decimator's and the resampler's last inputs: each output takes the flag of the input at or
        just before its filter's centre, half the filter's length back. */
     uint8_t post_flag_hist[32];

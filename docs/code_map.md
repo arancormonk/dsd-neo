@@ -2385,7 +2385,8 @@ constants, and Clang also folds an integer bit test on a float it computed or re
   IEEE) and a trunk tune's completion stamp, compared with it (`trunk_tuning_hooks.c` is IEEE), the fallback decimator's
   block-split-invariant running sum (`#pragma clang fp reassociate(off)`), and the auto and noise squelches' window
   sums, which must not depend on where a block starts (`squelch_floor.c`, `nfm_noise_squelch.c`, `noise_squelch_bank.c`
-  and `pcm_noise_squelch.c` are IEEE).
+  and `pcm_noise_squelch.c` are IEEE, as are the plans' noise models, `squelch_step_model.c` and
+  `squelch_cascade_noise.c`).
 - Tests that feed NaN or infinity, or check results with `std::isnan()`, compile their own sources with IEEE
   semantics (the block near the top of `tests/CMakeLists.txt`), leaving the code under test on the build's flags.
 
@@ -6085,11 +6086,14 @@ suite runs under this compiler.
     scan scope's restores, a config's values), setting `squelch_default_moved` so the next sync returns 1 and its
     caller pushes. Snapshots of the configured squelch take the base (`dsd_squelch_configured_fields()`: the scan
     scope's captures, config saves, the Airspy spec's kept squelch), so neither a scope's configured setting nor a save
-    ever holds the default; `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec
-    ended it, and so does a failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except
-    that a config apply whose squelch keys ended the default keeps it ended over the session's own squelch when its
-    input is rolled back (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`;
-    the in-place Airspy failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
+    ever holds the default; while it is pending the snapshot sets `dsdneoUserConfig::rtl_sql_analog_default`
+    (`dsd_snapshot_opts_to_user_config_as_run()`, a replay's retained `[input]` included) and `render_input_squelch()`
+    writes no squelch key for any source, so the save reloads as a config that never set one and does not end it;
+    `ui_radio_input` keeps the whole standing, so an input put back puts back whether its spec ended it, and so does a
+    failed Airspy apply (`svc_airspy_tuning::squelch_standing`, in place or reopened), except that a config apply whose
+    squelch keys ended the default keeps it ended over the session's own squelch when its input is rolled back
+    (`ui_cfg_ended_default()` in `ui_cfg_settle_reopen()` and `apply_cfg_radio_input_tuned()`; the in-place Airspy
+    failure also tells the running receiver, `svc_rtl_push_channel_squelch()`). A step that puts the
     options back exactly (a -Y row's staging in `dsd_scan_mode_prepare()` and `channel_scan_tune_staged()`, a suspended
     scope's restart on the profile that ran, `svc_rtl_start_on_the_profile_that_ran_locked()`) saves the fields and the
     standing apart (`dsd_squelch_standing`), so the default a row on air runs is never swapped for the configured
@@ -9909,7 +9913,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   Each instance has one thread: I/Q replay's on its reader thread (`rtl_device.cpp`: configured before the thread
   starts, cleared at a RETUNE, RESET, MUTE and loop rewind, freed after the join), the raw I/Q network input's on its
   reader (`rtl_net_iq.cpp`, issue #743) and the live rate step's on the demodulator (`live_iq_step.c`, below).
-  Test: `DSP_IQ_RESAMPLER`.
+  Both readers design theirs from a `dsd_iq_reader_plan` (`dsd_iq_reader_plan_for()`: none at equal rates, else
+  protecting 0.45 of the final DSP rate; `rtl_iq_resampler_open()`), the plan the controller publishes to the
+  demodulator for the squelch models, whose reader model designs the same bank from it and runs no samples (issue
+  #899, below). Test: `DSP_IQ_RESAMPLER`.
   - Rational entry point for the live rate step (issue #806): `dsd_iq_resampler_configure_ratio()` takes an L/M the
     caller chose (lowest terms, each at most 4096), the input rate as an exact fraction (a whole-Hz numerator over
     2^shift, kept in lowest terms in `in_rate_num`/`in_rate_shift`, so 2.5 MS/s after six half-band passes is
@@ -10138,21 +10145,35 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   acquisition stage end to end), and the `DECODE_IQ_SPEECH_LEVEL_*` and `DECODE_IQ_ANALOG_PARITY_*` cases pin the
   off-air excerpts (`docs/testing.md` "Speech level parity").
 - The auto squelch's core (issue #518 follow-up) is `src/dsp/squelch_floor.c` (`<dsd-neo/dsp/squelch_floor.h>`), pure
-  and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan
-  (`dsd_squelch_floor_plan_design()`) turns the channel taps and the half-band stage ahead of them into the
-  classifier's constants: the coherence lag L from the taps' autocorrelation, and the noise's N_eff and coherence bias
-  beta from the noise autocorrelation through both stages, the model `tools/squelch_model.py` fixed the thresholds with
-  (`docs/testing.md` "Auto squelch classifier"). Behind the live I/Q rate step the noise is periodic, and
-  `dsd_squelch_floor_plan_design_periodic()` takes the same constants from its covariance at every output phase: N_eff,
-  beta and rho at every 40 ms window start phase (partial periods included), averaged over the phases (the step model
-  below supplies the covariance). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor
-  is learned from NOISE windows only (5 of the last 8), tracked down fast and up at 1 dB/s, and relearned on a sustained
+  and on the channel-filtered I/Q at the channel rate (before any post-decimation). A plan turns the channel taps and
+  the noise that reaches them into the classifier's constants: the coherence lag L from the taps' autocorrelation, and
+  the noise's N_eff and coherence bias beta from its autocorrelation behind the taps (`docs/testing.md` "Auto squelch
+  classifier"). `dsd_squelch_floor_plan_design()` models unit white noise through one half-band stage and the taps,
+  which is the chain's noise with no pass or one. With more passes (every RTL-SDR and rtl_tcp chain runs 4 to 8, and
+  a SoapySDR device on its exact rate, replay and network I/Q log2 of their base decimation) the pipeline models the
+  whole cascade (issue #899): `src/dsp/squelch_cascade_noise.{h,c}` (module-private, caller-owned buffers) carries
+  white noise of variance 2^(passes - 1) at the capture rate through hb31 and then every hb15 stage with the half-band
+  recursion R'[k] = sum_j g[j] R[2k - j] (the step model's R_hb comes from the same function), and through the channel
+  taps' autocorrelation once, and `dsd_squelch_cascade_noise_floor_plan()` designs it at a period of one with the
+  tracker's mean 40 ms window (`dsd_squelch_floor_plan_design_periodic_mean()`: rate / 25.0 samples, 1,562.48 at a
+  kept 39,062 Hz replay rate, as the stationary design takes it). The one-stage model read idle noise as a carrier on
+  every unfiltered channel at 4 to 16 kHz (lag-1 beta 0.084 against the cascade's 0.268 at 16 kHz), so the tracker
+  never left learning and played the hiss. The helper also takes periodic covariance in (each stage's output phase q
+  is its sum at input 2q, a period P becoming P / gcd(P, 2)) and through the channel taps. `noise_gain` is on the step
+  model's scale (input variance 2^(passes - 1)), so plans with and without a step agree; the cache's density is that
+  gain's, and a pass-count change, which also changes the context's chain, takes the new plan (rescaling the floor)
+  before it stores the old context's density, so the gain cancels. Behind the live I/Q rate step the noise is periodic,
+  and `dsd_squelch_floor_plan_design_periodic()` takes the same constants from its covariance at every output phase:
+  N_eff, beta and rho at every 40 ms window start phase (partial periods included), averaged over the phases (the step
+  model below supplies the covariance). Each sample-exact 40 ms window is NOISE, CARRIER or UNDECIDED; the floor is
+  learned from NOISE windows only (5 of the last 8), tracked down fast and up at 1 dB/s, and relearned on a sustained
   shift or a collapse, so carrier power never becomes floor and a channel with no noise windows stays learning, its
   carrier windows open. The gate opens on a 20 ms sub-window at floor plus margin and closes 3 dB lower or on a NOISE
   window; each sample's flag (`DSD_SQUELCH_FLAG_CLOSED`) is the gate before that sample's decision, so flags, floor and
   state are bit-identical however the samples are cut into blocks. The per-channel cache keeps floors as a noise density
   (floor over the plan's noise gain) keyed by the values that set the noise (frequency, tuner gain, tuner AGC, bias tee,
-  device, channel rate, capture chain, the live rate step's L/M), stale after 30 minutes of sample time, which every
+  device, channel rate, capture chain, the live rate step's L/M, the replay or network reader's resampler), stale after
+  30 minutes of sample time, which every
   block counts in every mode (`squelch_cache_age()`, level squelch and digital included); a neighbour within 5 MHz seeds
   a floor provisionally.
   `dsd_demod_reset_filter_state()` (stream open, retunes, family switches, a replay's RESET) makes the next block take
@@ -10179,9 +10200,13 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   - the FSK discriminator at 9600 bit/s, two levels, that EDACS analog voice reads (`dsd_demod_fsk9600_active()`,
     keyed on the symbol profile, so a channel LPF that is off and leaves the WIDE label still counts).
 
-  It runs with a plan for the channel filter in force, the half-band stage
-  ahead of it (`hb31` for one pass, `hb15` for more) and the channel rate (`complex_rate`), or behind a running live
-  rate step the step model's plan (`dsd_demod_squelch_plan_key::step` keys it), and nothing
+  It runs with a plan for the channel filter in force, the half-band cascade
+  ahead of it (`hb31` alone for one pass, the whole cascade for more; `dsd_demod_squelch_plan_key::passes` keys it) and
+  the channel rate (`complex_rate`), or behind a running live rate step the step model's plan
+  (`dsd_demod_squelch_plan_key::step` keys it), or behind a replay or network reader's resampler the reader model's
+  (`dsd_demod_squelch_plan_key::reader`); `demod_state::squelch_plan_designs` counts its designs (a block whose
+  key is the same designs none, nor one whose key a kept plan in `demod_state::floor_plan_cache` was designed for),
+  and nothing
   is zeroed: the level gate and the AM detector's squelched-block branch stand aside, the flags land in
   `result_flags`, and the post-decimator, `low_pass_real()` and the resampler (`resamp_process_block_flags()`) carry
   them, each output taking the flag of its input at or just before the filter's centre (K/2 back, a group's middle
@@ -10268,7 +10293,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   (`squelch_noise_wanted()`, the level gate standing aside)
   and `squelch_noise_run()` flags each output right after `dsd_fm_demod()`, before the post-decimator, de-emphasis and
   audio filters, which then carry the flags as the tracker's. On an AM channel, one with no plan (8 and 10 kHz NFM,
-  low DSP rates, an unfiltered channel at 16 kHz or less), or the 9600 bit/s FSK path EDACS reads (its discriminator's
+  low DSP rates, an unfiltered channel at 16 kHz or less behind at least one half-band pass, a band the reader's
+  passband edge leaves under 1200 Hz), or the 9600 bit/s FSK path EDACS reads (its discriminator's
   output is slowly centred on the carrier and scaled to counts, not the radians the plan is calibrated on), `squelch_auto_wanted()` runs the tracker instead, N as its margin. Its plan follows the same `dsd_demod_squelch_plan_key` as the tracker's, which carries the cascade's pass
   count (designed only when NOISE needs it; the last four valid plans stay kept in `demod_state::noise_plan_cache`,
   the one taken longest ago giving way, since a design calibrates on 2 s of noise, 30-45 ms on the desktop, and a scan
@@ -10282,16 +10308,18 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   step's input rate by the step model's spectral factor and run through the step itself (no cascade FIR).
 - The squelches through the live I/Q rate step (issue #806) are `src/dsp/squelch_step_model.c`
   (`<dsd-neo/dsp/squelch_step_model.h>`). Both squelch models are calibrated on the noise that reaches the channel
-  filter; without a step their own designs model it (white noise through the cascade at twice the channel rate), which a
-  step between the cascade and the channel filter breaks. `dsd_squelch_step_model_build()` makes, for one step plan:
-  R_hb, the cascade's output autocorrelation at hb_out, exactly from the half-band recursion (input variance 2^(passes -
-  1), the scale the designs without a step use); its zero-phase spectral factor (sqrt of R_hb's 4096-point spectrum,
-  Kaiser-windowed, at most 255 taps, 1e-6 of its energy left out); a step design of its own from the plan's key (the
-  live step's taps bit for bit, never the running one); the factor's responses through that step from every input phase
-  (M of them, spaced coprime to M, each checked to lie in its window); and from them the step's output covariance
-  averaged over its period with the largest distance of any output phase's from it. It runs in the rate chain's
-  transaction (`dsd_demod_squelch_step_model_sync()`, `demod_state::squelch_step_model`, released by
-  `rtl_demod_cleanup()`), does nothing for the plan it holds, and has the plans of a new model designed again. The plans
+  filter; without a step their own designs model it (white noise at the capture rate through the whole cascade: the
+  floor plan from the shared half-band recursion, issue #899, the noise squelch from its composite FIR and last stage),
+  which a step between the cascade and the channel filter breaks. `dsd_squelch_step_model_build()` makes, for one step
+  plan: R_hb, the cascade's output autocorrelation at hb_out, exactly from the half-band recursion (input variance
+  2^(passes - 1), the scale the designs without a step use); its zero-phase spectral factor (sqrt of R_hb's 4096-point
+  spectrum, Kaiser-windowed, at most 255 taps, 1e-6 of its energy left out); a step design of its own from the plan's
+  key (the live step's taps bit for bit, never the running one); the factor's responses through that step from every
+  input phase (M of them, spaced coprime to M, each checked to lie in its window); and from them the step's output
+  covariance averaged over its period with the largest distance of any output phase's from it. It runs in the rate
+  chain's transaction (`dsd_demod_squelch_step_model_sync()`, `demod_state::squelch_step_model`, released by
+  `rtl_demod_cleanup()`), does nothing for the plan it holds, and has the plans of a new model taken again (designed,
+  or from the kept floor and noise plans for their key, which an equal model would design the same). The plans
   then come from it on the demod thread when a squelch plan key changes, allocating nothing.
   `dsd_squelch_step_model_floor_plan()` gives `dsd_squelch_floor_plan_design_periodic()` the covariance behind the
   channel taps averaged over the period, exact because the taps are time-invariant (the taps' autocorrelation convolved
@@ -10302,16 +10330,109 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   stepping chain whose model is not built has no valid plan (the gate open). Measured (`dsd-neo_bench_dsp` `squelch_*`
   cases, run only when named, x86 -O2): the build 3.1 ms at L = 576 (2.5 MS/s to 72 kHz) and 20 ms for a SoapySDR
   3000/4093; the floor plan 0.07 ms at 72 kHz NFM 25k (15 ms every phase in full), the noise plan 49 ms (today's 59 ms;
-  an Airspy ring holds about 420 ms). Tests: `DSP_SQUELCH_STEP_MODEL` (R_hb and the factor against the real cascade at
-  2.5 and 3 MS/s, the covariance against the real step within 2 % of R[0] at 12 to 72 kHz, the periodic design at a
-  period of one against today's within 1e-12, the averaged floor plan against every phase in full on every Airspy grid
-  point and the SoapySDR ratio, measured window power and coherence against N_eff and beta on the stepped stream,
-  no-step plans bit for bit and pinned to b08406ebc, the plan key and the model's cache),
-  `DSP_SQUELCH_STEP_MODEL_MATRIX` (every DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s, widest NFM and no
-  channel filter, three window phases: the floor and noise squelch bounds of `DSP_SQUELCH_FLOOR` and
-  `DSP_NFM_NOISE_SQUELCH` and the measured window statistics, the RTL-SDR chain held to the same),
-  `DSP_SQUELCH_AUTO_DEMOD` (AUTO and NOISE through `full_demod()` at 2.5 and 3 MS/s to 48 kHz) and
-  `IO_RTL_SQUELCH_PLUMBING` (the context's step identity).
+  an Airspy ring holds about 420 ms). Without a step the cascade's floor plan takes 0.05 ms at 72 kHz NFM 25k (4 passes,
+  201 taps; the one-stage design it replaced 0.19 ms) and 3 us at 4 kHz with 8 passes, and a block whose key is the same
+  designs none (`squelch_floor_plan_cascade_*`, `squelch_floor_block_*`). Tests: `DSP_SQUELCH_STEP_MODEL` (R_hb and the
+  factor against the real cascade at 2.5 and 3 MS/s, the covariance against the real step within 2 % of R[0] at 12 to 72
+  kHz, the periodic design at a period of one against today's within 1e-12, the averaged floor plan against every phase
+  in full on every Airspy grid point and the SoapySDR ratio, measured window power and coherence against N_eff and beta
+  on the stepped stream, no-step plans with up to one pass bit for bit and pinned to b08406ebc, with more the real
+  cascade's impulses at every DSP bandwidth and 2 to 10 passes, the shared cascade covariance on periodic noise and the
+  mean-window design, the plan key and the model's cache), `DSP_SQUELCH_STEP_MODEL_MATRIX` (every DSP bandwidth at the
+  post-half-band rates of 2.5 and 3 MS/s, widest NFM and no channel filter, three window phases: the floor and noise
+  squelch bounds of `DSP_SQUELCH_FLOOR` and `DSP_NFM_NOISE_SQUELCH` and the measured window statistics, the RTL-SDR
+  chain held to the same), `DSP_SQUELCH_AUTO_DEMOD` (AUTO and NOISE through `full_demod()` at 2.5 and 3 MS/s to 48 kHz;
+  without a step, white noise through 5 to 7 passes stays shut from cold start, and a pass-count or width change moves
+  the floor on the cascade's gain) and `IO_RTL_SQUELCH_PLUMBING` (the context's step identity).
+- The squelches behind a replay or network I/Q reader's resampler (issue #899) are `src/dsp/squelch_reader_model.c`
+  (`<dsd-neo/dsp/squelch_reader_model.h>`). The reader (`dsd_iq_reader_plan`: the source rate, the DSP input rate and
+  the protected band, the `dsd_iq_resampler_configure()` arguments that design its bank bit for bit) band-limits the
+  noise to its passband edge (0.45 of the source rate when it upsamples), and its L-phase bank makes the noise
+  periodic. No plan without it saw either: 8 kHz read into 16 kHz (no pass, unfiltered) has a lag-1 beta of 0.542
+  against the 0 the cascade's model gives (a Y bias of 13.7), so idle noise read as a carrier. For one plan and pass
+  count `dsd_squelch_reader_model_build()` makes a reader design of its own; the covariance white noise at the source
+  rate (variance 2^(passes - 1), the scale of the plans without a reader) shows at each of the reader's L output
+  phases, from its taps, lined up on the samples the decimators keep (stage output n is centred on input 2n, counted
+  from the stream's start, which the reader and the cascade start over at together: at the open, a replay's RESET and
+  rewind, a replay MUTE that marks a gap (a driver overflow), and on an I/Q stream a reconnect or resume and each
+  block its full ring drops, which is exact for an isolated drop (fewer than 33 gap marks pending,
+  `INPUT_RING_GAP_SLOTS`). A documented limit where one of the two starts over without the other: the cascade alone at
+  an FM <-> AM switch, at a digital -> analog switch (`rtl_demod_enter_analog_family()`) and at an analog -> digital one
+  (`rtl_demod_enter_digital_family()`, the same `demod_family_switch_reset()`; it costs nothing while the digital chain
+  runs no dynamic squelch, until the 9600 bit/s FSK path or the next analog entry runs on the alignment it left), on an
+  I/Q stream at the blocks a reconnect's or resume's purge takes after the reader's restart, and at a drop whose gap
+  mark the 33rd pending one moved (a congested stream: the reader restarts, the demod misses it); the reader alone at a
+  replay's RETUNE and at a MUTE that marks no gap (a retune_mute or retune_reconfigure span with no RESET at the same
+  sample). After any of them the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until
+  the next common start (no external landing reaches a reader chain: `dsd_engine_tune_with_backend()` refuses every tune
+  on a replay or I/Q stream before the rigctl or stream landing). Each is a shift of the reader-to-decimator alignment,
+  so its cost is bounded by the worst over every coset: 1.2e-4 of a plan over 9,530 readers the rate plans make with
+  every pass count and sources at every 1 % of the octave, unfiltered and through the analog channel filters, at 60 kHz
+  read into 48 kHz ahead of two passes) and carried through the cascade phase by
+  phase (`dsd_squelch_cascade_noise()`), which leaves P = L / gcd(L, 2^passes) output phases (40 kHz to 32 kHz and a
+  pass: 2); the mean over them, the largest distance from it, and every phase's covariance kept (`phase_cov`). It runs
+  when the rate plan commits, on a chain a dynamic squelch runs on (`dsd_demod_squelch_reader_model_sync()`,
+  `demod_state::squelch_reader_model`; released with the reader off, by `rtl_demod_cleanup()`, and for another reader
+  on a digital chain, which builds none: about 9 MB for nothing at 450,063 Hz read into 384 kHz, 74.6 MB before the
+  every-phase tables were bounded), and does nothing for the
+  plan it holds, so a width change reuses it. A switch onto such a chain (an analog family request, a profile that can
+  land the 9600 bit/s FSK path, judged on the rate, levels, TED and CQPSK it leaves in force, a taken request's
+  included: a TED alone sets the complex rate over it) builds it before it is queued, on the requesting thread with the demod parked
+  (`dsd_demod_squelch_reader_model_prepare()`, `rtl_stream_prepare_reader_model()`), so the first block of the new
+  chain allocates nothing. `dsd_squelch_reader_model_floor_plan()` takes the mean through the channel taps (exact: the
+  taps are time-invariant) while the step model's bound (`dsd_squelch_cascade_mean_suffices()`, the one rule both
+  models apply: the largest distance times (sum |c|)^2, over the output power) stays under 1e-2, else every output
+  phase's covariance (`dsd_squelch_reader_model_floor_plan_exact()`), by the cheaper of two exact routes for the taps
+  (`dsd_squelch_reader_model_floor_plan_route()`): the response of each of the Q = M 2^passes / gcd(L, 2^passes) input
+  phases through the reader, the stages (their taps copied) and the taps, made again at each design in batches of at
+  most 1 MB (about Q x span^2 / 2 multiply-adds), or `phase_cov` through the taps (sum_i c_i H_{n-i}(m + i), H the
+  rows through the taps once, a ring of one row per tap: about P x taps x (lags + taps), whatever Q is). Every reader
+  the rate plans make gets an every-phase plan (1110 enumerated, 864,058 Hz read into 576 kHz ahead of three passes
+  with the 5 kHz filter's 201 taps included: Q 32,752, which the old every-phase tables refused, leaving Auto open);
+  the largest design is about 4e8 multiply-adds (72 ms at 24,003 Hz into 24 kHz, one pass, 288 taps), the largest
+  retained model about 35 MB (8,046 Hz into 72 kHz: 34.5 MB, 24 MB before; a decimating reader's about 9 MB). Both
+  routes go through `dsd_squelch_floor_plan_design_periodic_mean()`. An
+  upsampling reader's phases stray by about 2 % (8 to 16 kHz: 2.03 %), so it takes the periodic design: beta 0.54180,
+  N_eff 317.75 at 8 to 16 kHz unfiltered, against 0.54165 for the averaged one. The plan key and the floor's context
+  carry the reader (`dsd_demod_squelch_plan_key::reader`, `dsd_squelch_floor_key::reader_in_hz`/`_out_hz`/`_protect_hz`
+  in the exact and the neighbour comparisons), so an 8 kHz source read into 16 kHz and a native 16 kHz source share no
+  plan and seed no floor of each other's. `dsd_demod_squelch_prime_reader_plan()` designs the floor plan for the channel
+  in force at the commit, before samples arrive (a reader of thousands of phases takes tens of milliseconds from every
+  phase), so the first block designs nothing, under any squelch setting (the demod thread takes the setting at every
+  block, so a later switch to AUTO finds the plan ready). The last `DSD_DEMOD_FLOOR_PLAN_CACHE` (4) valid floor plans
+  are kept by plan key (`demod_state::floor_plan_cache`, the one taken longest ago giving way, taken only while the
+  key's step or reader model is the one built), as the noise squelch's are, so a channel alternating widths designs
+  each width once; another reader identity or pass count is another key. NOISE behind the
+  reader (`dsd_squelch_reader_model_noise_plan()`, `dsd_noise_squelch_plan_design_reader()`): the band's upper edge is
+  held 800 Hz under the reader's passband edge (the channel edge's guard: flush with it, the reader's transition band
+  cut wanted FM's sidebands into the band, 33-36 dB of quieting at 12 kHz read into 48 kHz) and a plan needs its
+  1200 Hz under that (an 8 or 12 kHz source read into 48 kHz, edge 3.6 or 5.4 kHz, has none and the tracker runs it as
+  auto; calibrated without the reader every idle window opened at 8 kHz), and where
+  a band fits the reader's magnitude response is folded into the 63-tap cascade FIR (sampled from its bank, at most a
+  0.1 dB ripple in band; the FIR then runs with one stage or none). The reader and the live step never run together:
+  only a KEEP plan steps, and it reads the capture at its own rate (a plan with both on is not valid). Measured
+  (`dsd-neo_bench_dsp` `squelch_reader_*` and `squelch_floor_block_reader_*`, x86 -O2): the model's build 6 us at 8 to
+  16 kHz, 0.9 ms at 250 to 192 kHz with two passes, 36 ms at 8,046 Hz into 72 kHz (4000 output phases, 447 input
+  phases) and 60 ms at 864,058 Hz into 576 kHz with three passes; a floor plan from it 4 us at 8 to 16 kHz (every
+  phase, P = 2), 33 us at 250 to 192 kHz NFM 12.5k (averaged), 42 ms at 8,046 Hz into 72 kHz NFM 16k (201 taps, every
+  phase by the responses) and 23 ms at 864,058 Hz into 576 kHz, 5 kHz filter (201 taps, by the covariance; 380 ms by
+  the responses) (the commit designs the first, a width's
+  first visit designs on the demod thread, a return takes the kept plan); a block of the same key 0.4 us, a block
+  alternating two kept widths about 5 us (its channel taps designed again, its plan taken). Tests:
+  `DSP_SQUELCH_READER` (the installed plan against the production reader's impulses through `full_demod()` at every
+  output phase, 8 to 16 kHz with and without NFM 12.5k, 8 to 48 kHz NFM 16k, 40 to 32 kHz and a pass, 250 to 192 kHz
+  and two passes NFM 12.5k, 48,001 to 48,000 Hz NFM 16k, and no reader at 64 kHz; the model's phases, mean and
+  distance against the same impulses; AUTO from cold start at 8 to 16 kHz and 8 to 48 kHz; NOISE native and behind the
+  reader, 12 kHz into 48 kHz with no band, and a band the reader's guarded edge clips but leaves (16 kHz into 48 kHz,
+  3.8 to 6.4 kHz, which fails with the magnitude fold left out); one demod reopening the same replay as 8 to 16 kHz,
+  native 16 kHz and 8 to 16 kHz again; the kept floor plans by key and their bound; both routes on 524,288 input
+  phases, in batches; 864,058 Hz into 576 kHz with the 5 kHz filter, valid and shut on idle noise; no plan with the
+  reader and the step both on; the plan designed at the commit),
+  `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled analog open, no model
+  on a digital one, and never with the step), `IO_NET_IQ_STREAM` (no model on a resampled DMR `iqudp:` stream, then
+  built by the switch to the NFM monitor before it is queued; the resampler starting over at each block a full ring
+  drops, 112 kHz into 64 kHz and an upsampling 8 kHz into 48 kHz, where it was found and the block alone lost) and
+  `IO_RTL_SQUELCH_PLUMBING` (the context's reader identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
   Q = max(Q_sum, Q_max - guard) combine (`dsd_noise_squelch_bank_quieting_db()`); the radio squelch's results are
@@ -12238,8 +12359,17 @@ Key public headers:
     `controller_finalize_dsp_chain()` runs the DSP half of `controller_finalize_rate_chain()` without a centre.
     `controller_apply_replay_settings()` runs the applied plan's complex rate (`rate_in`, `complex_rate`, `rate_out` =
     complex over post), forced flag and step; a config no plan was applied to (test seams) runs its half-band output as
-    forced with no step. The replay device keeps the plan beside the chain it opened, so an `--iq-loop` rewind applies
-    the same step (`replay_loop_restart_step_l`/`_m` in the test replay state). Tests: `IO_IQ_REPLAY_RATE_PLAN`,
+    forced with no step. It publishes the reader's resampler too (`controller_apply_replay_reader()`:
+    `demod_state::iq_reader`, from the rule the device's and the stream's reader open by, a replay's and an `iqtcp:` /
+    `iqudp:` stream's alike), builds the squelches' reader model for it on a chain a dynamic squelch runs on
+    (published for other threads as one word, `g_pub_reader_state`, which the test replay state and the switch
+    preparation read, on every path that rewrites the reader or releases its model), and after the chain's
+    finalize designs the
+    auto squelch's plan behind it, all before samples arrive (issue #899); a reader that resamples and the live step
+    never run together (only KEEP steps, at the capture's own rate; both on refuses the open). A live chain clears the
+    reader (`rate_chain_run_plan()`, and before a device's first settings). The replay device keeps the plan beside the
+    chain it opened, so an `--iq-loop` rewind applies the same step (`replay_loop_restart_step_l`/`_m` in the test
+    replay state). Tests: `IO_IQ_REPLAY_RATE_PLAN`,
     `IO_RTL_REPLAY_STEP` (`rtl_stream_test_replay_planned_chain()`: a sidecar planned and run, per family and post 1-4;
     `rtl_stream_test_replay_filter_domain_hz()`), `IO_RTL_REPLAY_RESAMPLE`, the `DECODE_IQ_P25P1_*_ADJACENT_78K/94K`
     cases (forced-rate fixtures stepped to 48 kHz), the `DECODE_IQ_TETRA_WAV_*` and `DECODE_IQ_TETRA_REAL_AIR_SCBS_50K`
@@ -12381,9 +12511,15 @@ Key public headers:
     x256 and cs16 as 16-bit samples, cs32/cf32 as floats) is published over at least one block, short reads collected
     until they span one; the reader-side resampler
     (`rtl_iq_resampler_open()`, the design a resampled replay uses: protected band 0.45 of the final DSP rate) takes
-    4096-sample slices; a one-block accumulator of `dsd_iq_live_block_samples()` writes whole blocks only. A block the
-    ring cannot take is dropped whole: producer drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log
-    (queued samples, the resampler and the generation stay; a PCM input in front leaves the stream running this way).
+    slices of at most 4096 samples, each ending where the block being filled does; a one-block accumulator of
+    `dsd_iq_live_block_samples()` writes whole blocks only. A block the ring cannot take is dropped whole: producer
+    drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log (queued samples and the generation stay; a
+    PCM input in front leaves the stream running this way). Behind a resampler the resampler starts over there with the
+    input after the block, or, on an upsampling reader whose input the block ends inside, with that input again, so
+    its outputs past the block start the next one: the block alone is lost (exact for an isolated drop: fewer than 33
+    gap marks pending; `rtl_net_iq_state::drop_clears`), as the demod's filters start over at the gap mark: its first output after the gap
+    is the cascade's first input, the alignment the squelch's reader model describes (issue #899; left running, the
+    decimators could keep another coset of the reader's phases, 5e-5 off the plan at 112 kHz into 64 kHz).
     `dsd_iq_net_reader_note_written()` follows each block written. KNOWN_LOSS discards the partial block, clears the
     resampler and marks a gap; DISCONNECTED discards the partial block.
   - Boundary: RECONNECT (a new TCP connection, a new UDP sender) and RESUME (samples after a stall) discard the
@@ -18626,9 +18762,12 @@ Build files: `src/protocol/CMakeLists.txt` and per‑protocol `src/protocol/<nam
     changing text in a `ComboBox` model"); `reload()` takes the stored value afresh, and each caller calls it where it
     loads another value (`openForAdd`/`openForFound`/`openForEdit`, the scan list's `openFor`). A value changed from
     elsewhere (a Settings restore, a RadioReference import clearing a width TETRA cannot use) reloads by itself. App
-    default stays -1: opening or saving never turns it into a number. Names: Settings `settingsBandwidth` (note
-    `settingsBandwidthNote`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
-    `systemBandwidthNote`), the scan list `scanTuner_bandwidthKhz` (draft
+    default stays -1: opening or saving never turns it into a number. With `meaningShown` (Settings and the system
+    editor; issue #899, where the bandwidth was taken for the NFM width) a line under the note says "The slice of
+    spectrum the decoder processes. The NFM channel width is set in the Radio sheet."; the scan list, whose rows can
+    set their own width, leaves it off. Names: Settings `settingsBandwidth` (note `settingsBandwidthNote`, line
+    `settingsBandwidthMeaning`), the system editor `systemBandwidthField` (draft `bwText`, empty for App default; note
+    `systemBandwidthNote`, line `systemBandwidthMeaning`), the scan list `scanTuner_bandwidthKhz` (draft
     `bandwidthSet`/`bandwidthText`/`draft.bandwidthKhz`; note `scanBandwidthNote`). Tests:
     `tst_settings_receiver_defaults.qml`, `tst_wizard_bandwidth.qml`, `tst_wizard_gain.qml` (PPM),
     `tst_scan_list_screen.qml`, `tst_wizard_decode_chip.qml`, `tst_airspy_source_ui.qml`, `tst_a11y_text_reach.qml`.
