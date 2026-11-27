@@ -21,6 +21,13 @@ three trials each of the four ".../1536k/grid0" conditions (one analog, three no
   sha256 of the CSV, dump and trial log it closed, which match the files.
 - The late groups (--add cross, raised) only append: the conditions of --add masks,occupancy keep their order and
   names (and so their seeds), and cross adds the -8 masks crossed with neighbours, offsets and droop.
+- A run with a trial that reaches the clip level fails (B8), with or without --trial-log: nonzero, the condition named,
+  no completion record. The analog transmitter at 90 dB S/N clips once --scene-ceiling 1000 stops its scene from being
+  scaled down; at the default ceiling it is scaled under the clip level and the run completes with no crossing.
+- The completion record's digests are of the bytes written, so an output that cannot be read back (a FIFO, where the
+  platform has them) closes the run with a digest that matches what its reader got, instead of hanging.
+- --threshold and --estimator are refused outside validation (selection judges both estimators at no threshold, the
+  snr phase at none), so no run attests a parameter it did not use; selection's attestation stays as it was.
 """
 import argparse
 import csv
@@ -32,6 +39,7 @@ import struct
 import subprocess
 import sys
 import tempfile
+import threading
 
 TRIALS = 3
 FILTER = "/1536k/grid0"
@@ -77,9 +85,9 @@ SELECT = ["--phase", "select", "--guard", "8.7", "--occupancy-veto", "0.000001"]
 OCCUPANCY = 8  # DSD_SIGNAL_QUIET_VOID_OCCUPANCY
 
 
-def run(driver, root, out, extra, phase=None):
+def run(driver, root, out, extra, phase=None, modes="modes.tsv"):
     args = [driver] + (phase or VALIDATE) + [
-        "--sources", str(root), "--modes-file", str(root / "modes.tsv"), "--out", str(out),
+        "--sources", str(root), "--modes-file", str(root / modes), "--out", str(out),
         "--trials", str(TRIALS), "--jobs", "2", "--rates", "1536000", "--filter", FILTER] + extra
     return subprocess.run(args, capture_output=True, text=True, timeout=120, check=False)
 
@@ -213,6 +221,76 @@ def check_attestation(driver, root):
     return 0
 
 
+def check_clipping(driver, root):
+    """B8: a trial at or over the clip level fails the run, whether or not --trial-log counts it there."""
+    (root / "modes-loud.tsv").write_text((root / "modes.tsv").read_text().replace("ana\tnfm_12k5\tana\t8.0",
+                                                                                  "ana\tnfm_12k5\tana\t90.0"))
+    rc = 0
+    clipped = "condition analog/ana/1536k/grid0: 3 trial(s) clip"
+    for phase, name in ((VALIDATE, "validate"), (SELECT, "select")):
+        for logged in (True, False):
+            log = root / f"clip-{name}-{logged}.log"
+            extra = ["--scene-ceiling", "1000"] + (["--trial-log", str(log)] if logged else [])
+            done = run(driver, root, root / f"clip-{name}-{logged}.csv", extra, phase, "modes-loud.tsv")
+            label = f"{name}, a clipping scene, trial log {'on' if logged else 'off'}"
+            if done.returncode == 0 or clipped not in done.stderr or "complete:" in done.stderr:
+                rc |= fail(f"{label}: exit {done.returncode}, {done.stderr!r}")
+            if logged:
+                records = list(struct.iter_unpack("<fII", log.read_bytes())) if log.exists() else []
+                if not records or not all(r[1] > 0 for r in records[:TRIALS]):
+                    rc |= fail(f"{label}: the trial log's crossings {[r[1] for r in records[:TRIALS]]}")
+    log = root / "clip-scaled.log"
+    done = run(driver, root, root / "clip-scaled.csv", ["--trial-log", str(log)], None, "modes-loud.tsv")
+    records = list(struct.iter_unpack("<fII", log.read_bytes())) if log.exists() else []
+    if done.returncode != 0 or "complete:" not in done.stderr or not records or any(r[1] for r in records):
+        rc |= fail(f"the same scene scaled under the ceiling: exit {done.returncode}, {done.stderr!r}")
+    return rc
+
+
+def check_fifo_output(driver, root):
+    """A --dump to a FIFO: the run ends, and its completion record's digest is of what the FIFO's reader got."""
+    if not hasattr(os, "mkfifo"):
+        return 0
+    fifo = root / "dump.fifo"
+    os.mkfifo(fifo)
+    got = []
+
+    def drain():
+        with open(fifo, "rb") as f:
+            got.append(f.read())
+
+    reader = threading.Thread(target=drain, daemon=True)
+    reader.start()
+    try:
+        done = run(driver, root, root / "fifo.csv", ["--dump", str(fifo)])
+    except subprocess.TimeoutExpired:
+        return fail("a --dump to a FIFO: the run hangs after its trials")
+    reader.join(10)
+    records = [line for line in done.stderr.splitlines() if line.startswith("complete: ")]
+    fields = dict(f.split("=", 1) for f in records[0].split() if "=" in f) if len(records) == 1 else {}
+    if done.returncode != 0 or not got or fields.get("dump") != hashlib.sha256(got[0]).hexdigest():
+        return fail(f"a --dump to a FIFO: exit {done.returncode}, {records}, {len(got[0]) if got else None} B read")
+    if fields.get("csv") != hashlib.sha256((root / "fifo.csv").read_bytes()).hexdigest():
+        return fail(f"a --dump to a FIFO: the CSV's digest {fields.get('csv')}")
+    return 0
+
+
+def check_validation_only_options(driver, root):
+    """--threshold and --estimator outside validation are refused; selection attests what it always did."""
+    rc = 0
+    for phase, extra in ((SELECT, ["--threshold", "5"]), (SELECT, ["--estimator", "trimmed"]),
+                         (["--phase", "snr"], ["--threshold", "5"])):
+        out = root / "refused.csv"
+        done = run(driver, root, out, extra, phase)
+        if done.returncode == 0 or "--threshold and --estimator are for --phase validate only" not in done.stderr:
+            rc |= fail(f"{phase[1]} {extra}: exit {done.returncode}, {done.stderr!r}")
+    done = run(driver, root, root / "select-attest.csv", [], SELECT)
+    want = "run: phase=select salt=0 veto=1e-06 guard=8.7 threshold=0 estimator=both default,flat,0.0,none"
+    if done.returncode != 0 or want not in done.stderr.splitlines():
+        rc |= fail(f"selection's attestation: {[l for l in done.stderr.splitlines() if l.startswith('run:')]}")
+    return rc
+
+
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument("driver")
@@ -226,6 +304,9 @@ def main():
         rc |= check_full_disk(driver, root)
         rc |= check_late_groups(driver, root)
         rc |= check_attestation(driver, root)
+        rc |= check_clipping(driver, root)
+        rc |= check_fifo_output(driver, root)
+        rc |= check_validation_only_options(driver, root)
     return rc
 
 

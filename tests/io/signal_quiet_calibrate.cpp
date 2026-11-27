@@ -14,7 +14,10 @@
  *       [--jobs N] [--threshold DB --estimator trimmed|lowest] [--guard DB] [--filter TEXT] [--dump FILE]
  *       [--neighbour-levels DB,DB,...] [--geometry default|centred] [--rates HZ,HZ,...]
  *       [--response flat|nominal|steeper|mirrored] [--depression DB] [--adc-noise-db DB] [--modes-file FILE]
- *       [--pilot MODE] [--memory-mb MB] [--windows N]
+ *       [--pilot MODE] [--memory-mb MB] [--windows N] [--scene-ceiling BOUND]
+ *
+ * --threshold and --estimator belong to validate, the one phase that judges at them; any other phase refuses them, so
+ * no run attests parameters it did not use.
  *
  * --windows N (1..DSD_SIGNAL_QUIET_WINDOWS_MAX) judges N sub-windows of the shipped length instead of the calibrated
  * nine, through the request's own count (issue #834 follow-up): a short check of another reading length, not a
@@ -31,9 +34,11 @@
  * select    every condition, both floor estimators on the same samples: per condition the lowest, percentiles and
  *           highest max-of-9 ratio over its valid trials (a noise-only condition's invalid trials count as busy, at
  *           +999 dB), and the sideband floor's rise over the capture-wide reference (--guard, default off; --dump
- *           writes every trial's ratio and rise). The ratio is judged against that reference (on a centred capture
- *           the lower of it and the sideband floor), so both estimators read the same ratio on a shifted capture; the
- *           estimator sets the floor the guard compares.
+ *           writes every trial's ratio and rise). The ratio is judged against the lower of that reference and the
+ *           sideband floor on every geometry (quiet_judged_noise() in src/io/radio/signal_measure.cpp), and the
+ *           estimator sets that floor: the two estimators read the same ratio only where both floors stand over the
+ *           reference, so their rows differ wherever a floor reads under it, on a shifted capture too. The estimator
+ *           also sets the floor the guard compares.
  * validate  every condition at one threshold, estimator and guard, fresh seeds: quiet and busy verdicts (an invalid
  *           result is busy)
  * snr       the rendered S/N of every chosen active condition's wanted signal (all its carriers but neighbours),
@@ -94,12 +99,18 @@
  * at. A scene whose bound (its carriers at their waveforms' peaks plus six sigma of its densest noise) passes 0.9 is
  * scaled down whole, which leaves every ratio as it was and every sample under the clip level.
  *
+ * Every trial is rendered under the clip level the detector reads (issue #834 B8): a trial with a sample component at
+ * or over it fails the run, whatever --trial-log says, the CSV, dump and trial log written but no completion record
+ * printed. --scene-ceiling BOUND (default 0.9) moves the bound a scene is scaled under; only a check of that refusal
+ * raises it, and the run and completion records then name it.
+ *
  * Every trial's samples come from its own seed (the condition's name, the phase and the trial number), so results do
  * not depend on --jobs or the batches. */
 #include <algorithm>
 #include <atomic>
 #include <cmath>
 #include <complex>
+#include <cstdarg>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
@@ -107,6 +118,7 @@
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/io/signal_measure.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <dsd-neo/platform/platform.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <dsd-neo/runtime/signal_search.h>
 #include <fstream>
@@ -116,7 +128,6 @@
 #include <mutex>
 #include <numeric>
 #include <sstream>
-#include <stddef.h>
 #include <string>
 #include <thread>
 #include <utility>
@@ -1245,12 +1256,17 @@ struct Builder {
 /* ------------------------------------------------------------------------------------------------ options */
 
 constexpr double kGuardOff = 1000;       /* a guard no floor reaches: the raw ratios and rises */
+constexpr double kSceneCeiling = 0.9;    /* a scene's bound is kept under this, clear of the 0.999 clip level */
 constexpr float kInvalidBusyDb = 999.0f; /* a noise-only trial the guard voided, in the select quantiles */
 
 struct Options {
     std::string sources, phase, out, filter, dump, modes_file, pilot, trial_log, bounds;
     long trials = 0, jobs = 0, memory_mb = 8192, seed_salt = 0;
     double threshold = 0, guard = kGuardOff, occupancy_veto = 0;
+    bool threshold_given = false; /* --threshold: validation only */
+    /* --scene-ceiling: the bound a scene is scaled under (kSceneCeiling); only a check of the clip refusal raises it */
+    double scene_ceiling = kSceneCeiling;
+    bool ceiling_given = false;
     /* --add masks,occupancy,cross,raised: the groups beyond the shipped matrix */
     bool add_masks = false, add_occupancy = false, add_cross = false, add_raised = false;
     int estimator = -1;
@@ -1281,39 +1297,89 @@ run_columns(const Options& o) {
 
 /* What the run executes, as the run and completion lines print it: phase, salt, veto, guard, threshold, estimator,
    the run's tag columns and, for a --windows run only, its sub-window count (a run of the calibrated nine prints the
-   line it always did). */
+   line it always did), and for a --scene-ceiling run its ceiling. */
 std::string
 run_text(const Options& o) {
     char windows[24] = "";
     if (g_windows) {
         DSD_SNPRINTF(windows, sizeof(windows), " windows=%d", g_windows);
     }
-    char text[256];
-    DSD_SNPRINTF(text, sizeof(text), "phase=%s salt=%ld veto=%.6g guard=%.6g threshold=%.6g estimator=%s %s%s",
+    char ceiling[32] = "";
+    if (o.ceiling_given) {
+        DSD_SNPRINTF(ceiling, sizeof(ceiling), " ceiling=%.6g", o.scene_ceiling);
+    }
+    char text[288];
+    DSD_SNPRINTF(text, sizeof(text), "phase=%s salt=%ld veto=%.6g guard=%.6g threshold=%.6g estimator=%s %s%s%s",
                  o.phase.c_str(), o.seed_salt, o.occupancy_veto, o.guard, o.threshold,
                  o.estimator == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN   ? "trimmed"
                  : o.estimator == DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK ? "lowest"
                                                                       : "both",
-                 run_columns(o).c_str(), windows);
+                 run_columns(o).c_str(), windows, ceiling);
     return text;
 }
 
-/* SHA-256 of the file at @p path as lowercase hex (FIPS 180-4), "" when it cannot be read: the completion record's
-   digests of the outputs the run closed. */
-std::string
-file_sha256(const std::string& path) {
-    static const uint32_t k[64] = {
-        0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
-        0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
-        0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
-        0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
-        0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
-        0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
-        0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
-        0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
-    uint32_t h[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
-    const auto rotr = [](uint32_t x, int n) { return (x >> n) | (x << (32 - n)); };
-    const auto block = [&](const unsigned char* p) {
+/* SHA-256 (FIPS 180-4) of the bytes given in turn, as lowercase hex: the completion record's digest of an output,
+   taken as the run writes it, so an output it cannot read back (a FIFO) gets one too. */
+class Sha256 {
+  public:
+    void
+    update(const void* data, size_t size) {
+        const auto* p = static_cast<const unsigned char*>(data);
+        total_ += size;
+        while (size > 0) {
+            const size_t take = std::min(size, sizeof(buf_) - have_);
+            std::copy(p, p + take, buf_ + have_);
+            have_ += take;
+            p += take;
+            size -= take;
+            if (have_ == sizeof(buf_)) {
+                block(buf_);
+                have_ = 0;
+            }
+        }
+    }
+
+    /* The digest of everything given; the hasher is spent after it. */
+    std::string
+    hex() {
+        unsigned char tail[128] = {};
+        std::copy(buf_, buf_ + have_, tail);
+        tail[have_] = 0x80;
+        const size_t len = have_ + 1 + 8 <= 64 ? 64 : 128;
+        const uint64_t bits = total_ * 8;
+        for (int i = 0; i < 8; ++i) {
+            tail[len - 1 - i] = (unsigned char)(bits >> (8 * i));
+        }
+        block(tail);
+        if (len == 128) {
+            block(tail + 64);
+        }
+        std::string out;
+        char part[9];
+        for (uint32_t v : h_) {
+            DSD_SNPRINTF(part, sizeof(part), "%08x", v);
+            out += part;
+        }
+        return out;
+    }
+
+  private:
+    static uint32_t
+    rotr(uint32_t x, int n) {
+        return (x >> n) | (x << (32 - n));
+    }
+
+    void
+    block(const unsigned char* p) {
+        static const uint32_t k[64] = {
+            0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4, 0xab1c5ed5,
+            0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe, 0x9bdc06a7, 0xc19bf174,
+            0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f, 0x4a7484aa, 0x5cb0a9dc, 0x76f988da,
+            0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7, 0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967,
+            0x27b70a85, 0x2e1b2138, 0x4d2c6dfc, 0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85,
+            0xa2bfe8a1, 0xa81a664b, 0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070,
+            0x19a4c116, 0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+            0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7, 0xc67178f2};
         uint32_t w[64];
         for (size_t i = 0; i < 16; ++i) {
             w[i] = (uint32_t)p[4 * i] << 24 | (uint32_t)p[4 * i + 1] << 16 | (uint32_t)p[4 * i + 2] << 8 | p[4 * i + 3];
@@ -1323,7 +1389,7 @@ file_sha256(const std::string& path) {
             const uint32_t s1 = rotr(w[i - 2], 17) ^ rotr(w[i - 2], 19) ^ (w[i - 2] >> 10);
             w[i] = w[i - 16] + s0 + w[i - 7] + s1;
         }
-        uint32_t a = h[0], b = h[1], c = h[2], d = h[3], e = h[4], f = h[5], g = h[6], hh = h[7];
+        uint32_t a = h_[0], b = h_[1], c = h_[2], d = h_[3], e = h_[4], f = h_[5], g = h_[6], hh = h_[7];
         for (int i = 0; i < 64; ++i) {
             const uint32_t t1 = hh + (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) + ((e & f) ^ (~e & g)) + k[i] + w[i];
             const uint32_t t2 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) + ((a & b) ^ (a & c) ^ (b & c));
@@ -1336,61 +1402,17 @@ file_sha256(const std::string& path) {
             b = a;
             a = t1 + t2;
         }
-        h[0] += a;
-        h[1] += b;
-        h[2] += c;
-        h[3] += d;
-        h[4] += e;
-        h[5] += f;
-        h[6] += g;
-        h[7] += hh;
-    };
-    FILE* in = dsd_fopen_private(path.c_str(), "rb");
-    if (!in) {
-        return std::string();
-    }
-    std::vector<unsigned char> buf(1 << 16);
-    uint64_t total = 0;
-    size_t carry = 0;
-    for (;;) {
-        const size_t got = fread(buf.data() + carry, 1, buf.size() - carry, in);
-        const size_t have = carry + got;
-        total += got;
-        size_t off = 0;
-        for (; off + 64 <= have; off += 64) {
-            block(buf.data() + off);
-        }
-        carry = have - off;
-        std::copy(buf.begin() + (ptrdiff_t)off, buf.begin() + (ptrdiff_t)have, buf.begin());
-        if (got == 0) {
-            break;
+        const uint32_t add[8] = {a, b, c, d, e, f, g, hh};
+        for (int i = 0; i < 8; ++i) {
+            h_[i] += add[i];
         }
     }
-    const bool failed = ferror(in) != 0;
-    fclose(in);
-    if (failed) {
-        return std::string();
-    }
-    unsigned char tail[128] = {};
-    std::copy(buf.begin(), buf.begin() + (ptrdiff_t)carry, tail);
-    tail[carry] = 0x80;
-    const size_t len = carry + 1 + 8 <= 64 ? 64 : 128;
-    const uint64_t bits = total * 8;
-    for (int i = 0; i < 8; ++i) {
-        tail[len - 1 - i] = (unsigned char)(bits >> (8 * i));
-    }
-    block(tail);
-    if (len == 128) {
-        block(tail + 64);
-    }
-    std::string hex;
-    char part[9];
-    for (uint32_t v : h) {
-        DSD_SNPRINTF(part, sizeof(part), "%08x", v);
-        hex += part;
-    }
-    return hex;
-}
+
+    uint32_t h_[8] = {0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab, 0x5be0cd19};
+    unsigned char buf_[64] = {};
+    size_t have_ = 0;
+    uint64_t total_ = 0;
+};
 
 /* Whether @p c belongs to the pilot mode @p m: its own conditions, and its class's or width's noise-only ones. */
 bool
@@ -1420,7 +1442,6 @@ noise_peak_density(const Condition& c, const qs::Response& response) {
 constexpr double kPeakMargin = 1.1;   /* a placed waveform's interpolation and a response's ringing over its peak */
 constexpr double kDroopPeak = 1.13;   /* a DMR MS droop carrier's region B at +1 dBp, in amplitude */
 constexpr double kNoisePeakSigma = 6; /* noise components this far out are not reached in any trial's samples */
-constexpr double kSceneCeiling = 0.9; /* a scene's bound is kept under this, clear of the 0.999 clip level */
 
 /* An upper bound on any sample component @p c renders, at its scale 1: every carrier's amplitude (before the
  * response, which only lowers it) at its waveform's peak, plus kNoisePeakSigma of the noise at its densest. A scene
@@ -1460,7 +1481,7 @@ derive(std::vector<Condition>* all, const Options& o, const std::vector<Source>&
             }
         }
         c.bound = scene_bound(c, sources, waves, o.response);
-        c.scale = c.bound > kSceneCeiling ? kSceneCeiling / c.bound : 1.0;
+        c.scale = c.bound > o.scene_ceiling ? o.scene_ceiling / c.bound : 1.0;
     }
 }
 
@@ -1899,7 +1920,7 @@ struct Verdict {
     uint8_t valid = 0;         /* geometry fits and no floor over the guard */
     uint8_t quiet = 0;
     float occupancy = 0;    /* the result's occupancy share, when done */
-    uint32_t crossings = 0; /* samples of the trial with a component at or over the clip level (--trial-log) */
+    uint32_t crossings = 0; /* samples of the trial with a component at or over the clip level */
     uint32_t status = 0;    /* TrialStatus, with the detector's reason and decision (write_trial_log()) */
 };
 
@@ -1973,12 +1994,22 @@ struct Inputs {
     const std::vector<Condition>& all;
 };
 
-/* The waveforms @p c renders, sorted. */
+/* Whether the phase renders carrier @p k: every carrier, but the snr phase renders only the wanted ones (its
+   neighbours need no source there, renderable()). */
+bool
+renders_carrier(const Options& o, const Carrier& k) {
+    return o.phase != "snr" || !k.neighbour;
+}
+
+/* The waveforms the phase renders for @p c (renders_carrier()), sorted. */
 std::vector<int>
-condition_waves(const Condition& c, const std::vector<Source>& sources) {
-    std::vector<int> waves(c.carriers.size());
-    std::transform(c.carriers.begin(), c.carriers.end(), waves.begin(),
-                   [&](const Carrier& k) { return sources[(size_t)k.source].wave; });
+condition_waves(const Condition& c, const Options& o, const std::vector<Source>& sources) {
+    std::vector<int> waves;
+    for (const Carrier& k : c.carriers) {
+        if (renders_carrier(o, k)) {
+            waves.push_back(sources[(size_t)k.source].wave);
+        }
+    }
     std::sort(waves.begin(), waves.end());
     waves.erase(std::unique(waves.begin(), waves.end()), waves.end());
     return waves;
@@ -1989,7 +2020,7 @@ condition_waves(const Condition& c, const std::vector<Source>& sources) {
 std::vector<std::vector<size_t>>
 rate_batches(uint32_t rate, const Options& o, const Inputs& in, std::vector<size_t> here) {
     std::stable_sort(here.begin(), here.end(), [&](size_t a, size_t b) {
-        return condition_waves(in.all[a], in.sources) < condition_waves(in.all[b], in.sources);
+        return condition_waves(in.all[a], o, in.sources) < condition_waves(in.all[b], o, in.sources);
     });
     const double budget = (double)o.memory_mb * 1024.0 * 1024.0;
     std::vector<std::vector<size_t>> batches;
@@ -1997,7 +2028,7 @@ rate_batches(uint32_t rate, const Options& o, const Inputs& in, std::vector<size
     double bytes = 0;
     for (size_t i : here) {
         double extra = 0;
-        const std::vector<int> waves = condition_waves(in.all[i], in.sources);
+        const std::vector<int> waves = condition_waves(in.all[i], o, in.sources);
         for (int v : waves) {
             extra += std::find(held.begin(), held.end(), v) == held.end() ? placed_bytes(in.waves[(size_t)v], rate) : 0;
         }
@@ -2024,7 +2055,7 @@ std::vector<Placed>
 place_batch(uint32_t rate, const Options& o, const Inputs& in, const std::vector<size_t>& batch) {
     std::vector<bool> needed(in.waves.size(), false);
     for (size_t i : batch) {
-        for (int v : condition_waves(in.all[i], in.sources)) {
+        for (int v : condition_waves(in.all[i], o, in.sources)) {
             needed[(size_t)v] = true;
         }
     }
@@ -2074,7 +2105,7 @@ run_batch(const std::vector<size_t>& batch, const Scene& scene, const Options& o
             std::call_once(bins.built, [&] { record_bins(c, scene.response, &bins.bins); });
         }
         const cf* samples = render(c, scene, trial_seed(c, phase, trial), w, &bins.bins);
-        const uint32_t crossings = o.trial_log.empty() ? 0U : clip_crossings(samples, c.span);
+        const uint32_t crossings = clip_crossings(samples, c.span);
         for (int e = 0; e < 2; ++e) {
             if (!select && e != o.estimator) {
                 continue;
@@ -2110,11 +2141,47 @@ kind_text(Kind k) {
     return k == ACTIVE ? "active" : k == NOISE ? "noise" : "info";
 }
 
+/* One of a run's outputs (the CSV, --dump, --trial-log): the file, null for none, and the SHA-256 of every byte the run
+   wrote to it (its completion record's digest). */
+struct Output {
+    FILE* f = nullptr;
+    Sha256 sha;
+    bool overlong = false; /* a CSV field too long to format, which fails the run */
+};
+
+/* Write @p size bytes to @p out and hash them; false when the write fails (the run fails at the close then too). */
+bool
+out_write(Output* out, const void* data, size_t size) {
+    if (!out->f) {
+        return true;
+    }
+    const size_t written = fwrite(data, 1, size, out->f);
+    out->sha.update(data, written);
+    return written == size;
+}
+
+void out_printf(Output* out, const char* fmt, ...) DSD_ATTR_FORMAT(printf, 2, 3);
+
+/* fprintf() to @p out, hashed as written. */
+void
+out_printf(Output* out, const char* fmt, ...) {
+    char text[1024];
+    va_list ap;
+    va_start(ap, fmt);
+    const int n = DSD_VSNPRINTF(text, sizeof(text), fmt, ap);
+    va_end(ap);
+    if (n < 0 || (size_t)n >= sizeof(text)) {
+        out->overlong = true;
+        return;
+    }
+    (void)out_write(out, text, (size_t)n);
+}
+
 /* The q-quantiles (nearest rank) of the ratios (or rises) of the trials @p take selects, printed comma-separated
  * with @p end after the last; empty fields when none is selected. */
 template <typename Take>
 void
-print_quantiles(FILE* f, const std::vector<Verdict>& trials, bool rise, Take take, std::initializer_list<double> qs,
+print_quantiles(Output* f, const std::vector<Verdict>& trials, bool rise, Take take, std::initializer_list<double> qs,
                 char end) {
     std::vector<float> v;
     for (const Verdict& t : trials) {
@@ -2127,39 +2194,39 @@ print_quantiles(FILE* f, const std::vector<Verdict>& trials, bool rise, Take tak
     for (double q : qs) {
         const char sep = ++i == qs.size() ? end : ',';
         if (v.empty()) {
-            DSD_FPRINTF(f, "%c", sep);
+            out_printf(f, "%c", sep);
             continue;
         }
         const size_t rank = (size_t)std::min((double)v.size() - 1, std::max(0.0, std::ceil(q * v.size()) - 1));
-        DSD_FPRINTF(f, "%.3f%c", v[rank], sep);
+        out_printf(f, "%.3f%c", v[rank], sep);
     }
 }
 
 void
-write_header(FILE* f, bool select) {
-    DSD_FPRINTF(f, "condition,group,kind,rate_hz,classes,analog_width_hz,grid_shift_hz,snr_db,span,trials,estimator,"
-                   "guard_db,invalid,");
+write_header(Output* f, bool select) {
+    out_printf(f, "condition,group,kind,rate_hz,classes,analog_width_hz,grid_shift_hz,snr_db,span,trials,estimator,"
+                  "guard_db,invalid,");
     if (select) {
-        DSD_FPRINTF(f, "min,p001,p01,p05,p50,p95,p99,max,");
+        out_printf(f, "min,p001,p01,p05,p50,p95,p99,max,");
     } else {
-        DSD_FPRINTF(f, "threshold_db,quiet,busy,min,p05,p50,p95,max,");
+        out_printf(f, "threshold_db,quiet,busy,min,p05,p50,p95,max,");
     }
-    DSD_FPRINTF(f, "rise_min,rise_p05,rise_p50,rise_p95,rise_p99,rise_max,geometry,response,depression_db,"
-                   "adc_noise_db\n");
+    out_printf(f, "rise_min,rise_p05,rise_p50,rise_p95,rise_p99,rise_max,geometry,response,depression_db,"
+                  "adc_noise_db\n");
 }
 
 void
-write_row(FILE* f, const Condition& c, const Outcome& out, int e, const Options& o) {
+write_row(Output* f, const Condition& c, const Outcome& out, int e, const Options& o) {
     const std::vector<Verdict>& trials = out.trials[e];
     long invalid = 0, quiet = 0;
     for (const Verdict& t : trials) {
         invalid += t.valid ? 0 : 1;
         quiet += t.quiet;
     }
-    DSD_FPRINTF(f, "%s,%s,%s,%u,%s,%u,%d,%.2f,%d,%zu,%s,%.2f,%ld,", c.name.c_str(), c.group.c_str(), kind_text(c.kind),
-                c.rate, class_text(c.classes), c.analog_width, c.grid_shift_hz, c.kind == ACTIVE ? c.snr_db : 0.0,
-                c.span, trials.size(), e == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN ? "trimmed" : "lowest", o.guard,
-                invalid);
+    out_printf(f, "%s,%s,%s,%u,%s,%u,%d,%.2f,%d,%zu,%s,%.2f,%ld,", c.name.c_str(), c.group.c_str(), kind_text(c.kind),
+               c.rate, class_text(c.classes), c.analog_width, c.grid_shift_hz, c.kind == ACTIVE ? c.snr_db : 0.0,
+               c.span, trials.size(), e == DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN ? "trimmed" : "lowest", o.guard,
+               invalid);
     const auto valid = [](const Verdict& t) { return t.valid != 0; };
     const auto done = [](const Verdict& t) { return t.done != 0; };
     if (o.phase == "select" && c.kind != ACTIVE) {
@@ -2173,18 +2240,18 @@ write_row(FILE* f, const Condition& c, const Outcome& out, int e, const Options&
         print_quantiles(f, trials, false, valid, {0, 0.001, 0.01, 0.05, 0.5, 0.95, 0.99, 1}, ',');
     } else {
         /* busy: every verdict that is not quiet, an invalid (guarded) result included */
-        DSD_FPRINTF(f, "%.2f,%ld,%ld,", o.threshold, quiet, (long)trials.size() - quiet);
+        out_printf(f, "%.2f,%ld,%ld,", o.threshold, quiet, (long)trials.size() - quiet);
         print_quantiles(f, trials, false, valid, {0, 0.05, 0.5, 0.95, 1}, ',');
     }
     print_quantiles(f, trials, true, done, {0, 0.05, 0.5, 0.95, 0.99, 1}, ',');
-    DSD_FPRINTF(f, "%s\n", run_columns(o).c_str());
+    out_printf(f, "%s\n", run_columns(o).c_str());
 }
 
 /* Every trial's ratio and rise as little-endian float32 pairs, rows in the CSV's order (--dump; read it with the
  * guard off, where every completed trial is valid). False when the write fails. */
 bool
-write_dump(FILE* dump, const Outcome& out, int e) {
-    if (!dump) {
+write_dump(Output* dump, const Outcome& out, int e) {
+    if (!dump->f) {
         return true;
     }
     std::vector<float> pairs;
@@ -2193,7 +2260,7 @@ write_dump(FILE* dump, const Outcome& out, int e) {
         pairs.push_back(t.ratio);
         pairs.push_back(t.rise);
     }
-    if (fwrite(pairs.data(), sizeof(float), pairs.size(), dump) != pairs.size()) {
+    if (!out_write(dump, pairs.data(), pairs.size() * sizeof(float))) {
         DSD_FPRINTF(stderr, "dump write failed\n");
         return false;
     }
@@ -2205,8 +2272,8 @@ write_dump(FILE* dump, const Outcome& out, int e) {
  * failure reason in the next; for a completed trial the result's void causes (DSD_SIGNAL_QUIET_VOID_*) in the third
  * byte, valid in bit 24 and quiet in bit 25, the detector's own decision. False when the write fails. */
 bool
-write_trial_log(FILE* log, const Outcome& out, int e) {
-    if (!log) {
+write_trial_log(Output* log, const Outcome& out, int e) {
+    if (!log->f) {
         return true;
     }
 
@@ -2221,7 +2288,7 @@ write_trial_log(FILE* log, const Outcome& out, int e) {
     for (const Verdict& t : out.trials[e]) {
         records.push_back(Record{t.occupancy, t.crossings, t.status});
     }
-    if (fwrite(records.data(), sizeof(Record), records.size(), log) != records.size()) {
+    if (!out_write(log, records.data(), records.size() * sizeof(Record))) {
         DSD_FPRINTF(stderr, "trial log write failed\n");
         return false;
     }
@@ -2267,16 +2334,67 @@ chosen_rates(const Inputs& in, const std::vector<size_t>& chosen) {
     return rates;
 }
 
+/* The chosen conditions with a trial whose samples reach the clip level the detector reads, each said with its
+   clipped trials and samples: a calibration renders every trial under it (B8), so any one fails the run. */
+size_t
+clipped_conditions(const Options& o, const Inputs& in, const std::vector<size_t>& chosen,
+                   const std::vector<Outcome>& outcomes) {
+    /* Both estimators of a selection judge the same samples: the first one's crossings are the trial's. */
+    const int e = o.phase == "select" ? 0 : o.estimator;
+    size_t clipped = 0;
+    for (size_t i : chosen) {
+        long trials = 0;
+        uint64_t samples = 0;
+        for (const Verdict& t : outcomes[i].trials[e]) {
+            trials += t.crossings != 0;
+            samples += t.crossings;
+        }
+        if (trials) {
+            DSD_FPRINTF(stderr, "condition %s: %ld trial(s) clip (%llu samples at or over the clip level)\n",
+                        in.all[i].name.c_str(), trials, (unsigned long long)samples);
+            ++clipped;
+        }
+    }
+    return clipped;
+}
+
+/* Write every chosen condition's rows, dump and trial log, then close the outputs; false when a write or close fails. */
+bool
+write_outputs(const Options& o, const Inputs& in, const std::vector<size_t>& chosen,
+              const std::vector<Outcome>& outcomes, Output* csv, Output* dump, Output* log) {
+    bool ok = true;
+    write_header(csv, o.phase == "select");
+    for (size_t i : chosen) {
+        for (int e = 0; e < 2; ++e) {
+            if (o.phase == "select" || e == o.estimator) {
+                write_row(csv, in.all[i], outcomes[i], e, o);
+                ok = write_dump(dump, outcomes[i], e) && ok;
+                ok = write_trial_log(log, outcomes[i], e) && ok;
+            }
+        }
+    }
+    if (csv->overlong) {
+        DSD_FPRINTF(stderr, "a CSV field is too long\n");
+        ok = false;
+    }
+    ok = close_output(csv->f, o.out) && ok;
+    ok = close_output(dump->f, o.dump) && ok;
+    ok = close_output(log->f, o.trial_log) && ok;
+    return ok;
+}
+
 /* Run the chosen conditions and write the CSV, --dump and --trial-log. Every output opens before the run, so a path it
-   cannot write stops it at once; 1 when any output fails to open, write or close. */
+   cannot write stops it at once; 1 when any output fails to open, write or close, or any trial clips
+   (clipped_conditions()), with no completion record then. */
 int
 run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen) {
     bool ok = true;
-    FILE* f = open_output(o.out, "w", &ok);
-    FILE* dump = open_output(o.dump, "wb", &ok);
-    FILE* log = open_output(o.trial_log, "wb", &ok);
+    Output csv, dump, log;
+    csv.f = open_output(o.out, "wb", &ok);
+    dump.f = open_output(o.dump, "wb", &ok);
+    log.f = open_output(o.trial_log, "wb", &ok);
     if (!ok) {
-        for (FILE* opened : {f, dump, log}) {
+        for (FILE* opened : {csv.f, dump.f, log.f}) {
             if (opened) {
                 fclose(opened);
             }
@@ -2292,37 +2410,24 @@ run_trials(const Options& o, const Inputs& in, const std::vector<size_t>& chosen
     for (uint32_t rate : chosen_rates(in, chosen)) {
         run_rate(rate, o, in, chosen, &outcomes);
     }
-    write_header(f, o.phase == "select");
-    for (size_t i : chosen) {
-        for (int e = 0; e < 2; ++e) {
-            if (o.phase == "select" || e == o.estimator) {
-                write_row(f, in.all[i], outcomes[i], e, o);
-                ok = write_dump(dump, outcomes[i], e) && ok;
-                ok = write_trial_log(log, outcomes[i], e) && ok;
-            }
-        }
-    }
-    ok = close_output(f, o.out) && ok;
-    ok = close_output(dump, o.dump) && ok;
-    ok = close_output(log, o.trial_log) && ok;
-    if (!ok) {
+    if (!write_outputs(o, in, chosen, outcomes, &csv, &dump, &log)) {
         return 1;
     }
-    /* The completion record: what ran, how much, and the digests of the three files this run closed, so a checker can
-       tell these outputs from another run's beside this log. */
-    size_t rows = 0;
-    for (size_t i : chosen) {
-        (void)i;
-        rows += o.phase == "select" ? 2 : 1;
-    }
-    const auto digest = [](const std::string& path) { return path.empty() ? std::string("none") : file_sha256(path); };
-    const std::string csv = digest(o.out), dumped = digest(o.dump), logged = digest(o.trial_log);
-    if (csv.empty() || dumped.empty() || logged.empty()) {
-        DSD_FPRINTF(stderr, "cannot read back the outputs for the completion record\n");
+    const size_t clipped = clipped_conditions(o, in, chosen, outcomes);
+    if (clipped) {
+        DSD_FPRINTF(stderr, "%zu condition(s) clip: the run is no calibration\n", clipped);
         return 1;
     }
+    /* The completion record: what ran, how much, and the digests of the bytes this run wrote to its three outputs, so
+       a checker can tell these outputs from another run's beside this log. */
+    const size_t rows = chosen.size() * (o.phase == "select" ? 2 : 1);
+    const auto digest = [](const std::string& path, Output* out) {
+        return path.empty() ? std::string("none") : out->sha.hex();
+    };
+    const std::string csv_sha = digest(o.out, &csv), dump_sha = digest(o.dump, &dump),
+                      log_sha = digest(o.trial_log, &log);
     DSD_FPRINTF(stderr, "complete: %s trials=%ld conditions=%zu rows=%zu csv=%s dump=%s log=%s\n", run_text(o).c_str(),
-                o.trials, chosen.size(), rows, csv.c_str(), dumped.c_str(), logged.c_str());
+                o.trials, chosen.size(), rows, csv_sha.c_str(), dump_sha.c_str(), log_sha.c_str());
     return 0;
 }
 
@@ -2618,6 +2723,10 @@ parse_run_option(const std::string& key, const char* value, Options* o) {
     if (key == "--add") {
         return parse_groups(value, o);
     }
+    if (key == "--scene-ceiling") {
+        o->ceiling_given = true;
+        return parse_double(value, &o->scene_ceiling) && o->scene_ceiling > 0 && o->scene_ceiling <= 1e6;
+    }
     return false;
 }
 
@@ -2660,6 +2769,7 @@ parse_number(const std::string& key, const char* value, Options* o) {
         return parse_count(value, 1, 1024, &o->jobs);
     }
     if (key == "--threshold") {
+        o->threshold_given = true;
         return parse_double(value, &o->threshold);
     }
     if (key == "--guard") {
@@ -2722,12 +2832,17 @@ finish_rates(Options* o) {
     return true;
 }
 
-/* Whether the phase has what it needs: a known phase, its estimator, sources (but cost) and an output; and a depression
- * or ADC share only on a shaped response. */
+/* Whether the phase has what it needs: a known phase, its estimator, sources (but cost) and an output; a depression
+ * or ADC share only on a shaped response; and --threshold and --estimator in validation only, the one phase that
+ * judges at them (selection runs both estimators at no threshold), so a run never attests parameters it did not use. */
 bool
 phase_ok(const Options& o) {
-    const bool known =
-        o.phase == "select" || o.phase == "snr" || o.phase == "cost" || (o.phase == "validate" && o.estimator >= 0);
+    const bool validate = o.phase == "validate";
+    if (!validate && (o.threshold_given || o.estimator != -1)) {
+        DSD_FPRINTF(stderr, "--threshold and --estimator are for --phase validate only\n");
+        return false;
+    }
+    const bool known = o.phase == "select" || o.phase == "snr" || o.phase == "cost" || (validate && o.estimator >= 0);
     const bool response = o.response.shape != qs::Shape::FLAT || (o.response.depression_db <= 0 && !o.response.adc);
     return known && response && (o.phase == "cost" || !o.sources.empty()) && !o.out.empty();
 }
@@ -2797,7 +2912,7 @@ renderable(Condition c, const Options& o, const Inputs& in) {
         c.span = transform_points(c.rate);
         c.record = c.record ? record_points(c) : 0;
     }
-    const auto rendered = [&](const Carrier& k) { return !snr || !k.neighbour; };
+    const auto rendered = [&](const Carrier& k) { return renders_carrier(o, k); };
     const bool sources_ok = std::all_of(c.carriers.begin(), c.carriers.end(),
                                         [&](const Carrier& k) { return !rendered(k) || k.source >= 0; });
     const int lead = c.record ? (c.record - c.span) / 2 : 0;
@@ -2928,7 +3043,7 @@ write_bounds(const std::string& path, const std::vector<Condition>& all, const O
     if (!close_output(f, path)) {
         return 1;
     }
-    DSD_FPRINTF(stderr, "%zu of %zu conditions scaled under the %.2f ceiling\n", scaled, all.size(), kSceneCeiling);
+    DSD_FPRINTF(stderr, "%zu of %zu conditions scaled under the %.2f ceiling\n", scaled, all.size(), o.scene_ceiling);
     return 0;
 }
 
@@ -2938,7 +3053,7 @@ constexpr const char* kUsage =
     "[--neighbour-levels DB,DB,...] [--geometry default|centred] [--rates HZ,HZ,...] "
     "[--response flat|nominal|steeper|mirrored] [--depression DB] [--adc-noise-db DB] [--modes-file FILE] "
     "[--pilot MODE] [--memory-mb MB] [--trial-log FILE] [--bounds FILE] [--seed-salt N] [--occupancy-veto SHARE] "
-    "[--add masks,occupancy] [--windows N]\n"
+    "[--add masks,occupancy] [--windows N] [--scene-ceiling BOUND]\n"
     "responses (2.5, 3, 6, 10 MS/s; tests/io/signal_quiet_scene.h): half-band 0 dB to +-0.42 Fs, -0.35 dB at "
     "+-0.45, -6.02 dB at +-0.5; nominal tuner -3 dB at -0.335/+0.302 Fs (2.5, 3 MS/s), -0.4365/+0.4035 (6), "
     "-0.4665/+0.4335 (10); steeper +-0.28 (2.5, 3), +-0.40 (6, 10); mirrored = nominal swapped; --depression DB over "
