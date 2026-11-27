@@ -864,6 +864,7 @@ RecordingStore::rootsStillAvailable(const QList<bool>& roots, Pass* pass) {
 bool
 RecordingStore::rebuildRoot(int root, Pass* pass) {
     QString rootPath;
+    quint64 made = 0U;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         rootPath = m_roots.at(root);
@@ -872,6 +873,7 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         m_listing.insert(root, {});
+        made = m_rootMade.value(root);
     }
     // The folder table first, folder.json only: what a session start needs. The journals are read after
     // (loadPendingFolders()), so a start never waits for them.
@@ -892,11 +894,17 @@ RecordingStore::rebuildRoot(int root, Pass* pass) {
         m_rootReadHook(rootPath); // listed and its folder.json read, the table not installed yet
     }
     // Gone again while it was listed: an empty or short listing is not a root emptied. It stays away, what it held
-    // stays indexed, and the next pass reads it again.
-    const bool there = rootThereForIndex(root, rootPath);
+    // stays indexed, and the next pass reads it again. There and empty only because its directory went missing during
+    // the listing (nothing indexed on it): remembered as missing, so the next pass lists it once it is back, unless a
+    // session start made the directory since (m1's rule).
+    const bool playable = rootPlayableNow(rootPath);
+    const bool there = playable || rootMissingTakenAsThere(root, rootPath);
     const std::lock_guard<std::mutex> lock(m_mutex);
     if (there) {
         installRootTableLocked(root, table, pass);
+        if (!playable && m_rootMade.value(root) == made) {
+            m_rootDirMissing[root] = true;
+        }
     }
     m_listing.remove(root);
     return there;

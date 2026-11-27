@@ -5282,6 +5282,40 @@ test_export_note_during_a_pass_is_taken_by_its_listing(void) {
     expect("note in a pass: its recording is indexed", listed_as(s.store, 1, true));
 }
 
+/* r12 Part B: a root's directory that goes missing during its listing, after entryList() and before the final check,
+ * with nothing indexed on it, is installed there and empty but remembered as missing, so the pass after it is back
+ * lists it and indexes what it holds. */
+void
+test_directory_gone_during_its_listing_is_remembered_missing(void) {
+    const Roots roots;
+    expect("gone in listing: the recordings folder there at the start", QDir().mkpath(roots.external));
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    Store s(roots.list(), false);
+    std::atomic<bool> taken{false};
+    std::atomic<bool> back{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == roots.external && !taken.exchange(true)) {
+            (void)QDir().rename(roots.external, staged); // listed: the directory goes before the final check
+        }
+    });
+    // Back, holding a recording, as that pass ends: before any other pass looks at it.
+    s.store.setPassEndHookForTest([&]() {
+        if (taken.load() && !back.exchange(true)) {
+            (void)write_owner_json(owner, QString(kUidA), QStringLiteral("County"));
+            record(owner, QStringLiteral("0000000000000966-1"), QStringLiteral("a.wav"), 1754000000, 1);
+            (void)QDir().rename(staged, roots.external);
+        }
+    });
+    s.start();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    s.store.setPassEndHookForTest({});
+    expect("gone in listing: it went during the listing and came back", taken.load() && back.load());
+    expect("gone in listing: the store reads as there", s.store.available());
+    expect("gone in listing: back, its recording is indexed", listed_as(s.store, 1, true));
+}
+
 /* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
  * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
  * is away; it is listed again once the directory is back. */
@@ -6723,6 +6757,7 @@ main(int argc, char** argv) {
     test_session_start_remembers_storage_away();
     test_folder_missing_at_a_cold_start();
     test_root_without_rows_is_not_held_away();
+    test_directory_gone_during_its_listing_is_remembered_missing();
     test_session_made_root_during_a_pass_is_not_listed();
     test_session_made_root_inside_a_look_writes_no_flag();
     test_export_note_during_a_pass_is_taken_by_its_listing();
