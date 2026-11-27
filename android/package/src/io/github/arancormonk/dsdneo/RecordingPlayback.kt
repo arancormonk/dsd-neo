@@ -653,8 +653,9 @@ object RecordingPlayback {
                 media = null
                 // Only now: until release() returns, the native player may still post an event (one a pause just
                 // before it raised), and a Looper that has quit refuses it ("sending message to a Handler on a dead
-                // thread"). Release clears the native listener, so nothing is posted after it; an event already
-                // queued is for a released player, and quit() drops it unread. Nothing of ours is posted after this.
+                // thread"). Release clears the native listener, so no new event is posted after it (a callback already
+                // running can still be refused, harmlessly); an event already queued is for a released player, and
+                // quit() drops it unread. Nothing of ours is posted after this.
                 thread.quit()
             }
         }

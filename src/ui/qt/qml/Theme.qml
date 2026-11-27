@@ -32,8 +32,9 @@ QtObject {
     // reports the keyboard itself (Android, reportsKeyboard) saying none
     // means hidden. Only a host with no word of its own falls back to Qt's
     // input method, @p input in a test: shown with a keyboard of some
-    // height. Where it overlaps an item is keyboardTop()'s to measure; a
-    // window already resized above the keyboard has no overlap.
+    // height, the guard keyboardTop()'s own Qt fallback has always kept
+    // (main's rule). Where it overlaps an item is keyboardTop()'s to
+    // measure; a window already resized above the keyboard has no overlap.
     function keyboardShown(input) {
         var host = typeof decoderHost !== "undefined" ? decoderHost : null;
         if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)
