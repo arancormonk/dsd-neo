@@ -1189,17 +1189,20 @@ fresh_reader(dsd_iq_resampler* r, const std::vector<float>& src, size_t from, si
     }
 }
 
-/* The decoder's half-band cascade of two passes from its start (zero history, nothing pending), fed block by block as
-   the demod is (its SIMD sums round by where a block ends). */
+/* The decoder's half-band cascade of @p passes passes (0 to 2) from its start (zero history, nothing pending), fed block
+   by block as the demod is (its SIMD sums round by where a block ends). */
 struct FreshCascade {
+    int passes = 0;
     float hist_i[2][30] = {}; /* the longest stage, 31 taps */
     float hist_q[2][30] = {};
     int pending[2] = {0, 0};
 
+    explicit FreshCascade(int n) : passes(n) { assert(n >= 0 && n <= 2); }
+
     void
     run(const float* in, size_t floats, std::vector<float>* out) {
         std::vector<float> cur(in, in + floats);
-        for (int i = 0; i < 2; i++) {
+        for (int i = 0; i < passes; i++) {
             std::vector<float> next(cur.size() / 2U + 2U);
             const int len =
                 simd_hb_decim2_complex(cur.data(), (int)cur.size(), next.data(), hist_i[i], hist_q[i], &pending[i],
@@ -1212,31 +1215,79 @@ struct FreshCascade {
     }
 };
 
-/* ring_full_restarts_the_reader: behind a reader whose decimation keeps a coset of its phases (112 kHz read into
- * 64 kHz ahead of two passes: L/M 4/7, every fourth output kept), each block the full ring drops starts the reader over
- * (issue #899), as the demod starts its half-bands over at the drop's gap mark. With the demod held, noise fills the
- * ring and drops blocks; once it drains, known noise follows. Everything the demod takes after the drops' gap mark is
- * then the output of a reader started fresh on the source at a slice boundary after the last drop, sample for sample,
- * which a reader that kept running across the drops is not: the decimators, started over at the mark, keep the reader
- * phases the squelch's model describes. The counts are read once every callback returned: every drop started the
- * reader over, with no boundary, restart or output generation move. */
+/* Where the ingest last started @p r over when it wrote @p written blocks of @p block_pairs from @p inputs inputs of
+   @p src and dropped every full block after them: the input whose outputs a dropped block ends inside (its outputs
+   past the block start the next one), else the input after the block. Fed one input at a time, as the slices end where
+   a block does. */
+size_t
+last_restart_input(dsd_iq_resampler* r, const std::vector<float>& src, size_t inputs, size_t block_pairs,
+                   uint64_t written) {
+    dsd_iq_resampler_clear(r);
+    std::vector<float> buf(2U * dsd_iq_resampler_max_out(r, 1U));
+    size_t fill = 0U;
+    uint64_t blocks = 0U;
+    size_t restart = 0U;
+    for (size_t i = 0U; i < inputs; i++) {
+        const int made = dsd_iq_resampler_process(r, src.data() + 2U * i, 1U, buf.data(), buf.size() / 2U);
+        assert(made >= 0);
+        if (fill + (size_t)made < block_pairs) {
+            fill += (size_t)made;
+            continue;
+        }
+        const size_t surplus = fill + (size_t)made - block_pairs;
+        blocks++;
+        fill = surplus;
+        if (blocks > written) {
+            dsd_iq_resampler_clear(r);
+            restart = surplus > 0U ? i : i + 1U;
+            if (surplus > 0U) {
+                fill = 0U;
+                i--; /* the cleared reader takes this input again */
+            }
+        }
+    }
+    return restart;
+}
+
+/* One ring-full restart case: a reader of @p in_hz into @p out_hz (L/M as given) ahead of @p passes half-bands, @p held
+   pairs of noise sent while the demod is held. */
+struct ring_case {
+    uint32_t in_hz;
+    int out_hz;
+    int L;
+    int M;
+    int passes;
+    void (*decoder)(dsd_opts*);
+    size_t held;
+};
+
+/* Each block the full ring drops starts the reader over (issue #899), as the demod starts its half-bands over at the
+ * drop's gap mark. With the demod held, noise fills the ring and drops blocks; once it drains, known noise follows.
+ * Everything the demod takes after the drops' gap mark is then the output of a reader started fresh on the source where
+ * the last drop left it, sample for sample, which a reader that kept running across the drops is not: the decimators,
+ * started over at the mark, keep the reader phases the squelch's model describes. The counts are read once every
+ * callback returned: every drop started the reader over and cost its block alone, with no boundary, restart or output
+ * generation move. */
 void
-test_ring_full_restarts_the_reader(void) {
+ring_full_restart_case(const ring_case& c) {
     tcp_rig t;
     t.listener = open_listener(8, &t.port);
     dsd_demod_test_set_post_step_tap(on_cascade, nullptr);
-    stream_open(t.s, tcp_spec(t.port, 112000U, "cf32", 0U).c_str(), 1, nfm_16k);
+    stream_open(t.s, tcp_spec(t.port, c.in_hz, "cf32", 0U).c_str(), 1, c.decoder);
     t.conn = accept_within(t.listener, kWaitMs);
     assert(t.conn != DSD_INVALID_SOCKET);
     rtl_stream_test_replay_state opened{};
     assert(dsd_rtl_stream_test_get_replay_state(&opened) == 0);
-    assert(opened.reader_in_hz == 112000 && opened.reader_out_hz == 64000);
+    assert(opened.reader_in_hz == (int)c.in_hz && opened.reader_out_hz == c.out_hz);
     dsd_iq_reader_plan plan;
-    assert(dsd_iq_reader_plan_for(&plan, 112000U, 64000U, 16000U) == 0 && plan.enabled);
+    assert(
+        dsd_iq_reader_plan_for(&plan, c.in_hz, (uint32_t)c.out_hz, (uint64_t)((uint32_t)c.out_hz >> (unsigned)c.passes))
+            == 0
+        && plan.enabled);
     dsd_iq_resampler reader;
     dsd_iq_resampler_init(&reader);
-    assert(dsd_iq_reader_plan_configure(&plan, &reader, 4096U) == DSD_IQ_RESAMPLER_OK && reader.L == 4
-           && reader.M == 7);
+    assert(dsd_iq_reader_plan_configure(&plan, &reader, 4096U) == DSD_IQ_RESAMPLER_OK && reader.L == c.L
+           && reader.M == c.M);
     const size_t block_pairs = (size_t)rtl_net_iq_block_samples(rtl_device_net_iq(t.s.dev));
     const size_t block_floats = 2U * block_pairs;
     rtl_stream_test_live_sequence live_before{};
@@ -1254,17 +1305,17 @@ test_ring_full_restarts_the_reader(void) {
     const uint32_t gen = rtl_stream_output_generation();
     rtl_stream_test_replay_state gaps_before{};
     assert(dsd_rtl_stream_test_get_replay_state(&gaps_before) == 0);
-    const size_t held = (size_t)112000U * 3U;
-    cf32_noise(&src, held, &seed);
-    tcp_send_floats(t, src.data() + ((size_t)2U * 4096U), held);
-    const rtl_net_iq_state st = ingest_after(t.s, 4096U + held);
+    cf32_noise(&src, c.held, &seed);
+    tcp_send_floats(t, src.data() + ((size_t)2U * 4096U), c.held);
+    const rtl_net_iq_state st = ingest_after(t.s, 4096U + c.held);
     if (st.blocks_dropped == 0U || st.drop_clears != st.blocks_dropped) {
         DSD_FPRINTF(stderr, "resampled stream, ring full: %llu blocks dropped, the resampler started over %llu times\n",
                     (unsigned long long)st.blocks_dropped, (unsigned long long)st.drop_clears);
         assert(0);
     }
     assert(st.boundaries == 0U && st.input_restarts == 0U && st.resampler_clears == 0U);
-    /* Each drop cost its block alone: the resampler's calls end where a block does, so nothing after it went too. */
+    /* Each drop cost its block alone: the resampler's calls end where a block does, and an input whose outputs run
+       past a dropped block starts the next one, so nothing after the block went too. */
     rtl_stream_test_live_sequence live_after{};
     rtl_stream_test_get_live_sequence(&live_after);
     if (live_after.producer_drops - live_before.producer_drops != st.blocks_dropped * block_floats) {
@@ -1279,11 +1330,11 @@ test_ring_full_restarts_the_reader(void) {
     const size_t before_gap = (size_t)st.blocks_written * block_floats;
     g_blocks.paused.store(0);
     assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
-    const size_t tail = 112000U / 2U;
+    const size_t tail = c.in_hz / 2U;
     const size_t known_from = src.size() / 2U;
     cf32_noise(&src, tail, &seed);
     tcp_send_floats(t, src.data() + 2U * known_from, tail);
-    const rtl_net_iq_state after = ingest_after(t.s, 4096U + held + tail);
+    const rtl_net_iq_state after = ingest_after(t.s, 4096U + c.held + tail);
     assert(after.blocks_dropped == st.blocks_dropped);
     assert(wait_until([&] { return blocks_taken() >= (size_t)ingest(t.s).blocks_written; }, kWaitMs));
     std::vector<float> taken;
@@ -1295,9 +1346,9 @@ test_ring_full_restarts_the_reader(void) {
     }
     assert(taken.size() > before_gap + ((size_t)2U * 2048U));
     const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
-    /* The reader started over with the input after the last drop, and less than a block followed it before the known
-       noise (a whole one would have dropped too): search that one partial block's inputs, at the reader's 7/4 inputs
-       per output, then hold the whole post-gap stream to the start found. */
+    /* The reader started over where the last drop left it, and less than a block followed it before the known noise (a
+       whole one would have dropped too): search that one partial block's inputs, at the reader's M/L inputs per
+       output, then hold the whole post-gap stream to the start found, which must be the one the drops make. */
     std::vector<float> fresh;
     size_t found = SIZE_MAX;
     const size_t span = (block_pairs * (size_t)reader.M) / (size_t)reader.L + 2U;
@@ -1307,8 +1358,12 @@ test_ring_full_restarts_the_reader(void) {
             found = from;
         }
     }
-    if (found == SIZE_MAX) {
-        DSD_FPRINTF(stderr, "after the drops the demod took no fresh reader's output: the reader kept running\n");
+    const size_t restart = last_restart_input(&reader, src, known_from, block_pairs, st.blocks_written);
+    if (found != restart) {
+        DSD_FPRINTF(stderr,
+                    "after the drops the demod took a fresh reader's output from input %zu, not %zu (SIZE_MAX: none, "
+                    "the reader kept running)\n",
+                    found, restart);
         assert(0);
     }
     fresh_reader(&reader, src, found, post.size() / 2U, &fresh);
@@ -1321,8 +1376,8 @@ test_ring_full_restarts_the_reader(void) {
        the outputs the pre-gap input makes from the stream's start. A reset a block late would keep another phase. The
        expected outputs come from the blocks' cuts; the tap runs after the block hook, so the copy waits for it to have
        published that many. */
-    FreshCascade from_open;
-    FreshCascade from_gap;
+    FreshCascade from_open(c.passes);
+    FreshCascade from_gap(c.passes);
     std::vector<float> pre_cascade;
     std::vector<float> want;
     size_t at = 0U;
@@ -1362,6 +1417,22 @@ test_ring_full_restarts_the_reader(void) {
     dsd_iq_resampler_free(&reader);
     tcp_close(t);
     dsd_demod_test_set_post_step_tap(nullptr, nullptr);
+}
+
+/* ring_full_restarts_the_reader: a reader whose decimation keeps a coset of its phases (112 kHz read into 64 kHz ahead
+ * of two passes: L/M 4/7, every fourth output kept). Its slices never make more than the block's room. */
+void
+test_ring_full_restarts_the_reader(void) {
+    ring_full_restart_case(ring_case{112000U, 64000, 4, 7, 2, nfm_16k, (size_t)112000U * 3U});
+}
+
+/* ring_full_restarts_an_upsampling_reader: a reader that makes six outputs of each input (8 kHz read into 48 kHz for a
+ * ProVoice session, its FSK path at 9600 bit/s, no half-band pass). A 256-pair block ends inside an input two times in
+ * three: those outputs past the block start the next one, from the reader started over on that input, so a drop costs
+ * its block alone (not its block and the 2 or 4 outputs after it) and the input is not lost. */
+void
+test_ring_full_restarts_an_upsampling_reader(void) {
+    ring_full_restart_case(ring_case{8000U, 48000, 6, 1, 0, provoice_cqpsk, (size_t)8000U * 8U});
 }
 
 /* What a boundary must have moved since @p seq / @p gen. */
@@ -1813,6 +1884,7 @@ const named_test kTests[] = {
     {"blocks_after_upsampling_and_gaps", test_blocks_after_upsampling_and_gaps},
     {"ring_full_drops_whole_blocks", test_ring_full_drops_whole_blocks},
     {"ring_full_restarts_the_reader", test_ring_full_restarts_the_reader},
+    {"ring_full_restarts_an_upsampling_reader", test_ring_full_restarts_an_upsampling_reader},
     {"cqpsk_off_onto_fsk9600_prepares_the_model", test_cqpsk_off_onto_fsk9600_prepares_the_model},
     {"hunt_over_a_replaced_cqpsk_request_prepares_the_model",
      test_hunt_over_a_replaced_cqpsk_request_prepares_the_model},

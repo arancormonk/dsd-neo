@@ -172,11 +172,12 @@ net_iq_write_block(struct rtl_net_iq* n) {
 }
 
 /* Add @p pairs samples at the DSP input rate to the block, writing each block as it fills. Returns 1 when a block was
- * dropped behind a resampler, which then starts over: the rest of @p iq, made before the gap, is let go (counted as
- * dropped), so the resampler's next output is the first after the gap mark. The resampler's calls end where a block
- * does (net_iq_resample_slice()), so that rest is at most a few outputs of one input. */
+ * dropped behind a resampler, which then starts over, so that its next output is the first after the gap mark; the
+ * rest of @p iq, made before the gap, is not written, and @p rest gets its length. The resampler's calls end where a
+ * block does (net_iq_resample_slice()), so that rest is at most a few outputs of one input (net_iq_on_samples()). */
 static int
-net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
+net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs, size_t* rest) {
+    *rest = 0U;
     while (pairs > 0U) {
         const size_t room = (size_t)n->chunk_pairs - n->fill;
         const size_t take = pairs < room ? pairs : room;
@@ -188,7 +189,7 @@ net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
             const int dropped = net_iq_write_block(n);
             n->fill = 0U;
             if (dropped && n->resampler) {
-                n->ring->producer_drops.fetch_add((uint64_t)pairs * 2U);
+                *rest = pairs;
                 dsd_iq_resampler_clear(n->resampler);
                 n->drop_clears.fetch_add(1U, std::memory_order_relaxed);
                 return 1;
@@ -199,9 +200,9 @@ net_iq_append(struct rtl_net_iq* n, const float* iq, size_t pairs) {
 }
 
 /* The inputs the resampler takes next: at most a slice, and no more than can fill the block being filled
-   (floor(room M / L), at least one input), so a block the ring drops ends a resampler call. The resampler then starts
-   over with the input after it, and nothing else the call made is lost (at most ceil(L / M) - 1 outputs of that input
-   when one input makes more than the room left, an upsampling reader). */
+   (floor(room M / L), at least one input), so a block the ring drops ends a resampler call: those inputs make at most
+   ceil(k L / M) <= room outputs. Only a one-input call, on an upsampling reader with less room left than the input's
+   L / M outputs, makes more (at most ceil(L / M) - 1 past the block). */
 static size_t
 net_iq_resample_slice(const struct rtl_net_iq* n, size_t pairs) {
     const uint64_t room = (uint64_t)n->chunk_pairs - (uint64_t)n->fill;
@@ -225,21 +226,34 @@ net_iq_on_samples(void* ctx, const float* iq, size_t pairs) {
     const size_t total = pairs;
     net_iq_publish_level(n, iq, pairs);
     if (!n->resampler) {
-        (void)net_iq_append(n, iq, pairs);
+        size_t rest = 0U;
+        (void)net_iq_append(n, iq, pairs, &rest);
         n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
         return;
     }
+    const float* refed = nullptr;
     while (pairs > 0U) {
         const size_t slice = net_iq_resample_slice(n, pairs);
         const int made = dsd_iq_resampler_process(n->resampler, iq, slice, n->resampled, n->resampled_cap);
-        if (made > 0) {
-            (void)net_iq_append(n, n->resampled, (size_t)made);
+        size_t used = slice;
+        size_t rest = 0U;
+        if (made > 0 && net_iq_append(n, n->resampled, (size_t)made, &rest) && rest > 0U) {
+            /* A dropped block ended inside the call's one input: the started-over reader takes that input again, so
+               its outputs start the next block and the drop costs the block alone. Once: an input whose outputs alone
+               fill a block and drop it again lets the rest go, counted as dropped. */
+            const float* last = iq + (slice - 1U) * 2U;
+            if (last != refed) {
+                refed = last;
+                used = slice - 1U;
+            } else {
+                n->ring->producer_drops.fetch_add((uint64_t)rest * 2U);
+            }
         } else if (made < 0) {
             /* Cannot happen with slices within the design's max_in; counted, so a misconfiguration shows. */
             n->resampler_errors.fetch_add(1U, std::memory_order_relaxed);
         }
-        iq += slice * 2U;
-        pairs -= slice;
+        iq += used * 2U;
+        pairs -= used;
     }
     n->samples_ingested.fetch_add((uint64_t)total, std::memory_order_release);
 }

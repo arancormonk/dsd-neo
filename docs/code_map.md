@@ -10397,7 +10397,7 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled analog open, no model
   on a digital one, and never with the step), `IO_NET_IQ_STREAM` (no model on a resampled DMR `iqudp:` stream, then
   built by the switch to the NFM monitor before it is queued; the resampler starting over at each block a full ring
-  drops) and
+  drops, 112 kHz into 64 kHz and an upsampling 8 kHz into 48 kHz, where it was found and the block alone lost) and
   `IO_RTL_SQUELCH_PLUMBING` (the context's reader identity).
 - The band-pass bank both noise squelches share is `src/dsp/noise_squelch_bank.{h,c}` (module-private): the order-4
   Butterworth band-pass design (`dsd_noise_squelch_bank_design_band_pass()`), the runners, the per-band ratio and the
@@ -12481,8 +12481,9 @@ Key public headers:
     `dsd_iq_live_block_samples()` writes whole blocks only. A block the ring cannot take is dropped whole: producer
     drops, `input_ring_note_gap()`, `dsd_iq_net_reader_note_drop()`, no log (queued samples and the generation stay; a
     PCM input in front leaves the stream running this way). Behind a resampler the resampler starts over there with the
-    input after the block, which alone is lost (exact for an isolated drop: fewer than 33 gap marks pending;
-    `rtl_net_iq_state::drop_clears`), as the demod's filters start over at the gap mark: its first output after the gap
+    input after the block, or, on an upsampling reader whose input the block ends inside, with that input again, so
+    its outputs past the block start the next one: the block alone is lost (exact for an isolated drop: fewer than 33
+    gap marks pending; `rtl_net_iq_state::drop_clears`), as the demod's filters start over at the gap mark: its first output after the gap
     is the cascade's first input, the alignment the squelch's reader model describes (issue #899; left running, the
     decimators could keep another coset of the reader's phases, 5e-5 off the plan at 112 kHz into 64 kHz).
     `dsd_iq_net_reader_note_written()` follows each block written. KNOWN_LOSS discards the partial block, clears the
