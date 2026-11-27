@@ -285,6 +285,31 @@ def top_level_items(text):
     return [entry for entry in items if entry]
 
 
+def playback_requests_checked_before_begin():
+    """#909 R63/R70: RecordingPlayback refuses a request RecordingPlayer.validRequest() refuses before begin() accepts
+    it, so a refused one changes neither the play running nor the service's ownership. RecordingPlayback has Android
+    imports, so the JVM suites cannot run it: each play() entry is checked here to call validRequest( before begin(."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    entries = (
+        ("play(context, path)", r"fun play\(context: Context, path: String\): Int \{.*?\n    \}"),
+        ("play(context, arrays)", r"fun play\(\s*context: Context,\s*paths: Array<String>,.*?\n    \}"),
+    )
+    for name, pattern in entries:
+        body = re.search(pattern, source, re.S)
+        if not body:
+            return f"{playback.relative_to(REPO)}: {name} not found"
+        text = body.group(0)
+        checked = text.find("RecordingPlayer.validRequest(")
+        begun = text.find("begin(")
+        if checked < 0 or begun < 0 or checked > begun:
+            return f"{playback.relative_to(REPO)}: {name} must call RecordingPlayer.validRequest( before begin("
+    return None
+
+
 def playback_record_fields_match():
     """#909: the status record's fields are read by position, so Status.record() and the idle record in
     RecordingPlayback.kt must list as many as playback_status_record.h's kPlaybackStatusFields."""
@@ -1649,7 +1674,13 @@ SUITES = {
     # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
     # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
-        checks=(playback_states_match, playback_modes_match, playback_codes_match, playback_record_fields_match),
+        checks=(
+            playback_states_match,
+            playback_modes_match,
+            playback_codes_match,
+            playback_record_fields_match,
+            playback_requests_checked_before_begin,
+        ),
         builds=(
             Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
             Build(
