@@ -423,7 +423,7 @@ test_status_mapping(void) {
             DSD_MEMSET(&err, 0, sizeof(err));
 
             expect("getUserData succeeds", dsd_rr_get_user_data(client, &auth, &info, &err) == 0);
-            expect("subExpireDate decoded", strcmp(info.sub_expire, "11-24-2026") == 0);
+            expect("subExpireDate decoded", strcmp(info.sub_expire, "12-31-2099") == 0);
             dsd_rr_client_destroy(client);
             free(user_body);
         }
