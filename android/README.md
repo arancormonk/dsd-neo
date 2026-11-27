@@ -898,6 +898,9 @@ the media controls are current all along. After a playlist ends, a media button 
   show as done a moment before it is.
 - A button pressed on a car's screen or the lock screen in the instant you start another playlist can act on the new
   playlist instead.
+- If the storage stops responding after a call has started playing (an SD card or USB drive that hangs), the
+  playlist can wait on that call, keeping the phone awake, until you press **Stop**. A call that does not start is
+  given up after 10 seconds, but one that stalls after it started has no time limit.
 - While a call is still starting, Android 13 and later show a loading spinner in the media controls where Play and
   Pause would be, so there is no Pause there until it plays; **Stop** stays available, and a call that does not start
   within 10 seconds stops with an error.

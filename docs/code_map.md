@@ -20299,7 +20299,10 @@ Qt Quick frontend (`src/ui/qt`):
       generation (R36), within the binder transit of one command (r13); and while a start is pending, Android 13 and
       later's media controls show a loading spinner in place of Play and Pause for `STATE_BUFFERING`, as for any Media3
       app (R49's mapping), so there is no Pause there until the start sounds, Stop staying available and the 10 s start
-      watchdog bounding the wait (R44, r13).
+      watchdog bounding the wait (R44, r13); and a recording whose storage stops answering after its start was
+      acknowledged (a card that stalls mid-read) can leave the playlist waiting on it, the partial wake lock held and
+      the device kept awake, until Stop: the 10 s watchdog bounds only a start, and no timer watches a part that has
+      started (r18l).
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`, `UI_QT_CALL_HISTORY_MODEL`,
       `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
