@@ -8,6 +8,8 @@
 #include "squelch_cascade_noise.h"
 
 #include <dsd-neo/core/safe_api.h>
+#include <dsd-neo/dsp/nfm_noise_squelch.h>
+#include <dsd-neo/dsp/squelch_floor.h>
 #include <limits.h>
 #include <math.h>
 #include <stddef.h>

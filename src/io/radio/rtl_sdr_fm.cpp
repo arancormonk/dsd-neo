@@ -30,6 +30,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>
@@ -37,6 +38,7 @@
 #include <dsd-neo/dsp/snr_bias.h>
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/io/iq_capture.h>
 #include <dsd-neo/io/iq_net_spec.h>
@@ -658,12 +660,14 @@ static std::atomic<int> g_replay_loop_restart_step_m{0};
    the source rate in bits 32-62, the DSP input rate in bits 1-31 (both at most INT_MAX), the model in bit 0. */
 static std::atomic<uint64_t> g_pub_reader_state{0};
 
+namespace {
 /* What g_pub_reader_state holds, unpacked. */
 struct PublishedReaderState {
     int in_hz;
     int out_hz;
     int model;
 };
+} // namespace
 
 static PublishedReaderState
 rtl_stream_published_reader_state(void) {

@@ -1317,7 +1317,7 @@ test_cascade_noise_helper(void) {
             for (int m = 0; m < len; m++) {
                 for (int i = 0; i + m < len; i++) {
                     want[((size_t)n * (size_t)len) + (size_t)m] +=
-                        (double)taps[(size_t)i] * (double)taps[(size_t)(i + m)]
+                        (double)taps[(size_t)i] * (double)taps[(size_t)i + (size_t)m]
                         * var[(size_t)(((n - i) % period + period) % period)];
                 }
             }
@@ -1392,12 +1392,12 @@ test_cascade_noise_helper(void) {
         std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
         const int len = dsd_channel_lpf_design_analog(rate, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
         for (const int width : {0, 12500}) {
-            const float* run = width > 0 ? taps.data() : NULL;
+            const float* chan_taps = width > 0 ? taps.data() : NULL;
             const int run_len = width > 0 ? len : 0;
             dsd_squelch_floor_plan helper;
             dsd_squelch_floor_plan today;
-            const int rc_h = dsd_squelch_cascade_noise_floor_plan(&helper, run, run_len, st, 1, rate);
-            const int rc_t = dsd_squelch_floor_plan_design(&today, run, run_len, hb31_q15_taps, 31, rate);
+            const int rc_h = dsd_squelch_cascade_noise_floor_plan(&helper, chan_taps, run_len, st, 1, rate);
+            const int rc_t = dsd_squelch_floor_plan_design(&today, chan_taps, run_len, hb31_q15_taps, 31, rate);
             const bool same = rc_h == 0 && rc_t == 0 && helper.lag == today.lag
                               && close_rel(helper.rho_lag, today.rho_lag, 1e-12)
                               && close_rel(helper.beta, today.beta, 1e-12) && close_rel(helper.neff, today.neff, 1e-12)

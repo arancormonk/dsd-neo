@@ -21,6 +21,7 @@
 #include <algorithm>
 #include <assert.h>
 #include <atomic>
+#include <cstddef>
 #include <dsd-neo/core/constants.h>
 #include <dsd-neo/core/input_level.h>
 #include <dsd-neo/core/opts.h>
@@ -36,6 +37,7 @@
 #include <dsd-neo/platform/sockets.h>
 #include <dsd-neo/platform/threading.h>
 #include <dsd-neo/platform/timing.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/control_pump.h>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -341,7 +343,7 @@ on_cascade(const float* iq, int pairs, void* ctx) {
         return;
     }
     const std::lock_guard<std::mutex> hold(g_cascade_lock);
-    g_cascade.insert(g_cascade.end(), iq, iq + 2 * pairs);
+    g_cascade.insert(g_cascade.end(), iq, iq + (2U * (size_t)pairs));
 }
 
 void
@@ -1079,7 +1081,7 @@ fresh_reader(dsd_iq_resampler* r, const std::vector<float>& src, size_t from, si
         const size_t k = std::min<size_t>(std::min<size_t>(4096U, want_in), src.size() / 2U - at);
         const int made = dsd_iq_resampler_process(r, src.data() + 2U * at, k, buf.data(), buf.size() / 2U);
         assert(made >= 0);
-        out->insert(out->end(), buf.begin(), buf.begin() + 2 * made);
+        out->insert(out->end(), buf.begin(), buf.begin() + (std::ptrdiff_t)(2U * (size_t)made));
         at += k;
     }
     if (out->size() > 2U * n) {
@@ -1152,9 +1154,9 @@ test_ring_full_restarts_the_reader(void) {
     const uint32_t gen = rtl_stream_output_generation();
     rtl_stream_test_replay_state gaps_before{};
     assert(dsd_rtl_stream_test_get_replay_state(&gaps_before) == 0);
-    const size_t held = 112000U * 3U;
+    const size_t held = (size_t)112000U * 3U;
     cf32_noise(&src, held, &seed);
-    tcp_send_floats(t, src.data() + 2U * 4096U, held);
+    tcp_send_floats(t, src.data() + ((size_t)2U * 4096U), held);
     const rtl_net_iq_state st = ingest_after(t.s, 4096U + held);
     if (st.blocks_dropped == 0U || st.drop_clears != st.blocks_dropped) {
         DSD_FPRINTF(stderr, "resampled stream, ring full: %llu blocks dropped, the resampler started over %llu times\n",
@@ -1189,7 +1191,7 @@ test_ring_full_restarts_the_reader(void) {
         const std::lock_guard<std::mutex> hold(g_blocks.lock);
         taken = g_blocks.samples;
     }
-    assert(taken.size() > before_gap + 2U * 2048U);
+    assert(taken.size() > before_gap + ((size_t)2U * 2048U));
     const std::vector<float> post(taken.begin() + (std::ptrdiff_t)before_gap, taken.end());
     /* The reader started over with the input after the last drop, and less than a block followed it before the known
        noise (a whole one would have dropped too): search that one partial block's inputs, at the reader's 7/4 inputs
@@ -1242,7 +1244,7 @@ test_ring_full_restarts_the_reader(void) {
     const size_t pre_out = pre_cascade.size();
     assert(cascade.size() >= pre_out && std::equal(pre_cascade.begin(), pre_cascade.end(), cascade.begin()));
     const size_t have = cascade.size() > pre_out ? cascade.size() - pre_out : 0U;
-    if (have < want.size() || want.size() < 2U * 512U
+    if (have < want.size() || want.size() < (size_t)2U * 512U
         || !std::equal(want.begin(), want.end(), cascade.begin() + (std::ptrdiff_t)pre_out)) {
         DSD_FPRINTF(stderr,
                     "the decimated stream after the gap (%zu floats from %zu) is not a fresh cascade over the fresh "

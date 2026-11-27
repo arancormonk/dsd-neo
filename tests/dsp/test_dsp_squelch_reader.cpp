@@ -303,8 +303,8 @@ oracle(const ReaderChain& c) {
     }
     std::vector<float> out;
     feed(box.s, rd, in.data(), (size_t)total, [&](const float* iq, int pairs) {
-        for (int i = 0; i < pairs; i++) {
-            out.push_back(iq[2 * i]);
+        for (size_t i = 0; i < (size_t)pairs; i++) {
+            out.push_back(iq[2U * i]);
         }
     });
     if (c.width > 0) {

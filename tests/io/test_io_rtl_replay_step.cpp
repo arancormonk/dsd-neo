@@ -348,7 +348,7 @@ test_filter_domain_input(void) {
    0.45 x 72 kHz) is published, with no squelch noise model for a digital chain that never runs a dynamic squelch (it
    would hold memory for nothing), and no step runs. An Airspy capture opened next
    steps with the reader off and its model released. */
-int
+static int
 test_reader_and_step_never_together(void) {
     int rc = 0;
     const dsd_iq_replay_config resampled = sidecar(48000U, 1U, 1U, 48);

@@ -24,6 +24,7 @@
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/firdes.h>
 #include <dsd-neo/dsp/fsk_modem.h>
+#include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/live_iq_step.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/resampler.h>

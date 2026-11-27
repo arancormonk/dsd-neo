@@ -68,7 +68,6 @@
 #include <dsd-neo/dsp/iq_resampler.h>
 #include <dsd-neo/dsp/nfm_noise_squelch.h>
 #include <dsd-neo/dsp/squelch_floor.h>
-#include <stdint.h>
 
 #ifdef __cplusplus
 extern "C" {
