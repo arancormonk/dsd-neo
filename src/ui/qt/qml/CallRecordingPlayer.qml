@@ -713,7 +713,7 @@ Column {
         // nothing was deleted. Issue #909: and when the file under its id is
         // another one now, or the id is gone.
         var identified = target.size !== undefined && target.mtimeSec !== undefined && target.mtimeNanos !== undefined;
-        var taken = identified ? recordings.deleteRecordingChecked(target.id, Number(target.size), Number(target.mtimeSec), Number(target.mtimeNanos))
+        var taken = identified ? recordings.deleteRecordingChecked(target.id, target.path, Number(target.size), Number(target.mtimeSec), Number(target.mtimeNanos))
                                : recordings.deleteRecording(target.id);
         if (taken === false) {
             var refusal = recordings.deleteRefusal();

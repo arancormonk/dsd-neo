@@ -2254,6 +2254,7 @@ Item {
             var calls = recordings.calls();
             compare(calls[calls.length - 1].name, "deleteRecordingChecked");
             compare(calls[calls.length - 1].id, "b");
+            compare(calls[calls.length - 1].path, "/rec/Explore/b.wav", "R68: the path pressed goes with the delete");
             // The store drops it.
             recordings.setDetectionRecordings("17:40", [rec("c", 1700000300, 4000), rec("a", 1700000100, 2000)]);
             compare(sheet.selectedId, "a", "the next older one, in its place");

@@ -852,6 +852,7 @@ Item {
             var calls = recordings.calls();
             compare(calls[calls.length - 1].name, "deleteRecordingChecked");
             compare(calls[calls.length - 1].id, "t-2");
+            compare(calls[calls.length - 1].path, pathB, "R68: the path pressed goes with the delete");
             compare([calls[calls.length - 1].size, calls[calls.length - 1].mtimeSec, calls[calls.length - 1].mtimeNanos], [44 + 8000 * 16, 1700000100, 250]);
         }
 

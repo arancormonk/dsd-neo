@@ -1677,7 +1677,7 @@ RecordingStore::recheckEntries(const QStringList& ids, Pass* pass, bool readChan
 
 void
 RecordingStore::processDeletes(Pass* pass) {
-    QHash<QString, dsd_file_identity_t> asked;
+    QHash<QString, DeleteAsk> asked;
     {
         const std::lock_guard<std::mutex> lock(m_mutex);
         asked = m_deleteQueue;
@@ -1695,9 +1695,21 @@ RecordingStore::processDeletes(Pass* pass) {
     }
 }
 
+namespace {
+
+/* R68: a delete asked of the file at @p expected's path (none: the limit's) finds @p entry at another path now, or at
+ * another one than the path it took (@p taken). */
+template <typename EntryT, typename AskT>
+bool
+path_moved(const EntryT& entry, const AskT* expected, const QString& taken) {
+    return expected != nullptr && (entry.path != expected->path || entry.path != taken);
+}
+
+} // namespace
+
 RecordingStore::DeleteResult
 RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted,
-                            const dsd_file_identity_t* expected, qint64* foundBytes) {
+                            const DeleteAsk* expected, qint64* foundBytes) {
     QString path;
     {
         yieldToReaders();
@@ -1713,6 +1725,11 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, co
         // read, which drops every delete asked before it, comes first.
         if (!m_folders.value(it->folder).loaded) {
             return DeleteResult::Held;
+        }
+        // The entry under the id at another path now (a read again put another file under it, R68): not the file asked
+        // of, which stays, and neither is removed.
+        if (path_moved(*it, expected, it->path)) {
+            return DeleteResult::Changed;
         }
         path = it->path;
     }
@@ -1766,10 +1783,38 @@ RecordingStore::deleteEntry(const QString& id, DeleteCause cause, Pass* pass, co
 
 RecordingStore::DeleteResult
 RecordingStore::unlinkEntryLocked(const QString& id, const QString& path, bool uploading, DeleteCause cause,
-                                  const dsd_file_identity_t* expected, Pass* pass, UnlinkAttempt* attempt) {
+                                  const DeleteAsk* expected, Pass* pass, UnlinkAttempt* attempt) {
     const auto it = m_entries.constFind(id);
     if (it == m_entries.cend()) {
         return DeleteResult::Gone;
+    }
+    const DeleteResult refused = unlinkRefusedLocked(*it, path, uploading, cause, expected);
+    if (refused != DeleteResult::Failed) {
+        return refused;
+    }
+    attempt->root = m_folders.value(it->folder).root;
+    // Right before the unlink, without following a link: what is there now is what gets removed, and only when it is
+    // the file the request was asked of (the limit's: the one the index knows). Storage that came back changed without
+    // a read of it again (remounted between two passes, two owners' folders swapped; a folder a session start adopted
+    // while a delete waited) has another file at the path, which stays.
+    attempt->found =
+        onDiskAsKnownLocked(path, expected != nullptr ? expected->identity : it->identity, &attempt->bytes);
+    if (attempt->found == OnDisk::Replaced) {
+        return DeleteResult::Changed;
+    }
+    if (attempt->found == OnDisk::Removable && m_remove(path, &attempt->error)) {
+        removeEntryLocked(id, pass);
+        return DeleteResult::Removed;
+    }
+    return DeleteResult::Failed;
+}
+
+RecordingStore::DeleteResult
+RecordingStore::unlinkRefusedLocked(const Entry& entry, const QString& path, bool uploading, DeleteCause cause,
+                                    const DeleteAsk* expected) const {
+    // Again under the lock the unlink runs under: a read again since the path was taken may have put the id elsewhere.
+    if (path_moved(entry, expected, path)) {
+        return DeleteResult::Changed;
     }
     // Again under the lock the unlink runs under (the uploader was asked without it): the folder still there and read,
     // so a start that adopted it meanwhile, or a read that failed, holds the delete for the folder's read. The limit's
@@ -1779,8 +1824,8 @@ RecordingStore::unlinkEntryLocked(const QString& id, const QString& path, bool u
     }
     // Nor while its root has been seen away since (a session start or a request found it missing, the root back by now
     // perhaps): the root's listing in full, which drops every delete asked before it, comes first.
-    if (!folderAvailableLocked(it->folder) || !m_folders.value(it->folder).loaded
-        || m_rootsSeenAway.contains(m_folders.value(it->folder).root)) {
+    if (!folderAvailableLocked(entry.folder) || !m_folders.value(entry.folder).loaded
+        || m_rootsSeenAway.contains(m_folders.value(entry.folder).root)) {
         return DeleteResult::Held;
     }
     if (uploading || heldLocked(path)) {
@@ -1791,21 +1836,8 @@ RecordingStore::unlinkEntryLocked(const QString& id, const QString& path, bool u
     }
     // A recording whose name could not be read is never removed, whoever asked and whenever (access back before its
     // folder is read again included): skipped, kept with its journal line.
-    if (it->unreadable) {
+    if (entry.unreadable) {
         return DeleteResult::Unreadable;
-    }
-    attempt->root = m_folders.value(it->folder).root;
-    // Right before the unlink, without following a link: what is there now is what gets removed, and only when it is
-    // the file the request was asked of (the limit's: the one the index knows). Storage that came back changed without
-    // a read of it again (remounted between two passes, two owners' folders swapped; a folder a session start adopted
-    // while a delete waited) has another file at the path, which stays.
-    attempt->found = onDiskAsKnownLocked(path, expected != nullptr ? *expected : it->identity, &attempt->bytes);
-    if (attempt->found == OnDisk::Replaced) {
-        return DeleteResult::Changed;
-    }
-    if (attempt->found == OnDisk::Removable && m_remove(path, &attempt->error)) {
-        removeEntryLocked(id, pass);
-        return DeleteResult::Removed;
     }
     return DeleteResult::Failed;
 }
@@ -3043,7 +3075,7 @@ RecordingStore::queueDeletesLocked(const QStringList& ids, bool* wake) {
     for (const QString& id : ids) {
         const auto entry = m_entries.constFind(id);
         if (entry != m_entries.cend()) {
-            m_deleteQueue.insert(id, entry->identity);
+            m_deleteQueue.insert(id, DeleteAsk{entry->identity, entry->path});
         }
     }
     m_deleteRefusal = DeleteRefusal::None;
@@ -3117,7 +3149,8 @@ RecordingStore::deleteRecording(const QString& id) {
 }
 
 bool
-RecordingStore::deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos) {
+RecordingStore::deleteRecordingChecked(const QString& id, const QString& path, qint64 size, qint64 mtimeSec,
+                                       int mtimeNanos) {
     dsd_file_identity_t pressed{};
     pressed.kind = 1;
     pressed.size = size;
@@ -3134,8 +3167,8 @@ RecordingStore::deleteRecordingChecked(const QString& id, qint64 size, qint64 mt
             m_deleteRefusal = DeleteRefusal::Loading;
         } else if (entry == m_entries.cend()) {
             m_deleteRefusal = DeleteRefusal::Gone;
-        } else if (dsd_file_identity_equal(&entry->identity, &pressed) == 0) {
-            m_deleteRefusal = DeleteRefusal::Changed;
+        } else if (entry->path != path || dsd_file_identity_equal(&entry->identity, &pressed) == 0) {
+            m_deleteRefusal = DeleteRefusal::Changed; // another file under the id: another path (R68) or identity
         } else {
             queued = queueDeletesLocked({id}, &wake);
         }
@@ -3557,6 +3590,15 @@ void
 RecordingStore::setPassEndHookForTest(std::function<void()> hook) {
     const std::lock_guard<std::mutex> lock(m_mutex);
     m_passEndHook = std::move(hook);
+}
+
+void
+RecordingStore::moveEntryPathForTest(const QString& id, const QString& path) {
+    const std::lock_guard<std::mutex> lock(m_mutex);
+    const auto it = m_entries.find(id);
+    if (it != m_entries.end()) {
+        it->path = path;
+    }
 }
 
 QStringList

@@ -5930,26 +5930,93 @@ test_checked_delete_refuses_another_file(void) {
            now.value(QStringLiteral("id")).toString() == id
                && now.value(QStringLiteral("identitySize")).toLongLong() == 1500);
     expect("checked delete: the file pressed is no longer there: refused",
-           !s.store.deleteRecordingChecked(id, size, sec, nanos)
+           !s.store.deleteRecordingChecked(id, path, size, sec, nanos)
                && s.store.deleteRefusal() == QLatin1String("changed"));
     expect("checked delete: nothing queued", s.taken().isEmpty());
     s.pass();
     expect("checked delete: nothing deleted", QFileInfo::exists(path) && s.store.recordingCount() == 1);
 
     expect("checked delete: an id not indexed is gone",
-           !s.store.deleteRecordingChecked(QStringLiteral("000000000000090B-9"), size, sec, nanos)
+           !s.store.deleteRecordingChecked(QStringLiteral("000000000000090B-9"), path, size, sec, nanos)
                && s.store.deleteRefusal() == QLatin1String("gone"));
     expect("checked delete: the plain delete of it answers as before",
            s.store.deleteRecording(QStringLiteral("000000000000090B-9")) && s.store.deleteRefusal().isEmpty());
     s.pass();
 
     expect("checked delete: the file as it is now is deleted",
-           s.store.deleteRecordingChecked(id, now.value(QStringLiteral("identitySize")).toLongLong(),
+           s.store.deleteRecordingChecked(id, path, now.value(QStringLiteral("identitySize")).toLongLong(),
                                           now.value(QStringLiteral("mtimeSec")).toLongLong(),
                                           now.value(QStringLiteral("mtimeNanos")).toInt())
                && s.store.deleteRefusal().isEmpty());
     s.pass();
     expect("checked delete: gone from disk and the index", !QFileInfo::exists(path) && s.store.recordingCount() == 0);
+}
+
+/* R68: a delete carries the path the user pressed it on. A read again that indexed the same id under another path,
+ * with the same size and time (a copied journal and WAV), makes the delete refused as "changed", whether it comes
+ * before the request is taken or between the request and its unlink; neither file is removed. */
+void
+test_checked_delete_refuses_another_path(void) {
+    Roots roots;
+    Store s(roots.list(), false);
+    // Armed for the last case: the id moved between the delete's two looks, as a read again would (set before start).
+    const QString id = QStringLiteral("000000000000090B-1");
+    std::atomic<bool> armed{false};
+    QString movedTo;
+    s.store.setUploadHoldsForTest([&s, &armed, &id, &movedTo](const QString&) {
+        if (armed.exchange(false)) {
+            s.store.moveEntryPathForTest(id, movedTo);
+        }
+        return false;
+    });
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString pressedPath = folder + QStringLiteral("/r.wav");
+    const QString copyPath = folder + QStringLiteral("/s.wav");
+    record_at(folder, id, QStringLiteral("r.wav"), 1754000000, 1, 1000, 1754000004);
+    s.pass();
+    const QVariantMap pressed = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked path: pressed at r.wav", pressed.value(QStringLiteral("path")).toString() == pressedPath);
+    const qint64 size = pressed.value(QStringLiteral("identitySize")).toLongLong();
+    const qint64 sec = pressed.value(QStringLiteral("mtimeSec")).toLongLong();
+    const int nanos = pressed.value(QStringLiteral("mtimeNanos")).toInt();
+
+    // Before the request: the copy indexed under the same id at another path, with the same identity.
+    record_at(folder, id, QStringLiteral("s.wav"), 1754000000, 1, 1000, 1754000004);
+    s.store.recheckRecordings({id});
+    s.pass();
+    s.pass();
+    const QVariantMap now = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked path: the read again indexed the id at s.wav",
+           now.value(QStringLiteral("path")).toString() == copyPath
+               && now.value(QStringLiteral("identitySize")).toLongLong() == size
+               && now.value(QStringLiteral("mtimeSec")).toLongLong() == sec);
+    expect("checked path: another path under the id: refused as changed",
+           !s.store.deleteRecordingChecked(id, pressedPath, size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("changed"));
+    s.pass();
+    expect("checked path: neither file removed", QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath));
+
+    // Between the request and its unlink: taken at s.wav, then the id moves to r.wav before the pass runs.
+    expect("checked path: the file as it is now is taken",
+           s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
+    s.store.moveEntryPathForTest(id, pressedPath);
+    const int skipped = s.store.deletesSkipped();
+    s.pass();
+    expect("checked path: the delete finds another path under the id: neither file removed",
+           QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath) && s.store.deletesSkipped() == skipped + 1);
+
+    // And right before the unlink, between its two looks under the lock (the uploader is asked in between).
+    s.store.moveEntryPathForTest(id, copyPath);
+    s.pass();
+    expect("checked path: taken at s.wav again", s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
+    movedTo = pressedPath;
+    armed.store(true);
+    s.pass();
+    expect("checked path: the unlink's look finds another path: neither file removed",
+           !armed.load() && QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath)
+               && s.store.deletesSkipped() == skipped + 2);
 }
 
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
@@ -6221,6 +6288,7 @@ main(int argc, char** argv) {
     test_playlist_recordings_per_row();
     test_recording_map_identity_is_the_indexed_one();
     test_checked_delete_refuses_another_file();
+    test_checked_delete_refuses_another_path();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

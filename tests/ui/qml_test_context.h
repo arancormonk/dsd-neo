@@ -4453,8 +4453,9 @@ class RecordingsFake : public QQmlPropertyMap {
     /* Issue #909 (B11): noted with the identity the press captured; refused as the store refuses it while
      * setDeleteIdentityRefusal() names "changed" or "gone", then as deleteRecording(). */
     Q_INVOKABLE bool
-    deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos) {
+    deleteRecordingChecked(const QString& id, const QString& path, qint64 size, qint64 mtimeSec, int mtimeNanos) {
         note(QStringLiteral("deleteRecordingChecked"), {{QStringLiteral("id"), id},
+                                                        {QStringLiteral("path"), path},
                                                         {QStringLiteral("size"), size},
                                                         {QStringLiteral("mtimeSec"), mtimeSec},
                                                         {QStringLiteral("mtimeNanos"), mtimeNanos}});

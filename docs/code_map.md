@@ -20527,7 +20527,11 @@ Qt Quick frontend (`src/ui/qt`):
     screen and in Settings, and `deletesSkipped` (the file was not the recording: nothing to ask again) "Some files
     weren't deleted because they changed after they were recorded. They were left as they are."
     (`test_cancelled_deletes_notice`, `test_skipped_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
-    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen
+    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`). Every queued delete carries
+    the path its entry had when it was asked, with the identity (R68: `DeleteAsk`), and an entry found at another path
+    under its id, when the pass takes it and again right before the unlink, is not the file asked of: skipped, neither
+    file removed; the player's checked delete names the path pressed and is refused as "changed" for another path
+    (`deleteRecordingChecked(id, path, …)`, `test_checked_delete_refuses_another_path`). The Call recordings screen
     and the player say "Recordings are still loading. Try again in a moment." or "That storage isn't connected. Delete
     again once it's back." and keep nothing of the request (`test_delete_refused_while_storage_away` in both QML
     tests) (issue #902 B12, a decision: refuse, not merge the committed view;

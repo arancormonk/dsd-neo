@@ -296,14 +296,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     Q_INVOKABLE bool deleteRecordings(const QStringList& ids);
     Q_INVOKABLE bool deleteRecording(const QString& id);
     /**
-     * @brief deleteRecording() of the file the user pressed Delete on (issue #909): @p id with the identity its map
-     * gave then (`identitySize`, `mtimeSec`, `mtimeNanos`).
+     * @brief deleteRecording() of the file the user pressed Delete on (issue #909): @p id with the path and the
+     * identity its map gave then (`path`, `identitySize`, `mtimeSec`, `mtimeNanos`).
      *
      * Checked under the store's lock as the request is taken: refused, queuing nothing, with deleteRefusal() "changed"
-     * when the recording under @p id is another file now (a read again put another file under the id), and "gone"
-     * when no recording has @p id now; otherwise as deleteRecording().
+     * when the recording under @p id is another file now (a read again put another file under the id, at another path
+     * or with another identity: R68), and "gone" when no recording has @p id now; otherwise as deleteRecording(). The
+     * path goes with the queued request and is checked again right before the unlink.
      */
-    Q_INVOKABLE bool deleteRecordingChecked(const QString& id, qint64 size, qint64 mtimeSec, int mtimeNanos);
+    Q_INVOKABLE bool deleteRecordingChecked(const QString& id, const QString& path, qint64 size, qint64 mtimeSec,
+                                            int mtimeNanos);
     /** @brief Delete every recording of the owner @p uid, unfinished ones in its folders included. */
     Q_INVOKABLE bool deleteFolder(const QString& uid);
     /** @brief Delete the unfinished recordings earlier runs left. */
@@ -410,6 +412,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void setPassEndHookForTest(std::function<void()> hook);
     /** @brief The ids waiting to be deleted, sorted, and none waiting after. Test hook. */
     QStringList takeDeleteQueueForTest();
+    /** @brief Put the entry under @p id at @p path, as a read again that indexed the id elsewhere would. Test hook. */
+    void moveEntryPathForTest(const QString& id, const QString& path);
     /** @brief How many times a History read has taken the store's lock (ReaderLock). Test hook. */
     int readerLocksForTest() const;
 #endif
@@ -708,11 +712,18 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* tailFolder() could not read @p path's new journal lines: read whole at the next pass (its root still there). */
     void noteTailReadFailed(const QString& path, Pass* pass);
     void processDeletes(Pass* pass);
+
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
-    /* @p expected: the file a user's delete was asked of (its identity when the request was accepted); null for the
-     * limit's, which removes the file the index knows. */
+    /* A delete asked: the file it names, by its identity and its path when the request was accepted (R68). */
+    struct DeleteAsk {
+        dsd_file_identity_t identity{};
+        QString path;
+    };
+
+    /* @p expected: the file a user's delete was asked of (its identity and path when the request was accepted); null
+     * for the limit's, which removes the file the index knows. One whose entry has another path now is not it. */
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr,
-                             const dsd_file_identity_t* expected = nullptr, qint64* foundBytes = nullptr);
+                             const DeleteAsk* expected = nullptr, qint64* foundBytes = nullptr);
     /* A recording not removable as found (@p found: missing, or not the store's to remove) leaves the index, unless
      * what is there changed meanwhile. Under the store's lock. */
     DeleteResult dropUnremovableLocked(const QString& id, OnDisk found, Pass* pass);
@@ -734,7 +745,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* deleteEntry()'s step under the lock: the holds, the check and the unlink. Failed when deleteEntry() still has to
      * settle it from @p attempt (a missing or foreign name, a refused or failed removal). */
     DeleteResult unlinkEntryLocked(const QString& id, const QString& path, bool uploading, DeleteCause cause,
-                                   const dsd_file_identity_t* expected, Pass* pass, UnlinkAttempt* attempt);
+                                   const DeleteAsk* expected, Pass* pass, UnlinkAttempt* attempt);
+    /* unlinkEntryLocked()'s refusals before it looks at the name: what decides for @p entry (at @p path when it was
+     * taken) instead of the unlink, or Failed when none does. */
+    DeleteResult unlinkRefusedLocked(const Entry& entry, const QString& path, bool uploading, DeleteCause cause,
+                                     const DeleteAsk* expected) const;
     /* The player, an export or a save holds @p path. */
     bool heldLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
@@ -856,8 +871,9 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     const std::shared_ptr<std::atomic<quint64>> m_storageReads = std::make_shared<std::atomic<quint64>>(0U);
     int m_nextSelection = 1;
     QString m_playing;
-    /* Each delete asked and not done yet, with its file's identity as the index knew it when the request was accepted. */
-    QHash<QString, dsd_file_identity_t> m_deleteQueue;
+    /* Each delete asked and not done yet, with its file's identity and path as the index knew them when the request was
+     * accepted. */
+    QHash<QString, DeleteAsk> m_deleteQueue;
     /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
      * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
     QSet<int> m_rootsSeenAway;
