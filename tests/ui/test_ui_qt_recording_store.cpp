@@ -5474,25 +5474,42 @@ test_session_on_another_root_notes_a_missing_indexed_root(void) {
     const QString extAway = roots.dir.path() + QStringLiteral("/ext-away");
     const QString renamed = roots.dir.path() + QStringLiteral("/ext/renamed");
     expect("other root: the external storage away", QDir().rename(ext, extAway));
+    // Its folder made whole while it is away, so no pass can list it half made.
+    const QString awayFolder = extAway + QStringLiteral("/Call recordings/County (1a2b3c4d)");
+    expect("other root: a folder on it", write_owner_json(awayFolder, QString(kUidA), QStringLiteral("County")));
+    record(awayFolder, QStringLiteral("0000000000000970-1"), QStringLiteral("a.wav"), 1754000000, 1);
     Store s(roots.list());
     const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
     s.store.endSession();
     expect("other root: the owner's folder on the internal storage", b.startsWith(roots.internal + QLatin1Char('/')));
-    expect("other root: the external storage back", QDir().rename(extAway, ext));
-    const QString a = roots.external + QStringLiteral("/County (1a2b3c4d)");
-    expect("other root: a folder on it", write_owner_json(a, QString(kUidA), QStringLiteral("County")));
-    record(a, QStringLiteral("0000000000000970-1"), QStringLiteral("a.wav"), 1754000000, 1);
     s.pass();
+    expect("other root: the external storage back", QDir().rename(extAway, ext));
     s.pass();
     expect("other root: indexed", listed_as(s.store, 1, true));
-    expect("other root: the recordings folder renamed, no pass since", QDir().rename(roots.external, renamed));
-    const QString again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
-    s.store.endSession();
-    expect("other root: the session recorded on the internal storage", again == b);
-    expect("other root: the missing root's row is unavailable at once", listed_as(s.store, 1, false));
-    expect("other root: the folder back", QDir().rename(renamed, roots.external));
+    // On the worker, between two passes (so no pass marks the root away meanwhile): the recordings folder goes, a
+    // session start on the other root sees it missing, a new owner folder is put on it, and it comes back.
+    std::atomic<int> ends{0};
+    std::atomic<bool> unavailableAtOnce{false};
+    QString again;
+    s.store.setPassEndHookForTest([&]() {
+        if (ends++ != 0 || !QDir().rename(roots.external, renamed)) {
+            return;
+        }
+        again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+        s.store.endSession();
+        unavailableAtOnce = listed_as(s.store, 1, false);
+        const QString metro = renamed + QStringLiteral("/Metro (5e6f7a8b)");
+        (void)write_owner_json(metro, QString(kUidC), QStringLiteral("Metro"));
+        record(metro, QStringLiteral("0000000000000970-2"), QStringLiteral("m.wav"), 1754000100, 2);
+        (void)QDir().rename(renamed, roots.external);
+    });
     s.pass();
+    s.pass();
+    s.store.setPassEndHookForTest({});
+    expect("other root: the session recorded on the internal storage", ends.load() >= 1 && again == b);
+    expect("other root: the missing root's row is unavailable at once", unavailableAtOnce.load());
     expect("other root: read again, the row is available", listed_as(s.store, 1, true));
+    expect("other root: read again in full, the folder put on it is found", listed_as(s.store, 2, true));
 }
 
 /* r15t: a session start never records onto a root held away that is back but not read in full. The card comes back
