@@ -693,8 +693,10 @@ idle_opens(demod_state* s, const ReaderChain& c, double seconds) {
    noise+10, NFM 16k at noise+3) run the noise squelch and stay shut on idle noise; an 8 kHz source read into the same
    chains has nothing past the reader's 3.6 kHz edge, so no band fits, the tracker runs the setting as auto, and it
    stays shut too (a plan calibrated without the reader reads idle noise there as 13 dB and 6 dB of quieting, and
-   opens). A 25 kHz source read into 48 kHz keeps a band (its edge is 11.25 kHz): the plan is valid, its calibration
-   noise carries the reader's magnitude (the cascade FIR runs with no pass), and idle noise stays shut. */
+   opens). A 12 kHz source has no band either: its edge is 5.4 kHz, and the band ends 800 Hz under it, 4.6 kHz, less
+   than the band's 1200 Hz over its 3.8 kHz floor. A 25 kHz source read into 48 kHz keeps a band (its edge is 11.25
+   kHz): the plan is valid, its calibration noise carries the reader's magnitude (the cascade FIR runs with no pass),
+   and idle noise stays shut. */
 void
 test_noise_behind_the_reader(void) {
     struct Case {
@@ -709,6 +711,8 @@ test_noise_behind_the_reader(void) {
         {{"native 48 kHz, NFM 16k", 48000U, 48000U, 0, 16000}, 3, 1},
         {{"8 kHz read into 48 kHz, NFM 16k", 8000U, 48000U, 0, 16000}, 3, 0},
         {{"25 kHz read into 48 kHz, NFM 12.5k", 25000U, 48000U, 0, 12500}, 10, 1},
+        {{"12 kHz read into 48 kHz, NFM 12.5k", 12000U, 48000U, 0, 12500}, 3, 0},
+        {{"12 kHz read into 48 kHz unfiltered", 12000U, 48000U, 0, 0}, 3, 0},
     };
     for (const Case& k : cases) {
         const DemodBox box;
@@ -733,21 +737,25 @@ test_noise_behind_the_reader(void) {
     }
 }
 
-/* A reader whose passband edge cuts into the noise band but leaves more than its 1200 Hz (issue #899): 12 kHz read into
-   48 kHz (edge 5.4 kHz) under NFM 12.5k and with no channel filter. The band ends at the reader's edge, and the plan's
-   calibration noise carries the reader's magnitude, so idle noise reads no quieting: shut from cold start at noise+3
-   and noise+10, and a carrier inside the source band (25 dB over the noise, 1.0 to 1.5 s) opens it. Calibrated on noise
-   that runs flat to the channel's edge (the magnitude left out of the cascade FIR), the band's idle noise reads as
-   quieting and opens. */
-/* Idle noise reads about 0 dB of quieting when the calibration saw the same noise: within 0.17 dB on these rows with
-   the reader's magnitude folded in, 0.77 to 6.2 dB without it. */
-constexpr double kIdleQuietingDb = 0.5;
+/* A reader whose passband edge cuts into the noise band but leaves more than its 1200 Hz (issue #899): 16 kHz read into
+   48 kHz (edge 7.2 kHz) under NFM 16k and with no channel filter, where the channel alone would leave the band's top
+   higher. The band ends the 800 Hz guard under the reader's edge (6.4 kHz; its transition band would cut a carrier's
+   sidebands into the band's top), and the plan's calibration noise carries the reader's magnitude, so idle noise reads
+   no quieting: shut from cold start at noise+3 and noise+10, and a carrier inside the source band (25 dB over the
+   noise, 1.0 to 1.5 s) opens it. Calibrated on noise that runs flat to the channel's edge (the magnitude left out of
+   the cascade FIR), the band's idle noise reads as quieting. */
+/* The guard the band's top keeps under the reader's passband edge (k_edge_guard_hz, src/dsp/nfm_noise_squelch.c). */
+constexpr double kReaderBandGuardHz = 800.0;
+
+/* Idle noise reads about 0 dB of quieting when the calibration saw the same noise: within 0.16 dB on these rows with
+   the reader's magnitude folded in, 0.43 to 4.6 dB without it. */
+constexpr double kIdleQuietingDb = 0.3;
 
 void
 test_noise_band_clipped_by_the_reader(void) {
     const ReaderChain chains[] = {
-        {"12 kHz read into 48 kHz, NFM 12.5k", 12000U, 48000U, 0, 12500},
-        {"12 kHz read into 48 kHz unfiltered", 12000U, 48000U, 0, 0},
+        {"16 kHz read into 48 kHz, NFM 16k", 16000U, 48000U, 0, 16000},
+        {"16 kHz read into 48 kHz unfiltered", 16000U, 48000U, 0, 0},
     };
     const int margins[] = {3, 10};
     for (const ReaderChain& c : chains) {
@@ -794,7 +802,8 @@ test_noise_band_clipped_by_the_reader(void) {
                    "%.2f dB, %ld idle samples open, carrier %.1f %% open\n",
                    c.name, margin, plan->lo_hz, plan->hi_hz, edge, idle_q, idle_open,
                    100.0 * (double)burst_open / (double)(burst_to - burst_from));
-            CHECK(plan->valid && s->squelch_noise_ran && edge > 0.0 && std::fabs(plan->hi_hz - edge) <= 1e-9 * edge
+            const double top = edge - kReaderBandGuardHz;
+            CHECK(plan->valid && s->squelch_noise_ran && edge > 0.0 && std::fabs(plan->hi_hz - top) <= 1e-9 * edge
                       && plan->hi_hz - plan->lo_hz >= 1200.0 && flags.size() >= burst_to && idle_open == 0
                       && std::fabs(idle_q) <= kIdleQuietingDb
                       && burst_open >= (long)((burst_to - burst_from) * 95U / 100U),

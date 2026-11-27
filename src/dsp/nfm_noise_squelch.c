@@ -460,9 +460,11 @@ nsq_design_band(dsd_noise_squelch_plan* out, const float* taps, int taps_len, in
     if (hi > k_nyquist_fraction * fs) {
         hi = k_nyquist_fraction * fs;
     }
-    /* A reader's resampler passes nothing past its passband edge (0 with none). */
-    if (reader_edge_hz > 0.0 && hi > reader_edge_hz) {
-        hi = reader_edge_hz;
+    /* A reader's resampler passes nothing past its passband edge (0 with none), and its transition band below that
+       cuts the sidebands of an in-band carrier into the band's top: the band ends the channel edge's guard under it
+       (issue #899; flush with the edge, wanted FM read 33-36 dB of quieting at 12 kHz read into 48 kHz). */
+    if (reader_edge_hz > 0.0 && hi > reader_edge_hz - k_edge_guard_hz) {
+        hi = reader_edge_hz - k_edge_guard_hz;
     }
     const double width = hi - k_band_lo_hz;
     if (width < k_min_band_hz) {

@@ -10362,8 +10362,10 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   key's step or reader model is the one built), as the noise squelch's are, so a channel alternating widths designs
   each width once; another reader identity or pass count is another key. NOISE behind the
   reader (`dsd_squelch_reader_model_noise_plan()`, `dsd_noise_squelch_plan_design_reader()`): the band's upper edge is
-  held to the reader's passband edge and a plan needs its 1200 Hz under it (an 8 kHz source read into 48 kHz, edge
-  3.6 kHz, has none and the tracker runs it as auto; calibrated without the reader every idle window opened), and where
+  held 800 Hz under the reader's passband edge (the channel edge's guard: flush with it, the reader's transition band
+  cut wanted FM's sidebands into the band, 33-36 dB of quieting at 12 kHz read into 48 kHz) and a plan needs its
+  1200 Hz under that (an 8 or 12 kHz source read into 48 kHz, edge 3.6 or 5.4 kHz, has none and the tracker runs it as
+  auto; calibrated without the reader every idle window opened at 8 kHz), and where
   a band fits the reader's magnitude response is folded into the 63-tap cascade FIR (sampled from its bank, at most a
   0.1 dB ripple in band; the FIR then runs with one stage or none). The reader and the live step never run together:
   only a KEEP plan steps, and it reads the capture at its own rate (a plan with both on is not valid). Measured
@@ -10379,10 +10381,11 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   output phase, 8 to 16 kHz with and without NFM 12.5k, 8 to 48 kHz NFM 16k, 40 to 32 kHz and a pass, 250 to 192 kHz
   and two passes NFM 12.5k, 48,001 to 48,000 Hz NFM 16k, and no reader at 64 kHz; the model's phases, mean and
   distance against the same impulses; AUTO from cold start at 8 to 16 kHz and 8 to 48 kHz; NOISE native and behind the
-  reader, and a band the reader's edge clips but leaves (12 kHz into 48 kHz, which fails with the magnitude fold left
-  out); one demod reopening the same replay as 8 to 16 kHz, native 16 kHz and 8 to 16 kHz again; the kept floor plans
-  by key and their bound; both routes on 524,288 input phases, in batches; 864,058 Hz into 576 kHz with the 5 kHz
-  filter, valid and shut on idle noise; no plan with the reader and the step both on; the plan designed at the commit),
+  reader, 12 kHz into 48 kHz with no band, and a band the reader's guarded edge clips but leaves (16 kHz into 48 kHz,
+  3.8 to 6.4 kHz, which fails with the magnitude fold left out); one demod reopening the same replay as 8 to 16 kHz,
+  native 16 kHz and 8 to 16 kHz again; the kept floor plans by key and their bound; both routes on 524,288 input
+  phases, in batches; 864,058 Hz into 576 kHz with the 5 kHz filter, valid and shut on idle noise; no plan with the
+  reader and the step both on; the plan designed at the commit),
   `IO_RTL_REPLAY_STEP` (the reader's plan, its model and the first plan published at a resampled analog open, no model
   on a digital one, and never with the step), `IO_NET_IQ_STREAM` (no model on a resampled DMR `iqudp:` stream, then
   built by the switch to the NFM monitor before it is queued; the resampler starting over at each block a full ring

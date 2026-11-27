@@ -1833,9 +1833,11 @@ their sensitivity in.
   edge and would truncate a wide signal into the band. A channel that runs no half-band stage (a replay or network I/Q
   stream at the DSP rate) keeps its band. Where a replay or network I/Q stream is resampled to the DSP rate, the band
   must also lie inside the resampler's passband, which ends at 0.45 times the capture rate when the capture is slower
-  than the channel rate: the band's top is cut to that edge, and a channel left with under 1200 Hz (an 8 kHz capture at
-  a 16 kHz DSP bandwidth, say) has no band either. The auto squelch runs the setting on such a channel, with N as its
-  margin, and the readout says `as auto`. AM has no discriminator: on the AM monitor
+  than the channel rate: the band's top is cut to 800 Hz below that edge (the resampler's transition band would cut
+  a carrier's sidebands into the band), and a channel left with under 1200 Hz (an 8 kHz capture at a 16 kHz DSP
+  bandwidth, or a 12 kHz one at 48 kHz, say) has no band either; a 16 kHz capture at 48 kHz keeps 3.8-6.4 kHz. The auto
+  squelch runs the setting on such a channel, with N as its margin, and the readout says `as auto`. AM has no
+  discriminator: on the AM monitor
   (`-fM`) of a radio input a noise setting runs as auto with the same N, whatever set it (`--squelch noise`, an input
   spec, the config, a live edit from the terminal), and the engine says so at startup (`NOTICE: The noise squelch needs
   an FM channel; this AM channel runs auto+10dB.`). The setting stays noise, so a switch back to `-fA` runs the noise
