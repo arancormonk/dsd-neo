@@ -3044,19 +3044,27 @@ RecordingStore::recordingsForFragmentLists(const QList<QStringList>& fragmentsPe
 QHash<int, RecordingStore::AdmissionRoot>
 RecordingStore::admissionRootsLocked(const QList<QList<const Entry*>>& found) const {
     QHash<int, AdmissionRoot> roots;
+    const auto take = [this, &roots](int root, bool missing) {
+        AdmissionRoot look;
+        look.path = m_roots.at(root);
+        look.known = m_rootAvailable.value(root);
+        look.pending = m_rootsSeenAway.contains(root);
+        look.rereading = m_rootsRereading.contains(root);
+        look.listing = m_listing.contains(root);
+        look.missing = missing;
+        roots.insert(root, look);
+    };
     for (const QList<const Entry*>& entries : found) {
         for (const Entry* entry : entries) {
             const int root = m_folders.value(entry->folder).root;
-            if (root < 0 || root >= m_roots.size() || roots.contains(root)) {
-                continue;
+            if (root >= 0 && root < m_roots.size() && !roots.contains(root)) {
+                take(root, false);
             }
-            AdmissionRoot look;
-            look.path = m_roots.at(root);
-            look.known = m_rootAvailable.value(root);
-            look.pending = m_rootsSeenAway.contains(root);
-            look.rereading = m_rootsRereading.contains(root);
-            look.listing = m_listing.contains(root);
-            roots.insert(root, look);
+        }
+    }
+    for (int root = 0; root < m_rootDirMissing.size(); root++) {
+        if (m_rootDirMissing.at(root) && !roots.contains(root)) {
+            take(root, true);
         }
     }
     return roots;
@@ -3081,6 +3089,15 @@ RecordingStore::admissionLookRecordedLocked(const QHash<int, AdmissionRoot>& roo
     for (auto it = roots.cbegin(); it != roots.cend(); ++it) {
         const AdmissionRoot& look = it.value();
         if (look.pending) {
+            continue;
+        }
+        if (look.missing) {
+            // Its directory, missing when it was listed, is there now (item 5): read at once, as a root back from
+            // away is. Still missing, it holds nothing to note.
+            if (playable.value(it.key()) && !look.listing) {
+                noteRootSeenAwayLocked(it.key());
+                wake = true;
+            }
             continue;
         }
         if (!playable.value(it.key())) {

@@ -702,15 +702,17 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
         bool pending = false;   // in m_rootsSeenAway: a listing in full asked for, not begun
         bool rereading = false; // in m_rootsRereading
         bool listing = false;   // in m_listing: rebuildRoot() is listing it now
+        bool missing = false;   // m_rootDirMissing: there and empty only because its directory is missing (item 5)
 
         bool
         operator==(const AdmissionRoot& other) const {
             return path == other.path && known == other.known && pending == other.pending
-                   && rereading == other.rereading && listing == other.listing;
+                   && rereading == other.rereading && listing == other.listing && missing == other.missing;
         }
     };
 
-    /* The roots the recordings of @p found are on, each as the store holds it. Under the store's lock. */
+    /* The roots the recordings of @p found are on, and every root with its missing flag set (one whose folder may be
+     * back, holding recordings the index has not seen), each as the store holds it. Under the store's lock. */
     QHash<int, AdmissionRoot> admissionRootsLocked(const QList<QList<const Entry*>>& found) const;
     /* A playlist's admission records what its look found, @p playable (rootPlayableNow()) for each root of @p roots:
      * true when a pass was asked for (a root gone was noted seen away, or one back asks for its read again). Under the

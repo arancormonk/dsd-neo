@@ -6459,6 +6459,46 @@ test_playlist_admission_checks_roots_live(void) {
     model.setRecordingProvider(nullptr);
 }
 
+/* Item 5: after a cold start with the recordings folder missing, the folder comes back holding a History call's
+ * recording. Play all finds nothing indexed yet and is refused, and its look at the storage finds the folder there
+ * and asks for its read at once, with no pass asked for by anyone else; once read, Play all plays. */
+void
+test_playlist_asks_for_a_missing_folder_back(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    const Roots roots;
+    Store s(roots.list());
+    Ring ring;
+    dsd_qt::CallHistoryModel model;
+    model.setRecordingProvider(&s.store);
+    QObject::connect(&s.store, &RecordingStore::recordingFragmentsChanged, &model,
+                     &dsd_qt::CallHistoryModel::recordingFragmentsChanged);
+    const time_t when = 1754705000;
+    ring.commit(31002, 502, when, when + 4);
+    model.refresh(ring.state);
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/Explore");
+    expect("missing back: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("00000000000000CF-1"), QStringLiteral("a.wav"), when, ring.rings[0].push_seq);
+    dsd_qt::CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    PlayingHost host;
+    dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
+    const auto result = [&playlist] { return playlist.start(0).value(QStringLiteral("result")).toString(); };
+    expect("missing back: nothing to play yet", result() == QLatin1String("none") && host.plays == 0);
+    expect("missing back: the folder put in place", QDir().rename(staged, roots.external));
+    const quint64 before = s.store.passCountForTest();
+    expect("missing back: Play all is refused for now", result() == QLatin1String("none") && host.plays == 0);
+    QElapsedTimer waited;
+    waited.start();
+    while (s.store.passCountForTest() == before && waited.elapsed() < 5000) {
+        QThread::msleep(5);
+    }
+    expect("missing back: the press asked for the read", s.store.passCountForTest() > before);
+    QCoreApplication::processEvents();
+    expect("missing back: read, Play all plays", result() == QLatin1String("accepted") && host.plays == 1);
+    model.setRecordingProvider(nullptr);
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -6736,6 +6776,7 @@ main(int argc, char** argv) {
     test_checked_delete_refuses_another_path();
     test_seen_away_root_is_not_admitted();
     test_playlist_admission_checks_roots_live();
+    test_playlist_asks_for_a_missing_folder_back();
     test_loss_during_a_listing_asks_for_another();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
