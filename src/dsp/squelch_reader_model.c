@@ -407,7 +407,10 @@ dsd_squelch_reader_model_build(dsd_squelch_reader_model* m, const dsd_iq_reader_
     if (srm_exact_tables(m, stages, stage_count) == 0) {
         m->exact_ready = 1;
     } else {
+        /* The averaged plan reads the mean alone: the phases' covariance only fed the every-phase design. */
         srm_release_exact(m);
+        dsd_neo_aligned_free(m->phase_cov);
+        m->phase_cov = NULL;
     }
     m->ready = 1;
     return 0;

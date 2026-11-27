@@ -23,7 +23,8 @@
  *   input 2n, counted from the stream's start, which the reader and the cascade start over at together. The period
  *   left at the channel filter is P = L / gcd(L, 2^passes) (40 kHz to 32 kHz by 4/5, then one pass: 2 phases).
  *   A limit: where the cascade starts over without the reader (an FM <-> AM switch on the analog monitor; on an I/Q
- *   stream, the blocks a boundary's purge takes after the reader's restart, and an external rigctl landing's purge),
+ *   stream, the blocks a reconnect's or resume's purge takes after the reader's restart; no external landing reaches a
+ *   replay or I/Q stream, whose tunes the engine refuses),
  *   the decimators can keep another of the gcd(L, 2^passes) cosets of the reader's phases until the next common
  *   start, which the plan does not follow. The worst plan error that costs, over 9,530 readers the rate plans make
  *   (every pass count, sources at every 1 % of the octave), unfiltered and through the analog channel filters, is
@@ -90,7 +91,8 @@ typedef struct dsd_squelch_reader_model {
     int lags;                /**< The covariance's lags there, 0 included; 0 beyond */
     double* mean;            /**< The covariance averaged over the period (lags of it) */
     double cyclo_dev;        /**< The largest absolute distance of any phase's covariance from it */
-    double* phase_cov;       /**< Every output phase's covariance there: period rows of lags */
+    /** Every output phase's covariance there: period rows of lags (released, NULL, with exact_ready 0) */
+    double* phase_cov;
     /* The every-phase design's tables, bounded whatever the reader (exact_ready 1 once built; a reader past the size
        limit, or no memory for them, leaves the averaged plan only, and a plan its bound refuses is then not valid). */
     int exact_ready;
