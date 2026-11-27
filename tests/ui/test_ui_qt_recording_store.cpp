@@ -5998,21 +5998,27 @@ test_checked_delete_refuses_another_path(void) {
     s.pass();
     expect("checked path: neither file removed", QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath));
 
-    // Between the request and its unlink: taken at s.wav, then the id moves to r.wav before the pass runs.
+    // Between the request and its unlink: taken at s.wav and held there (the player holds the file), so the worker
+    // leaves it queued; the id moves to r.wav while the worker is idle, then the hold ends and the pass takes it.
+    const int skipped = s.store.deletesSkipped();
+    s.store.setPlayingPath(copyPath);
     expect("checked path: the file as it is now is taken",
            s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
+    s.pass();
+    expect("checked path: held while it plays", QFileInfo::exists(copyPath) && s.store.deletesSkipped() == skipped);
     s.store.moveEntryPathForTest(id, pressedPath);
-    const int skipped = s.store.deletesSkipped();
+    s.store.setPlayingPath(QString());
     s.pass();
     expect("checked path: the delete finds another path under the id: neither file removed",
            QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath) && s.store.deletesSkipped() == skipped + 1);
 
-    // And right before the unlink, between its two looks under the lock (the uploader is asked in between).
+    // And right before the unlink, between its two looks under the lock (the uploader is asked in between). Armed
+    // before the request, with the worker idle, so the pass the request wakes meets the hook.
     s.store.moveEntryPathForTest(id, copyPath);
     s.pass();
-    expect("checked path: taken at s.wav again", s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
     movedTo = pressedPath;
     armed.store(true);
+    expect("checked path: taken at s.wav again", s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
     s.pass();
     expect("checked path: the unlink's look finds another path: neither file removed",
            !armed.load() && QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath)
