@@ -1758,10 +1758,11 @@ test_quiet_occupancy(dsd_signal_quiet_detector* d) {
     }
 }
 
-/* The occupancy share bit for bit: the count of the reference's bins over its 98th percentile runs on the bins the
-   quartile's selection left above it, and must read what the count over every bin read. Scenes from clean noise to
-   most of the span raised, on both geometries, at a short (1.536 Msps) and a long (10 MS/s) transform, in every class
-   mask; the values are the full count's (recorded from it), compared as raw bits. */
+/* The occupancy count against the count over every bin: the count of the reference's bins over its 98th percentile
+   runs on the bins the quartile's selection left above it, and must count what the full count does, window by window
+   (rtl_signal_measure_test_occupancy_audit() runs both on the same spectrum, so the check holds whatever samples a
+   platform's normal_distribution draws). Scenes from clean noise to most of the span raised, on both geometries, at a
+   short (1.536 Msps) and a long (10 MS/s) transform, in every class mask; a raised scene finds bins over the level. */
 static void
 test_quiet_occupancy_share_exact(dsd_signal_quiet_detector* d) {
     const dsd_signal_quiet_params shipped = dsd_signal_quiet_params_default();
@@ -1769,57 +1770,44 @@ test_quiet_occupancy_share_exact(dsd_signal_quiet_detector* d) {
     struct ShareCase {
         double share, raise_db;
         uint32_t rate;
-        unsigned seed;
-        uint32_t want_bits;
         bool centred;
         uint8_t classes;
     };
 
-    static const ShareCase cases[] = {
-        {0.00, 0.0, 1536000, 151, 0x3b99b9f7U, false, 1},   {0.00, 0.0, 1536000, 152, 0x3c825f8dU, false, 1},
-        {0.02, 10.0, 1536000, 151, 0x3ccbed33U, false, 1},  {0.02, 10.0, 1536000, 152, 0x3d0f5647U, false, 1},
-        {0.09, 10.0, 1536000, 151, 0x3dc3ca2bU, false, 1},  {0.09, 10.0, 1536000, 152, 0x3dc3ca2bU, false, 1},
-        {0.50, 10.0, 1536000, 151, 0x3ef2065eU, false, 1},  {0.50, 10.0, 1536000, 152, 0x3ef2065eU, false, 1},
-        {0.70, 3.0, 1536000, 151, 0x3e5cdde7U, false, 1},   {0.70, 3.0, 1536000, 152, 0x3e515fc5U, false, 1},
-        {0.00, 0.0, 1536000, 151, 0x3b99b9f7U, false, 4},   {0.00, 0.0, 1536000, 152, 0x3c825f8dU, false, 4},
-        {0.02, 10.0, 1536000, 151, 0x3ccbed33U, false, 4},  {0.02, 10.0, 1536000, 152, 0x3d0f5647U, false, 4},
-        {0.09, 10.0, 1536000, 151, 0x3dc3ca2bU, false, 4},  {0.09, 10.0, 1536000, 152, 0x3dc3ca2bU, false, 4},
-        {0.50, 10.0, 1536000, 151, 0x3ef2065eU, false, 4},  {0.50, 10.0, 1536000, 152, 0x3ef2065eU, false, 4},
-        {0.70, 3.0, 1536000, 151, 0x3e5cdde7U, false, 4},   {0.70, 3.0, 1536000, 152, 0x3e515fc5U, false, 4},
-        {0.00, 0.0, 1536000, 151, 0x3bcf705aU, false, 7},   {0.00, 0.0, 1536000, 152, 0x3baab95aU, false, 7},
-        {0.02, 10.0, 1536000, 151, 0x3cddaa77U, false, 7},  {0.02, 10.0, 1536000, 152, 0x3cc6b817U, false, 7},
-        {0.09, 10.0, 1536000, 151, 0x3dc48a06U, false, 7},  {0.09, 10.0, 1536000, 152, 0x3dbda7b6U, false, 7},
-        {0.50, 10.0, 1536000, 151, 0x3ef106f8U, false, 7},  {0.50, 10.0, 1536000, 152, 0x3ef199d4U, false, 7},
-        {0.70, 3.0, 1536000, 151, 0x3ddb7c66U, false, 7},   {0.70, 3.0, 1536000, 152, 0x3dbecd6eU, false, 7},
-        {0.00, 0.0, 10000000, 151, 0x3b3f5af4U, false, 1},  {0.02, 10.0, 10000000, 151, 0x3cb73afdU, false, 1},
-        {0.09, 10.0, 10000000, 151, 0x3db65c23U, false, 1}, {0.50, 10.0, 10000000, 151, 0x3ef0acc3U, false, 1},
-        {0.70, 3.0, 10000000, 151, 0x3e274787U, false, 1},  {0.00, 0.0, 2500000, 151, 0x3b9a204cU, true, 1},
-        {0.00, 0.0, 2500000, 152, 0x3c3e6422U, true, 1},    {0.02, 10.0, 2500000, 151, 0x3ce8cee8U, true, 1},
-        {0.02, 10.0, 2500000, 152, 0x3d08a42aU, true, 1},   {0.09, 10.0, 2500000, 151, 0x3dbbb848U, true, 1},
-        {0.09, 10.0, 2500000, 152, 0x3dc7dcb5U, true, 1},   {0.50, 10.0, 2500000, 151, 0x3ef8cbabU, true, 1},
-        {0.50, 10.0, 2500000, 152, 0x3ef94d2fU, true, 1},   {0.70, 3.0, 2500000, 151, 0x3e137d06U, true, 1},
-        {0.70, 3.0, 2500000, 152, 0x3e1c9858U, true, 1},    {0.00, 0.0, 10000000, 151, 0x3b0ec919U, true, 4},
-        {0.02, 10.0, 10000000, 151, 0x3cab7b4aU, true, 4},  {0.09, 10.0, 10000000, 151, 0x3db277f4U, true, 4},
-        {0.50, 10.0, 10000000, 151, 0x3ef6c310U, true, 4},  {0.70, 3.0, 10000000, 151, 0x3e26b80eU, true, 4},
+    static const ShareCase scenes[] = {
+        {0.00, 0.0, 1536000, false, 1},   {0.02, 10.0, 1536000, false, 1}, {0.09, 10.0, 1536000, false, 1},
+        {0.50, 10.0, 1536000, false, 1},  {0.70, 3.0, 1536000, false, 1},  {0.00, 0.0, 1536000, false, 4},
+        {0.09, 10.0, 1536000, false, 4},  {0.50, 10.0, 1536000, false, 4}, {0.70, 3.0, 1536000, false, 4},
+        {0.00, 0.0, 1536000, false, 7},   {0.02, 10.0, 1536000, false, 7}, {0.09, 10.0, 1536000, false, 7},
+        {0.50, 10.0, 1536000, false, 7},  {0.70, 3.0, 1536000, false, 7},  {0.00, 0.0, 10000000, false, 1},
+        {0.09, 10.0, 10000000, false, 1}, {0.70, 3.0, 10000000, false, 1}, {0.00, 0.0, 2500000, true, 1},
+        {0.02, 10.0, 2500000, true, 1},   {0.09, 10.0, 2500000, true, 1},  {0.50, 10.0, 2500000, true, 1},
+        {0.70, 3.0, 2500000, true, 1},    {0.00, 0.0, 10000000, true, 4},  {0.09, 10.0, 10000000, true, 4},
+        {0.50, 10.0, 10000000, true, 4},  {0.70, 3.0, 10000000, true, 4},
     };
     int failures = 0;
-    for (const ShareCase& c : cases) {
-        const dsd_signal_quiet_request q =
-            c.centred
-                ? quiet_centred_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0)
-                : quiet_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0);
-        const auto noise = c.share > 0
-                               ? quiet_occupied_noise(q, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ, c.share, c.raise_db, c.seed)
-                               : quiet_noise(quiet_request_pairs(q), c.seed);
-        const auto r = quiet_run(d, q, noise, 4096, &shipped);
-        uint32_t bits = 0;
-        static_assert(sizeof bits == sizeof r.occupancy_share, "a float is 32 bits");
-        DSD_MEMCPY(&bits, &r.occupancy_share, sizeof bits);
-        if (r.failure != DSD_SIGNAL_MEASURE_OK || bits != c.want_bits) {
-            std::fprintf(stderr, "occupancy share %s %u classes %u share %.2f +%.1f dB seed %u: 0x%08x, want 0x%08x\n",
-                         c.centred ? "centred" : "default", c.rate, (unsigned)c.classes, c.share, c.raise_db, c.seed,
-                         bits, c.want_bits);
-            failures++;
+    for (const ShareCase& c : scenes) {
+        for (unsigned seed : {151U, 152U}) {
+            const dsd_signal_quiet_request q =
+                c.centred
+                    ? quiet_centred_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0)
+                    : quiet_request(c.rate, c.classes, (c.classes & DSD_SIGNAL_QUIET_CLASS_ANALOG) ? 12500 : 0);
+            const auto noise = c.share > 0
+                                   ? quiet_occupied_noise(q, DSD_SIGNAL_QUIET_WIDTH_12K5_HZ, c.share, c.raise_db, seed)
+                                   : quiet_noise(quiet_request_pairs(q), seed);
+            rtl_signal_measure_test_occupancy_audit(1, nullptr, nullptr, nullptr);
+            const auto r = quiet_run(d, q, noise, 4096, &shipped);
+            uint64_t windows = 0, mismatches = 0, above = 0;
+            rtl_signal_measure_test_occupancy_audit(0, &windows, &mismatches, &above);
+            if (r.failure != DSD_SIGNAL_MEASURE_OK || windows < DSD_SIGNAL_QUIET_WINDOWS || mismatches != 0
+                || (c.share > 0 && above == 0)) {
+                std::fprintf(stderr,
+                             "occupancy count %s %u classes %u share %.2f +%.1f dB seed %u: %llu windows, %llu differ, "
+                             "%llu bins over the level\n",
+                             c.centred ? "centred" : "default", c.rate, (unsigned)c.classes, c.share, c.raise_db, seed,
+                             (unsigned long long)windows, (unsigned long long)mismatches, (unsigned long long)above);
+                failures++;
+            }
         }
     }
     assert(failures == 0);

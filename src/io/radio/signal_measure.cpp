@@ -1704,6 +1704,31 @@ quiet_finish(dsd_signal_quiet_detector* detector, dsd_signal_measure_failure rea
    @p occupancy takes the share of the bins over the 98th percentile that reference implies for noise, less the 2% noise
    alone puts there (DSD_SIGNAL_QUIET_OCCUPANCY_SHARE has its edge). @p scratch (n doubles) takes the copies the
    selection reorders. Negative when no bin qualifies (@p occupancy 0 then). */
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+namespace {
+/* rtl_signal_measure_test_occupancy_audit(): while on, every occupancy count is checked against the count over every
+   reference bin (the windows checked, those whose two counts differ, and the bins the full count found over the
+   upper level). */
+std::atomic<int> test_occupancy_audit{0};
+std::atomic<uint64_t> test_occupancy_windows{0};
+std::atomic<uint64_t> test_occupancy_mismatches{0};
+std::atomic<uint64_t> test_occupancy_above{0};
+
+void
+test_audit_occupancy(const double* scratch, int count, double upper, long above) {
+    if (!test_occupancy_audit.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const long full = std::count_if(scratch, scratch + count, [upper](double v) { return v > upper; });
+    test_occupancy_windows.fetch_add(1, std::memory_order_relaxed);
+    test_occupancy_above.fetch_add((uint64_t)full, std::memory_order_relaxed);
+    if (full != above) {
+        test_occupancy_mismatches.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+} // namespace
+#endif
+
 static double
 wide_reference(const dsd_signal_quiet_detector* detector, double* scratch, double* occupancy) {
     const dsd_signal_capture& capture = detector->request.capture;
@@ -1738,6 +1763,9 @@ wide_reference(const dsd_signal_quiet_detector* detector, double* scratch, doubl
        quartile, and the upper level is above it (reference / quartile and upper / reference both exceed 1, for any
        number of transforms). */
     const long above = std::count_if(rank + 1, scratch + count, [upper](double v) { return v > upper; });
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    test_audit_occupancy(scratch, count, upper, above);
+#endif
     *occupancy = std::max(0.0, (double)above / count - 0.02);
     return reference;
 }
@@ -2015,6 +2043,23 @@ rtl_signal_measure_test_set_ticket(uint32_t ticket) {
 extern "C" uint32_t
 rtl_signal_measure_test_quiet_requests(void) {
     return test_quiet_requests.load(std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_signal_measure_test_occupancy_audit(int on, uint64_t* out_windows, uint64_t* out_mismatches, uint64_t* out_above) {
+    if (out_windows) {
+        *out_windows = test_occupancy_windows.load(std::memory_order_relaxed);
+    }
+    if (out_mismatches) {
+        *out_mismatches = test_occupancy_mismatches.load(std::memory_order_relaxed);
+    }
+    if (out_above) {
+        *out_above = test_occupancy_above.load(std::memory_order_relaxed);
+    }
+    test_occupancy_windows.store(0, std::memory_order_relaxed);
+    test_occupancy_mismatches.store(0, std::memory_order_relaxed);
+    test_occupancy_above.store(0, std::memory_order_relaxed);
+    test_occupancy_audit.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 #endif
 

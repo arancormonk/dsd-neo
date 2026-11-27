@@ -85,6 +85,12 @@ void rtl_signal_measure_test_set_ticket(uint32_t ticket);
 void rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void));
 /* How many times rtl_signal_quiet_request() was called since the process started, whatever it answered. */
 uint32_t rtl_signal_measure_test_quiet_requests(void);
+/* The quiet detector's occupancy count against the count over every reference bin: from a call with @p on set, every
+   window's two counts are compared. Each call reports the windows checked since the call before, those whose counts
+   differed and the bins the full count found over the upper level (any pointer may be NULL), then starts the counts
+   again and turns the check on or off. */
+void rtl_signal_measure_test_occupancy_audit(int on, uint64_t* out_windows, uint64_t* out_mismatches,
+                                             uint64_t* out_above);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
