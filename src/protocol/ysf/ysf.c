@@ -1143,7 +1143,8 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     ysf_update_call_lifecycle(opts, state, &info);
     const bool payload_read = ysf_dispatch_payload(opts, state, &info);
     ysf_end_call_lifecycle(opts, state, &info);
-    ysf_arm_next_sync_anchor(state, payload_read);
+    /* A payload a carrier boundary cut ends nowhere near the next word: the hunt resumes inside the new carrier. */
+    ysf_arm_next_sync_anchor(state, payload_read && !ysf_carrier_left(state, &info));
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

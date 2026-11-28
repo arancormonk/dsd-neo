@@ -9114,9 +9114,12 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   symbols at the wrong sign and was missed. The decoder names the word the hunt accepted at its frame's entry: NXDN
   the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first
   sample, and the measurement needs a sample of margin before the first centre), DMR MS the 24 dibits below
-  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. Tests:
+  `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. `processYSF()`
+  arms only after a payload no carrier boundary cut (`ysf_carrier_left()`): the next word does not follow a cut
+  frame, and a grid held over the new carrier's hunt would keep the crossing loop off it. Tests:
   `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols, YSF's two readings), `SYMBOL_MATCHED_FILTER_SEAM`
-  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`, `DECODE_IQ_YSF_ACQUIRE`, `DECODE_IQ_YSF_ACQUIRE_SYMBOLS`,
+  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `YSF_DCH_DECODE` (a cut frame arms
+  nothing), `DECODE_IQ_YSF_SYNTH`, `DECODE_IQ_YSF_ACQUIRE`, `DECODE_IQ_YSF_ACQUIRE_SYMBOLS`,
   `DECODE_IQ_NXDN96_SYNTH_SYMBOLS`, `DECODE_IQ_NXDN48_SYNTH_SYMBOLS`.
   P25 Phase 1 on C4FM (`rf_mod` 0) is the fourth hunt-read caller. The P25 word ends in alternating outer symbols whose
   crossings, acted on a symbol late, left every frame the hunt read about a sample past its symbols (a whole sample on
