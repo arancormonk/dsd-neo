@@ -736,7 +736,7 @@ P25_NO_HDU_SYNTH_SEED = 3801
 
 #
 # ysf_acquire_synth (issue #938) is five clean V/D mode 2 frames of the same generator, payload seed 901, with 50 ms
-# of the carrier held at its first and last deviation either side. The first frame's sync acquires; the second's
+# of unmodulated carrier either side (the first and last I/Q sample repeated, so 0 Hz deviation). The first frame's sync acquires; the second's
 # word is the first the symbol anchor measures, read while the hunt's crossing loop walked the grid, and measured on
 # the centres it was read on it moved the grid two samples where one was due: the third frame's word, held on that
 # grid, read the +1 between a +3 and a -3 at its 18th symbol as negative, and the frame (FN 3/8) was lost. It carries

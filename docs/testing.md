@@ -928,7 +928,9 @@ clean, after it all 46. `DECODE_IQ_YSF_SYNTH` needs 19 of the 20 FICHs; 9 passed
 checker needs only the Python standard library and registers when CTest finds Python 3.
 
 `ysf_acquire_synth` (58 kB, `SLICER_SYNTH`, issue #938) is five frames of the same YSF generator (payload seed 901)
-with 50 ms of the carrier held at its first and last deviation either side, and carries its `.dibits` too. The second
+with 50 ms of unmodulated carrier either side (the first and last I/Q sample repeated, 0 Hz deviation), and carries
+its `.dibits` too. The unmodulated lead is part of the case: with the edge symbols' deviation held instead, the hunt
+acquires on the second frame and the failure does not occur. The second
 frame's word is the first the symbol anchor measures after the acquisition, read while the hunt's crossing loop walked
 the grid: measured on the centres it was read on, it moved the grid two samples where one was due, and the third
 frame's word, held on that grid, read the +1 between a +3 and a -3 at its 18th symbol as negative, so the frame was
