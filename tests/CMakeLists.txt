@@ -24652,6 +24652,28 @@ if(DSD_HAS_RADIO)
     # and each frame was read two samples early, where the hunt's crossing loop left the grid on the sync. 9 FICHs
     # passed before the fix, 20 after it; at least 19 (95 %) must.
     dsd_neo_add_iq_decode_test(DECODE_IQ_YSF_SYNTH ysf_synth -fy "FN: [1-8]/8 " "" 19)
+    # Issue #938: five clean generated V/D mode 2 frames (ysf_acquire_synth, SLICER_SYNTH in tools/build_iq_fixtures.py).
+    # The second frame's word, the first the symbol anchor measured after acquisition, was read on the grid the hunt's
+    # crossing loop walked; measured on those centres it moved the grid two samples where one was due, and the third
+    # frame's word, held there, lost an inner symbol and the frame (FN 3/8). Before the fix 1 of the 3 frames checked
+    # after acquisition read clean and FN 3/8 was missing; after it all three, and every FICH.
+    dsd_neo_add_iq_decode_test(DECODE_IQ_YSF_ACQUIRE ysf_acquire_synth -fy "FN: 3/8 ")
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME DECODE_IQ_YSF_ACQUIRE_SYMBOLS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/symbol_capture_check.py
+                $<TARGET_FILE:dsd-neo>
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_acquire_synth.iq.json
+                --mode=-fy --frame 480 --sync 20 --skip-frames 1 --min-clean 1.0
+                --expect-frames 3
+        )
+        set_tests_properties(
+            DECODE_IQ_YSF_ACQUIRE_SYMBOLS
+            PROPERTIES LABELS "iq-decode" TIMEOUT 120
+        )
+    endif()
     dsd_neo_add_iq_decode_test(
         DECODE_IQ_EDACS
         edacs

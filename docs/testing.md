@@ -927,6 +927,18 @@ outside the FSW, which the hunt records by sign only. Before the fix 7 (NXDN96) 
 clean, after it all 46. `DECODE_IQ_YSF_SYNTH` needs 19 of the 20 FICHs; 9 passed before the fix, 20 after it. The
 checker needs only the Python standard library and registers when CTest finds Python 3.
 
+`ysf_acquire_synth` (58 kB, `SLICER_SYNTH`, issue #938) is five frames of the same YSF generator (payload seed 901)
+with 50 ms of the carrier held at its first and last deviation either side, and carries its `.dibits` too. The second
+frame's word is the first the symbol anchor measures after the acquisition, read while the hunt's crossing loop walked
+the grid: measured on the centres it was read on, it moved the grid two samples where one was due, and the third
+frame's word, held on that grid, read the +1 between a +3 and a -3 at its 18th symbol as negative, so the frame was
+lost. YSF's word is now measured both on those centres and on the grid without the walk, and moves the grid only as
+far as both agree (`dsd_symbol_note_walked_sync_anchor()`). `DECODE_IQ_YSF_ACQUIRE_SYMBOLS` needs all three frames
+checked (`--expect-frames 3`: after the first, before the last) clean outside the sync word, and `DECODE_IQ_YSF_ACQUIRE`
+the third frame's FICH (`FN: 3/8`). Before the fix 1 of the 3 read clean and FN 3/8 was missing. `--expect-frames`
+fails a capture that let the checker score fewer frames than the fixture sends, which would otherwise pass on the
+frames it held.
+
 `DECODE_IQ_DSTAR_AUTO_HUNT` and `DECODE_IQ_P25P2_CC_AUTO_HUNT` assert on an `SPS hunt:` rotation line rather than a
 decoded payload. The `dstar` (4 s) and `p25p2_cc` (2 s) fixtures are shorter than one full hunt rotation (~6 s at
 48 kHz), so under `-fa` they cannot be expected to decode; what they can prove is that the hunt is not pinned on its

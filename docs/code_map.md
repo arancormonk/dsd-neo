@@ -9115,8 +9115,8 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   the FSW from its second symbol and YSF the frame sync from its second (the recording starts on the word's first
   sample, and the measurement needs a sample of margin before the first centre), DMR MS the 24 dibits below
   `dmr_payload_p`. An M17 preamble's `dsd_symbol_hold_sync_anchor()` lets the crossing loop back on. Tests:
-  `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols), `SYMBOL_MATCHED_FILTER_SEAM` (hunt-hold),
-  `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`,
+  `DSP_SYMBOL_ANCHOR` (the hold rules, words with inner symbols, YSF's two readings), `SYMBOL_MATCHED_FILTER_SEAM`
+  (hunt-hold), `NXDN_FRAME_ROUTING`, `DMR_MS_DATA`, `DMR_SYNTH_MS_CLEAR_VOICE`, `DECODE_IQ_YSF_SYNTH`, `DECODE_IQ_YSF_ACQUIRE`, `DECODE_IQ_YSF_ACQUIRE_SYMBOLS`,
   `DECODE_IQ_NXDN96_SYNTH_SYMBOLS`, `DECODE_IQ_NXDN48_SYNTH_SYMBOLS`.
   P25 Phase 1 on C4FM (`rf_mod` 0) is the fourth hunt-read caller. The P25 word ends in alternating outer symbols whose
   crossings, acted on a symbol late, left every frame the hunt read about a sample past its symbols (a whole sample on
@@ -9138,9 +9138,17 @@ the stream-notice hooks' pattern: one that fails to initialize leaves the hook u
   word may be the first one measured after
   acquisition, a lapse or a reset, read while the crossing loop still walks the grid: it is measured against the grid
   without those slips (each symbol's shift, the samples it took against its span, is recorded), ending at its last
-  centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. Only the P25 frame
-  sync asks for that (`dsd_symbol_note_p25p1_sync_anchor()`); NXDN's, YSF's, DMR's and M17's words
-  (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever `lastsynctype` a P25 frame left.
+  centre, where the frame's grid goes on; the spans a fractional rate alternates stay as they were. The P25 frame sync
+  asks for that (`dsd_symbol_note_p25p1_sync_anchor()`). YSF's word (`dsd_symbol_note_walked_sync_anchor()`, issue
+  #938) is measured both ways and moves the grid only as far as both readings agree: the smaller of two moves the same
+  way, none when they disagree or either declines. Its recorded centres asked a clean word for two samples where one
+  was due, and the next word, held on that grid, lost an inner symbol and its frame; the walk-free reading alone moved
+  too far after a re-acquisition in noise (11 and 9 dB: 0.7 and 1.4 % of exact AMBE blocks lost against main). A word
+  read on a held grid has no slips inside it and the two readings are one. YSF has no unarmed raw-history fallback.
+  NXDN's, DMR's and M17's words (`dsd_symbol_note_sync_anchor()`) keep their recorded centres, whatever
+  `lastsynctype` a P25 frame left: their words and timing differ (NXDN48's 2400 grid and nine-symbol suffix, a DMR BS
+  word read inside its burst, DMR MS armed a dibit early, M17's preamble hold and filter switch), and no frame of
+  theirs was measured lost this way.
   The word that acquires a transmission (and the first after a lapse or a reset) is read with no recording armed, so
   `dsd_symbol_note_p25p1_sync_anchor()` measures it on the matched-filter seam's raw history instead
   (`dsd_matched_filter_seam::raw`, which keeps every raw sample the grid took): the hunt records nothing and pays
