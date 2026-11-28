@@ -46,7 +46,9 @@
 #endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
-#include "dsp/symbol_anchor_internal.h"
+#ifndef DSD_YSF_TEST_REAL_VOCODER
+#include "dsp/symbol_anchor_internal.h" /* the stubbed-vocoder cases' arm checks */
+#endif
 #include "scan_activity_capture.h"
 #include "test_support.h"
 #include "ysf_frame.h"
