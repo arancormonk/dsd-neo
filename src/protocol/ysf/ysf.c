@@ -1103,7 +1103,7 @@ ysf_dispatch_payload(dsd_opts* opts, dsd_state* state, const ysf_fich_info* info
 static void
 ysf_note_sync_anchor(const dsd_state* state) {
     const char* sync = state->synctype == DSD_SYNC_YSF_NEG ? INV_FUSION_SYNC_DIBITS : FUSION_SYNC_DIBITS;
-    dsd_symbol_note_sync_anchor(state, sync + 1, 19);
+    dsd_symbol_note_walked_sync_anchor(state, sync + 1, 19);
 }
 
 /* A frame whose payload was read ends where the next one's sync begins: record it for ysf_note_sync_anchor(). One whose
@@ -1143,7 +1143,8 @@ processYSF(dsd_opts* opts, dsd_state* state) {
     ysf_update_call_lifecycle(opts, state, &info);
     const bool payload_read = ysf_dispatch_payload(opts, state, &info);
     ysf_end_call_lifecycle(opts, state, &info);
-    ysf_arm_next_sync_anchor(state, payload_read);
+    /* A payload a carrier boundary cut ends nowhere near the next word: the hunt resumes inside the new carrier. */
+    ysf_arm_next_sync_anchor(state, payload_read && !ysf_carrier_left(state, &info));
 
     DSD_FPRINTF(stderr, "%s", KNRM);
     DSD_FPRINTF(stderr, "\n");

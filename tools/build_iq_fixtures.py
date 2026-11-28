@@ -734,13 +734,24 @@ P25_NO_HDU_SYNTH_LEAD_SYMBOLS = 5
 P25_NO_HDU_SYNTH_RAMP_S = 0.001
 P25_NO_HDU_SYNTH_SEED = 3801
 
+#
+# ysf_acquire_synth (issue #938) is five clean V/D mode 2 frames of the same generator, payload seed 901, with 50 ms
+# of unmodulated carrier either side (the first and last I/Q sample repeated, so 0 Hz deviation). The first frame's sync acquires; the second's
+# word is the first the symbol anchor measures, read while the hunt's crossing loop walked the grid, and measured on
+# the centres it was read on it moved the grid two samples where one was due: the third frame's word, held on that
+# grid, read the +1 between a +3 and a -3 at its 18th symbol as negative, and the frame (FN 3/8) was lost. It carries
+# <name>.dibits as the NXDN fixtures do.
+#
 # name, generator, symbol rate, frames, outer deviation Hz
 SLICER_SYNTH_AMPLITUDE = 0.5  # the carrier's magnitude at full scale 1.0: clear of the RF Level HOT advisory
 SLICER_SYNTH = [
     ("nxdn96_synth", "nxdn", 4800, 50, 2400.0),
     ("nxdn48_synth", "nxdn", 2400, 50, 1050.0),
     ("ysf_synth", "ysf", 4800, 20, 2700.0),
+    ("ysf_acquire_synth", "ysf_acquire", 4800, 5, 2700.0),
 ]
+YSF_ACQUIRE_SEED = 901
+YSF_ACQUIRE_HOLD_S = 0.05
 M17_SYNTH_DST = "N0CALL"
 M17_SYNTH_SRC = "LSF-FIRST"
 M17_SYNTH_TYPE = 0x0005  # stream, voice, no encryption, CAN 0
@@ -1937,9 +1948,9 @@ def ysf_fich_bits(fn):
     return sent
 
 
-def ysf_levels(frames, outer_sync=False):
-    """The symbol levels of the generator's first frames (also the I/Q fixture ysf_synth)."""
-    rng = np.random.default_rng(YSF_SEED)
+def ysf_levels(frames, outer_sync=False, seed=YSF_SEED):
+    """The symbol levels of the generator's first frames (also the I/Q fixtures ysf_synth and ysf_acquire_synth)."""
+    rng = np.random.default_rng(seed)
     levels = []
     for frame in range(frames):
         sync = bits_to_levels(msb_bits(YSF_FS, 40))
@@ -2252,12 +2263,18 @@ def build_slicer_synth(out_dir):
         if generator == "nxdn":
             levels = nxdn_levels(frames)
             response = nxdn_response(symbol_rate)
+        elif generator == "ysf_acquire":
+            levels = ysf_levels(frames, seed=YSF_ACQUIRE_SEED)
+            response = rrc_response(0.2, symbol_rate)
         else:
             levels = ysf_levels(frames)
             response = rrc_response(0.2, symbol_rate)
         samples = SLICER_SYNTH_AMPLITUDE * fm_from_levels(levels, symbol_rate, response, outer_hz)
+        if generator == "ysf_acquire":
+            hold = int(YSF_ACQUIRE_HOLD_S * SAMPLE_RATE_HZ)
+            samples = np.concatenate([np.full(hold, samples[0]), samples, np.full(hold, samples[-1])])
         written = write_fixture(out_dir, name, samples, normalize=False)
-        if generator == "nxdn":
+        if generator in ("nxdn", "ysf_acquire"):
             dibits = "".join(str(level_to_dibit[float(level)]) for level in levels)
             with open(os.path.join(out_dir, name + ".dibits"), "w", encoding="ascii", newline="\n") as handle:
                 handle.write(dibits + "\n")

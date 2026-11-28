@@ -6,7 +6,8 @@ first byte holds the dibit). The capture is aligned to <fixture>.dibits by the l
 frame the transmission sent after the first --skip-frames (acquisition) and before the last (whose final symbols the
 end of the clip cuts out of the filters) is checked outside its sync word, which the hunt records by sign only: a frame
 is clean when every one of those symbols matches. The check passes when at
-least --min-clean of those frames are clean, and prints the count either way."""
+least --min-clean of those frames are clean (and, with --expect-frames, exactly that many frames were checked), and
+prints the count either way."""
 
 import argparse
 import os
@@ -54,6 +55,11 @@ def main():
     parser.add_argument("--sync", type=int, required=True, help="sync symbols at the start of each frame")
     parser.add_argument("--skip-frames", type=int, default=2, help="frames left to acquisition")
     parser.add_argument("--min-clean", type=float, required=True, help="fraction of checked frames that must be clean")
+    parser.add_argument(
+        "--expect-frames",
+        type=int,
+        help="the number of frames that must be checked, so a capture cut short cannot pass on the frames it holds",
+    )
     args = parser.parse_args()
 
     dibits_path = args.fixture[: -len(".iq.json")] + ".dibits"
@@ -90,6 +96,9 @@ def main():
     print(f"aligned at symbol {lag}; {clean} of {checked} frames clean outside the sync word")
     if dirty:
         print("frames with symbol errors (frame:errors): " + " ".join(dirty))
+    if args.expect_frames is not None and checked != args.expect_frames:
+        print(f"FAILED: checked {checked} frames, expected {args.expect_frames}")
+        return 1
     if checked == 0 or clean < args.min_clean * checked:
         print(f"FAILED: need at least {args.min_clean:.0%} of the checked frames clean")
         return 1

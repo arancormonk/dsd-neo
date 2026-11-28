@@ -566,8 +566,9 @@ test_p25_hold_is_its_own(void) {
    samples show (one more or one fewer than its span) and every later centre follows. The transmitter's symbols are
    uniform at its own period (the grid's times 1 + @p ppm 1e-6), @p offset samples after the grid the frame goes on with
    (the word's last centre's). Feeds it through the anchor under @p lastsynctype, names the word from its second symbol
-   once read (as the P25 frame sync names it, dsd_symbol_note_p25p1_sync_anchor(), or with @p plain as every other
-   caller does), and returns the move the measurement queued, or 99 when it did not measure. */
+   once read (as the P25 frame sync names it, dsd_symbol_note_p25p1_sync_anchor(), or as @p namer says), and returns
+   the move the measurement queued, or 99 when it did not measure. @p word, when set, replaces the P25 word (YSF's, at
+   most P25_WORD symbols). */
 typedef struct {
     int whole;
     int rem;
@@ -579,8 +580,16 @@ typedef struct {
     int lastsynctype;
     int named_from; /* the word's first named symbol: 1, as frame sync names it, or 0 */
     const int* walk;
-    int plain; /* named with dsd_symbol_note_sync_anchor(), as NXDN, YSF, DMR and M17 name theirs */
+    int namer; /* WORD_NAMED_*: 0 as P25 names its word; 1 dsd_symbol_note_sync_anchor(), as NXDN, DMR and M17 name
+                  theirs; 2 dsd_symbol_note_walked_sync_anchor(), as YSF names its */
+    const char* word;
 } p25_word_case;
+
+enum {
+    WORD_NAMED_P25 = 0,
+    WORD_NAMED_PLAIN = 1,
+    WORD_NAMED_WALKED = 2,
+};
 
 #define P25_WORD    24
 #define P25_TAIL    2
@@ -589,7 +598,10 @@ typedef struct {
 
 static int
 run_p25_word(const p25_word_case* c) {
-    const int total = c->lead + P25_WORD + P25_TAIL;
+    const char* word = c->word != NULL ? c->word : P25P1_SYNC;
+    const int len = (int)strlen(word);
+    assert(len >= 2 && len <= P25_WORD);
+    const int total = c->lead + len + P25_TAIL;
     assert(total <= P25_MAX_LEN);
     int spans[P25_MAX_LEN];
     int shifts[P25_MAX_LEN];
@@ -603,12 +615,12 @@ run_p25_word(const p25_word_case* c) {
             accum -= c->den;
         }
         const int w = k - c->lead;
-        shifts[k] = (w > 0 && w < P25_WORD) ? c->walk[w] - c->walk[w - 1] : 0;
-        dibits[k] = (w >= 0 && w < P25_WORD) ? P25P1_SYNC[w] : (char)('0' + (int)((noise() + 0.5) * 3.999));
+        shifts[k] = (w > 0 && w < len) ? c->walk[w] - c->walk[w - 1] : 0;
+        dibits[k] = (w >= 0 && w < len) ? word[w] : (char)('0' + (int)((noise() + 0.5) * 3.999));
     }
     /* The grid without the walk, ending at the word's last centre (a span's centre is (span - 1) / 2 into it), where
        the frame's grid goes on; and the samples as the walking grid takes them. */
-    const int last = c->lead + P25_WORD - 1;
+    const int last = c->lead + len - 1;
     int nominal[P25_MAX_LEN];
     int at = 0;
     for (int k = 0; k < total; k++) {
@@ -631,7 +643,7 @@ run_p25_word(const p25_word_case* c) {
     for (int k = c->lead; k <= last; k++) {
         phase += (double)nominal[k] - ((double)k * period);
     }
-    phase = (phase / (double)P25_WORD) + (double)walked_by + c->offset;
+    phase = (phase / (double)len) + (double)walked_by + c->offset;
     static float samples[P25_MAX_LEN * (P25_MAX_SPS + 2)];
     assert(samples_total <= (int)(sizeof(samples) / sizeof(samples[0])));
     for (int n = 0; n < samples_total; n++) {
@@ -659,10 +671,12 @@ run_p25_word(const p25_word_case* c) {
         }
         dsd_symbol_anchor_end_symbol(anchor, spans[k]);
         if (k == last) {
-            if (c->plain) {
-                dsd_symbol_note_sync_anchor(state, &P25P1_SYNC[c->named_from], P25_WORD - c->named_from);
+            if (c->namer == WORD_NAMED_WALKED) {
+                dsd_symbol_note_walked_sync_anchor(state, &word[c->named_from], len - c->named_from);
+            } else if (c->namer == WORD_NAMED_PLAIN) {
+                dsd_symbol_note_sync_anchor(state, &word[c->named_from], len - c->named_from);
             } else {
-                dsd_symbol_note_p25p1_sync_anchor(state, &P25P1_SYNC[c->named_from], P25_WORD - c->named_from);
+                dsd_symbol_note_p25p1_sync_anchor(state, &word[c->named_from], len - c->named_from);
             }
         }
         if (k == last + 1) {
@@ -722,7 +736,8 @@ test_p25_word_measures_the_frame_grid(void) {
                                              DSD_SYNC_P25P1_POS,
                                              1,
                                              k_no_walk,
-                                             0};
+                                             WORD_NAMED_P25,
+                                             NULL};
                     const int slip = run_p25_word(&c);
                     const int want = capped_move(offset, k_rates[r].whole);
                     if (slip != want) {
@@ -742,7 +757,7 @@ test_p25_word_measures_the_frame_grid(void) {
    margin. */
 static void
 test_p25_word_named_from_its_second_symbol(void) {
-    p25_word_case c = {10, 0, 0, 0.0, 0, 1.0, 1.0, DSD_SYNC_P25P1_POS, 0, k_no_walk, 0};
+    p25_word_case c = {10, 0, 0, 0.0, 0, 1.0, 1.0, DSD_SYNC_P25P1_POS, 0, k_no_walk, WORD_NAMED_P25, NULL};
     assert(run_p25_word(&c) == 99);
     c.named_from = 1;
     assert(run_p25_word(&c) == 1);
@@ -782,7 +797,8 @@ test_p25_word_read_on_a_walking_grid(void) {
                                    DSD_SYNC_P25P1_POS,
                                    1,
                                    k_p25_walk,
-                                   0};
+                                   WORD_NAMED_P25,
+                                   NULL};
                 const int slip = run_p25_word(&c);
                 if (slip != offset) {
                     DSD_FPRINTF(stderr, "P25 word on a walking grid, %d+%d/%d sps, offset %d, polarity %d: moved %d\n",
@@ -791,7 +807,7 @@ test_p25_word_read_on_a_walking_grid(void) {
                 assert(slip == offset);
                 /* The same samples named by another caller measure on the recorded centres, after a P25 frame (an M17
                    word) as after an NXDN one. */
-                c.plain = 1;
+                c.namer = WORD_NAMED_PLAIN;
                 const int after_p25 = run_p25_word(&c);
                 c.lastsynctype = DSD_SYNC_NXDN_POS;
                 const int after_nxdn = run_p25_word(&c);
@@ -801,6 +817,91 @@ test_p25_word_read_on_a_walking_grid(void) {
         }
     }
     assert(differs > 0);
+}
+
+/* The hunt's crossing loop over the YSF frame sync of a clean frame, up to two samples behind the frame's grid over the
+   word's middle and back by its end (issue #938): measured on its recorded centres, a grid a sample behind its symbols
+   asks for two, and a centred one for one. */
+static const int k_ysf_walk[20] = {0, 0, 0, -1, -1, -1, -1, -2, -2, -2, -2, -1, -1, -1, 0, 0, 0, 0, 0, 0};
+
+/* The move both readings of a word agree on, as symbol_anchor.c takes it for YSF. */
+static int
+agreed_move(int recorded, int nominal) {
+    if (recorded == 0 || nominal == 0 || (recorded < 0) != (nominal < 0)) {
+        return 0;
+    }
+    return abs(recorded) < abs(nominal) ? recorded : nominal;
+}
+
+/* YSF's frame sync, named from its second symbol as ysf.c names it, measured both ways
+   (dsd_symbol_note_walked_sync_anchor()): the grid moves only as far as the recorded and the walk-free readings of the
+   same samples agree. On a word the loop walked, where the recorded centres ask for more than the grid is off (issue
+   #938: two samples where it needed one, and the next word, held there, lost its frame), it moves as far as the grid
+   is off; it never moves further than either reading, nor against the walk-free one; on a held grid the readings are
+   one. At 20 samples a symbol the word's few crossings leave the walk-free reading itself up to a sample out, and only
+   those relations are held to.
+   Named whole, the word has no symbol of samples before its first centre, and nothing is placed. Both polarities, at
+   whole and alternating spans. */
+static void
+test_ysf_word_moves_as_far_as_both_readings_agree(void) {
+    static const struct {
+        int whole;
+        int rem;
+        int den;
+    } k_rates[] = {{10, 0, 0}, {10, 2000, 4800}, {20, 0, 0}};
+
+    int recorded_overshoots = 0;
+    for (size_t r = 0; r < sizeof(k_rates) / sizeof(k_rates[0]); r++) {
+        for (int offset = -2; offset <= 2; offset++) {
+            for (int polarity = -1; polarity <= 1; polarity += 2) {
+                p25_word_case c = {k_rates[r].whole, k_rates[r].rem,    k_rates[r].den,   0.0, 0,
+                                   (double)offset,   (double)polarity,  DSD_SYNC_YSF_POS, 1,   k_ysf_walk,
+                                   WORD_NAMED_PLAIN, FUSION_SYNC_DIBITS};
+                /* Every reading of a case sees the same symbols around the word. */
+                const uint64_t seed = g_rng;
+                const int recorded = run_p25_word(&c);
+                c.namer = WORD_NAMED_P25;
+                g_rng = seed;
+                const int nominal = run_p25_word(&c);
+                c.namer = WORD_NAMED_WALKED;
+                g_rng = seed;
+                const int walked = run_p25_word(&c);
+                if (walked != agreed_move(recorded, nominal) || (k_rates[r].whole == 10 && nominal != offset)) {
+                    DSD_FPRINTF(
+                        stderr, "YSF word, %d+%d/%d sps, offset %d, polarity %d: recorded %d nominal %d moved %d\n",
+                        k_rates[r].whole, k_rates[r].rem, k_rates[r].den, offset, polarity, recorded, nominal, walked);
+                }
+                assert(recorded != 99 && nominal != 99);
+                assert(walked == agreed_move(recorded, nominal));
+                assert(abs(walked) <= abs(recorded) && abs(walked) <= abs(nominal));
+                assert(walked == 0 || (walked < 0) == (nominal < 0));
+                if (k_rates[r].whole == 10) {
+                    /* YSF's spans at 48 kHz: the walk-free reading is where the grid is. */
+                    assert(nominal == offset);
+                    if (abs(recorded) > abs(offset)) {
+                        /* The issue's case: the recorded centres ask for more than the grid is off (a centred grid
+                           included), the move does not. */
+                        assert(walked == offset);
+                        recorded_overshoots++;
+                    }
+                }
+
+                c.walk = k_no_walk;
+                g_rng = seed;
+                const int held = run_p25_word(&c);
+                c.namer = WORD_NAMED_PLAIN;
+                g_rng = seed;
+                assert(run_p25_word(&c) == held);
+                assert(k_rates[r].whole != 10 || held == offset);
+
+                c.named_from = 0;
+                c.namer = WORD_NAMED_WALKED;
+                g_rng = seed;
+                assert(run_p25_word(&c) == 99);
+            }
+        }
+    }
+    assert(recorded_overshoots > 0);
 }
 
 /* A P25 word the hunt read with no recording armed (the first of a transmission): the grid recorded nothing, and the
@@ -1110,6 +1211,8 @@ main(void) {
     test_p25_marked_word_declines();
     /* Last: its words draw on the shared random sequence, which the cases above were written against. */
     test_move_cap_follows_the_rate();
+    /* After it, for the same reason: its frames' random symbols come from the same sequence. */
+    test_ysf_word_moves_as_far_as_both_readings_agree();
     printf("symbol anchor: OK\n");
     return 0;
 }

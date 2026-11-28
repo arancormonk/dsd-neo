@@ -30,6 +30,14 @@
 /* Samples either side of the centre a symbol's level is read over: the decoder's own C4FM window is about this. */
 #define ANCHOR_CENTRE_HALF  1
 
+/* How a named word is measured: on the centres it was read on, on the grid without the walk the crossing loop took
+   while reading it (P25 Phase 1), or both ways, moving only as far as both agree (YSF). */
+typedef enum {
+    ANCHOR_MEASURE_RECORDED = 0,
+    ANCHOR_MEASURE_NOMINAL = 1,
+    ANCHOR_MEASURE_AGREED = 2,
+} anchor_measure_kind;
+
 struct dsd_symbol_anchor {
     float samples[ANCHOR_RING_SAMPLES];
     uint64_t centres[ANCHOR_RING_SYMBOLS];
@@ -46,7 +54,7 @@ struct dsd_symbol_anchor {
     int sync_count;
     uint64_t sync_end_symbol; /* symbol_total when the sync word's last symbol had ended. */
     int sync_pending;
-    int sync_nominal;  /* a P25 Phase 1 word (dsd_symbol_note_p25p1_sync_anchor()): measured without the walk */
+    int sync_measure;  /* how the named word is measured (anchor_measure_kind) */
     int slip;          /* +1: take one sample more at the next symbol; -1: one fewer. */
     int slip_from_raw; /* the slip was measured on the seam's raw history (anchor_note_hunt_word()) */
     int armed;         /* recording: a protocol said a sync word is coming (dsd_symbol_arm_sync_anchor()) */
@@ -360,11 +368,12 @@ anchor_slip_for(double offset, int cap) {
     return offset < 0.0 ? -slip : slip;
 }
 
-/* Measures the named sync word with @p margin_before / @p margin_after samples around its first / last centre, and
-   writes the move it asks for. Returns 0 when the recording cannot place it. */
+/* Measures the named sync word with @p margin_before / @p margin_after samples around its first / last centre, on the
+   centres it was read on or, with @p nominal, on the grid without the walk (anchor_nominal_centres()), and writes the
+   move it asks for. Returns 0 when the recording cannot place it. */
 static int
-anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t margin_after, int* out_slip) {
-    anchor->sync_pending = 0;
+anchor_measure_word(const dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t margin_after, int nominal,
+                    int* out_slip) {
     const int count = anchor->sync_count;
     const int sps = anchor->samples_per_symbol;
     if ((uint64_t)count > anchor->symbol_total || sps < 2 || sps > DSD_SYMBOL_TIMING_MAX_SPAN) {
@@ -379,7 +388,7 @@ anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t 
     if (!anchor_gather_centres(anchor, count, abs_centres, &first, &last)) {
         return 0;
     }
-    if (anchor->sync_nominal && !anchor_nominal_centres(anchor, count, abs_centres, &first)) {
+    if (nominal && !anchor_nominal_centres(anchor, count, abs_centres, &first)) {
         return 0;
     }
     if (first < margin_before || last + margin_after >= anchor->sample_total
@@ -403,6 +412,37 @@ anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t 
         return 0;
     }
     *out_slip = anchor_slip_for(offset, anchor_slip_cap(sps, anchor->sync_symbol_rate_hz));
+    return 1;
+}
+
+/* The move both readings of a word ask for: the smaller of two moves the same way, none when they disagree. */
+static int
+anchor_agreed_slip(int recorded, int nominal) {
+    if (recorded == 0 || nominal == 0 || (recorded < 0) != (nominal < 0)) {
+        return 0;
+    }
+    return abs(recorded) < abs(nominal) ? recorded : nominal;
+}
+
+/* Measures the named sync word as anchor_measure_word() does, the way its caller named it. A YSF word
+   (ANCHOR_MEASURE_AGREED) is measured both ways and moves the grid only as far as both readings agree: the first
+   word after an acquisition is read on the grid the crossing loop walks, its recorded centres are not one grid and
+   asked a clean word for twice the move it needed (issue #938), and in noise the walk-free reading of a word the
+   loop walked far can ask for too much. On a word nothing walked the two readings are one. */
+static int
+anchor_measure_slip(dsd_symbol_anchor* anchor, uint64_t margin_before, uint64_t margin_after, int* out_slip) {
+    anchor->sync_pending = 0;
+    if (anchor->sync_measure != ANCHOR_MEASURE_AGREED) {
+        return anchor_measure_word(anchor, margin_before, margin_after, anchor->sync_measure == ANCHOR_MEASURE_NOMINAL,
+                                   out_slip);
+    }
+    int recorded = 0;
+    int nominal = 0;
+    if (!anchor_measure_word(anchor, margin_before, margin_after, 0, &recorded)
+        || !anchor_measure_word(anchor, margin_before, margin_after, 1, &nominal)) {
+        return 0;
+    }
+    *out_slip = anchor_agreed_slip(recorded, nominal);
     return 1;
 }
 
@@ -672,9 +712,9 @@ anchor_note_hunt_word(dsd_state* state, const anchor_hunt_word* word, const char
     return 1;
 }
 
-/* Names the word for a measurement; @p nominal measures it on the grid without the slips it was read on. */
+/* Names the word for a measurement, measured as @p measure (anchor_measure_kind) says. */
 static void
-anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int nominal) {
+anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int measure) {
     if (state == NULL || sync_dibits == NULL || count <= 0 || count > DSD_SYMBOL_ANCHOR_MAX_SYMS) {
         return;
     }
@@ -690,7 +730,7 @@ anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int
     }
     DSD_MEMCPY(anchor->sync, sync_dibits, (size_t)count);
     anchor->sync_count = count;
-    anchor->sync_nominal = nominal;
+    anchor->sync_measure = measure;
     anchor->sync_symbol_rate_hz = anchor_stream_symbol_rate_hz(state);
     anchor->sync_end_symbol = anchor->symbol_total;
     anchor->sync_pending = 1;
@@ -698,7 +738,12 @@ anchor_note_sync(const dsd_state* state, const char* sync_dibits, int count, int
 
 void
 dsd_symbol_note_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
-    anchor_note_sync(state, sync_dibits, count, 0);
+    anchor_note_sync(state, sync_dibits, count, ANCHOR_MEASURE_RECORDED);
+}
+
+void
+dsd_symbol_note_walked_sync_anchor(const dsd_state* state, const char* sync_dibits, int count) {
+    anchor_note_sync(state, sync_dibits, count, ANCHOR_MEASURE_AGREED);
 }
 
 void
@@ -711,7 +756,7 @@ dsd_symbol_note_p25p1_sync_anchor(dsd_state* state, const char* sync_dibits, int
     if ((anchor == NULL || !anchor->armed) && anchor_hunt_word_locate(state, count, &word)) {
         (void)anchor_note_hunt_word(state, &word, sync_dibits);
     }
-    anchor_note_sync(state, sync_dibits, count, 1);
+    anchor_note_sync(state, sync_dibits, count, ANCHOR_MEASURE_NOMINAL);
 }
 
 void

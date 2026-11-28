@@ -46,6 +46,9 @@
 #endif
 #include "dsd-neo/core/safe_api.h"
 #include "dsd-neo/core/state_fwd.h"
+#ifndef DSD_YSF_TEST_REAL_VOCODER
+#include "dsp/symbol_anchor_internal.h" /* the stubbed-vocoder cases' arm checks */
+#endif
 #include "scan_activity_capture.h"
 #include "test_support.h"
 #include "ysf_frame.h"
@@ -2188,8 +2191,16 @@ test_process_ysf_header_and_terminator_end_the_capture(void) {
     dsd_state_ext_free_all(&state);
 }
 
+/* Whether the frame just read armed the recording of the next frame's sync word (ysf_arm_next_sync_anchor()). */
+static int
+next_word_armed(dsd_state* state) {
+    const dsd_symbol_anchor* anchor = DSD_STATE_EXT_GET_AS(dsd_symbol_anchor, state, DSD_STATE_EXT_DSP_SYMBOL_ANCHOR);
+    return anchor != NULL && dsd_symbol_anchor_recording(anchor);
+}
+
 /* Issue #661: a voice block read across the carrier boundary is dropped with the rest of the frame, as V/D1 drops it,
-   in V/D2 and in full rate alike. */
+   in V/D2 and in full rate alike. Issue #938: the cut frame arms no recording of a next word, which does not follow it
+   (the hunt goes on inside the new carrier); a whole frame arms one. */
 static void
 test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     static dsd_opts opts;
@@ -2204,12 +2215,24 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     prepare_gain_stage(&state);
     reset_ysf_stream();
     append_vd_type2_frame(0);
+    (void)processYSF(&opts, &state);
+    assert(state.carrier_seq == 0U);
+    assert(next_word_armed(&state));
+    dsd_state_ext_free_all(&state);
+
+    DSD_MEMSET(&opts, 0, sizeof(opts));
+    DSD_MEMSET(&state, 0, sizeof(state));
+    opts.floating_point = 1;
+    prepare_gain_stage(&state);
+    reset_ysf_stream();
+    append_vd_type2_frame(0);
     /* Inside the third block's VeCH. */
     g_boundary_at = 100U + (2U * 72U) + 20U + 10U;
     (void)processYSF(&opts, &state);
     g_boundary_at = SIZE_MAX;
     assert(state.carrier_seq == 1U);
     assert(g_mbe_call_count == 2);
+    assert(!next_word_armed(&state));
     dsd_state_ext_free_all(&state);
 
     DSD_MEMSET(&opts, 0, sizeof(opts));
@@ -2231,6 +2254,7 @@ test_process_ysf_voice_split_by_a_carrier_boundary_drops_the_rest(void) {
     g_boundary_at = SIZE_MAX;
     assert(state.carrier_seq == 1U);
     assert(g_process_mbe_call_count == 2);
+    assert(!next_word_armed(&state));
     dsd_state_ext_free_all(&state);
 }
 #else

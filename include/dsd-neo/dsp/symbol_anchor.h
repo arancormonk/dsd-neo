@@ -86,12 +86,28 @@ void dsd_symbol_hold_sync_anchor(struct dsd_state* state);
 void dsd_symbol_note_sync_anchor(const struct dsd_state* state, const char* sync_dibits, int count);
 
 /**
+ * @brief Name the YSF sync word the symbol grid just read, as dsd_symbol_note_sync_anchor() does, for a word that may
+ * have been read while the hunt's crossing loop walked the grid.
+ *
+ * The first word measured after an acquisition (or a lapse, a reset, a lost frame) is read on a grid nothing holds:
+ * the loop slips it a sample at a time over the word's crossings, so the recorded centres are not one grid. The word is
+ * measured twice, on those centres and on the grid without the slips (as dsd_symbol_note_p25p1_sync_anchor() measures
+ * it), and the grid moves only as far as both readings agree: the smaller of two moves the same way, none when they
+ * disagree or either reading declines. A word read on a held grid has no slips inside it and the two readings are one.
+ * The move, the hold and the lapse are dsd_symbol_note_sync_anchor()'s: there is no unarmed raw-history fallback.
+ * Issue #938: the recorded centres of a clean word asked for two samples where it needed one, and the next word,
+ * held on that grid, lost an inner symbol and its frame; the walk-free reading alone overshot in noise.
+ */
+void dsd_symbol_note_walked_sync_anchor(const struct dsd_state* state, const char* sync_dibits, int count);
+
+/**
  * @brief Name the P25 Phase 1 sync word the symbol grid just read (C4FM), as dsd_symbol_note_sync_anchor() does.
  *
  * The word is measured against the grid its symbols would have had without the slips the hunt's crossing loop took
  * while reading it, ending at its last centre: the first word after acquisition, a lapse or a reset is read on a grid
- * nothing holds, and the frame behind it goes on from that last centre. Only the P25 Phase 1 frame sync calls it; every
- * other caller's word is measured on the centres it was read on, whatever dsd_state::lastsynctype says.
+ * nothing holds, and the frame behind it goes on from that last centre. Only the P25 Phase 1 frame sync calls it; YSF
+ * measures its word both ways (dsd_symbol_note_walked_sync_anchor()), and every other caller's word is measured on the
+ * centres it was read on, whatever dsd_state::lastsynctype says.
  *
  * With no recording armed (the word that acquires a transmission, or the first after a lapse or a reset), the word is
  * measured on the raw samples the matched-filter seam keeps (dsd_matched_filter_seam), at a whole number of samples a
