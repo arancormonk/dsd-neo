@@ -57,9 +57,12 @@ struct dsd_state;
 /**
  * @brief Mid-threshold placement factor between center and outer rails.
  *
- * A pure midpoint between inner/outer rails would be 0.5, but 0.625 has shown
- * better first-frame decode robustness on noisy captures by adding a small bias
- * toward the outer symbols during warm-start.
+ * For ideal levels +1 and +3 the midpoint between an inner and an outer symbol is +2, 2/3 of the distance from the
+ * centre to the outer rail; 0.625 places the boundary closer to the centre. It stays (issue #938): two thirds, here and
+ * in the engine's refresh (dsd_engine_slicer_thresholds_refresh(), which also uses 5/8), helped generated YSF
+ * signals whose pulse was not the receiver's matched one, but corrupted AMBE blocks on a clean matched YSF signal,
+ * moved NXDN96 acquisition (whose FSW gate places its levels with this constant) and read slightly worse on the
+ * repository's off-air YSF, DMR and P25 captures.
  */
 #define DSD_WARM_START_MID_FRACTION 0.625f
 
