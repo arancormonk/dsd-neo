@@ -609,7 +609,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* rootThereForIndex() for a root whose directory is not a readable one: one a session could make, with no row
      * indexed on it. Takes the lock for the row look. */
     bool rootMissingTakenAsThere(int root, const QString& path) const;
-    /* A first read of @p path that read @p rows rows, dropped (true) when @p root's directory is missing now (r16t): the
+    /* A first read of @p path that read @p rows rows, dropped (true) when @p root's directory is missing now: the
      * folder stays unread and the next pass is asked for. Takes the lock. */
     bool firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass);
     /* Whether a new folder may go on @p root (@p usable, or @p makeOnly with its directory still absent, then made);
@@ -845,7 +845,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* folderLocked()'s steps, under the store's lock: the roots usable now; the owner's folder (its path, @p gone
      * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
      * and a new folder. @p makeOnly: the roots held or seen away that this start found with no directory, which it may
-     * make anew (I2 reads them again after) but never use as they stand (r15t). */
+     * make anew (I2 reads them again after) but never use as they stand. */
     QList<bool> usableRootsLocked(QList<bool>* makeOnly);
     QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
     /* One scan of ownerFolderPathLocked(): the best folder among the roots usable as it goes, its checks clearing any

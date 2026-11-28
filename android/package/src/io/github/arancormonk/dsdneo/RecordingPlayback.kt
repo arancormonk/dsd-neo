@@ -237,7 +237,7 @@ object RecordingPlayback {
     fun takeRecheck(): Array<String> = recheck.take()
 
     /**
-     * The recheck list's serial ([RecordingRecheck.serial]), for a poll with no play open (r13): a play that ended
+     * The recheck list's serial ([RecordingRecheck.serial]), for a poll with no play open: a play that ended
      * can still add to the list (a late open's Gone), and the host reads it without the ended play's record.
      */
     @JvmStatic
@@ -546,7 +546,7 @@ object RecordingPlayback {
             if (intent.action == AudioManager.ACTION_AUDIO_BECOMING_NOISY) {
                 // Delivered on the playback looper (Listening registers it with the looper's handler): the instance's
                 // taps are read through the volatile serviceTaps, as every looper command reads them, never the
-                // main-thread service field (r14t); its waiting tap goes before the pause (R54).
+                // main-thread service field; its waiting tap goes before the pause (R54).
                 onLooper { PlayPauseTaps.disconnected(serviceTaps, it) }
             }
         }

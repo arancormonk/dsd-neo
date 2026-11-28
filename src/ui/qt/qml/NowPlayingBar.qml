@@ -475,7 +475,7 @@ Rectangle {
         accessibleName: qsTr("Next call")
         visible: !bar.end
         // Not offered at the last call, nor when every later call is already
-        // known failed: the player's own rule, the one it delivers Next by (#909 r13).
+        // known failed: the player's own rule, the one it delivers Next by (#909).
         enabled: bar.live && decoderHost.playbackCanNext === true
         x: bar.nextX
         y: bar.transportY + 2

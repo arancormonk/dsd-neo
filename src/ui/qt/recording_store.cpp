@@ -693,8 +693,8 @@ RecordingStore::rootAvailableNow(const QString& root) {
 
 bool
 RecordingStore::firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass) {
-    // A first read with something in it whose directory is missing now (there and empty only for holding no rows,
-    // r16t) is not committed: what it read named files no longer there. The folder stays unread and the next pass is
+    // A first read with something in it whose directory is missing now (there and empty only for holding no rows)
+    // is not committed: what it read named files no longer there. The folder stays unread and the next pass is
     // asked for (it finds the folder gone, or reads it whole); the root, remembered missing, is listed once back.
     if (rows == 0 || rootPlayableNow(rootPathOf(root))) {
         return false;
@@ -708,8 +708,8 @@ RecordingStore::firstReadDropped(const QString& path, int root, qsizetype rows, 
 bool
 RecordingStore::rootTakenForFolderLocked(int root, bool usable, bool makeOnly) {
     // Never a parent: an available root's parent is there, and one gone since is not made again in its place. A root
-    // only to be made (r15t) is passed over when its directory is there by now: it waits for its listing, which is
-    // asked for whether or not the start finds a folder elsewhere (r16t).
+    // only to be made is passed over when its directory is there by now: it waits for its listing, which is
+    // asked for whether or not the start finds a folder elsewhere.
     const bool missing = !QFileInfo(m_roots.at(root)).isDir();
     if (makeOnly && !missing) {
         m_passRequested = true;
@@ -886,8 +886,8 @@ RecordingStore::rootStillAvailable(int root, Pass* pass) {
     const bool there = rootMissingTakenAsThere(root, rootPath);
     const std::lock_guard<std::mutex> lock(m_mutex);
     if (there) {
-        // There and empty only because its directory is missing (no rows on it), seen after the pass's look at it
-        // (r13): remembered as missing, under m1's fence, so the next pass lists it once it is back.
+        // There and empty only because its directory is missing (no rows on it), seen after the pass's look at it:
+        // remembered as missing, under m1's fence, so the next pass lists it once it is back.
         if (m_rootMade.value(root) == made) {
             m_rootDirMissing[root] = true;
         }
@@ -1110,7 +1110,7 @@ RecordingStore::loadFolder(const QString& path, int root, bool replace, Pass* pa
             holdCommittedFolderLocked(path);
             removeFolderEntriesLocked(path, pass);
         } else {
-            // A first read holds nothing from before, but its rows wait for its last slice all the same (r14t): an
+            // A first read holds nothing from before, but its rows wait for its last slice all the same: an
             // early record already carries the identity of a file a later one reused the name of (statPublished()).
             m_committed.insert(path, CommittedFolder());
         }
@@ -2677,11 +2677,11 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
     QList<bool> usable = m_rootAvailable;
     *makeOnly = QList<bool>(usable.size(), false);
     for (int i = 0; i < usable.size(); i++) {
-        // One look decides whether the directory is missing; only a missing one is asked whether it can be made (r14t),
+        // One look decides whether the directory is missing; only a missing one is asked whether it can be made,
         // so a directory replaced between two looks never reads as there to one and missing to the other.
         const bool missing = !rootPlayableNow(m_roots.at(i));
         const bool creatable = !missing || rootAvailableNow(m_roots.at(i));
-        // Gone while its listing in full is in flight (r13, R79's rule), or while rows are indexed on it (r14t, R83):
+        // Gone while its listing in full is in flight (R79's rule), or while rows are indexed on it (R83):
         // what the index holds of it may name files no longer there, and it is read in full once back, wherever this
         // session records.
         const bool holdsRows = m_rootAvailable.value(i) && rootHoldsRowsLocked(i);
@@ -2692,13 +2692,13 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
             usable[i] = false;
             noteRootSeenAwayLocked(i);
         }
-        // A root held or seen away is not recorded onto until a full listing has read it, whatever the looks see now
-        // (r15t): a card back unread may hold this owner's folder under another name. Only a start that finds its
+        // A root held or seen away is not recorded onto until a full listing has read it, whatever the looks see now:
+        // a card back unread may hold this owner's folder under another name. Only a start that finds its
         // directory absent may make it anew (I2 reads it again after); the pass the start asks for lists the rest.
         if (!m_rootAvailable.value(i) || rootSeenAwayLocked(i)) {
             (*makeOnly)[i] = missing && creatable;
             usable[i] = false;
-            // Back and passed over: its listing is asked for, whether or not this start finds a folder (r16t).
+            // Back and passed over: its listing is asked for, whether or not this start finds a folder.
             m_passRequested = m_passRequested || !missing;
         }
     }
@@ -2708,8 +2708,8 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
 QString
 RecordingStore::ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread) {
     // The owner's folder in the first available root that has one: a rename keeps it, and a clash of the short
-    // uid in the name never merges two owners. Chosen only among the roots still usable once its checks are done
-    // (r16t): a check that finds a root gone clears it, and the choice is made again without it.
+    // uid in the name never merges two owners. Chosen only among the roots still usable once its checks are done:
+    // a check that finds a root gone clears it, and the choice is made again without it.
     for (;;) {
         const QList<bool> before = *usable;
         const QString path = ownerFolderCandidateLocked(uid, usable, gone, unread);
@@ -3628,7 +3628,7 @@ RecordingStore::selectPath(const QString& path) {
         return 0;
     }
     // A hold for a share's copy, taken whenever: never transferred (selectionToken() refuses it while not settled).
-    // Only of a recording available as the entry map says (r12): a row held from before its folder's read again, or
+    // Only of a recording available as the entry map says: a row held from before its folder's read again, or
     // on a root seen away since, may name another file at its path now, so no share takes it.
     const std::lock_guard<std::mutex> lock(m_mutex);
     const QString id = readerIdForPathLocked(clean_absolute(path));

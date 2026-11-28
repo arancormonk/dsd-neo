@@ -890,7 +890,7 @@ private fun aFailedRestartKeepsSearchingBackward() {
             "last $last: A plays, and the playlist goes on (${rig.state}, ${rig.service.ends})"
         }
         if (last) {
-            // r13: every later call already known failed: Next is not offered, nor delivered, and A goes on.
+            // Every later call already known failed: Next is not offered, nor delivered, and A goes on.
             val token = rig.status.playToken
             check(!rig.status.allows(RecordingPlayer.ACTION_NEXT) && rig.status.record(rig.nowMs).endsWith("\t0")) {
                 "Next is not offered, in the record either"
@@ -1037,7 +1037,7 @@ private fun nextPastOnlyFailedCallsIsRefused() {
     val b = rig.current
     rig.machine.next()
     rig.turn()
-    // r13: delivered by the rule that offers it, a Next not offered changes nothing: B goes on.
+    // Delivered by the rule that offers it, a Next not offered changes nothing: B goes on.
     check(rig.state == PLAYING && rig.status.call == 1 && rig.current === b && !b.released) {
         "a Next with only failed calls ahead is refused, and B goes on (${rig.state})"
     }
@@ -1343,7 +1343,7 @@ private fun theQueueIsLetGoAtTheEnd() {
 }
 
 /**
- * The emulator's Previous burst (D1, evidence emu-r10): five Previous from Call 6 of 7 (two parts, the first 1.44 s
+ * The emulator's Previous burst (D1): five Previous from Call 6 of 7 (two parts, the first 1.44 s
  * long). While its first part plays, each press moves one call and the burst ends on Call 1. In the failing runs that
  * part had completed just as the burst arrived (its player released unpaused), so the first press found the second
  * part current and restarted the call (D7: a playable part of the call before the current one), and the burst ended on

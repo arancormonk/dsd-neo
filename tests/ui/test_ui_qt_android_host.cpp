@@ -148,7 +148,7 @@ struct PlatformRecordings {
     int arrayPlays = 0;
     QStringList recheck;
     int rechecks = 0;
-    qint64 recheckSerial = -1; // RecordingPlayback.recheckSerial(); -1: not readable (#909 r13)
+    qint64 recheckSerial = -1; // RecordingPlayback.recheckSerial(); -1: not readable (#909)
     std::atomic<int> transfers{0};
     std::atomic<int> shares{0};
     int canShares = 0;
@@ -3106,7 +3106,7 @@ check_playlist_record() {
     r.status = f.text();
     host.refresh();
     check(host.playbackCanNext() && host.property("playbackCanNext").toBool() && seen.changed == refusedChanges + 5,
-          "#909 r13: Next as the player offers it is published, as a change");
+          "#909: Next as the player offers it is published, as a change");
     const qint64 kept = host.playbackPositionMs();
     const qint64 position = f.position;
     f.canNext = 2;
@@ -3121,7 +3121,7 @@ check_playlist_record() {
     host.refresh();
     check(!host.playbackCanNext(), "no Next offered: none published");
     const qint64 shownBefore = host.playbackPositionMs();
-    // r17f: every number read whole: a state field with trailing data, a NUL or a leading space is no record, so a
+    // Every number read whole: a state field with trailing data, a NUL or a leading space is no record, so a
     // "4" prefix (Failed) never closes a play still running.
     for (const QString& state : {QStringLiteral("4x"), QStringLiteral("4") + QChar(0), QStringLiteral(" 4")}) {
         QStringList fields = f.text().split(QLatin1Char('\t'));
@@ -3130,7 +3130,7 @@ check_playlist_record() {
         host.refresh();
         check(host.playbackState() != DecoderHost::PlaybackFailed && host.playbackGeneration() == f.generation
                   && host.playbackPositionMs() == shownBefore,
-              "#909 r17f: a state field not wholly a number is no record, the play left open");
+              "#909: a state field not wholly a number is no record, the play left open");
     }
 
     f.item = 3;
@@ -3317,7 +3317,7 @@ check_playlist_recheck() {
     check(host.playbackError() == QStringLiteral("missing") && seen.missing.isEmpty(),
           "a part gone is not reported from the reading");
 
-    // r13: the play over (its terminal record taken, nothing open), a late Gone (its last item's open, past its
+    // The play over (its terminal record taken, nothing open), a late Gone (its last item's open, past its
     // timeout, found the file gone) moves the list's serial: the next poll hands it to the store, without reading the
     // ended play's record or reopening it.
     {
@@ -3332,7 +3332,7 @@ check_playlist_recheck() {
         host.refresh();
         check(seen.missing == QStringList({QStringLiteral("/r/late.wav")}) && r.statusReads == readsAfterEnd
                   && host.playbackError() == QStringLiteral("missing"),
-              "#909 r13: a late recheck after the end reaches the store at the next poll, the end left as it was");
+              "#909: a late recheck after the end reaches the store at the next poll, the end left as it was");
         host.refresh();
         check(r.rechecks == rechecksAfterEnd + 1, "the same serial again is not news");
         r.recheckSerial = -1;
@@ -3890,7 +3890,7 @@ check_recording_share() {
               && recordings().diagnosticsCleanOnWorker.load(),
           "a host cleans old diagnostics share copies once, at its start, on the transfer worker");
     host.setRecordingIndex([&a](const QString& path) { return path == a; });
-    // The store's hold for the share's copy; 0 for one it refuses (r12: not available now).
+    // The store's hold for the share's copy; 0 for one it refuses (not available now).
     std::atomic<bool> holdRefused{false};
     host.setRecordingHold([&holdRefused](const QString&) { return holdRefused.load() ? 0 : 1; }, [](int) {});
     const auto shared = [](const QString& path, const QString& title) {
@@ -3904,7 +3904,7 @@ check_recording_share() {
           "an indexed recording is shared through the platform, copied on the transfer worker");
     holdRefused = true;
     check(!host.shareRecording(a, QStringLiteral("Call recording")) && recordings().shares.load() == 1,
-          "#909 r12: a recording the store will not hold is not shared, nothing staged");
+          "#909: a recording the store will not hold is not shared, nothing staged");
     holdRefused = false;
     recordings().canShareAnswer = false;
     check(!host.shareRecording(a, QStringLiteral("Call recording")), "the platform's refusal is the answer");

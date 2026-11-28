@@ -4093,7 +4093,7 @@ class ReadingMap : public QQmlPropertyMap {
         insert(QStringLiteral("playbackPartCount"), item.value(QStringLiteral("partCount")).toInt());
     }
 
-    /* playbackCanNext as the player derives it with no call already failed: a queue's call before its last (#909 r13);
+    /* playbackCanNext as the player derives it with no call already failed: a queue's call before its last (#909);
      * a case sets it itself for a later call already known failed. */
     void
     followNext() {

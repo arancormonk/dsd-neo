@@ -334,7 +334,7 @@ def playback_scoped_commands_check_first():
 
 
 def playback_looper_reads_no_main_service():
-    """#909 r14t: RecordingPlayback's `service` field is the main thread's. The noisy receiver, delivered on the
+    """#909: RecordingPlayback's `service` field is the main thread's. The noisy receiver, delivered on the
     playback looper, reads the instance's taps through the volatile `serviceTaps`, as the looper commands do; every
     other read of `service` sits inside a `main.post` block."""
     playback = REPO / APP_SOURCES / "RecordingPlayback.kt"

@@ -19729,7 +19729,7 @@ Qt Quick frontend (`src/ui/qt`):
     selection (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`). The share's hold is taken
     only of a recording available as the entry map says (`entryAvailableLocked()`: not held from before its folder's
     read again, R78, nor on a root seen away since, R74), and the Android host stages nothing without it (issue #909
-    r12; main held and staged such a row, `test_queries_between_rebuild_slices` and `check_recording_share`).
+    main held and staged such a row, `test_queries_between_rebuild_slices` and `check_recording_share`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
@@ -19847,7 +19847,7 @@ Qt Quick frontend (`src/ui/qt`):
     and a keyboard or screen reader step seeks from the open recording's own position, never from a drag's preview). The
     bar's Pause/Resume keys on whether it would pause and the playlist, and Previous, Next and ✕ on the playlist, Next
     enabled only as the player offers it (the status record's last field, `playbackCanNext`: a later call not already
-    known failed, `RecordingPlayer.hasCallAfter()`, the rule `next()` delivers by, r13), the action and whether it has
+    known failed, `RecordingPlayer.hasCallAfter()`, the rule `next()` delivers by), the action and whether it has
     ended, so a press held on one playlist never moves or stops the next one, nor a press on an ended result stops a new
     one; Show in list keys on the playlist and the call it names (`playbackKey`, or the ended reading's key). A keyboard
     or screen reader activation acts on the state at its moment and never takes, clears or replaces a held pointer
@@ -20043,7 +20043,7 @@ Qt Quick frontend (`src/ui/qt`):
       replacement never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a
       `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and, with no
       play open, when the list's own serial (`recheckSerial()`, a `()J` counter) moved at a poll, so a late recheck
-      after a play ended (its last item's open past its timeout) is heard without reopening it (r13); it hands the paths
+      after a play ended (its last item's open past its timeout) is heard without reopening it; it hands the paths
       to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path is
       handed over once.
     - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
@@ -20112,7 +20112,7 @@ Qt Quick frontend (`src/ui/qt`):
       again with the same reading still moves it), skip notice call and count (the call a part played on after
       recordings were skipped, and how many, kept by the player while that call is current: `noteSkips()` when a part
       starts, cleared when another call opens; -1 and 0 with none), seeks landed (R56: the play's seeks the player
-      confirmed, `playbackSeeksLanded`), can go next (r13: `allows(ACTION_NEXT)`, `playbackCanNext`). `run_jvm_tests.py`
+      confirmed, `playbackSeeksLanded`), can go next (`allows(ACTION_NEXT)`, `playbackCanNext`). `run_jvm_tests.py`
       checks the writers and the parser count the same fields. A seek is a landing only once the player confirms it:
       each carries a seek serial, the owner forwards `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` for
       the seek that landed (R59: the listener names no request, so the owner, `PlayerOwnerState`, keeps one platform
@@ -20285,7 +20285,7 @@ Qt Quick frontend (`src/ui/qt`):
       play), and Resume moves on as if it had just completed: the next part, the gap, or the end; Stop, Next and
       Previous act as from any paused part, Previous reading the end position, and the paused deadline counts on); calls
       recorded after the press are not added; the limit or a delete can take a queued recording, which is skipped; a
-      gone file found after a host-asked Stop reaches the store at the next poll (r13); a start redelivered after the
+      gone file found after a host-asked Stop reaches the store at the next poll; a start redelivered after the
       process died may flash the notification; while the app is in the background Qt does not update the bar or the rows
       (the notification does); after the end a media key no longer restarts it; interrupted, the lock screen shows Play,
       which changes nothing; a lock-screen or system seek applies to the part current when the looper runs it, so one
@@ -20296,14 +20296,14 @@ Qt Quick frontend (`src/ui/qt`):
       was issued since (m1), but one that arrives after a newer seek has been issued is matched to the newer one, which
       can land that seek early; a transport command already in transit from a controller (a car, the lock screen) when a
       playlist is replaced can act on the new playlist, the session being reused with its callback replaced per
-      generation (R36), within the binder transit of one command (r13); and while a start is pending, Android 13 and
+      generation (R36), within the binder transit of one command; and while a start is pending, Android 13 and
       later's media controls show a loading spinner in place of Play and Pause for `STATE_BUFFERING`, as for any Media3
       app (R49's mapping), so there is no Pause there until the start sounds, Stop staying available and the 10 s start
-      watchdog bounding the wait (R44, r13); and a recording whose storage stops answering after its start was
+      watchdog bounding the wait (R44); and a recording whose storage stops answering after its start was
       acknowledged (a card that stalls mid-read) can leave the playlist waiting on it, the partial wake lock held and
       the device kept awake, until Stop: the 10 s watchdog bounds only a start, and no timer watches a part that has
-      started (r18l); and the sheet compares a seek's landing count with the one read at the last poll, so two seeks
-      made between two polls can show the first one's landing for a moment before the second lands (r19).
+      started; and the sheet compares a seek's landing count with the one read at the last poll, so two seeks
+      made between two polls can show the first one's landing for a moment before the second lands.
     - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
       `MediaKeysTest.kt`, `PlayerOwnerStateTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`,
       `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
@@ -20450,12 +20450,12 @@ Qt Quick frontend (`src/ui/qt`):
     a folder's read again holds from before it (`m_committed`) are unavailable too until `commitFolderLocked()` replaces
     them, so between its slices they are listed but not played or admitted (R78; main read them as available from the
     moment the folder was marked loaded, before its slices). A folder's first read waits for its last slice the same way
-    (an empty hold, `loadFolder()`, r14t, `test_first_read_waits_for_its_last_slice`); one that read recordings, whose
+    (an empty hold, `loadFolder()`, `test_first_read_waits_for_its_last_slice`); one that read recordings, whose
     directory is missing at its last look at the root (there and empty only for holding no rows), is not committed at
-    all: the folder stays unread and the next pass is asked for (r16t,
-    `test_first_read_of_a_vanished_directory_is_not_committed`): its rows, an early one already carrying the identity of
-    a file a later record reused the name of, are neither listed, admitted nor shared before then (main listed them as
-    each slice applied, available, so a sheet's single play could play the newer file under the older call). Play all
+    all: the folder stays unread and the next pass is asked for
+    (`test_first_read_of_a_vanished_directory_is_not_committed`): its rows, an early one already carrying the identity
+    of a file a later record reused the name of, are neither listed, admitted nor shared before then (main listed them
+    as each slice applied, available, so a sheet's single play could play the newer file under the older call). Play all
     and Play from here look at no storage: they admit from what the store knows, as every reader does
     (`recordingsForFragmentLists()`, one `ReaderLock`, the entry map's `available`). Decided limit: a press in the
     moment after storage goes away, before the store has noticed (its next pass, or a delete or session start that
@@ -20465,11 +20465,11 @@ Qt Quick frontend (`src/ui/qt`):
     is in flight or done (not merely asked for) is noted again, so another listing runs after it: the storage there at
     the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`); so does a session start
     that sees only the root's directory gone during its listing, whatever root it records on (`usableRootsLocked()`,
-    r13, `test_session_seeing_a_listing_root_gone_queues_another`); and one that sees a root's recordings folder missing
+    `test_session_seeing_a_listing_root_gone_queues_another`); and one that sees a root's recordings folder missing
     while rows are indexed on it notes it seen away too, whatever root it records on, so its rows are unavailable at
-    once and it is read in full once back (r14t, `test_session_on_another_root_notes_a_missing_indexed_root`). A session
+    once and it is read in full once back (`test_session_on_another_root_notes_a_missing_indexed_root`). A session
     start's one look at a root (`rootPlayableNow()`) decides whether its directory is missing; only a missing one is
-    asked whether it can be made (r14t). A recheck a transfer asked for that finds the file the index knows but cannot
+    asked whether it can be made. A recheck a transfer asked for that finds the file the index knows but cannot
     open it (no read access) marks it unreadable, so the next export takes the others (`opensToRead()`,
     `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through later reads of its
     folder until an open succeeds, a metadata read alone never bringing it back (`opensAgainLocked()`,
@@ -20489,10 +20489,10 @@ Qt Quick frontend (`src/ui/qt`):
     (`test_unread_journal_retry_publishes`). A session start never records onto a root held or seen away (a delete
     request saw it missing, back before the pass, or a pass marked it away) until a full listing has read it, whatever
     its looks see now: a card back unread may hold the owner's folder under another name, so the start records on the
-    fallback and the pass it asks for lists the card (r15t, `test_session_never_records_onto_a_root_back_unlisted`; a
-    root passed over so has its listing asked for whether or not the start finds a folder elsewhere, r16t,
+    fallback and the pass it asks for lists the card (`test_session_never_records_onto_a_root_back_unlisted`; a
+    root passed over so has its listing asked for whether or not the start finds a folder elsewhere,
     `test_start_with_no_folder_asks_for_the_listing`; its owner-folder choice is made only among roots still usable once
-    its checks are done, a check that finds a root gone making it choose again without that root, r16t,
+    its checks are done, a check that finds a root gone making it choose again without that root,
     `test_owner_choice_drops_a_root_its_checks_found_gone`; the one exception, a start that finds the directory absent
     and makes it anew, is read again in full after, I2). A root listed while it is not away (its directory there again,
     I1) keeps a folder a session start made or took on it during the listing, or relabelled (`m_listing`,
@@ -20515,8 +20515,8 @@ Qt Quick frontend (`src/ui/qt`):
     documented rather than handled:
     - Outside changes to the recordings folders while DSD-neo runs (replacing, swapping or re-permissioning files or
       folders) are not tracked beyond the guards described below.
-    - Storage that vanishes or returns at the same moment as a store pass or a session start (issue #909 r17f, the
-      store-race class, decided as a limit after r16t; the folder is chosen at `beginSession()`, when the session's
+    - Storage that vanishes or returns at the same moment as a store pass or a session start (issue #909, the
+      store-race class, decided as a limit; the folder is chosen at `beginSession()`, when the session's
       decoder arguments are built, and every call of that session records there): the store can start a session in a
       second folder for an owner whose existing folder, on a card that appeared since the last pass, has another name
       (the owner's recordings then sit in two folders, both listed); pick an owner folder whose directory was renamed
@@ -20702,7 +20702,7 @@ Qt Quick frontend (`src/ui/qt`):
     look at the flag), and listed in full once it is a readable directory (I1, `test_folder_missing_at_a_cold_start`); a
     directory that goes during the root's listing, before its final check, is remembered as missing the same way
     (`rebuildRoot()`, `test_directory_gone_during_its_listing_is_remembered_missing`), and so is one a folder read in
-    the pass sees gone after the pass's look at its root (`rootStillAvailable()`, r13,
+    the pass sees gone after the pass's look at its root (`rootStillAvailable()`,
     `test_directory_gone_during_a_folder_read_is_remembered_missing`). A pass reads the flag at the root's turn and
     writes it, under the lock, only from a look no session start overtook (a per-root count of directories a start
     made), and its listing of a root takes any seen-away note made since the pass's top, so neither a session start nor

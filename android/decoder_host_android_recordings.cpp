@@ -295,7 +295,7 @@ DecoderHostAndroid::drainRecordingRecheck() {
 bool
 DecoderHostAndroid::refreshPlayback() {
     if (m_playback_generation == 0) {
-        // No play open: only the recheck list's serial (r13). A play that ended can still add to the list (its last
+        // No play open: only the recheck list's serial. A play that ended can still add to the list (its last
         // item's open, past its timeout, found the file gone), so the store hears of it at the next poll; the ended
         // play's record is not read, and it is not reopened.
         const qint64 serial = platformRecordingRecheckSerial();
@@ -607,7 +607,7 @@ DecoderHostAndroid::shareRecordingFile(const QString& path, const QString& title
         return false;
     }
     // Held in the store until its copy is made: behind a running export, the limit or a delete would otherwise take
-    // the recording before the copy, and the share the user was told began would fail. No hold, no share (r12): the
+    // the recording before the copy, and the share the user was told began would fail. No hold, no share: the
     // store refuses one for a recording not available now (its folder read again, or its storage seen away), whose
     // path may name another call's file.
     const int hold = holdRecording(path);

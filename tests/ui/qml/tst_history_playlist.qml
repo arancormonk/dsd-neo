@@ -882,7 +882,7 @@ Item {
             playing({item: 1});
             verify(!next.enabled, "the last call: no Next");
             verify(previous.enabled);
-            // r13: Next follows the player's own rule: on the first call with every later one already known failed
+            // Next follows the player's own rule: on the first call with every later one already known failed
             // (a restart that fell back to it), the player offers no Next, and neither does the bar.
             playing({item: 0, playbackCanNext: false});
             compare(bar(screen).callIndex, 0);
@@ -1464,7 +1464,7 @@ Item {
             compare(barItem.height, opening, "one height ended");
         }
 
-        // A filter that hides every call while a playlist plays (r12): on a 360x360 screen at 2x text the empty
+        // A filter that hides every call while a playlist plays: on a 360x360 screen at 2x text the empty
         // state's text and Clear filters stay in the list's area, scrolled there, never over the bar, and both its
         // button and the bar's take a tap.
         function test_filtered_empty_state_stays_above_the_bar() {

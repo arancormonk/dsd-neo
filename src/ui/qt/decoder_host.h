@@ -462,7 +462,7 @@ class DecoderHost : public QObject {
      * whatever was seen in between. playbackSeeksLanded: the seeks this play's player has confirmed landing (#909
      * R56), which moves only when the latest seek lands, so a position read before a seek reached the player is never
      * taken for its landing (0 on a host whose seeks have no confirmation). playbackCanNext: whether Next would act,
-     * by the player's own rule (a later call not already known failed, #909 r13); false with no queue.
+     * by the player's own rule (a later call not already known failed, #909); false with no queue.
      * playbackHoldPath: the file the recording store holds from deletes while it plays; only a single recording's play
      * holds one (empty for parts and playlists, which hold no files).
      */

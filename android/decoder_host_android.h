@@ -388,7 +388,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
      * ends at its end reads Stopped with its path kept and its position at its length, unlike a stop. The paths the
      * player found gone or changed (RecordingPlayback.takeRecheck()) go to recordingFilesMissing() when the record's
      * recheck serial moves, on every return to the foreground and with every play; with no play open, each poll reads
-     * the list's own serial (RecordingPlayback.recheckSerial(), r13), so a late recheck after a play ended is heard.
+     * the list's own serial (RecordingPlayback.recheckSerial()), so a late recheck after a play ended is heard.
      */
     void pausePlayback() override;
     void resumePlayback() override;
@@ -695,7 +695,7 @@ class DecoderHostAndroid : public dsd_qt::DecoderHost {
     static void platformStopPlayback();
     /** @brief RecordingPlayback.status(): the status record (playback_status_record.h); empty when the call failed. */
     static QString platformPlaybackStatus();
-    /** @brief RecordingPlayback.recheckSerial(): the recheck list's serial, or -1 when it cannot be read (#909 r13). */
+    /** @brief RecordingPlayback.recheckSerial(): the recheck list's serial, or -1 when it cannot be read (#909). */
     static qint64 platformRecordingRecheckSerial();
     /** @brief RecordingPlayback.takeRecheck(): the paths found gone or changed since the last take, each once. */
     static QStringList platformTakeRecordingRecheck();

@@ -54,7 +54,7 @@ struct PlaybackStatusRecord {
     int skipNoticeCall = -1;  // the call that played after skips, while it is current; -1: none
     int skipNoticeCount = 0;  // the skips said on it
     int seeksLanded = 0;      // the seeks this play's player confirmed (R56): moves only on a landing
-    bool canNext = false;     // Next would act (ACTION_NEXT: a later call not already failed, r13)
+    bool canNext = false;     // Next would act (ACTION_NEXT: a later call not already failed)
 };
 
 /** @brief How many tab-separated fields a status record has. */
@@ -63,7 +63,7 @@ constexpr int kPlaybackStatusFields = 23;
 namespace detail {
 
 /** @brief Whether @p text is a decimal within [@p low, @p high] and nothing else (no space, sign other than a leading
- * minus, NUL or trailing data: strtoll with its end checked against the whole text, r17f), read into @p out. */
+ * minus, NUL or trailing data: strtoll with its end checked against the whole text), read into @p out. */
 inline bool
 playback_status_number(const QString& text, qint64 low, qint64 high, qint64* out) {
     const QByteArray bytes = text.toLatin1();

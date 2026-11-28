@@ -408,7 +408,7 @@ class RecordingPlayer(
          * generation, state, position ms, duration ms, error, item index, play token, call, calls, part ordinal,
          * part count, gap, interrupted, can seek, paused reason, ended reason, skipped count, recheck serial,
          * refusals, skip notice call, skip notice count, seeks landed, can go next (ACTION_NEXT: a later call not
-         * already failed, the rule next() delivers by, r13).
+         * already failed, the rule next() delivers by).
          *
          * Numbers are decimal (the play token is a 64-bit count from 1; 0 = none). The flags are 0 or 1. With no item
          * (before the first play, after a host stop): item index -1, call -1, calls 0, part ordinal and count 0. Error
@@ -867,7 +867,7 @@ class RecordingPlayer(
     /**
      * The next call's first playable part. With calls after this one but none of them playable the play ends, as the
      * automatic advance ends it at the end (finished, or "unplayable" when every recording failed); dropped at the last
-     * call (or SINGLE), and when every later call is already known failed (r13: by [hasCallAfter], the rule that
+     * call (or SINGLE), and when every later call is already known failed (by [hasCallAfter], the rule that
      * offers ACTION_NEXT, so a Next the controls do not offer changes nothing). Paused stays paused.
      */
     fun next(generation: Int = 0) = command(generation) {

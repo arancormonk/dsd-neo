@@ -1113,7 +1113,7 @@ DecoderHostAndroid::platformPlaybackStatus() {
 
 qint64
 DecoderHostAndroid::platformRecordingRecheckSerial() {
-    // Must match RecordingPlayback.kt: @JvmStatic fun recheckSerial(): Long (#909 r13). An atomic read.
+    // Must match RecordingPlayback.kt: @JvmStatic fun recheckSerial(): Long (#909). An atomic read.
     return read_static_counter(kPlaybackClass, "recheckSerial");
 }
 

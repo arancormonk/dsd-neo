@@ -3464,7 +3464,7 @@ test_queries_between_rebuild_slices(void) {
         slices++;
         partial += whole() ? 0 : 1;
         accepted += refused() ? 0 : 1;
-        // A share's hold (selectPath()) is refused too (r12): the rows held from before the read again are not
+        // A share's hold (selectPath()) is refused too: the rows held from before the read again are not
         // available (R78), and a save between slices is refused as loading.
         const int selection = s.store.selectPath(folder + QStringLiteral("/k.wav"));
         if (selection > 0) {
@@ -4419,7 +4419,7 @@ test_changed_file_reads_its_folder_again(void) {
            QFileInfo::exists(a + QStringLiteral("/r.wav")) && QFileInfo::exists(b + QStringLiteral("/r.wav")));
 }
 
-/* Issue #902, r15t: a start while the worker lists a root again (a delete request saw the root missing, back before the
+/* Issue #902: a start while the worker lists a root again (a delete request saw the root missing, back before the
  * pass) never records onto it, the root not read in full since it came back: it records on the fallback, and its
  * recordings are indexed. A start during a listing of a root that is not away (its directory found again, I1) makes
  * its folder there, and that folder is the start's: the listing never saw it (keepSessionFoldersLocked()). */
@@ -4509,7 +4509,7 @@ storage_seen_away_and_back(Store& s, const QString& ext, const QString& away, co
     return seen.load();
 }
 
-/* Issue #902, r15t: a session folder removed while its storage was away is not made again by a start while the
+/* Issue #902: a session folder removed while its storage was away is not made again by a start while the
  * returning root is listed (not read in full since it came back): the start records on the fallback, and the listing
  * drops the removed folder's earlier recordings; only what is recorded now counts. */
 void
@@ -4541,7 +4541,7 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     expect("recreated: only the new recording counts", s.store.recordingCount() == 1 && s.store.usedBytes() == 3000
                                                            && !s.store.isIndexedPath(a + QStringLiteral("/old.wav")));
 
-    // r16t: the same path made again, through the one exception (a start that finds the directory absent may make it
+    // The same path made again, through the one exception (a start that finds the directory absent may make it
     // anew). The listing omits the removed folder; in its read hook the recordings directory is moved aside and the
     // start makes it, and the same owner path, again. At that pass's end, before the read again it asks for, the old
     // row is gone (installRootTableLocked() drops what the index held at a path a start made during the listing).
@@ -4578,8 +4578,8 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     });
     t.pass();
     t.pass();
-    // r17f: the listing asked for a follow-up listing; the hooks are cleared only once it has run. Timed out, the
-    // worker may still call the root-read hook, so the run stops here rather than tear the hook down under it (r18l).
+    // The listing asked for a follow-up listing; the hooks are cleared only once it has run. Timed out, the
+    // worker may still call the root-read hook, so the run stops here rather than tear the hook down under it.
     expect_or_stop("recreated, same path: its follow-up listing ran",
                    listedAt.load() > 0 && passes_reach(t.store, listedAt + 2));
     t.store.setRootReadHookForTest({});
@@ -4590,7 +4590,7 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
     t.store.endSession();
 }
 
-/* Issue #902, r15t: a start while the returning root is listed (the listing read the old folder.json already) leaves
+/* Issue #902: a start while the returning root is listed (the listing read the old folder.json already) leaves
  * its owner's folder there alone, that root not read in full since it came back: it records on the fallback under the
  * new label, and the folder on the returning root keeps its own. */
 void
@@ -4620,7 +4620,7 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
            onDisk.contains(QStringLiteral("County")) && !onDisk.contains(QStringLiteral("Metro"))
                && s.store.folderPathsForTest().contains(a));
 
-    // r16t, r17f: a relabel during a listing that is permitted, of an available root whose directory is there again
+    // A relabel during a listing that is permitted, of an available root whose directory is there again
     // (I1), the listing's only folder change. The folder is known first; its directory, missing at one pass's look and
     // back right after it, is listed by the next pass; in that listing's read hook a start relabels it. The installed
     // table keeps the start's label (noteFolderAddedLocked(), keepSessionFoldersLocked()), seen before the folder's
@@ -5414,7 +5414,7 @@ test_export_note_during_a_pass_is_taken_by_its_listing(void) {
     expect("note in a pass: its recording is indexed", listed_as(s.store, 1, true));
 }
 
-/* r12 Part B: a root's directory that goes missing during its listing, after entryList() and before the final check,
+/* A root's directory that goes missing during its listing, after entryList() and before the final check,
  * with nothing indexed on it, is installed there and empty but remembered as missing, so the pass after it is back
  * lists it and indexes what it holds. */
 void
@@ -5448,7 +5448,7 @@ test_directory_gone_during_its_listing_is_remembered_missing(void) {
     expect("gone in listing: back, its recording is indexed", listed_as(s.store, 1, true));
 }
 
-/* r13: a root with no rows whose directory goes after the pass's look at it, seen by a folder read in that pass, is
+/* A root with no rows whose directory goes after the pass's look at it, seen by a folder read in that pass, is
  * remembered as missing as the look itself would, so the pass after it is back lists it: an owner folder put on it
  * meanwhile is found. */
 void
@@ -5483,7 +5483,7 @@ test_directory_gone_during_a_folder_read_is_remembered_missing(void) {
     expect("gone in a read: back, the folder put on it is found", listed_as(s.store, 1, true));
 }
 
-/* r13: a session start that sees a returning root's directory gone while its listing is in flight queues another
+/* A session start that sees a returning root's directory gone while its listing is in flight queues another
  * listing, though it records elsewhere (its owner's folder on the internal storage): a different directory back before
  * the listing's end has its folders found by the listing after it. */
 void
@@ -5525,7 +5525,7 @@ test_session_seeing_a_listing_root_gone_queues_another(void) {
     expect("listing gone: the other directory's folder is found", listed_as(s.store, 1, true));
 }
 
-/* r14t: a folder's first read is unavailable to every reader until its last slice, as a read again is (R78): between
+/* A folder's first read is unavailable to every reader until its last slice, as a read again is (R78): between
  * slices a sheet's read, a playlist's admission and a share's hold all refuse its rows; after the last, they take
  * them. */
 void
@@ -5573,7 +5573,7 @@ test_first_read_waits_for_its_last_slice(void) {
     s.store.releaseSelection(after);
 }
 
-/* r14t: a session start that sees an indexed root's recordings folder missing (its parent there) notes the root seen
+/* A session start that sees an indexed root's recordings folder missing (its parent there) notes the root seen
  * away though it records on another root: its rows are unavailable at once, and the folder back before any pass is
  * read again in full, its rows available after. */
 void
@@ -5621,7 +5621,7 @@ test_session_on_another_root_notes_a_missing_indexed_root(void) {
     expect("other root: read again in full, the folder put on it is found", listed_as(s.store, 2, true));
 }
 
-/* r15t: a session start never records onto a root held away that is back but not read in full. The card comes back
+/* A session start never records onto a root held away that is back but not read in full. The card comes back
  * between the start's look at its roots (its directory missing then) and its choice of folder, with this owner's folder
  * under another name: the start records on the fallback; the pass after lists the card, and the next start takes the
  * card's own folder, with no second folder made there. */
@@ -5665,7 +5665,7 @@ test_session_never_records_onto_a_root_back_unlisted(void) {
     expect("back unlisted: no second folder made on the card", onCard == 1);
 }
 
-/* r16t: a first read that read recordings, whose recordings directory goes before the read's last look at its root,
+/* A first read that read recordings, whose recordings directory goes before the read's last look at its root,
  * is not committed: none of its rows is offered while the directory is missing; once it is back, a listing reads it
  * and they are available. */
 void
@@ -5688,7 +5688,7 @@ test_first_read_of_a_vanished_directory_is_not_committed(void) {
     const quint64 before = s.store.passCountForTest();
     s.pass();
     expect("vanished read: it went during the read", taken.load() && !QFileInfo::exists(roots.external));
-    // r17f: the discarded read asks for the next pass itself: it runs with none asked for here.
+    // The discarded read asks for the next pass itself: it runs with none asked for here.
     expect("vanished read: the pass it asked for ran", passes_reach(s.store, before + 2));
     s.store.setJournalReadHookForTest({});
     expect("vanished read: none of its rows is offered",
@@ -5699,7 +5699,7 @@ test_first_read_of_a_vanished_directory_is_not_committed(void) {
     expect("vanished read: back and listed, its row is available", listed_as(s.store, 1, true));
 }
 
-/* r16t: a start that passes over a root back but not listed asks for its listing even when it finds no folder. One
+/* A start that passes over a root back but not listed asks for its listing even when it finds no folder. One
  * root, held away; it comes back between the start's look and its choice of folder: the start gets no folder, and the
  * listing runs with no other request (no endSession(), no pass() asked for here). */
 void
@@ -5727,7 +5727,7 @@ test_start_with_no_folder_asks_for_the_listing(void) {
     expect("no folder: the listing it asked for ran", passes_reach(s.store, before + 1) && listed_as(s.store, 1, true));
 }
 
-/* r16t: the owner-folder choice is made only among roots still usable once its checks are done. The card holds two
+/* The owner-folder choice is made only among roots still usable once its checks are done. The card holds two
  * folders for one owner. A test hook walks them worst first and makes the second owner check (of the better folder,
  * after the other was saved as best) find the card gone: the start records on the fallback, never in the saved one. */
 void
@@ -5797,7 +5797,7 @@ test_session_making_the_folder_reads_its_root_again(void) {
     expect("made again: indexed", listed_as(s.store, 1, true));
     expect("made again: the folder renamed away, no pass since", QDir().rename(roots.external, away));
     // The read again the start asks for is held at its listing, before anything of it is installed, until the row
-    // has been looked at (r12): the pass the start wakes cannot finish first.
+    // has been looked at: the pass the start wakes cannot finish first.
     std::mutex gate;
     std::condition_variable turned;
     bool reached = false;
@@ -6876,7 +6876,7 @@ class PlayingHost : public dsd_qt::DecoderHost {
 /* R83 through a playlist: a recordings folder renamed away keeps its rows indexed and unavailable once the store has
  * noticed, so Play all is refused with the play running unchanged; renamed back and read again, Play all plays. A
  * session start while it is away makes the folder anew, and the read after it drops the old rows. Play all admits
- * from what the store knows (r12 Part B): pressed before the store has noticed, it admits as before (a decided limit;
+ * from what the store knows: pressed before the store has noticed, it admits as before (a decided limit;
  * the play then ends "Couldn't play these recordings"). */
 void
 test_playlist_missing_folder_keeps_its_rows_away(void) {
