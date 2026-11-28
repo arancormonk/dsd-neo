@@ -1840,6 +1840,51 @@ read_published_sidecar(const rig* r, const char* pub, char* body, size_t body_si
     }
 }
 
+/* Issue #931 B4: an API upload of a call with no system ID is skipped, not failed: the close logs no export failure,
+   its journal record says no upload was queued, and the run says once why the call was not uploaded (each run anew,
+   dsd_rdio_session_reset()). The sidecar is still put in place. */
+static int
+test_rdio_no_system_skip_is_no_failure(void) {
+    int rc = 0;
+    rig r;
+    rc |= rig_open(&r, "dsdneo_journal_rdio_no_system");
+    r.opts->rdio_mode = DSD_RDIO_MODE_API;
+    r.opts->rdio_system_id = 0;
+    r.opts->rdio_upload_timeout_ms = 100;
+    r.opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+    DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+    dsd_rdio_session_reset();
+    submit(&r, DSD_APP_CMD_WAV_START);
+    begin_call(&r, DSD_SYNC_P25P1_POS, 1410U, 14U, DSD_CALL_BOUNDARY_BEGIN);
+    voice_frames(&r, 0, 2);
+    dsd_test_capture_stderr cap;
+    const int capturing = dsd_test_capture_stderr_begin(&cap, "journal_no_system") == 0;
+    end_call(&r, DSD_CALL_END_EXPLICIT);
+    char out[8192] = "";
+    if (capturing) {
+        dsd_test_capture_stderr_end(&cap);
+        (void)dsd_test_capture_stderr_read(&cap, out, sizeof out);
+    }
+    dsd_rdio_upload_shutdown();
+    reload(&r);
+    const char* pub = record(&g_j, "publish", 0);
+    rc |= expect_true("no system ID: published", pub != NULL);
+    rc |= expect_str("no system ID: no upload queued", pub ? field_s(pub, "rdio") : "", "false");
+    rc |= expect_true("no system ID: stderr captured", capturing);
+#ifdef USE_CURL
+    rc |= expect_true("no system ID: no export failure", strstr(out, "Rdio export failed") == NULL);
+    rc |= expect_true("no system ID: said why",
+                      strstr(out, "Rdio API upload skipped: no system ID (set --rdio-system-id)") != NULL);
+#endif
+    char body[4096];
+    read_published_sidecar(&r, pub, body, sizeof body);
+    rc |= expect_true("no system ID: the sidecar is in place", strstr(body, "\"talkgroup\": 1410,") != NULL);
+    r.opts->rdio_mode = DSD_RDIO_MODE_OFF;
+    rig_close(&r);
+    return rc;
+}
+
 /* Issue #668 and the #708 contract for NFM: an NFM call's recording is exported through the real closer, and the
    journal's publish record says whether its API upload was queued, which the exporter decides before the record is
    written. A radio input's call goes up under its frequency in kHz to the analog system, its sidecar beside it, and
@@ -3468,6 +3513,195 @@ test_d7_fallback_journal_rdio_flag(void) {
 #endif
         rdio_fallback_off(&r);
         rig_close(&r);
+    }
+    return rc;
+}
+
+/* --- Issue #931: one rdio-scanner system per frequency, two talkgroup 1 calls in one session. --- */
+
+enum { BY_FREQ_CALLS = 2 };
+
+/* The two conventional DMR carriers the session hops between, as a -Y scan does. */
+static const uint32_t k_by_freq_hz[BY_FREQ_CALLS] = {154437500U, 456950000U};
+
+/* What one call of a session left: its published file and journal system, its sidecar, and whether its upload's form
+   system part and meta part both named the system it was filed under (-1: no stand-in server to ask). */
+typedef struct {
+    char file[LINE_CAP];
+    char system[LINE_CAP];
+    char sidecar[4096];
+    int upload_system;
+} by_freq_call;
+
+#ifdef RDIO_CAPTURE
+static capture_server g_by_freq_servers[BY_FREQ_CALLS];
+#endif
+
+/* The system call @p c of a session is filed under: its carrier's kHz with the option on, else the base 48. */
+static unsigned
+by_freq_want_system(int by_frequency, int c) {
+    return by_frequency ? k_by_freq_hz[c] / 1000U : 48U;
+}
+
+/* The raw value of @p key in the sidecar @p body, up to the comma or line end that ends it ("" when absent). */
+static void
+sidecar_value(const char* body, const char* key, char* out, size_t cap) {
+    char pat[64];
+    DSD_SNPRINTF(pat, sizeof pat, "\"%s\": ", key);
+    out[0] = '\0';
+    const char* p = strstr(body, pat);
+    if (!p) {
+        return;
+    }
+    p += strlen(pat);
+    const size_t len = strcspn(p, ",\n");
+    DSD_SNPRINTF(out, cap, "%.*s", (int)len, p);
+}
+
+/* A per-call file name, <date>_<time>_<n>_<call>.wav, without its third field, a number drawn at random for each file:
+   what two runs of one session name alike. */
+static void
+name_without_draw(const char* name, char* out, size_t cap) {
+    const char* first = strchr(name, '_');
+    const char* second = first ? strchr(first + 1, '_') : NULL;
+    const char* third = second ? strchr(second + 1, '_') : NULL;
+    if (!third) {
+        DSD_SNPRINTF(out, cap, "%s", name);
+        return;
+    }
+    DSD_SNPRINTF(out, cap, "%.*s%s", (int)(second - name + 1), name, third + 1);
+}
+
+#ifdef RDIO_CAPTURE
+/* Whether the upload @p s kept names @p system in its form system part and in its meta part. */
+static int
+capture_names_system(const capture_server* s, unsigned system) {
+    char form[64];
+    char meta[64];
+    DSD_SNPRINTF(form, sizeof form, "name=\"system\"\r\n\r\n%u\r\n", system);
+    DSD_SNPRINTF(meta, sizeof meta, "\"system\": %u,", system);
+    return capture_has(s, form) && capture_has(s, meta);
+}
+#endif
+
+/* One decoder session, one rig with no re-init between the calls, exporting to DirWatch and the API (both): a numbered
+   DMR group call to talkgroup 1 on each carrier of k_by_freq_hz, with --rdio-system-by-frequency as @p by_frequency
+   says. The scan hop to the second carrier writes its tune while the first call is still running, and the first call
+   is rendered again on it before it ends, as a -Y commit does (channel_scan.c: the queued tune writes
+   rtlsdr_center_freq before the outgoing calls are finalized). Each call's results go to @p out. */
+static int
+by_freq_session(int by_frequency, by_freq_call* out) {
+    rig r;
+    int rc = rig_open(&r, "dsdneo_journal_by_freq");
+    r.opts->audio_in_type = AUDIO_IN_RTL;
+    r.opts->rtlsdr_center_freq = k_by_freq_hz[0];
+    r.opts->rdio_mode = DSD_RDIO_MODE_BOTH;
+    r.opts->rdio_system_id = 48;
+    r.opts->rdio_system_by_frequency = by_frequency;
+    r.opts->rdio_upload_timeout_ms = 1000;
+    r.opts->rdio_upload_retries = 1;
+    DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", "http://127.0.0.1:1");
+    DSD_SNPRINTF(r.opts->rdio_api_key, sizeof r.opts->rdio_api_key, "%s", "test-key");
+    int capturing[BY_FREQ_CALLS] = {0, 0};
+    char ids[BY_FREQ_CALLS][64];
+    submit(&r, DSD_APP_CMD_WAV_START);
+    for (int c = 0; c < BY_FREQ_CALLS; c++) {
+#ifdef RDIO_CAPTURE
+        /* One stand-in server a call: the job copies the URL when it is queued, at the call's close. */
+        capturing[c] = capture_start(&g_by_freq_servers[c]) == 0;
+        rc |= expect_true("capture server", capturing[c]);
+        if (capturing[c]) {
+            DSD_SNPRINTF(r.opts->rdio_api_url, sizeof r.opts->rdio_api_url, "%s", g_by_freq_servers[c].url);
+        }
+#endif
+        clock_at(k_t0 + 100 + (uint64_t)c * 10);
+        begin_kind_call_on(&r, 0U, DSD_SYNC_DMR_BS_VOICE_POS, DSD_CALL_KIND_GROUP_VOICE, 1U, 100U + (uint32_t)c, 0);
+        voice_frames(&r, 0, 3);
+        slot_id(&r, 0, ids[c], sizeof ids[c]);
+        if (c == 0) {
+            r.opts->rtlsdr_center_freq = k_by_freq_hz[1];
+            clock_at(k_t0 + 103);
+            dsd_event_sync_slot(r.opts, r.state, 0U);
+            voice_frames(&r, 0, 1);
+        }
+        clock_at(k_t0 + 105 + (uint64_t)c * 10);
+        end_call(&r, DSD_CALL_END_EXPLICIT);
+    }
+    dsd_rdio_upload_shutdown();
+    reload(&r);
+    for (int c = 0; c < BY_FREQ_CALLS; c++) {
+        const char* pub = publish_of(ids[c]);
+        rc |= expect_true("each call is published", pub != NULL);
+        DSD_SNPRINTF(out[c].file, sizeof out[c].file, "%s", pub ? field_s(pub, "file") : "");
+        DSD_SNPRINTF(out[c].system, sizeof out[c].system, "%s", pub ? field_s(pub, "system") : "");
+        read_published_sidecar(&r, pub, out[c].sidecar, sizeof out[c].sidecar);
+        out[c].upload_system = -1;
+#ifdef RDIO_CAPTURE
+        if (capturing[c]) {
+            (void)dsd_thread_join(g_by_freq_servers[c].thread);
+            out[c].upload_system =
+                capture_names_system(&g_by_freq_servers[c], by_freq_want_system(by_frequency, c)) ? 1 : 0;
+        }
+#endif
+    }
+    (void)capturing;
+    rig_close(&r);
+    return rc;
+}
+
+/* Issue #931: a user scanning conventional DMR channels hears talkgroup 1 on 154.4375 and on 456.9500 MHz. With
+   --rdio-system-by-frequency the two calls of one session go to systems 154437 and 456950, named "System <kHz>", each
+   upload's form system part and meta part naming its sidecar's system, the first call still filed under its own
+   carrier although the hop's tune was written before it closed. The label, the file name and the journal's system are
+   the ones the same session writes with the option off, where both calls go to --rdio-system-id 48. */
+static int
+test_rdio_system_by_frequency_in_one_session(void) {
+    static by_freq_call on[BY_FREQ_CALLS];
+    static by_freq_call off[BY_FREQ_CALLS];
+    int rc = by_freq_session(1, on);
+    rc |= by_freq_session(0, off);
+    for (int c = 0; c < BY_FREQ_CALLS; c++) {
+        char tag[200];
+        char want[96];
+        const unsigned khz = by_freq_want_system(1, c);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d, option on: the sidecar", c + 1);
+        DSD_SNPRINTF(want, sizeof want, "\"system\": %u,", khz);
+        rc |= expect_true(tag, strstr(on[c].sidecar, want) != NULL);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"System %u\",", khz);
+        rc |= expect_true(tag, strstr(on[c].sidecar, want) != NULL);
+        DSD_SNPRINTF(want, sizeof want, "\"freq\": %u,", k_by_freq_hz[c]);
+        rc |= expect_true(tag, strstr(on[c].sidecar, want) != NULL);
+        rc |= expect_true(tag, strstr(on[c].sidecar, "\"talkgroup\": 1,") != NULL);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d, option off: the sidecar", c + 1);
+        DSD_SNPRINTF(want, sizeof want, "\"system\": %u,", by_freq_want_system(0, c));
+        rc |= expect_true(tag, strstr(off[c].sidecar, want) != NULL);
+        rc |= expect_true(tag, strstr(off[c].sidecar, "\"talkgroup\": 1,") != NULL);
+        DSD_SNPRINTF(want, sizeof want, "\"short_name\": \"%s\",", off[c].system);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d, option off: short_name is the journal's system", c + 1);
+        rc |= expect_true(tag, off[c].system[0] != '\0' && strstr(off[c].sidecar, want) != NULL);
+
+        char on_tag[160];
+        char off_tag[160];
+        sidecar_value(on[c].sidecar, "talkgroup_tag", on_tag, sizeof on_tag);
+        sidecar_value(off[c].sidecar, "talkgroup_tag", off_tag, sizeof off_tag);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d: the option leaves the label", c + 1);
+        rc |= expect_true(tag, on_tag[0] != '\0');
+        rc |= expect_str(tag, on_tag, off_tag);
+        char on_name[LINE_CAP];
+        char off_name[LINE_CAP];
+        name_without_draw(on[c].file, on_name, sizeof on_name);
+        name_without_draw(off[c].file, off_name, sizeof off_name);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d: the option leaves the file name", c + 1);
+        rc |= expect_true(tag, strstr(on_name, "_TGT_1_") != NULL);
+        rc |= expect_str(tag, on_name, off_name);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d: the option leaves the journal's system", c + 1);
+        rc |= expect_str(tag, on[c].system, off[c].system);
+#ifdef RDIO_CAPTURE
+        DSD_SNPRINTF(tag, sizeof tag, "call %d, option on: the upload names the sidecar's system", c + 1);
+        rc |= expect_int(tag, on[c].upload_system, 1);
+        DSD_SNPRINTF(tag, sizeof tag, "call %d, option off: the upload names system 48", c + 1);
+        rc |= expect_int(tag, off[c].upload_system, 1);
+#endif
     }
     return rc;
 }
@@ -6089,6 +6323,7 @@ main(void) {
     rc |= test_strings_are_escaped();
     rc |= test_pending_without_room_or_id_is_published_as_no_rows();
     rc |= test_error_failed_and_rdio_shapes();
+    rc |= test_rdio_no_system_skip_is_no_failure();
     rc |= test_nfm_rdio_export_is_journaled();
     rc |= test_wav_stop_follows_a_fresh_stream_verdict();
     rc |= test_analog_recordings_are_named_by_mode();
@@ -6121,6 +6356,7 @@ main(void) {
     rc |= test_d7_edacs_rotation();
     rc |= test_d7_both_slots();
     rc |= test_d7_fallback_journal_rdio_flag();
+    rc |= test_rdio_system_by_frequency_in_one_session();
     rc |= test_d7_stream_off_stays_local();
     rc |= test_edacs_grant_closes_unowned_audio_first();
     rc |= test_edacs_grant_leaves_owned_audio_to_its_row();

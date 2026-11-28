@@ -15,13 +15,17 @@
  * - The periodic floor design at a period of one against today's stationary model; the averaged floor plan against
  *   every output phase in full on every Airspy grid point and a SoapySDR ratio near the 4096-term limit.
  * - The window statistics the classifier sees (N_eff, beta) against the covariance measured on a real stepped stream.
- * - Without a step full_demod()'s plans are today's designs, bit for bit and pinned to b08406ebc's; the plan key and the
- *   model follow the step's plan, and a build for the plan the model holds does nothing.
- * - --matrix: every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass
- *   from twice hb_out), the widest NFM channel the bandwidth takes and none: the auto squelch's floor (trackers at
- *   +3/+6/+10 dB at three phases of the step's period), the noise squelch and the measured window statistics, held to
- *   the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to (Durations says how long each runs
- *   and why). The plans the half-band cascade alone gives (what a stepped chain ran before the model) miss the band.
+ * - Without a step full_demod()'s floor plan is today's design with up to one pass, bit for bit and pinned to
+ *   b08406ebc's, and with more the whole cascade's, against the real cascade's impulses at every DSP bandwidth and 2 to
+ *   10 passes (issue #899); its noise plan is today's; the plan key and the model follow the step's plan, and a build for
+ *   the plan the model holds does nothing.
+ * - --matrix: every selectable DSP bandwidth, the widest NFM channel the bandwidth takes and none, on the real RTL-SDR
+ *   chain (its capture rate through the 4 to 8 half-band passes it runs, no step, on the plans full_demod() installs:
+ *   issue #899), at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass from twice hb_out, then the
+ *   step), and on the stand-ins' one-pass control: the auto squelch's floor (trackers at +3/+6/+10 dB at three phases of
+ *   the step's period), the noise squelch and the measured window statistics, held to the bounds DSP_SQUELCH_FLOOR and
+ *   DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to (Durations says how long each runs and why). The plans the
+ *   half-band cascade alone gives (what a stepped chain ran before the model) miss the band.
  */
 
 #include <algorithm>
@@ -40,8 +44,10 @@
 #include <dsd-neo/io/rate_plan.h>
 #include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/mem.h>
+#include <limits>
 #include <vector>
 #include "dsd-neo/core/safe_api.h"
+#include "squelch_cascade_noise.h"
 
 #ifndef M_PI
 #define M_PI 3.14159265358979323846
@@ -427,15 +433,191 @@ run_plans(demod_state* s, int mode, double in_rate) {
     feed_noise(s, rng, 1e-3, (long)(0.01 * in_rate) + (2L * kBlockPairs), [](const float*, int) {});
 }
 
-/* Without a step full_demod()'s plans are today's designs (the cascade's last stage, or the whole cascade for the
-   noise squelch), bit for bit. */
+/* ------------------------------------------------------------------------- the cascade without a step (#899) */
+
+/* The floor plan of a chain with no step, from the real cascade (issue #899): full_demod() with the cascade of
+   @p passes and the channel filter at @p width_hz (0: off), a unit impulse at each of the 2^passes input phases, so
+   the summed output autocorrelation is the covariance white unit noise at the capture rate shows behind the channel
+   filter, exact up to the float cascade's rounding. Scaled by 2^(passes - 1), the noise_gain convention (the step
+   model's), and designed at a period of one. N_eff is worked out here on its own: the tracker's 40 ms windows are
+   rate / 25.0 samples on average, a fraction when 25 does not divide the rate, so N_eff = (rate / 25.0) R[0]^2 /
+   (R[0]^2 + 2 sum R[m]^2). The taps the chain ran come back in taps. */
+struct CascadeOracle {
+    dsd_squelch_floor_plan plan;
+    std::vector<float> taps;
+};
+
+CascadeOracle
+cascade_oracle(int passes, int rate, int width) {
+    CascadeOracle o;
+    DSD_MEMSET(&o.plan, 0, sizeof o.plan);
+    std::vector<float> designed(DSD_NOISE_SQUELCH_MAX_TAPS, 0.0f);
+    const int len =
+        width > 0 ? dsd_channel_lpf_design_analog(rate, width, designed.data(), DSD_NOISE_SQUELCH_MAX_TAPS) : 1;
+    CHECK(len >= 1, "%d Hz: no channel filter for width %d", rate, width);
+    const DemodBox box;
+    configure(box.s, passes, rate, NULL, width);
+    const int period = 1 << passes;
+    /* The cascade's response spans about 15 outputs and its autocorrelation 15 lags (hb31's, then hb15's: under
+       DSD_SQUELCH_STEP_MAX_HB_LAGS), so with the channel taps a response spans under len + 32 outputs; spacing them
+       len + 32 further apart keeps every lag counted clear of the next one. */
+    const int lags = len + 32;
+    const std::vector<double> r = impulse_autocorr(box.s, period, impulse_gap(period, 1.0 / period, 2 * lags), lags);
+    if (width > 0) {
+        o.taps.assign(box.s->channel_lpf_plan_taps, box.s->channel_lpf_plan_taps + box.s->channel_lpf_plan_taps_len);
+    }
+    std::vector<double> cov((size_t)lags, 0.0);
+    for (int m = 0; m < lags; m++) {
+        cov[(size_t)m] = std::ldexp(r[(size_t)m], passes > 0 ? passes - 1 : 0);
+    }
+    dsd_squelch_floor_periodic_noise noise;
+    noise.period = 1;
+    noise.lags = lags;
+    noise.cov = cov.data();
+    const float* plan_taps = o.taps.empty() ? NULL : o.taps.data();
+    const int rc = dsd_squelch_floor_plan_design_periodic(&o.plan, plan_taps, (int)o.taps.size(), &noise, rate);
+    CHECK(rc == 0 && o.plan.valid, "%d passes at %d Hz: the oracle plan is not valid", passes, rate);
+    double sq = cov[0] * cov[0];
+    for (int m = 1; m < lags; m++) {
+        sq += 2.0 * cov[(size_t)m] * cov[(size_t)m];
+    }
+    o.plan.neff = ((double)rate / 25.0) * cov[0] * cov[0] / sq;
+    o.plan.sqrt_neff = std::sqrt(o.plan.neff);
+    return o;
+}
+
+/* The plan full_demod() installs under AUTO (selected here: configure() runs LEVEL) on the chain of @p passes, rate
+   and width with no step, after the first block that leaves channel samples; the taps it ran into taps. */
+dsd_squelch_floor_plan
+installed_plan(int passes, int rate, int width, std::vector<float>* taps) {
+    const DemodBox box;
+    demod_state* s = box.s;
+    configure(s, passes, rate, NULL, width);
+    s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    s->squelch_margin_db = 10;
+    Rng rng(0x899ULL + (uint64_t)passes);
+    const long block = std::min<long>(kBlockPairs, 32L << passes);
+    bool channel = false;
+    for (int i = 0; i < 64 && !channel; i++) {
+        feed_noise(s, rng, 1e-3, block, [&](const float*, int pairs) { channel = pairs > 0; });
+    }
+    CHECK(channel && s->squelch_auto_ran, "%d passes at %d Hz: no channel block under AUTO", passes, rate);
+    taps->assign(s->channel_lpf_plan_taps, s->channel_lpf_plan_taps + s->channel_lpf_plan_taps_len);
+    if (s->channel_lpf_enable == 0) {
+        taps->clear();
+    }
+    return s->squelch_floor.plan;
+}
+
+/* How far @p got is from the oracle @p want: beta and rho absolute, N_eff and the noise gain relative; the largest double (a finite sentinel, the
+   fast-math builds reject infinity) for
+   another lag or rate, or a plan not valid. */
+double
+cascade_plan_distance(const dsd_squelch_floor_plan& got, const dsd_squelch_floor_plan& want) {
+    if (!got.valid || !want.valid || got.lag != want.lag || got.rate_hz != want.rate_hz) {
+        return std::numeric_limits<double>::max();
+    }
+    const double rel =
+        std::fmax(std::fabs(got.neff / want.neff - 1.0), std::fabs(got.noise_gain / want.noise_gain - 1.0));
+    return std::fmax(rel, std::fmax(std::fabs(got.beta - want.beta), std::fabs(got.rho_lag - want.rho_lag)));
+}
+
+/* The float cascade's rounding against the oracle's: its impulses are float, the plans double. Under 1e-7 on x86;
+   1e-5 is the bound test_halfband_recursion() already holds the same float cascade to on every platform (another
+   FMA contraction or SIMD path moves the last float bits), and stays far below what the tests tell apart: the
+   one-stage plan misses by 2.9e-3 at 2 passes, the whole-sample window at 39,062 Hz by 3.1e-4. */
+constexpr double kCascadeTolerance = 1e-5;
+
+/* Without a step the auto squelch's plan models the whole half-band cascade (issue #899): at every row of the DSP
+   bandwidth table (unfiltered 4 to 16 kHz, the widths 16 kHz takes, 24/48/72 kHz with the default 16 kHz design and
+   wider or narrower widths), 2 to 10 passes (9 and 10: replay base decimations 512 and 1024) and an odd kept replay rate,
+   the plan installed after the first channel block is the one the real cascade's impulses give: lag, beta, rho, N_eff
+   and the noise gain on its absolute scale. Three rows against independent figures (the 6-pass 16 kHz unfiltered gain:
+   0.00745380 output power for unit capture variance, times 32). */
+void
+test_no_step_plan_is_the_cascade(void) {
+    struct Row {
+        int passes;
+        int rate;
+        int width;
+        int default_taps;        /* the default NFM design: 16 kHz, the taps it runs at this rate */
+        double beta, neff, gain; /* independent figures, 0: none */
+    };
+
+    const Row rows[] = {
+        {8, 4000, 0, 0, 0.0, 0.0, 0.0},
+        {8, 6000, 0, 0, 0.0, 0.0, 0.0},
+        {7, 8000, 0, 0, 0.0, 0.0, 0.0},
+        {7, 12000, 0, 0, 0.0, 0.0, 0.0},
+        {6, 16000, 0, 0, 0.26795, 505.07, 0.23852161},
+        {6, 16000, 8000, 0, 0.0, 0.0, 0.0},
+        {6, 16000, 12500, 0, 0.0, 0.0, 0.0},
+        {6, 24000, 16000, 67, 0.0, 0.0, 0.0},
+        {6, 24000, 12500, 0, 0.12749, 476.62, 0.0},
+        {6, 24000, 20000, 0, 0.0, 0.0, 0.0},
+        {5, 48000, 16000, 135, 0.0, 0.0, 0.0},
+        {5, 48000, 25000, 0, 0.14034, 928.04, 0.0},
+        {4, 72000, 16000, 201, 0.0, 0.0, 0.0},
+        {4, 72000, 25000, 0, 0.0, 0.0, 0.0},
+        {2, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {3, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {4, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {5, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {7, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {8, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {9, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {10, 16000, 0, 0, 0.0, 0.0, 0.0},
+        {2, 24000, 12500, 0, 0.0, 0.0, 0.0},
+        {3, 24000, 12500, 0, 0.0, 0.0, 0.0},
+        {8, 24000, 12500, 0, 0.0, 0.0, 0.0},
+        {6, 39062, 0, 0, 0.0, 0.0, 0.0},
+        {6, 39062, 16000, 0, 0.0, 0.0, 0.0},
+    };
+
+    double worst = 0.0;
+    int failed = 0;
+    for (const Row& row : rows) {
+        std::vector<float> taps;
+        const dsd_squelch_floor_plan got = installed_plan(row.passes, row.rate, row.width, &taps);
+        const CascadeOracle want = cascade_oracle(row.passes, row.rate, row.width);
+        const double off = cascade_plan_distance(got, want.plan);
+        worst = std::fmax(worst, off);
+        bool ok = off <= kCascadeTolerance && taps == want.taps;
+        if (row.default_taps > 0) {
+            std::vector<float> design(DSD_NOISE_SQUELCH_MAX_TAPS, 0.0f);
+            const int len = dsd_channel_lpf_design_analog(row.rate, 16000, design.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+            design.resize(len > 0 ? (size_t)len : 0U);
+            ok = ok && len == row.default_taps && taps == design;
+        }
+        if (row.beta > 0.0) {
+            ok = ok && std::fabs(got.beta - row.beta) <= 1e-5 && std::fabs(got.neff - row.neff) <= 1e-2;
+        }
+        if (row.gain > 0.0) {
+            ok = ok && std::fabs(got.noise_gain / row.gain - 1.0) <= 1e-6;
+        }
+        failed += ok ? 0 : 1;
+        CHECK(ok,
+              "%d passes at %d Hz, width %d (%zu taps): installed lag %d beta %.6f N_eff %.3f gain %.8f, the real "
+              "cascade lag %d beta %.6f N_eff %.3f gain %.8f (off by %.3e)",
+              row.passes, row.rate, row.width, taps.size(), got.lag, got.beta, got.neff, got.noise_gain, want.plan.lag,
+              want.plan.beta, want.plan.neff, want.plan.noise_gain, off);
+    }
+    printf("no step: the installed floor plan is the real cascade's at %zu chains (2 to 10 passes), within %.2e "
+           "(%d off)\n",
+           sizeof(rows) / sizeof(rows[0]), worst, failed);
+}
+
+/* Without a step full_demod()'s plans: with no pass or one the floor plan is today's design (that stage's, or none),
+   bit for bit, at a rate 25 divides and at an odd kept replay rate; with more it is the whole cascade's (issue #899).
+   The noise plan is today's design (the whole cascade), bit for bit. */
 void
 test_no_step_plans_are_todays(void) {
     const struct {
         int passes;
         int rate;
         int width;
-    } chains[] = {{5, 48000, 12500}, {1, 24000, 0}, {6, 16000, 13200}, {0, 48000, 25000}};
+    } chains[] = {{5, 48000, 12500}, {1, 24000, 0},     {6, 16000, 13200},
+                  {0, 48000, 25000}, {1, 39062, 16000}, {0, 39062, 0}};
 
     for (const auto& c : chains) {
         const DemodBox box;
@@ -448,17 +630,25 @@ test_no_step_plans_are_todays(void) {
         const int taps_len = c.width > 0 ? s->channel_lpf_plan_taps_len : 0;
         dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
         const int count = stages_for(c.passes, st);
-        dsd_squelch_floor_plan fp;
-        (void)dsd_squelch_floor_plan_design(&fp, taps, taps_len, count > 0 ? st[count - 1].taps : NULL,
-                                            count > 0 ? st[count - 1].len : 0, c.rate);
-        CHECK(fp.valid && same_floor_plan(fp, s->squelch_floor.plan), "%d passes at %d Hz: floor plan differs",
-              c.passes, c.rate);
+        if (c.passes <= 1) {
+            dsd_squelch_floor_plan fp;
+            (void)dsd_squelch_floor_plan_design(&fp, taps, taps_len, count > 0 ? st[0].taps : NULL,
+                                                count > 0 ? st[0].len : 0, c.rate);
+            CHECK(fp.valid && same_floor_plan(fp, s->squelch_floor.plan), "%d passes at %d Hz: floor plan differs",
+                  c.passes, c.rate);
+        } else {
+            const CascadeOracle want = cascade_oracle(c.passes, c.rate, c.width);
+            const double off = cascade_plan_distance(s->squelch_floor.plan, want.plan);
+            CHECK(off <= kCascadeTolerance, "%d passes at %d Hz: floor plan off the real cascade's by %.3e", c.passes,
+                  c.rate, off);
+        }
         static dsd_noise_squelch_plan np;
         (void)dsd_noise_squelch_plan_design(&np, taps, taps_len, st, count, c.rate);
         CHECK(same_noise_plan(np, s->noise_squelch.plan), "%d passes at %d Hz: noise plan differs", c.passes, c.rate);
         CHECK(!s->squelch_step_model.ready && s->squelch_plan.step.enabled == 0, "%d passes: a step model", c.passes);
     }
-    printf("no step: full_demod()'s floor and noise plans are today's designs, bit for bit\n");
+    printf("no step: full_demod()'s floor plans are today's with up to one pass and the cascade's with more, its noise "
+           "plans today's, bit for bit\n");
 }
 
 /* The plan key follows the step: another plan designs other plans, and no step goes back to today's; the model is
@@ -522,14 +712,13 @@ test_plan_key_follows_the_step(void) {
     dsd_squelch_floor_get_status(&s->squelch_floor, &st);
     CHECK(!s->squelch_floor.plan.valid && st.gate_open, "a stepping chain with no model has a plan");
 
-    /* The step off: today's plan. */
+    /* The step off: the plan of the cascade the chain runs, every stage of it (issue #899). */
     dsd_live_iq_step_disable(&s->live_iq_step);
     run_plans(s, DSD_SQUELCH_MODE_AUTO, 3000000.0);
-    dsd_squelch_floor_plan today;
-    (void)dsd_squelch_floor_plan_design(&today, s->channel_lpf_plan_taps, s->channel_lpf_plan_taps_len, hb_q15_taps,
-                                        HB_TAPS, rate);
-    CHECK(same_floor_plan(today, s->squelch_floor.plan) && s->squelch_plan.step.enabled == 0,
-          "with the step off the plan is not today's");
+    const CascadeOracle cascade = cascade_oracle(s->downsample_passes, rate, 16000);
+    const double step_off = cascade_plan_distance(s->squelch_floor.plan, cascade.plan);
+    CHECK(s->downsample_passes >= 2 && step_off <= kCascadeTolerance && s->squelch_plan.step.enabled == 0,
+          "with the step off the plan is not the %d-pass cascade's (off by %.3e)", s->downsample_passes, step_off);
 
     /* Refusals leave the model empty. */
     dsd_squelch_step_model m;
@@ -868,48 +1057,77 @@ noise_bounds(const Runners& r, const Meter* meters, int meter_count, const char*
     }
 }
 
-/* The plans a chain runs: behind the step @p plan its model's, or with no step (NULL, the RTL-SDR chain: one 31-tap
-   pass from twice the rate) today's designs. */
+/* The plans a chain runs. Behind the step @p plan its model's. With no step (NULL) and one pass, the stepped stand-ins'
+   control (one 31-tap pass from twice the rate, where today's one-stage design is exact), that design. With more
+   passes (the real RTL-SDR chain, issue #899) the plans full_demod() installs under AUTO and NOISE on that cascade:
+   the floor plan held to the real cascade's impulses (cascade_oracle()), the noise plan to the design from every stage
+   of the cascade. */
 void
-design_chain_plans(demod_state* s, const dsd_live_iq_step_plan* plan, int rate, const float* taps, int taps_len,
+design_chain_plans(demod_state* s, const dsd_live_iq_step_plan* plan, int passes, int rate, int width_hz,
                    dsd_squelch_floor_plan* fp, dsd_noise_squelch_plan* np) {
+    const float* taps = width_hz > 0 ? s->channel_lpf_plan_taps : NULL;
+    const int taps_len = width_hz > 0 ? s->channel_lpf_plan_taps_len : 0;
     if (plan != NULL) {
         CHECK(dsd_squelch_step_model_floor_plan(&s->squelch_step_model, fp, taps, taps_len, rate) == 0,
               "stepped floor plan at %d Hz", rate);
         (void)dsd_squelch_step_model_noise_plan(&s->squelch_step_model, np, taps, taps_len, rate);
         return;
     }
-    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
-    const int count = stages_for(1, st);
-    CHECK(dsd_squelch_floor_plan_design(fp, taps, taps_len, st[0].taps, st[0].len, rate) == 0, "floor plan at %d Hz",
-          rate);
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES] = {};
+    const int count = stages_for(passes, st);
     (void)dsd_noise_squelch_plan_design(np, taps, taps_len, st, count, rate);
+    if (passes <= 1) {
+        /* No pass: no half-band ahead of the channel filter. */
+        CHECK(dsd_squelch_floor_plan_design(fp, taps, taps_len, count > 0 ? st[0].taps : NULL,
+                                            count > 0 ? st[0].len : 0, rate)
+                  == 0,
+              "floor plan at %d Hz", rate);
+        return;
+    }
+    const double in_rate = std::ldexp((double)rate, passes);
+    run_plans(s, DSD_SQUELCH_MODE_AUTO, in_rate);
+    *fp = s->squelch_floor.plan;
+    run_plans(s, DSD_SQUELCH_MODE_NOISE, in_rate);
+    const int noise_same = np->valid != 0 ? same_noise_plan(*np, s->noise_squelch.plan) : !s->noise_squelch.plan.valid;
+    s->squelch_mode = DSD_SQUELCH_MODE_LEVEL;
+    const CascadeOracle want = cascade_oracle(passes, rate, width_hz);
+    const double off = cascade_plan_distance(*fp, want.plan);
+    CHECK(fp->valid && off <= kCascadeTolerance,
+          "%d passes at %d Hz, width %d: the installed floor plan is off the real cascade's by %.3e (beta %.5f, the "
+          "cascade's %.5f)",
+          passes, rate, width_hz, off, fp->beta, want.plan.beta);
+    CHECK(noise_same, "%d passes at %d Hz, width %d: the installed noise plan is not the whole cascade's design",
+          passes, rate, width_hz);
 }
 
-/* Unit noise into a chain at @p rate (full_demod() through one 31-tap pass, from twice hb_out then the step of
-   @p plan, or from twice the rate with no step when @p plan is NULL) at @p width_hz, its plans held to the bounds for
-   the lengths in @p len; @p interim also measures the plans the half-band stage alone gives at the channel rate (what
-   a stepped chain ran before the model). */
+/* Noise into a chain at @p rate: full_demod() through one 31-tap pass from twice hb_out then the step of @p plan, or,
+   with no step (@p plan NULL), through @p passes half-band passes from 2^passes times the rate (1: the stepped
+   stand-ins' control, from twice the rate). Its variance is 2^(passes - 1) at the capture rate, the noise_gain
+   convention, so the channel noise power is the plan's noise gain (unit variance through the stand-in's one pass);
+   2^passes inputs make an output, past a warm-up of 2048 outputs. Its plans are held to the bounds for the lengths in
+   @p len; @p interim also measures the plans the half-band stage alone gives at the channel rate (what a stepped chain
+   ran before the model). */
 Outcome
-run_chain(const char* name, const dsd_live_iq_step_plan* plan, int rate, int width_hz, int interim, uint64_t seed,
-          const Durations& len) {
+run_chain(const char* name, const dsd_live_iq_step_plan* plan, int passes, int rate, int width_hz, int interim,
+          uint64_t seed, const Durations& len) {
     Outcome o;
     const DemodBox box;
     demod_state* s = box.s;
-    CHECK(configure(s, 1, rate, plan, width_hz) == 0, "%s: configure", name);
+    const int chain_passes = plan != NULL ? 1 : passes;
+    CHECK(configure(s, chain_passes, rate, plan, width_hz) == 0, "%s: configure", name);
     Rng rng(seed);
+    const double var = std::ldexp(1.0, chain_passes - 1);
     /* One block designs the channel plan the squelch plans take, and fills the filters. */
-    feed_noise(s, rng, 1.0, 4096, [](const float*, int) {});
-    const float* taps = width_hz > 0 ? s->channel_lpf_plan_taps : NULL;
-    const int taps_len = width_hz > 0 ? s->channel_lpf_plan_taps_len : 0;
+    const long warm = plan != NULL ? 4096L : (2048L << chain_passes);
+    feed_noise(s, rng, var, warm, [](const float*, int) {});
     static dsd_squelch_floor_plan fp;
     static dsd_noise_squelch_plan np;
     static dsd_noise_squelch_plan interim_np;
-    design_chain_plans(s, plan, rate, taps, taps_len, &fp, &np);
+    design_chain_plans(s, plan, chain_passes, rate, width_hz, &fp, &np);
     DSD_MEMSET(&interim_np, 0, sizeof interim_np);
     if (interim != 0) {
         dsd_squelch_floor_plan interim_fp;
-        design_chain_plans(s, NULL, rate, taps, taps_len, &interim_fp, &interim_np);
+        design_chain_plans(s, NULL, 1, rate, width_hz, &interim_fp, &interim_np);
     }
     static Runners r;
     r = Runners();
@@ -924,9 +1142,10 @@ run_chain(const char* name, const dsd_live_iq_step_plan* plan, int rate, int wid
     meter_init(&meters[1], &interim_np, rate / 10);
     const int meter_count = np.valid == 0 ? 0 : (interim_np.valid != 0 ? 2 : 1);
     const long outputs = std::max(std::max(run.floor + r.offset[kPhases - 1], run.noise), std::max(run.meter, run.cov));
-    const double in_per_out =
-        plan != NULL ? 2.0 * std::ldexp((double)plan->hb_out_num, -(int)plan->hb_out_shift) / (double)rate : 2.0;
-    feed_noise(s, rng, 1.0, (long)((double)outputs * in_per_out) + 4096,
+    const double in_per_out = plan != NULL
+                                  ? 2.0 * std::ldexp((double)plan->hb_out_num, -(int)plan->hb_out_shift) / (double)rate
+                                  : std::ldexp(1.0, chain_passes);
+    feed_noise(s, rng, var, (long)((double)outputs * in_per_out) + warm,
                [&](const float* iq, int pairs) { runners_add(&r, meters, meter_count, iq, pairs); });
     if (run.floor > 0) {
         floor_bounds(r, fp, name, &o);
@@ -937,7 +1156,7 @@ run_chain(const char* name, const dsd_live_iq_step_plan* plan, int rate, int wid
         noise_bounds(r, meters, meter_count, name, &o);
     }
     printf(
-        "  %-30s lag %d beta %+.4f N_eff %7.2f | measured N_eff %+5.2f %% coh %+.4f | floor %.2f dB known <= %llu %s",
+        "  %-42s lag %d beta %+.4f N_eff %7.2f | measured N_eff %+5.2f %% coh %+.4f | floor %.2f dB known <= %llu %s",
         name, fp.lag, fp.beta, fp.neff, 100.0 * o.neff_off, o.beta_off, o.floor_worst_db,
         (unsigned long long)o.known_max, (o.floor_ok != 0 && stats_ok != 0) ? "ok" : "FAIL");
     if (run.noise > 0 && run.meter > 0) {
@@ -1030,6 +1249,237 @@ test_period_one_is_todays_model(void) {
               today.rho_lag, today.beta, today.neff);
     }
     printf("period one: the periodic design is today's stationary model within 1e-12\n");
+}
+
+/* White noise of variance var[n % period] at sample n: periodic noise with no correlation between samples. */
+dsd_squelch_floor_periodic_noise
+white_rows(const std::vector<double>& var) {
+    dsd_squelch_floor_periodic_noise r;
+    r.period = (int)var.size();
+    r.lags = 1;
+    r.cov = var.data();
+    return r;
+}
+
+/* The largest distance of two covariances of the same shape, relative to the first's largest value. */
+double
+cov_distance(const dsd_squelch_floor_periodic_noise& a, const dsd_squelch_floor_periodic_noise& b) {
+    if (a.period != b.period || a.lags != b.lags) {
+        return std::numeric_limits<double>::max();
+    }
+    double peak = 0.0;
+    double off = 0.0;
+    for (size_t i = 0; i < (size_t)a.period * (size_t)a.lags; i++) {
+        peak = std::fmax(peak, std::fabs(a.cov[i]));
+        off = std::fmax(off, std::fabs(a.cov[i] - b.cov[i]));
+    }
+    return peak > 0.0 ? off / peak : std::numeric_limits<double>::max();
+}
+
+/* The shared cascade covariance (src/dsp/squelch_cascade_noise.c, issue #899) on periodic noise, against the formula
+   for white noise of a periodic variance: a stage takes y_q = sum_i h_i x_{2q - i}, so E{y_q y_{q+m}} = sum_i h_i
+   h_{i+2m} var((2q - i) mod P); the channel taps E{z_n z_{n+m}} = sum_i c_i c_{i+m} var((n - i) mod P). A period of 2
+   becomes 1 after a stage, 3 stays 3; stationary noise tiled to a period of 2 gives the stationary result; and the
+   floor plan helper with one stage is the stationary design (within 1e-12) at a rate 25 divides and at an odd one. */
+void
+test_cascade_noise_helper(void) {
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    (void)stages_for(2, st);
+    for (const std::vector<double>& var : {std::vector<double>{1.0, 0.25}, std::vector<double>{1.0, 0.5, 2.0}}) {
+        const dsd_squelch_floor_periodic_noise in = white_rows(var);
+        const int period = (int)var.size();
+        for (int s = 0; s < 2; s++) {
+            std::vector<double> work(dsd_squelch_cascade_noise_work_len(period, 1, &st[s], 1));
+            dsd_squelch_floor_periodic_noise out;
+            const int rc = dsd_squelch_cascade_noise(&in, &st[s], 1, work.data(), work.size(), &out);
+            const int want_period = period % 2 == 0 ? period / 2 : period;
+            std::vector<double> want((size_t)want_period * (size_t)out.lags, 0.0);
+            for (int q = 0; q < want_period; q++) {
+                for (int m = 0; m < out.lags; m++) {
+                    for (int i = 0; i + (2 * m) < st[s].len; i++) {
+                        const int phase = (((2 * q) - i) % period + period) % period;
+                        want[((size_t)q * (size_t)out.lags) + (size_t)m] +=
+                            (double)st[s].taps[i] * (double)st[s].taps[i + (2 * m)] * var[(size_t)phase];
+                    }
+                }
+            }
+            dsd_squelch_floor_periodic_noise ref = out;
+            ref.cov = want.data();
+            CHECK(rc == 0 && out.period == want_period && out.lags == ((st[s].len - 1) / 2) + 1
+                      && cov_distance(ref, out) <= 1e-12,
+                  "a %d-tap stage on a period of %d: rc %d, period %d, lags %d, off %.3e", st[s].len, period, rc,
+                  out.period, out.lags, cov_distance(ref, out));
+        }
+        /* The channel taps keep the period. */
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(24000, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> chan((size_t)period * (size_t)len);
+        dsd_squelch_floor_periodic_noise out;
+        const int rc =
+            dsd_squelch_cascade_noise_through_taps(&in, taps.data(), len, NULL, 0U, chan.data(), chan.size(), &out);
+        std::vector<double> want(chan.size(), 0.0);
+        for (int n = 0; n < period; n++) {
+            for (int m = 0; m < len; m++) {
+                for (int i = 0; i + m < len; i++) {
+                    want[((size_t)n * (size_t)len) + (size_t)m] +=
+                        (double)taps[(size_t)i] * (double)taps[(size_t)i + (size_t)m]
+                        * var[(size_t)(((n - i) % period + period) % period)];
+                }
+            }
+        }
+        dsd_squelch_floor_periodic_noise ref = out;
+        ref.cov = want.data();
+        CHECK(rc == 0 && out.period == period && out.lags == len && cov_distance(ref, out) <= 1e-12,
+              "the channel taps on a period of %d: rc %d, off %.3e", period, rc, cov_distance(ref, out));
+    }
+
+    /* Stationary noise tiled to a period of 2: the periodic paths give the stationary results. */
+    {
+        dsd_squelch_floor_periodic_noise hb;
+        std::vector<double> work(dsd_squelch_cascade_noise_work_len(1, 1, st, 2));
+        CHECK(dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size(), &hb) == 0 && hb.period == 1,
+              "white noise through two stages");
+        std::vector<double> tiled(hb.cov, hb.cov + hb.lags);
+        tiled.insert(tiled.end(), hb.cov, hb.cov + hb.lags);
+        dsd_squelch_floor_periodic_noise two;
+        two.period = 2;
+        two.lags = hb.lags;
+        two.cov = tiled.data();
+        std::vector<double> w1(dsd_squelch_cascade_noise_work_len(1, hb.lags, &st[1], 1));
+        std::vector<double> w2(dsd_squelch_cascade_noise_work_len(2, hb.lags, &st[1], 1));
+        dsd_squelch_floor_periodic_noise a;
+        dsd_squelch_floor_periodic_noise b;
+        const int rc_a = dsd_squelch_cascade_noise(&hb, &st[1], 1, w1.data(), w1.size(), &a);
+        const int rc_b = dsd_squelch_cascade_noise(&two, &st[1], 1, w2.data(), w2.size(), &b);
+        CHECK(rc_a == 0 && rc_b == 0 && cov_distance(a, b) <= 1e-12, "tiled stationary noise through a stage: %.3e",
+              cov_distance(a, b));
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(48000, 25000, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> rc(DSD_NOISE_SQUELCH_MAX_TAPS);
+        std::vector<double> c1((size_t)(hb.lags + len - 1));
+        std::vector<double> c2(2U * c1.size());
+        const int rc_c = dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), rc.size(), c1.data(),
+                                                                c1.size(), &a);
+        const int rc_d =
+            dsd_squelch_cascade_noise_through_taps(&two, taps.data(), len, NULL, 0U, c2.data(), c2.size(), &b);
+        dsd_squelch_floor_periodic_noise b0 = b;
+        b0.period = 1;
+        CHECK(rc_c == 0 && rc_d == 0 && b.period == 2 && cov_distance(a, b0) <= 1e-12
+                  && std::equal(c2.begin(), c2.begin() + (long)c1.size(), c2.begin() + (long)c1.size()),
+              "tiled stationary noise through the channel taps: %.3e", cov_distance(a, b0));
+        /* Refusals: too little workspace, a stage too long, a period of none, a lag count a stage could overflow, no rc
+           or too short a one for stationary noise, too small an output. */
+        dsd_squelch_floor_periodic_noise none;
+        dsd_noise_squelch_stage longest = st[0];
+        longest.len = DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS + 1;
+        dsd_squelch_floor_periodic_noise zero = hb;
+        zero.period = 0;
+        CHECK(
+            dsd_squelch_cascade_noise(NULL, st, 2, work.data(), work.size() - 1U, &none) == -1
+                && dsd_squelch_cascade_noise(NULL, &longest, 1, work.data(), work.size(), &none) == -1
+                && dsd_squelch_cascade_noise(&zero, st, 1, work.data(), work.size(), &none) == -1
+                && dsd_squelch_cascade_noise_work_len(1, 1, &longest, 1) == 0U
+                && dsd_squelch_cascade_noise_work_len(1, INT32_MAX - DSD_SQUELCH_CASCADE_MAX_STAGE_TAPS + 1, st, 1)
+                       == 0U
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), (size_t)len - 1U, c1.data(),
+                                                          c1.size(), &none)
+                       == -1
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, NULL, 0U, c1.data(), c1.size(), &none)
+                       == -1
+                && dsd_squelch_cascade_noise_through_taps(&hb, taps.data(), len, rc.data(), rc.size(), c1.data(),
+                                                          c1.size() - 1U, &none)
+                       == -1,
+            "a refusal went through");
+    }
+
+    /* One stage: the stationary design, at a rate 25 divides and at an odd one (both windows rate / 25.0). */
+    for (const int rate : {24000, 39062}) {
+        std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+        const int len = dsd_channel_lpf_design_analog(rate, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+        for (const int width : {0, 12500}) {
+            const float* chan_taps = width > 0 ? taps.data() : NULL;
+            const int run_len = width > 0 ? len : 0;
+            dsd_squelch_floor_plan helper;
+            dsd_squelch_floor_plan today;
+            const int rc_h = dsd_squelch_cascade_noise_floor_plan(&helper, chan_taps, run_len, st, 1, rate);
+            const int rc_t = dsd_squelch_floor_plan_design(&today, chan_taps, run_len, hb31_q15_taps, 31, rate);
+            const bool same = rc_h == 0 && rc_t == 0 && helper.lag == today.lag
+                              && close_rel(helper.rho_lag, today.rho_lag, 1e-12)
+                              && close_rel(helper.beta, today.beta, 1e-12) && close_rel(helper.neff, today.neff, 1e-12)
+                              && close_rel(helper.noise_gain, today.noise_gain, 1e-12);
+            CHECK(same, "%d Hz width %d: one-stage helper N_eff %.15g beta %.15g, today's %.15g %.15g", rate, width,
+                  helper.neff, helper.beta, today.neff, today.beta);
+        }
+    }
+    dsd_squelch_floor_plan refused;
+    CHECK(dsd_squelch_cascade_noise_floor_plan(&refused, NULL, DSD_NOISE_SQUELCH_MAX_TAPS + 1, st, 2, 16000) == -1
+              && !refused.valid,
+          "more channel taps than the helper holds planned");
+    printf("cascade noise: periodic stages and channel taps match the formula, tiled stationary noise the stationary "
+           "path, and one stage today's design\n");
+}
+
+/* The periodic design over the tracker's mean window: where 25 divides the rate it is the periodic design bit for bit
+   (a period of one and of three); at 39,062 Hz the window is 1,562.48 samples, so at a period of one N_eff scales by
+   1,562.48 / 1,562 and beta and rho stay, and at a period of three the plan is the two window lengths' plans weighted
+   by how often each runs. */
+void
+test_periodic_mean_window(void) {
+    std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+    const int len = dsd_channel_lpf_design_analog(48000, 12500, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS);
+    std::vector<double> cov((size_t)len, 0.0);
+    for (int m = 0; m < len; m++) {
+        cov[(size_t)m] = taps_autocorr(taps.data(), len, m);
+    }
+    std::vector<double> three;
+    for (int n = 0; n < 3; n++) {
+        for (int m = 0; m < len; m++) {
+            three.push_back(cov[(size_t)m] * (1.0 + (0.25 * n)));
+        }
+    }
+    dsd_squelch_floor_periodic_noise one;
+    one.period = 1;
+    one.lags = len;
+    one.cov = cov.data();
+    dsd_squelch_floor_periodic_noise per3 = one;
+    per3.period = 3;
+    per3.cov = three.data();
+    for (const dsd_squelch_floor_periodic_noise* noise : {&one, &per3}) {
+        dsd_squelch_floor_plan a;
+        dsd_squelch_floor_plan b;
+        const int rc_a = dsd_squelch_floor_plan_design_periodic(&a, taps.data(), len, noise, 48000);
+        const int rc_b = dsd_squelch_floor_plan_design_periodic_mean(&b, taps.data(), len, noise, 48000);
+        CHECK(rc_a == 0 && rc_b == 0 && same_floor_plan(a, b), "period %d at 48 kHz: the mean window moved the plan",
+              noise->period);
+    }
+    /* A period of three at 39,062 Hz: 12 of every 25 windows are 1,563 samples, the rest 1,562, so the plan is those
+       lengths' plans weighted 0.52 / 0.48 (39,075 Hz takes 1,563-sample windows in the periodic design). */
+    {
+        dsd_squelch_floor_plan short_w;
+        dsd_squelch_floor_plan long_w;
+        dsd_squelch_floor_plan mixed;
+        const int rc_s = dsd_squelch_floor_plan_design_periodic(&short_w, taps.data(), len, &per3, 39062);
+        const int rc_l = dsd_squelch_floor_plan_design_periodic(&long_w, taps.data(), len, &per3, 39075);
+        const int rc_x = dsd_squelch_floor_plan_design_periodic_mean(&mixed, taps.data(), len, &per3, 39062);
+        const double f = 12.0 / 25.0;
+        CHECK(rc_s == 0 && rc_l == 0 && rc_x == 0
+                  && close_rel(mixed.neff, ((1.0 - f) * short_w.neff) + (f * long_w.neff), 1e-12)
+                  && close_rel(mixed.beta, ((1.0 - f) * short_w.beta) + (f * long_w.beta), 1e-12)
+                  && close_rel(mixed.rho_lag, ((1.0 - f) * short_w.rho_lag) + (f * long_w.rho_lag), 1e-12)
+                  && close_rel(mixed.noise_gain, short_w.noise_gain, 1e-12) && mixed.rate_hz == 39062
+                  && std::fabs(short_w.neff - long_w.neff) > 1e-6 * short_w.neff,
+              "period 3 at 39,062 Hz: mean-window N_eff %.15g, the windows' %.15g and %.15g", mixed.neff, short_w.neff,
+              long_w.neff);
+    }
+    dsd_squelch_floor_plan whole;
+    dsd_squelch_floor_plan mean;
+    const int rc_w = dsd_squelch_floor_plan_design_periodic(&whole, taps.data(), len, &one, 39062);
+    const int rc_m = dsd_squelch_floor_plan_design_periodic_mean(&mean, taps.data(), len, &one, 39062);
+    CHECK(rc_w == 0 && rc_m == 0 && close_rel(mean.neff, whole.neff * (39062.0 / 25.0) / 1562.0, 1e-12)
+              && close_rel(mean.sqrt_neff, std::sqrt(mean.neff), 1e-12) && close_rel(mean.beta, whole.beta, 1e-12)
+              && close_rel(mean.rho_lag, whole.rho_lag, 1e-12) && close_rel(mean.noise_gain, whole.noise_gain, 1e-12),
+          "39,062 Hz: mean-window N_eff %.15g, whole windows %.15g", mean.neff, whole.neff);
+    printf("mean window: the periodic design where 25 divides the rate, fractional N_eff at 39,062 Hz\n");
 }
 
 /* The step plans the averaged floor path is held to: every planned Airspy grid point, and a SoapySDR ratio near the
@@ -1207,23 +1657,56 @@ test_window_statistics(void) {
             stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, c.device, (uint32_t)c.target));
         char name[96];
         DSD_SNPRINTF(name, sizeof name, "%u/%d Hz, width %d", c.device, c.target, c.width);
-        (void)run_chain(name, &plan, c.target, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target, len);
+        (void)run_chain(name, &plan, 1, c.target, c.width, 0, 0x57A7ULL + c.device + (uint64_t)c.target, len);
     }
 }
 
-/* Every selectable DSP bandwidth at the post-half-band rates of 2.5 and 3 MS/s (stand-ins: one 31-tap pass from twice
-   hb_out), the widest NFM channel it takes and none: each chain's floor, noise squelch and window statistics held to
-   the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to, the trackers at three phases of the
-   step's period, and the RTL-SDR chain at the same bandwidth (one 31-tap pass from twice the rate) held to the same
-   bounds for the same lengths. A stepped chain's noise plan is valid exactly where the RTL-SDR chain's is: the same band
-   rule, so a stepped design refused for any other reason (the factor's length, the step's output, a step refusing a
-   pass, no calibrated power) fails here. */
+/* The passes the RTL-SDR chain runs at @p target: the planner's for its capture rate (the DSP bandwidth times the
+   passes near a good RTL-SDR rate, rtl_downsample_passes_for_rate_in()), which never steps. */
+int
+rtl_passes(uint32_t capture_hz, int target) {
+    dsd_rate_plan_input in;
+    DSD_MEMSET(&in, 0, sizeof(in));
+    in.backend = DSD_RATE_PLAN_BACKEND_RTL_USB;
+    in.request_hz = capture_hz;
+    in.programmed_hz = capture_hz;
+    in.readback_hz = capture_hz;
+    in.target_hz = (uint32_t)target;
+    in.max_passes = 10;
+    dsd_rate_plan rp;
+    const int rc = dsd_rate_plan_compute(&in, &rp);
+    CHECK(rc == DSD_RATE_PLAN_OK && !rp.step.enabled && rp.step_out_hz == (uint32_t)target,
+          "RTL-SDR plan %u Hz -> %d Hz: %d %s", capture_hz, target, rc, rp.message);
+    return rp.passes;
+}
+
+/* Every selectable DSP bandwidth, the widest NFM channel it takes and none, each chain's floor, noise squelch and
+   window statistics held to the bounds DSP_SQUELCH_FLOOR and DSP_NFM_NOISE_SQUELCH hold the RTL-SDR chain to:
+   - the real RTL-SDR chain (issue #899): its capture rate (1.024, 1.152 or 1.536 MS/s) through the 4 to 8 half-band
+     passes it runs, with no step, on the plans full_demod() installs (held to the real cascade's);
+   - the stepped stand-ins at the post-half-band rates of 2.5 and 3 MS/s (one 31-tap pass from twice hb_out, then the
+     step), the trackers at three phases of the step's period;
+   - their control: one 31-tap pass from twice the rate, where today's one-stage design is exact, for the same
+     lengths. A stepped chain's noise plan is valid exactly where the control's is, and the real chain's too: the same
+     band rule, so a stepped design refused for any other reason (the factor's length, the step's output, a step
+     refusing a pass, no calibrated power) fails here. */
 void
 test_matrix(void) {
     const uint32_t devices[] = {2500000u, 3000000u};
-    const int targets[] = {4000, 6000, 8000, 12000, 16000, 24000, 48000, 72000};
+
+    const struct {
+        int target;
+        uint32_t capture;
+    } rtl[] = {{4000, 1024000u},  {6000, 1536000u},  {8000, 1024000u},  {12000, 1536000u},
+               {16000, 1024000u}, {24000, 1536000u}, {48000, 1536000u}, {72000, 1152000u}};
+
     int interim_misses = 0;
-    for (const int target : targets) {
+    int real_rows = 0;
+    for (const auto& row : rtl) {
+        const int target = row.target;
+        const int passes = rtl_passes(row.capture, target);
+        CHECK(passes >= 4 && passes <= 8 && ((uint32_t)target << passes) == row.capture,
+              "RTL-SDR %d Hz: %d passes from %u Hz", target, passes, row.capture);
         const int widths[2] = {widest_nfm_hz(target), 0};
         /* Lengths in channel samples (Durations): 4 s of trackers, 3 s of noise squelch, 6 s of meters, 100,000
            samples of covariance. */
@@ -1233,9 +1716,18 @@ test_matrix(void) {
                 continue;
             }
             char name[96];
-            DSD_SNPRINTF(name, sizeof name, "RTL %d Hz, width %d", target, widths[w]);
-            const Outcome rtl =
-                run_chain(name, NULL, target, widths[w], 0, 0x5EED0000ULL + (uint64_t)target + (uint64_t)w, len);
+            DSD_SNPRINTF(name, sizeof name, "RTL %u/%d Hz, %d passes, width %d", row.capture, target, passes,
+                         widths[w]);
+            const Outcome real = run_chain(name, NULL, passes, target, widths[w], 0,
+                                           0x899C0000ULL + (uint64_t)target + (uint64_t)w, len);
+            real_rows++;
+            DSD_SNPRINTF(name, sizeof name, "1-pass %d Hz, width %d", target, widths[w]);
+            const Outcome control =
+                run_chain(name, NULL, 1, target, widths[w], 0, 0x5EED0000ULL + (uint64_t)target + (uint64_t)w, len);
+            CHECK(real.noise_valid == control.noise_valid,
+                  "%d Hz, width %d: the RTL-SDR chain's noise plan valid %d, "
+                  "the control's %d",
+                  target, widths[w], real.noise_valid, control.noise_valid);
             for (const uint32_t device : devices) {
                 const dsd_live_iq_step_plan plan =
                     stand_in(plan_for(DSD_RATE_PLAN_BACKEND_AIRSPY, device, (uint32_t)target));
@@ -1246,17 +1738,18 @@ test_matrix(void) {
                 const int interim = (target == 24000 && widths[w] == 0) ? 1 : 0;
                 Durations chain_len = len;
                 chain_len.meter = interim != 0 ? 20L * target : len.meter;
-                const Outcome step = run_chain(name, &plan, target, widths[w], interim,
+                const Outcome step = run_chain(name, &plan, 1, target, widths[w], interim,
                                                0xA1E5ULL + device + (uint64_t)target + (uint64_t)w, chain_len);
-                CHECK(step.noise_valid == rtl.noise_valid, "%s: noise plan valid %d, the RTL-SDR chain's %d", name,
-                      step.noise_valid, rtl.noise_valid);
+                CHECK(step.noise_valid == control.noise_valid, "%s: noise plan valid %d, the control's %d", name,
+                      step.noise_valid, control.noise_valid);
                 interim_misses +=
                     (interim != 0 && (step.interim_worst >= 0.6 || std::fabs(step.interim_whole) >= 0.3)) ? 1 : 0;
             }
         }
     }
-    printf("the half-band stage alone misses the noise references at %d of 2 stepped plans at 24 kHz unfiltered\n",
-           interim_misses);
+    printf("the real RTL-SDR chain ran at %d chains (4 to 8 passes); the half-band stage alone misses "
+           "the noise references at %d of 2 stepped plans at 24 kHz unfiltered\n",
+           real_rows, interim_misses);
     /* What a stepped chain ran before the model: at 24 kHz with no channel filter its references are off by more than
        DSP_NFM_NOISE_SQUELCH allows (the matrix tells the two apart). */
     CHECK(interim_misses >= 1, "the half-band stage alone never missed: the matrix does not test the step");
@@ -1270,9 +1763,12 @@ main(int argc, char** argv) {
         test_halfband_recursion();
         test_step_covariance();
         test_no_step_plans_are_todays();
+        test_no_step_plan_is_the_cascade();
         test_plan_key_follows_the_step();
         test_window_statistics();
         test_period_one_is_todays_model();
+        test_cascade_noise_helper();
+        test_periodic_mean_window();
         test_floor_plan_matches_every_phase();
         test_no_step_floor_plans_pinned();
         test_no_step_noise_plans_pinned();

@@ -194,7 +194,7 @@ Item {
                 verify(!node.inTree, "covered: out of the tree");
                 compare(node.name, "", "covered: nameless");
                 compare(node.role, 0x10, "covered: a plain pane");
-                verify(!node.focusable && node.actions.indexOf("SetFocus") < 0, "covered: no stop, " + JSON.stringify(node.actions));
+                verify(!node.focusable && node.actions.indexOf(testContext.setFocusAction) < 0, "covered: no stop, " + JSON.stringify(node.actions));
                 testContext.accessibleClick(r);
                 r.activate();
                 verify(editor === null || !editor.visible, "covered: a press opens no editor");

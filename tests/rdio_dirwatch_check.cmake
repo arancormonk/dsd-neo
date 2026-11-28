@@ -1,7 +1,8 @@
 # SPDX-License-Identifier: GPL-3.0-or-later
 #
-# Runs one DECODE_*_RDIO_DIRWATCH_UNKNOWN_TG case (issue #888): a digital call whose voice rows carry no talkgroup
-# number, exported to an rdio-scanner DirWatch folder. Three legs of dsd-neo, each with -P -7 <calls> --wav-journal
+# Runs one DECODE_*_RDIO_DIRWATCH_* case (issue #888): a digital call whose voice rows carry no talkgroup number,
+# exported to an rdio-scanner DirWatch folder. Three legs of dsd-neo, each with MODE's options (the decode mode, and
+# any export option the case adds, such as --rdio-system-by-frequency, issue #931) and -P -7 <calls> --wav-journal
 # <journal> --rdio-mode dirwatch --rdio-system-id 48:
 #
 #   rf        replays the I/Q fixture, which knows its frequency, and saves its discriminator audio (-6 raw.wav). Every

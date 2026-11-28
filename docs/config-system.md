@@ -40,6 +40,13 @@ We use a minimal INI-style format:
 - Key-value pairs: `key = value`
 - Comments: lines starting with `#` or `;`, plus quote-aware inline comments
   introduced by either character.
+- Lines: at most 8191 bytes each, not counting the line ending (LF or CRLF, read
+  alike). A longer line, or one holding a NUL byte, is ignored whole, with a
+  warning that quotes none of it; `--validate-config` reports it as an error
+  against the file it is in, an included one too. A read error part way through
+  any file of a load (the config, an include, a profile) fails the whole load:
+  nothing of it is used, and the file is named once. `--validate-config` reports
+  it as an error.
 - Values:
   - Strings (unquoted or double-quoted).
   - Integers (parsed with `strtol`).
@@ -329,7 +336,8 @@ own `RTL-SDR` row; it is not saved. A file the switch opened by its `-i` extensi
 streams, `.bin` as a capture) is saved by its path, so startup opens it the same way.
 
 An I/Q replay (`--iq-replay`) has no `[input]` form. A session that runs one saves (the exit autosave, Save,
-`--print-config`) the `[input]` of the config it loaded, exactly as loaded, or no `[input]` when it loaded none. When
+`--print-config`) the `[input]` of the config it loaded, exactly as loaded (but with no squelch key while
+`--squelch-analog-default` stands, see `rtl_sql_mode`), or no `[input]` when it loaded none. When
 that `[input]` is an I/Q stream (`iqtcp` or `iqudp`), the save writes `[trunking] enabled`, `[trunking] scanner` and
 `[trunk_scan] enabled` off, even if the replay ran trunking or a scan (`-T`, `-Y`, `--trunk-scan`): the next start of
 the saved file runs the stream, which cannot run beside them. A config file loaded during the replay (Config > Load) whose `[input]` leaves the replay running is saved in its place. A
@@ -380,8 +388,8 @@ the session; they never write the process environment.
 | `rtl_gain` | INT (0-49) | RTL-SDR tuner gain: `0` is automatic (the tuner's automatic gain where it has one, plus the RTL2832U's digital AGC unless `DSD_NEO_RTL_AGC=0`), `1`-`49` a manual gain in dB run at the nearest step the tuner has (over rtl_tcp, the nearest step of the server's tuner, or the gain as written when the server's tuner is not one librtlsdr lists gains for; see `docs/cli.md`). A save writes the configured gain (`0` when it is automatic), and a load applies it like any other gain (an omitted key keeps the gain running). Loading a config applies its gain even when its `[input]` is otherwise the input that runs: the input restarts on the new gain at the frequency and DSP bandwidth it runs (a SoapySDR `[input]` too, whose spec names no gain; its own frequency and bandwidth wait for an `[input]` that reopens the device) | `0` |
 | `rtl_ppm` | INT (-1000-1000) | Frequency correction | `0` |
 | `rtl_bw_khz` | INT (4, 6, 8, 12, 16, 24, 48 or 72) | DSP bandwidth (72 for TETRA) of every radio input: an `rtl` or `rtltcp` source halves its rate to it, and a `soapy` or `airspy` device's own rate is halved and resampled to it exactly; `--validate-config` warns about any other value, which runs at the default. Set under an `rtl`, `rtltcp`, `soapy` or `airspy` source, it is also the DSP bandwidth an `--iq-replay` started with this config plans its rate chain for, ahead of the bandwidth the capture's sidecar recorded (a decode-mode preset on the command line, such as `-fT`, replaces it); loaded into a running replay that it leaves running, it re-plans the replay (see `docs/iq-capture-replay.md`). Under an `iqtcp` or `iqudp` source it is the DSP bandwidth the stream's rate is planned to, and loaded into a running stream it re-plans it through a restart | `48` |
-| `rtl_sql` | INT (-120-0) | Squelch threshold in whole dB; `0` switches squelch off (a disabled squelch is saved as `0`; the unset default is -110 dB, saved as `-110`). A save or `--print-config` writes a level that is not a whole dB from -120 to -1 (`--squelch -65.5`, a linear power) as the nearest one, an active level never as `0` (0 dB and above save as `-1`, under -120 dB as `-120`), and warns that it rounded (`The squelch level -65.50 dB is saved as rtl_sql = -66 ...`); before, a level was cut toward 0, so `-0.25` dB saved as `0`, off. The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value. Under `rtl_sql_mode = auto` or `noise` it is kept as the level a switch back to `level` returns to. The three squelch keys are read and written under the audio sources too (`pulse`, `file`, `tcp`, `udp`): a save writes them (off as `rtl_sql = 0`), and a load applies them only when the section sets one, so a config saved before audio input had a squelch leaves the running one alone, and an `rtl_sql` left in such a section by hand now applies | `0` |
-| `rtl_sql_mode` | ENUM (`level`, `auto`, `noise`) | `level` gates on `rtl_sql`; `auto` is the [auto squelch](cli.md#auto-squelch---squelch-auto), which opens `rtl_sql_margin_db` over the noise floor the demodulator learns on each analog channel; `noise` is the [noise squelch](cli.md#noise-squelch---squelch-noise), which opens an FM channel at `rtl_sql_margin_db` of quieting (as auto on AM). Auto runs on radio inputs; noise runs on radio inputs and, from a reference it learns, on audio input ([noise squelch on audio input](cli.md#noise-squelch-on-audio-input)). Both are off on digital channels. Written only when it is not `level`; `--squelch` and a spec's `sql` field win over it. A section that sets any of the three squelch keys is an explicit squelch, which ends `--squelch-analog-default` for the session; that option has no key, and a save writes the session's own squelch, never the analog default ([cli.md](cli.md#analog-default-squelch---squelch-analog-default)) | `level` |
+| `rtl_sql` | INT (-120-0) | Squelch threshold in whole dB; `0` switches squelch off (a disabled squelch is saved as `0`; the unset default is -110 dB, saved as `-110`; not saved while `--squelch-analog-default` stands, see `rtl_sql_mode`; the level beneath the default then comes back as Off, no squelch as -110 dB is). A save or `--print-config` writes a level that is not a whole dB from -120 to -1 (`--squelch -65.5`, a linear power) as the nearest one, an active level never as `0` (0 dB and above save as `-1`, under -120 dB as `-120`), and warns that it rounded (`The squelch level -65.50 dB is saved as rtl_sql = -66 ...`); before, a level was cut toward 0, so `-0.25` dB saved as `0`, off. The default a scan row's `--squelch-db` overrides and every row without one inherits; a save during a row override writes this default, not the row's value. Under `rtl_sql_mode = auto` or `noise` it is kept as the level a switch back to `level` returns to. The three squelch keys are read and written under the audio sources too (`pulse`, `file`, `tcp`, `udp`): a save writes them (off as `rtl_sql = 0`) unless `--squelch-analog-default` stands, and a load applies them only when the section sets one, so a config saved before audio input had a squelch leaves the running one alone, and an `rtl_sql` left in such a section by hand now applies | `0` |
+| `rtl_sql_mode` | ENUM (`level`, `auto`, `noise`) | `level` gates on `rtl_sql`; `auto` is the [auto squelch](cli.md#auto-squelch---squelch-auto), which opens `rtl_sql_margin_db` over the noise floor the demodulator learns on each analog channel; `noise` is the [noise squelch](cli.md#noise-squelch---squelch-noise), which opens an FM channel at `rtl_sql_margin_db` of quieting (as auto on AM). Auto runs on radio inputs; noise runs on radio inputs and, from a reference it learns, on audio input ([noise squelch on audio input](cli.md#noise-squelch-on-audio-input)). Both are off on digital channels. Written only when it is not `level`; `--squelch` and a spec's `sql` field win over it. A section that sets any of the three squelch keys is an explicit squelch, which ends `--squelch-analog-default` for the session; that option has no key, and a save never writes the analog default: while it stands (no squelch set this session) the save writes none of the three keys, for any source, so the next start runs it again; once a squelch was set (an Off included) it writes the session's own ([cli.md](cli.md#analog-default-squelch---squelch-analog-default)) | `level` |
 | `rtl_sql_margin_db` | INT (3-30) | The auto squelch's margin over the learned noise floor, or the noise squelch's quieting, in dB; written with `rtl_sql_mode = auto` or `noise` | `10` |
 | `rtl_volume` | INT (1-3) | RTL monitor/non-symbol gain multiplier | `2` |
 | `auto_ppm` | BOOL | Enable carrier/error-based RTL auto-PPM correction | `false` |
@@ -516,16 +524,17 @@ audio input) sound no alert.
 | `unknown_talkgroups_only` | BOOL | Record only calls whose talkgroup has no row in the group list (`--record-unknown-only`) | `false` |
 | `analog_max_gap_ms` | INT | Longest pause, 0 to 10000 ms, that keeps one conventional analog call in one recording and one history row; the pause is saved as silence (its end as heard while `analog_preroll_ms` is on); 200 or less is off; works only with `per_call_wav` on (`--analog-record-max-gap-ms`) | `200` |
 | `analog_preroll_ms` | INT | Audio, 0 to 1000 ms, heard just before a conventional NFM call that each new recording of it starts with; only audio the tone filter allows; 0 is off; works only with `per_call_wav` on (`--analog-record-preroll-ms`) | `200` |
-| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both | `off` |
-| `rdio_system_id` | INT | rdio-scanner numeric system ID | `0` |
-| `rdio_api_url` | STRING | rdio API base URL | `http://127.0.0.1:3000` |
-| `rdio_api_key` | STRING | rdio API key | (empty) |
+| `rdio_mode` | ENUM | rdio export mode: off/dirwatch/api/both; any other value, an empty one included, is refused with a warning and the mode already loaded stays | `off` |
+| `rdio_system_id` | INT | rdio-scanner numeric system ID, 0 to 2147483647 (`--rdio-system-id`) | `0` |
+| `rdio_api_url` | STRING | rdio API base URL, up to 1023 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | `http://127.0.0.1:3000` |
+| `rdio_api_key` | STRING | rdio API key, up to 255 bytes; a longer one is refused with a warning (`too long`) and the value already loaded stays | (empty) |
 | `rdio_upload_timeout_ms` | INT | rdio API timeout per call in ms | `5000` |
 | `rdio_upload_retries` | INT | rdio API upload attempts per call | `1` |
 | `rdio_api_delete_after_upload` | BOOL | Delete per-call WAV after successful API-only upload; files are kept while a run's `--wav-journal` is set, whose owner manages retention (the value is unchanged) | `false` |
-| `rdio_analog_system_id` | INT | rdio-scanner system ID for conventional NFM calls, 0 to 65535; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
-| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for NFM calls with no known frequency (audio input), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
+| `rdio_analog_system_id` | INT | rdio-scanner system ID for analog calls (NFM, AM, or an audio input's analog calls; EDACS analog and ProVoice calls follow the digital rule), 0 to 2147483647; 0 uses `rdio_system_id` (`--rdio-analog-system-id`) | `0` |
+| `rdio_analog_talkgroup` | INT | rdio-scanner talkgroup for analog calls with no known frequency (audio input with no `-Y` or `--trunk-scan` landing), 0 to 2147483647; 0 leaves them unexported (`--rdio-analog-talkgroup`) | `0` |
 | `rdio_unknown_talkgroup` | INT | rdio-scanner talkgroup for digital calls with no talkgroup and no known frequency (audio input, or an SDRTrunk `.mbe` call played with `-r`), 0 to 2147483647; 0 leaves them unexported (`--rdio-unknown-talkgroup`) | `0` |
+| `rdio_system_by_frequency` | BOOL | Export each call whose frequency is known to the rdio-scanner system numbered by that frequency in kHz, rounded down, with the `short_name` `System <kHz>`; a call with no known frequency keeps `rdio_system_id`, and an analog call keeps `rdio_analog_system_id` when that is set (`--rdio-system-by-frequency`, `--no-rdio-system-by-frequency`) | `false` |
 
 Note: `per_call_wav` and `static_wav` are mutually exclusive (same as `-P` vs `-w` on the CLI).
 `unknown_talkgroups_only` treats every call a group list row matches (an exact, range or digit-pattern row other
@@ -543,13 +552,17 @@ stays (the default, 200, for a base file); `--validate-config` reports it as an 
 session that changes it drops the audio held so far at once; otherwise a config drops that audio only as any other
 change would (a recording switch or folder change, a retune, an input switch, a fresh tone check). It works only while
 `per_call_wav` is on. What it holds, and the limits, are in `docs/cli.md`, "Where an NFM recording starts".
-`rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges, or not whole
-numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them as errors.
+`rdio_system_id`, `rdio_analog_system_id`, `rdio_analog_talkgroup` and `rdio_unknown_talkgroup` outside their ranges,
+or not whole numbers, are refused with a warning, and the value already loaded stays; `--validate-config` reports them
+as errors.
 An analog call with a frequency is exported under it in kHz; how analog calls are exported, and the limits, are in
 `docs/cli.md`, "Analog calls in rdio-scanner". A digital call with no talkgroup is exported under its frequency in kHz
 too, and `rdio_unknown_talkgroup` numbers only such calls heard with no frequency; which calls, and the limits, are in
 `docs/cli.md`, "Digital calls with no talkgroup in rdio-scanner". A saved config writes `rdio_unknown_talkgroup` only
 when it is above 0, and `--rdio-unknown-talkgroup 0` on the command line turns a config's value off.
+A saved config writes `rdio_system_by_frequency` only when it is on, and `--no-rdio-system-by-frequency` on the command
+line turns a config's `true` off. Which calls it moves, how each rdio-scanner server takes the systems, and the limits,
+are in `docs/cli.md`, "One rdio-scanner system per frequency".
 For RAM-backed rdio API staging, set `per_call_wav_dir` to a tmpfs/RAM-disk path and enable
 `rdio_api_delete_after_upload`. DirWatch modes keep files for watcher ingestion.
 Rdio API uploads do not follow HTTP redirects. Configure `rdio_api_url` as the final trusted HTTP/HTTPS endpoint.
@@ -1111,7 +1124,7 @@ the reason and the mode question is asked again.
 | Flag | Description |
 |------|-------------|
 | `--config [PATH]` | Enable config loading; optionally specify path (uses default if omitted) |
-| `--print-config` | Print effective config (as INI) and exit |
+| `--print-config` | Print effective config (as INI) and exit; `rdio_api_key`, `rdio_api_url` and `[radioreference] app_key` are left out (a saved config keeps them) |
 
 ### Template and Validation
 

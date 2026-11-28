@@ -7566,49 +7566,58 @@ target_link_libraries(
 # CMAKE_INTERPROCEDURAL_OPTIMIZATION[_<CONFIG>] for every target alike), through generator expressions, so a
 # multi-config build decides per configuration. The cases are skipped there. The definition and the link options
 # follow the same answer, as --wrap without the __wrap_ definitions would not link.
-get_target_property(_dsd_rdio_runtime_type dsd-neo_runtime TYPE)
-get_target_property(_dsd_rdio_platform_type dsd-neo_platform TYPE)
-set(_dsd_rdio_lto_configs "")
-set(_dsd_rdio_cfgs
-    ${CMAKE_CONFIGURATION_TYPES}
-    ${CMAKE_BUILD_TYPE}
-    Debug
-    Release
-    RelWithDebInfo
-    MinSizeRel
-)
-list(REMOVE_DUPLICATES _dsd_rdio_cfgs)
-foreach(_dsd_rdio_cfg IN LISTS _dsd_rdio_cfgs)
-    string(TOUPPER "${_dsd_rdio_cfg}" _dsd_rdio_cfg_upper)
+# The condition, kept in one place (dsd_neo_test_wrap_condition()), as a generator expression in @out_var for
+# @target: empty where --wrap cannot work at all (Apple, Windows, a compiler other than GCC or Clang, LTO asked for,
+# shared runtime or platform libraries, -flto in the common flags), else true in each configuration that builds
+# without IPO or -flto.
+function(dsd_neo_test_wrap_condition target out_var)
+    get_target_property(_runtime_type dsd-neo_runtime TYPE)
+    get_target_property(_platform_type dsd-neo_platform TYPE)
+    set(${out_var} "" PARENT_SCOPE)
     if(
-        "${CMAKE_C_FLAGS_${_dsd_rdio_cfg_upper}} ${CMAKE_CXX_FLAGS_${_dsd_rdio_cfg_upper}}"
-            MATCHES
-            "-flto"
+        APPLE
+        OR WIN32
+        OR NOT (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
+        OR DSD_ENABLE_LTO
+        OR NOT _runtime_type STREQUAL "STATIC_LIBRARY"
+        OR NOT _platform_type STREQUAL "STATIC_LIBRARY"
+        OR "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
     )
-        list(APPEND _dsd_rdio_lto_configs "${_dsd_rdio_cfg}")
+        return()
     endif()
-endforeach()
-if(
-    NOT APPLE
-    AND NOT WIN32
-    AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang")
-    AND NOT DSD_ENABLE_LTO
-    AND _dsd_rdio_runtime_type STREQUAL "STATIC_LIBRARY"
-    AND _dsd_rdio_platform_type STREQUAL "STATIC_LIBRARY"
-    AND NOT "${CMAKE_C_FLAGS} ${CMAKE_CXX_FLAGS}" MATCHES "-flto"
-)
-    set(_dsd_rdio_tgt dsd-neo_test_runtime_rdio_export)
-    set(_dsd_rdio_ipo
-        "$<OR:$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${_dsd_rdio_tgt},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    set(_lto_configs "")
+    set(_cfgs
+        ${CMAKE_CONFIGURATION_TYPES}
+        ${CMAKE_BUILD_TYPE}
+        Debug
+        Release
+        RelWithDebInfo
+        MinSizeRel
     )
-    set(_dsd_rdio_wrap "$<NOT:${_dsd_rdio_ipo}>")
-    if(_dsd_rdio_lto_configs)
-        string(REPLACE ";" "," _dsd_rdio_lto_list "${_dsd_rdio_lto_configs}")
-        set(_dsd_rdio_wrap
-            "$<AND:${_dsd_rdio_wrap},$<NOT:$<CONFIG:${_dsd_rdio_lto_list}>>>"
+    list(REMOVE_DUPLICATES _cfgs)
+    foreach(_cfg IN LISTS _cfgs)
+        string(TOUPPER "${_cfg}" _cfg_upper)
+        if(
+            "${CMAKE_C_FLAGS_${_cfg_upper}} ${CMAKE_CXX_FLAGS_${_cfg_upper}}"
+                MATCHES
+                "-flto"
         )
-        unset(_dsd_rdio_lto_list)
+            list(APPEND _lto_configs "${_cfg}")
+        endif()
+    endforeach()
+    set(_ipo
+        "$<OR:$<BOOL:$<TARGET_PROPERTY:${target},INTERPROCEDURAL_OPTIMIZATION>>,$<BOOL:$<TARGET_PROPERTY:${target},INTERPROCEDURAL_OPTIMIZATION_$<UPPER_CASE:$<CONFIG>>>>>"
+    )
+    set(_wrap "$<NOT:${_ipo}>")
+    if(_lto_configs)
+        string(REPLACE ";" "," _lto_list "${_lto_configs}")
+        set(_wrap "$<AND:${_wrap},$<NOT:$<CONFIG:${_lto_list}>>>")
     endif()
+    set(${out_var} "${_wrap}" PARENT_SCOPE)
+endfunction()
+
+dsd_neo_test_wrap_condition(dsd-neo_test_runtime_rdio_export _dsd_rdio_wrap)
+if(_dsd_rdio_wrap)
     target_compile_definitions(
         dsd-neo_test_runtime_rdio_export
         PRIVATE "$<${_dsd_rdio_wrap}:DSD_TEST_WRAP_RDIO_SEAMS=1>"
@@ -7621,16 +7630,8 @@ if(
             "$<${_dsd_rdio_wrap}:LINKER:--wrap=dsd_fopen_private_ex>"
             "$<${_dsd_rdio_wrap}:LINKER:--wrap=pthread_join>"
     )
-    unset(_dsd_rdio_wrap)
-    unset(_dsd_rdio_ipo)
-    unset(_dsd_rdio_tgt)
 endif()
-unset(_dsd_rdio_cfg_upper)
-unset(_dsd_rdio_cfg)
-unset(_dsd_rdio_cfgs)
-unset(_dsd_rdio_lto_configs)
-unset(_dsd_rdio_platform_type)
-unset(_dsd_rdio_runtime_type)
+unset(_dsd_rdio_wrap)
 add_test(NAME RUNTIME_RDIO_EXPORT COMMAND dsd-neo_test_runtime_rdio_export)
 
 # Issue #800: the map's tile fetch. The public suite runs against the library as
@@ -11479,6 +11480,25 @@ target_link_libraries(
     dsd-neo_test_runtime_config_user
     PRIVATE dsd-neo_runtime dsd-neo_test_support
 )
+# Issue #931: the read-error cases fault the stream the config readers open, as CORE_CSV_VALIDATE does; the
+# wrapper delegates to the real opener otherwise. They need --wrap where it works (dsd_neo_test_wrap_condition(), as
+# RUNTIME_RDIO_EXPORT) and glibc's fopencookie() with its cookie types (cookie_io_functions_t, off64_t), so they are
+# built only against glibc: musl, Apple and MSVC go without them.
+include(CheckSymbolExists)
+check_symbol_exists(__GLIBC__ "stdio.h" DSD_TEST_HAVE_GLIBC)
+dsd_neo_test_wrap_condition(dsd-neo_test_runtime_config_user _dsd_config_user_wrap)
+if(_dsd_config_user_wrap AND DSD_TEST_HAVE_GLIBC)
+    target_link_options(
+        dsd-neo_test_runtime_config_user
+        PRIVATE
+            "$<${_dsd_config_user_wrap}:LINKER:--wrap=dsd_path_fopen_user_read_file>"
+    )
+    target_compile_definitions(
+        dsd-neo_test_runtime_config_user
+        PRIVATE "$<${_dsd_config_user_wrap}:DSD_TEST_FAULT_READS=1>"
+    )
+endif()
+unset(_dsd_config_user_wrap)
 add_test(NAME RUNTIME_CONFIG_USER COMMAND dsd-neo_test_runtime_config_user)
 
 add_executable(
@@ -15489,6 +15509,21 @@ add_test(
     COMMAND dsd-neo_test_dsp_squelch_step_model --matrix
 )
 set_tests_properties(DSP_SQUELCH_STEP_MODEL_MATRIX PROPERTIES TIMEOUT 300)
+
+# The dynamic squelches behind a replay or network I/Q reader's resampler (issue #899): the installed floor plan against
+# the impulses of the production reader and full_demod() at every output phase, the reader model against them, cold
+# start under AUTO, NOISE on reader chains, and the reader in the plan key and the floor's context.
+add_executable(dsd-neo_test_dsp_squelch_reader dsp/test_dsp_squelch_reader.cpp)
+target_include_directories(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE ${PROJECT_SOURCE_DIR}/include ${PROJECT_SOURCE_DIR}/src/dsp
+)
+target_link_libraries(
+    dsd-neo_test_dsp_squelch_reader
+    PRIVATE dsd-neo_dsp_private_test_support ${DSD_NEO_TEST_MATH_LIB}
+)
+add_test(NAME DSP_SQUELCH_READER COMMAND dsd-neo_test_dsp_squelch_reader)
+set_tests_properties(DSP_SQUELCH_READER PROPERTIES TIMEOUT 120)
 
 # The live rate plan's copies of the I/Q resampler's limits and tap estimate, pinned to the real designs (issue #806).
 add_executable(dsd-neo_test_dsp_rate_plan_step dsp/test_dsp_rate_plan_step.c)
@@ -21960,20 +21995,37 @@ if(DSD_HAS_RADIO)
     add_executable(dsd-neo_test_io_net_iq_stream io/test_io_net_iq_stream.cpp)
     target_include_directories(
         dsd-neo_test_io_net_iq_stream
-        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${PROJECT_SOURCE_DIR}/src/dsp
     )
     target_compile_definitions(
         dsd-neo_test_io_net_iq_stream
         PRIVATE DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
     )
-    target_link_libraries(
-        dsd-neo_test_io_net_iq_stream
-        PRIVATE
-            dsd-neo_io_radio_private_test_support
-            dsd-neo_io_iq
-            dsd-neo_core
-            ${LIBS}
-    )
+    # The radio and DSP test archives reach into each other (the post-step tap): GNU-style linkers take them as one
+    # group, Apple's and MSVC's linkers search every archive again on their own.
+    if(NOT APPLE AND NOT MSVC AND (CMAKE_C_COMPILER_ID MATCHES "GNU|Clang"))
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                "-Wl,--start-group"
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                "-Wl,--end-group"
+                dsd-neo_core
+                ${LIBS}
+        )
+    else()
+        target_link_libraries(
+            dsd-neo_test_io_net_iq_stream
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_dsp_private_test_support
+                dsd-neo_io_iq
+                dsd-neo_core
+                ${LIBS}
+        )
+    endif()
     add_test(NAME IO_NET_IQ_STREAM COMMAND dsd-neo_test_io_net_iq_stream)
     set_tests_properties(IO_NET_IQ_STREAM PROPERTIES TIMEOUT 180)
 
@@ -25232,6 +25284,27 @@ if(DSD_HAS_RADIO)
             DECODE_IQ_M17_RDIO_DIRWATCH_UNKNOWN_TG
             PROPERTIES LABELS "iq-decode" TIMEOUT 360
         )
+        # The same call with --rdio-system-by-frequency (issue #931), given to every leg through MODE: replayed, it is
+        # filed under the system numbered by its frequency in kHz and named "System <kHz>"; decoded from the audio,
+        # which knows no frequency, it keeps --rdio-system-id 48 and its own short_name.
+        add_test(
+            NAME DECODE_IQ_M17_RDIO_DIRWATCH_BY_FREQUENCY
+            COMMAND
+                ${CMAKE_COMMAND} "-DDSD_BIN=$<TARGET_FILE:dsd-neo>"
+                "-DMODE=-fz --rdio-system-by-frequency"
+                "-DFIXTURE=${_DSD_NEO_IQ_FIXTURE_DIR}/m17.iq.json"
+                "-DEXPECTED=SRC: N0CALL"
+                "-DWORK_DIR=${CMAKE_CURRENT_BINARY_DIR}/rdio_dirwatch/DECODE_IQ_M17_RDIO_DIRWATCH_BY_FREQUENCY"
+                "-DTARGET=BROADCAST"
+                "-DRF_SIDECAR=talkgroup=851375,talkgroup_tag=M17 CAN 7 851.3750 MHz,freq=851375000,system=851375,short_name=System 851375,emergency=false,encrypted=false"
+                "-DAUDIO_TALKGROUP=4242"
+                "-DAUDIO_SIDECAR=talkgroup_tag=M17 CAN 7,freq=0,system=48,short_name=M17_CAN_7"
+                -P "${CMAKE_CURRENT_SOURCE_DIR}/rdio_dirwatch_check.cmake"
+        )
+        set_tests_properties(
+            DECODE_IQ_M17_RDIO_DIRWATCH_BY_FREQUENCY
+            PROPERTIES LABELS "iq-decode" TIMEOUT 360
+        )
     endif()
     # The synthetic YSF call names no target or source and ends with the capture, on no terminator: a YSF call takes
     # the fallback only once it has ended on a decoded terminator, so in every leg it is recorded but not exported,
@@ -26172,7 +26245,16 @@ add_test(
 # means every audio bound held. not_expected is a regex that must not appear.
 # dsd_neo_add_analog_replay_test(name fixture mode [expected [not_expected [audio_out]]]): audio_out is the
 # --analog-audio-out file the run must write, passed apart from mode so a path holding a space stays whole.
+# An empty fixture names no capture: the host makes its own (--analog-synth-burst).
+# A seventh argument, config, is a config file the run loads with --config, passed apart
+# from mode as audio_out is.
 function(dsd_neo_add_analog_replay_test test_name fixture mode)
+    set(_fixture_path "")
+    if(NOT "${fixture}" STREQUAL "")
+        set(_fixture_path
+            "${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
+        )
+    endif()
     set(_expected "ANALOG AUDIO OK")
     if(ARGC GREATER 3 AND NOT "${ARGV3}" STREQUAL "")
         set(_expected "${ARGV3}")
@@ -26185,14 +26267,18 @@ function(dsd_neo_add_analog_replay_test test_name fixture mode)
     if(ARGC GREATER 5 AND NOT "${ARGV5}" STREQUAL "")
         set(_audio_out_arg "-DANALOG_AUDIO_OUT=${ARGV5}")
     endif()
+    set(_config_arg)
+    if(ARGC GREATER 6 AND NOT "${ARGV6}" STREQUAL "")
+        set(_config_arg "-DCONFIG=${ARGV6}")
+    endif()
     add_test(
         NAME ${test_name}
         COMMAND
             ${CMAKE_COMMAND}
             "-DDSD_BIN=$<TARGET_FILE:dsd-neo_test_analog_replay>"
-            "-DMODE=${mode}"
-            "-DFIXTURE=${PROJECT_SOURCE_DIR}/tests/fixtures/iq/${fixture}.iq.json"
-            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg} -P
+            "-DMODE=${mode}" "-DFIXTURE=${_fixture_path}"
+            "-DEXPECTED=${_expected}" ${_not_expected_arg} ${_audio_out_arg}
+            ${_config_arg} -P
             "${CMAKE_CURRENT_SOURCE_DIR}/iq_decode_check.cmake"
     )
     set_tests_properties(
@@ -27711,6 +27797,85 @@ if(DSD_HAS_RADIO)
         "-fs -C ${_scan_sql_default_csv} --analog-scan-row 0 --squelch-analog-default noise ${_sql_noise_burst_bounds}"
         "Scan row applied: 0 nfm; width 16 kHz; squelch noise [+]10 dB.*ANALOG AUDIO OK"
         "${_analog_off_path}|squelch noise [+]10 dB [(]row[)]"
+    )
+    # The analog default on a multi-pass chain (issue #899 follow-up): the host makes the
+    # capture at run time (--analog-synth-burst; no fixture is committed), 3.0 s of white
+    # noise at the capture rate with one NFM burst from 1.0 to 2.0 s, 25 dB over the noise
+    # the channel can pass, and a sidecar that records the chain. 1.024 MS/s recorded at
+    # 16 kHz through base 64 runs six half-band passes with no channel filter, where the
+    # floor plan used to model one: idle noise read as carrier, the tracker never left
+    # learning and the hiss played (2900 of the 3000 ms audible from 40 ms). Now the gate
+    # stays shut on the noise, opens 20 ms into the burst and closes within a window of
+    # its end (1020 ms to the first audible block, 2040 ms to the last, 1020 ms audible).
+    # The bounds hold it silent before the burst and after the close delay, audible
+    # inside. The host's ANALOG SQUELCH line shows the floor tracker ran, the noise
+    # squelch never did, and the floor ended known. Noise runs as auto on that channel
+    # (no band above voice): its line is auto's, and it measures the same. 1.536 MS/s at
+    # 24 kHz through base 64 with a 12.5 kHz NFM filter (six passes, filtered) used to open
+    # on noise too (from 80 ms, 1140 ms audible); it measures the same as the 16 kHz
+    # chain. With the squelch off the made noise plays throughout, and no dynamic squelch
+    # runs.
+    set(_sql_default_synth_bounds
+        "--analog-audible-dbfs -40 --analog-min-total-ms 2900 --analog-max-total-ms 3100 --analog-min-first-audible-ms 1000 --analog-max-first-audible-ms 1060 --analog-min-last-audible-ms 1980 --analog-max-last-audible-ms 2100 --analog-min-audible-ms 940 --analog-max-audible-ms 1100 --analog-max-clip 0"
+    )
+    set(_sql_default_synth_16k "--analog-synth-burst 1024000:16:64 -fA")
+    set(_sql_default_chain_16k
+        "Rate chain: capture=1024000 Hz, base_decim=64, post=1 -> demod=16000 Hz"
+    )
+    set(_sql_default_tracker_known
+        "ANALOG SQUELCH: tracker_ms=[1-9][0-9.]* noise_ms=0[.]00 state=known"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_16K_6PASS
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "${_sql_default_chain_16k}.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_NOISE_16K_6PASS
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default noise+10 ${_sql_default_synth_bounds}"
+        "${_sql_default_chain_16k}.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_24K_NFM12K5_6PASS
+        ""
+        "--analog-synth-burst 1536000:24:64 -fA --nfm-bandwidth-hz 12500 --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "Rate chain: capture=1536000 Hz, base_decim=64, post=1 -> demod=24000 Hz.*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_16K_6PASS_EXPLICIT_OFF
+        ""
+        "${_sql_default_synth_16k} --squelch-analog-default auto+10 --squelch off --analog-audible-dbfs -40 --analog-min-audible-ms 2800 --analog-min-total-ms 2900"
+        "${_sql_default_chain_16k}.*ANALOG AUDIO OK"
+        "${_analog_off_path}|ANALOG SQUELCH:"
+    )
+    # Through the replay reader: an 8 kHz capture with 16 kHz asked for explicitly
+    # ([input] rtl_bw_khz = 16, analog decode; a sidecar alone keeps 8 kHz and skips the
+    # reader), so the reader resamples it 2:1 ahead of the chain and the floor plan has
+    # to model the band it leaves. The rate chain line shows the reader ran. Loaded as a
+    # profile, the config is never autosaved over, and its path is passed apart from the
+    # mode, so a path holding a space stays whole. It used to hiss from 40 ms (2960 ms
+    # audible); it holds the 16 kHz chain's bounds and ends known once the plan models
+    # the reader.
+    set(_sql_default_reader_ini
+        "${CMAKE_CURRENT_BINARY_DIR}/analog_sql_default_reader_16k.ini"
+    )
+    file(
+        WRITE "${_sql_default_reader_ini}"
+        "[input]\nsource = \"rtl\"\nrtl_bw_khz = 16\n\n[mode]\ndecode = \"analog\"\n\n[profile.reader]\nmode.decode = \"analog\"\n"
+    )
+    dsd_neo_add_analog_replay_test(
+        DECODE_IQ_ANALOG_SQL_DEFAULT_AUTO_8K_READER_16K
+        ""
+        "--profile reader --analog-synth-burst 8000:8:1 --squelch-analog-default auto+10 ${_sql_default_synth_bounds}"
+        "Rate chain: capture=8000 Hz resampled to 16000 Hz [(]L/M=2/1, .*${_sql_default_tracker_known}.*ANALOG AUDIO OK"
+        "${_analog_off_path}"
+        ""
+        "${_sql_default_reader_ini}"
     )
 
     # Negative controls: bounds that must NOT hold, run through
@@ -29682,6 +29847,50 @@ if(DSD_HAS_AIRSPY)
     )
     set_tests_properties(IO_RTL_STREAM_START_FAILURE PROPERTIES TIMEOUT 20)
 
+    # A live native Airspy stream on the same SDK double, at the desktop default rate (the highest listed) and at
+    # Android's (the lowest listed): what reaches the Signal search and quiet tap, and the retune warning's backend.
+    foreach(_policy IN ITEMS desktop prefer_lowest)
+        if(_policy STREQUAL "desktop")
+            set(_target dsd-neo_test_io_airspy_signal_tap)
+            set(_test IO_AIRSPY_SIGNAL_TAP)
+            set(_lowest 0)
+        else()
+            set(_target dsd-neo_test_io_airspy_signal_tap_prefer_lowest)
+            set(_test IO_AIRSPY_SIGNAL_TAP_PREFER_LOWEST)
+            set(_lowest 1)
+        endif()
+        add_executable(
+            ${_target}
+            io/test_io_airspy_signal_tap.cpp
+            io/airspy_sdk_double.cpp
+            ${PROJECT_SOURCE_DIR}/src/io/radio/airspy_source.cpp
+        )
+        target_include_directories(
+            ${_target}
+            PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio ${_AIRSPY_TEST_SDK}
+        )
+        target_compile_definitions(
+            ${_target}
+            PRIVATE USE_AIRSPY AIRSPY_SOURCE_PREFER_LOWEST_RATE=${_lowest}
+        )
+        target_link_libraries(
+            ${_target}
+            PRIVATE
+                dsd-neo_io_radio_private_test_support
+                dsd-neo_core
+                dsd-neo_test_support
+                dsd-neo_warnings
+        )
+        if(DSD_HAS_RTLSDR)
+            target_link_libraries(
+                ${_target}
+                PRIVATE ${RTLSDR_LIBRARIES} ${CMAKE_THREAD_LIBS_INIT}
+            )
+        endif()
+        add_test(NAME ${_test} COMMAND ${_target})
+        set_tests_properties(${_test} PROPERTIES TIMEOUT 60)
+    endforeach()
+
     # Issue #806: live decode at the rates an Airspy forces. The real engine runs a live Airspy session on the SDK
     # double (its stream workers and the native adapter, as IO_RTL_STREAM_START_FAILURE), fed committed fixtures
     # upsampled to the device rate, paced by the stream's own acknowledgements; then it replays the session's capture
@@ -30142,6 +30351,7 @@ if(DSD_HAS_RADIO)
     add_executable(
         dsd-neo_test_signal_quiet_calibrate
         io/signal_quiet_calibrate.cpp
+        io/signal_quiet_scene.cpp
     )
     target_include_directories(
         dsd-neo_test_signal_quiet_calibrate
@@ -30171,6 +30381,40 @@ if(DSD_HAS_RADIO)
         set_tests_properties(
             IO_SIGNAL_QUIET_CALIBRATE_CHOOSE
             PROPERTIES TIMEOUT 120
+        )
+    endif()
+    # The calibration's receiver responses and capture coordinates, against fixtures of their own.
+    add_executable(
+        dsd-neo_test_io_signal_quiet_scene
+        io/test_io_signal_quiet_scene.cpp
+        io/signal_quiet_scene.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/io/radio
+    )
+    target_link_libraries(
+        dsd-neo_test_io_signal_quiet_scene
+        PRIVATE dsd-neo_io_radio dsd-neo_core ${LIBS}
+    )
+    add_test(
+        NAME IO_SIGNAL_QUIET_SCENE
+        COMMAND dsd-neo_test_io_signal_quiet_scene
+    )
+    # The calibration driver's outputs: every record lands with the detector's decision, and an output it cannot
+    # open or write fails the run (io/signal_quiet_calibrate_outputs_check.py).
+    find_package(Python3 QUIET COMPONENTS Interpreter)
+    if(Python3_Interpreter_FOUND)
+        add_test(
+            NAME IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            COMMAND
+                ${Python3_EXECUTABLE}
+                ${CMAKE_CURRENT_SOURCE_DIR}/io/signal_quiet_calibrate_outputs_check.py
+                $<TARGET_FILE:dsd-neo_test_signal_quiet_calibrate>
+        )
+        set_tests_properties(
+            IO_SIGNAL_QUIET_CALIBRATE_OUTPUTS
+            PROPERTIES TIMEOUT 300
         )
     endif()
     # The shared tap forgets a stopped stream's capture, run on a real I/Q replay stream.

@@ -316,14 +316,15 @@ quiet_widths_text(int kind, char* out, size_t out_size) {
     }
 }
 
-/* The receiver's WARN lines: what has no check, what to do, and that the scan keeps its timing. */
+/* The receiver's WARN lines: what has no check, what to do, and that the scan keeps its timing. @p rate_line: RATE,
+   whose detail is SCAN_QUIET_WARN_RATE .. _AIRSPY_RATE. */
 static int
-quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate_hz) {
-    switch (detail) {
+quiet_format_receiver_warn(char* out, size_t out_size, int rate_line, int detail, uint32_t rate_hz) {
+    switch (rate_line ? -1 : detail) {
         case SCAN_QUIET_WARN_AUDIO:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels on audio input; it needs a "
-                                "radio input (rtl, rtltcp or soapy). Normal scan timing applies.\n");
+                                "radio input (rtl, rtltcp, soapy or airspy). Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_REPLAY:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels in an I/Q replay; it needs a "
@@ -338,9 +339,9 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
                                 "support. Normal scan timing applies.\n");
         case SCAN_QUIET_WARN_AIRSPY:
             return DSD_SNPRINTF(out, out_size,
-                                "WARNING: scan: silent channel skip cannot check channels on a native Airspy input; "
-                                "open the Airspy through SoapySDR (-i soapy:driver=airspy) to have them checked. "
-                                "Normal scan timing applies.\n");
+                                "WARNING: scan: silent channel skip cannot check channels on this native Airspy "
+                                "capture: its I/Q is not centred on the tuned frequency, which the check needs. Normal "
+                                "scan timing applies.\n");
         case SCAN_QUIET_WARN_CENTRED:
             return DSD_SNPRINTF(out, out_size,
                                 "WARNING: scan: silent channel skip cannot check channels while offset tuning is on or "
@@ -350,6 +351,29 @@ quiet_format_receiver_warn(char* out, size_t out_size, int detail, uint32_t rate
     }
     char rate[24];
     quiet_scaled_text(rate_hz, 1000000U, 6, rate, sizeof rate);
+    if (detail == SCAN_QUIET_WARN_SOAPY_AIRSPY) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check channels on an Airspy through SoapySDR; "
+                            "use the native Airspy input (-i airspy, in a build with native Airspy support) to have "
+                            "them checked. Normal scan timing applies.\n");
+    }
+    if (detail == SCAN_QUIET_WARN_AIRSPY_RATE) {
+        return DSD_SNPRINTF(
+            out, out_size,
+            "WARNING: scan: silent channel skip cannot check channels on this native Airspy at %s Msps, "
+            "a sample rate it was not calibrated for; it checks 2.5, 3, 6 and 10 Msps: set "
+            "--airspy-sample-rate to 2500000, 3000000, 6000000 or 10000000, one the Airspy lists, to have them "
+            "checked. Normal scan timing applies.\n",
+            rate);
+    }
+    if (detail == SCAN_QUIET_WARN_SOAPY_UNKNOWN) {
+        return DSD_SNPRINTF(out, out_size,
+                            "WARNING: scan: silent channel skip cannot check channels on this SoapySDR device: it is "
+                            "reached through a proxy, or its driver did not say which device it is, so an Airspy, "
+                            "which it cannot check through SoapySDR, cannot be ruled out. For an Airspy, use the "
+                            "native Airspy input (-i airspy, in a build with native Airspy support). Normal scan "
+                            "timing applies.\n");
+    }
     return DSD_SNPRINTF(out, out_size,
                         "WARNING: scan: silent channel skip cannot check channels at %s Msps, a sample rate it was "
                         "not calibrated for; docs/trunk-scan.md lists the rates it checks. Normal scan timing "
@@ -475,7 +499,7 @@ scan_quiet_format_warn(char* out, size_t out_size, uint8_t reason, int detail, u
     }
     if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_INPUT || reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER
         || reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE) {
-        return quiet_format_receiver_warn(out, out_size, reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE ? -1 : detail,
+        return quiet_format_receiver_warn(out, out_size, reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE, detail,
                                           rate_hz);
     }
     char mhz[24];
@@ -719,6 +743,7 @@ typedef struct {
        read on (receiver_input, receiver_device): the session's reason, which outranks a channel's, for a visit that
        never reads a capture (no class to judge) or still waits for its own. */
     uint8_t receiver_reason;
+    uint8_t receiver_detail; /* its WARN detail (quiet_capture_receiver_detail()) */
     int receiver_input;
     uint32_t receiver_device;
     uint32_t receiver_rate_hz;
@@ -941,19 +966,67 @@ quiet_landed_capture(scan_quiet_check* c, dsd_signal_capture* cap) {
     return c->capture_qualified;
 }
 
-/* What the calibration refuses of the capture (dsd_scan_quiet_reason): TUNER for one with no Fs/4 rotation (centred
-   I/Q, an offset-tuned E4000 or the shift off put the channel on DC), RATE for a rate it did not validate, WIDTH for an
-   analog width it did not validate for its kind there; NONE when it covers all three. The receiver's part is kept as
-   the session's verdict, with the input it was read on. */
+/* The receiver's part of what the calibration refuses of the capture. A SoapySDR Airspy, or a SoapySDR device that
+   cannot be ruled out as one, is RATE whatever its geometry and rate: that refusal is the receiver's own, which no
+   shift or rate setting lifts, so it comes first and its line names the native input. Otherwise exactly one of the two
+   geometry policies is covered, the default one with the Fs/4 shift (rotation a quarter of the rate, the channel that
+   far from the hardware centre) or a native Airspy's centred capture (tuned on the channel: no rotation, no offset).
+   Anything else (centred I/Q under the default policy, an offset-tuned E4000, the shift off, any other rotation or an
+   unknown policy) is TUNER; a covered geometry at a rate its policy did not validate is RATE. */
+static uint8_t
+quiet_capture_receiver_reason(const dsd_signal_capture* cap) {
+    if (dsd_signal_quiet_receiver_refused(cap)) {
+        return (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
+    if (cap->geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
+        if (cap->rate_hz == 0U || cap->rotation_hz != (int32_t)(cap->rate_hz / 4U)
+            || cap->capture_offset_hz != cap->rotation_hz) {
+            return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+        }
+        return dsd_signal_quiet_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
+                                                             : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
+    if (cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) {
+        if (cap->rotation_hz != 0 || cap->capture_offset_hz != 0) {
+            return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+        }
+        return dsd_signal_quiet_airspy_centred_rate_supported(cap->rate_hz) ? (uint8_t)DSD_SCAN_QUIET_REASON_NONE
+                                                                            : (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
+    }
+    return (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
+}
+
+/* The WARN detail of @p cap's receiver verdict @p reason (TUNER or RATE): which receiver it is, so the line can say what
+   to do. A SoapySDR Airspy, or a SoapySDR device that may be one, says so (its refusal outranks the geometry's,
+   quiet_capture_receiver_reason()); a centred capture on the native Airspy input is the Airspy's (at a rate its centred
+   calibration did not validate, the Airspy's rate line). */
+static uint8_t
+quiet_capture_receiver_detail(const dsd_opts* opts, const dsd_signal_capture* cap, uint8_t reason) {
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && dsd_signal_quiet_receiver_refused(cap)) {
+        return (uint8_t)(cap->receiver == DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN ? SCAN_QUIET_WARN_SOAPY_UNKNOWN
+                                                                            : SCAN_QUIET_WARN_SOAPY_AIRSPY);
+    }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER) {
+        return (uint8_t)(cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                                 || dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev)
+                             ? SCAN_QUIET_WARN_AIRSPY
+                             : SCAN_QUIET_WARN_CENTRED);
+    }
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && cap->geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) {
+        return (uint8_t)SCAN_QUIET_WARN_AIRSPY_RATE;
+    }
+    return (uint8_t)SCAN_QUIET_WARN_RATE;
+}
+
+/* What the calibration refuses of the capture (dsd_scan_quiet_reason): the receiver's part
+   (quiet_capture_receiver_reason(): TUNER for a geometry it does not cover, RATE for a rate it did not validate under
+   the capture's policy), then WIDTH for an analog width it did not validate for its kind there; NONE when it covers
+   all three. The receiver's part is kept as the session's verdict, with the input it was read on. */
 static uint8_t
 quiet_capture_refusal(const dsd_opts* opts, scan_quiet_check* c, const dsd_signal_capture* cap) {
-    uint8_t receiver = (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
-    if (cap->rotation_hz == 0) {
-        receiver = (uint8_t)DSD_SCAN_QUIET_REASON_TUNER;
-    } else if (!dsd_signal_quiet_rate_supported(cap->rate_hz)) {
-        receiver = (uint8_t)DSD_SCAN_QUIET_REASON_RATE;
-    }
+    const uint8_t receiver = quiet_capture_receiver_reason(cap);
     c->receiver_reason = receiver;
+    c->receiver_detail = quiet_capture_receiver_detail(opts, cap, receiver);
     c->receiver_input = opts->audio_in_type;
     c->receiver_device = quiet_device_hash(opts);
     c->receiver_rate_hz = cap->rate_hz;
@@ -1222,7 +1295,7 @@ static int
 quiet_capture_equal(const dsd_signal_capture* a, const dsd_signal_capture* b) {
     return a->generation == b->generation && a->rate_hz == b->rate_hz && a->capture_hz == b->capture_hz
            && a->capture_offset_hz == b->capture_offset_hz && a->rotation_hz == b->rotation_hz && a->gain == b->gain
-           && a->drops == b->drops;
+           && a->drops == b->drops && a->geometry == b->geometry && a->receiver == b->receiver;
 }
 
 /* For a reconciled READY result past the class and revision checks: the tap's capture and the live output
@@ -1430,9 +1503,10 @@ quiet_suspend_ineligible(const dsd_opts* opts, const dsd_engine_scan_owner* owne
 }
 
 /* Whether the started check @p c is refused for its analog width without a capture read (issue #834 R10): the last
-   capture read, on the input in force, in this stream session (a reopen may turn the rotation off) and at the DSP rate
-   this visit runs (so at this visit's capture rate), was rotated and at a validated rate, and the calibration covers
-   no such width of this kind there. At another DSP rate the visit reads its own capture, whose rate outranks its
+   capture read, on the input in force, in this stream session (a reopen may change the capture's geometry) and at the
+   DSP rate this visit runs (so at this visit's capture rate), passed the receiver's checks (its geometry and its rate
+   under its policy: rotated by Fs/4, or a native Airspy's centred capture) and the calibration covers no such width of
+   this kind there. At another DSP rate the visit reads its own capture, whose rate outranks its
    width. The width table does not hang on the visit, so a width-refused target is refused at once on every visit (no
    Quiet check before its capture comes) until a width, decoder or list edit gives it other facts. */
 static int
@@ -1769,14 +1843,26 @@ scan_quiet_key_get(const dsd_state* state) {
     return none;
 }
 
-/* The receiver's verdict the last capture read showed, while the input it was read on is still the one in force: a
-   centred capture only (TUNER), which the input and its shift settings decide for every visit. A rate is no session
-   fact: a list's DSP bandwidth sets the capture rate a visit runs at, so RATE is a visit's own, read on its capture. */
+/* Whether the receiver verdict of @p c is the opened device's identity (a SoapySDR Airspy, or a SoapySDR device that
+   may be one): refused at every rate, so it holds for the stream session like the geometry does. */
+static int
+quiet_receiver_identity_refused(const scan_quiet_check* c) {
+    return c->receiver_reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE
+           && (c->receiver_detail == (uint8_t)SCAN_QUIET_WARN_SOAPY_AIRSPY
+               || c->receiver_detail == (uint8_t)SCAN_QUIET_WARN_SOAPY_UNKNOWN);
+}
+
+/* The receiver's verdict the last capture read showed, while the input it was read on is still the one in force, in
+   the same stream session: what the input decides for every visit, a centred capture (TUNER, which the input and its
+   shift settings decide) or the opened SoapySDR device's identity (quiet_receiver_identity_refused()). Any other rate
+   is no session fact: a list's DSP bandwidth sets the capture rate a visit runs at, so that RATE is a visit's own,
+   read on its capture. */
 static uint8_t
 quiet_receiver_reason_now(const dsd_opts* opts, const scan_quiet_check* c) {
-    if (c->receiver_reason != (uint8_t)DSD_SCAN_QUIET_REASON_TUNER
-        || c->receiver_session != rtl_stream_session_generation() || c->receiver_input != opts->audio_in_type
-        || c->receiver_device != quiet_device_hash(opts)) {
+    const int session_fact =
+        c->receiver_reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER || quiet_receiver_identity_refused(c);
+    if (!session_fact || c->receiver_session != rtl_stream_session_generation()
+        || c->receiver_input != opts->audio_in_type || c->receiver_device != quiet_device_hash(opts)) {
         return (uint8_t)DSD_SCAN_QUIET_REASON_NONE;
     }
     return c->receiver_reason;
@@ -1801,10 +1887,9 @@ quiet_warn_capture(const dsd_opts* opts, dsd_state* state, const scan_quiet_chec
     quiet_receiver_key key;
     DSD_MEMSET(&key, 0, sizeof key);
     key.reason = reason;
-    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_TUNER) {
-        key.detail = (uint8_t)(dsd_opts_audio_in_dev_is_airspy_spec(opts->audio_in_dev) ? SCAN_QUIET_WARN_AIRSPY
-                                                                                        : SCAN_QUIET_WARN_CENTRED);
-    } else {
+    key.detail = c->receiver_detail;
+    /* A rate line names its rate; a SoapySDR identity's line names none and holds at every rate, so it logs once. */
+    if (reason == (uint8_t)DSD_SCAN_QUIET_REASON_RATE && !quiet_receiver_identity_refused(c)) {
         key.rate_hz = c->receiver_rate_hz;
     }
     key.input = opts->audio_in_type;

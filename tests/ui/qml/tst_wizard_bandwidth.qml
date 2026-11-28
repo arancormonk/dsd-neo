@@ -59,6 +59,9 @@ Item {
         function note() {
             return control("systemBandwidthNote");
         }
+        function meaning() {
+            return control("systemBandwidthMeaning");
+        }
         // A pick as the keyboard makes it: the list's own step, which reports
         // the choice (activated) as a tap on a row does.
         function pick(label) {
@@ -133,6 +136,29 @@ Item {
             verify(!note().visible, "a width the radio runs needs no note");
             verify(tc.wizard.hasUnsavedDraft(), "a pick is a change");
             compare(save().bandwidthKhz, 24);
+        }
+
+        // Issue #899 (D5): the line under the choice says what the bandwidth
+        // is and where the NFM channel width is set, under App default's note
+        // and a picked width alike, wrapped and read as its own words.
+        function test_bandwidth_meaning_under_the_choice() {
+            openAdvanced();
+            var line = meaning();
+            verify(line.visible);
+            compare(line.text, "The slice of spectrum the decoder processes. The NFM channel width is set in the Radio sheet.");
+            compare(line.wrapMode, Text.Wrap);
+            verify(line.lineCount > 1, "the line wraps at a phone's width");
+            compare(line.width, combo().width);
+            verify(line.contentWidth <= line.width, "the line runs past the editor");
+            compare(line.Accessible.name, line.text);
+            compare(line.Accessible.role, Accessible.StaticText);
+            verify(note().visible);
+            verify(note().y > combo().y + combo().height, "App default's note is not under the choice");
+            verify(line.y > note().y + note().height, "the line is not under App default's note");
+            pick("24 kHz");
+            verify(!note().visible);
+            verify(line.visible);
+            verify(line.y > combo().y + combo().height, "the line is not under the choice");
         }
 
         // Issue #803: App default runs TETRA at 72 kHz and says so, and stays

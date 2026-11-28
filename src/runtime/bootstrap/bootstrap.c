@@ -86,7 +86,6 @@ typedef struct {
     int validate_config_cli;
     int strict_config_cli;
     int list_profiles_cli;
-    int cli_file_rate_override;
     const char* config_path_cli;
     const char* profile_cli;
     const char* validate_path_cli;
@@ -151,74 +150,53 @@ bootstrap_cli_try_profile_option(int argc, char** argv, int* i, bootstrap_cli_ar
     return 1;
 }
 
+/* The long option at argv[*@p i], a bootstrap option or not, with the value the parser gives it stepped over
+   (dsd_cli_long_option_span()): no option's value is ever read as a bootstrap option (issue #931). Nonzero when the
+   parser knows it. */
 static int
-bootstrap_cli_try_file_rate_override(int argc, char** argv, int* i, bootstrap_cli_args* args) {
-    if (strcmp(argv[*i], "-s") == 0) {
-        args->cli_file_rate_override = 1;
-        if (*i + 1 < argc) {
-            ++(*i);
-        }
-        return 1;
-    }
-    if (strncmp(argv[*i], "-s", 2) == 0 && argv[*i][2] != '\0') {
-        args->cli_file_rate_override = 1;
-        return 1;
-    }
-    return 0;
-}
-
-/* An option whose value may be any text, a "--print-config"-like token included: step over the value, which is never a
-   bootstrap option of its own. */
-static int
-bootstrap_cli_try_skip_free_value(int argc, char** argv, int* i) {
-    if (!dsd_cli_option_takes_free_value(argv[*i])) {
+bootstrap_cli_try_skip_long_option(int argc, char** argv, int* i) {
+    const int span = dsd_cli_long_option_span(argc, argv, *i);
+    if (span <= 0) {
         return 0;
     }
-    if (*i + 1 < argc) {
-        ++(*i);
-    }
+    *i += span - 1;
     return 1;
 }
 
+/* A bootstrap option at argv[*@p i], read in place with its value: --config and --validate-config take the next
+   argument unless it starts with '-', --profile takes it whatever it is. */
+static int
+bootstrap_cli_try_own_option(int argc, char** argv, int* i, bootstrap_cli_args* args) {
+    const char* arg = argv[*i];
+    return bootstrap_cli_try_config_option(argc, argv, i, args)
+           || bootstrap_cli_try_validate_option(argc, argv, i, args)
+           || bootstrap_cli_try_profile_option(argc, argv, i, args)
+           || bootstrap_cli_try_flag(arg, "--interactive-setup", &args->force_bootstrap_cli)
+           || bootstrap_cli_try_flag(arg, "--print-config", &args->print_config_cli)
+           || bootstrap_cli_try_flag(arg, "--dump-config-template", &args->dump_template_cli)
+           || bootstrap_cli_try_flag(arg, "--strict-config", &args->strict_config_cli)
+           || bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)
+           || bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli);
+}
+
+/* Bootstrap's options, read as the parser reads the argv (issue #931): its long-option pass, up to the first "--" that
+   is no long option's value, steps over every long option's value by the parser's arity, so a value that reads like a
+   bootstrap option ("--rdio-api-key --print-config", "--rdio-api-key --config x.ini") is the value it is, and nothing
+   after that "--" is an option. Whether -s gives the file rate is left to getopt itself (opts->input_rate_cli_seen),
+   whose own rules (stopping at an operand or not) only it knows. */
 static void
 bootstrap_parse_cli_args(int argc, char** argv, bootstrap_cli_args* args) {
     if (!args) {
         return;
     }
     DSD_MEMSET(args, 0, sizeof(*args));
-    for (int i = 1; i < argc; i++) {
-        const char* arg = argv[i];
-        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
-            continue;
+    for (int i = 1; i < argc && argv[i] != NULL; i++) {
+        if (strcmp(argv[i], "--") == 0) {
+            break;
         }
-        if (bootstrap_cli_try_config_option(argc, argv, &i, args)) {
-            continue;
+        if (!bootstrap_cli_try_own_option(argc, argv, &i, args)) {
+            (void)bootstrap_cli_try_skip_long_option(argc, argv, &i);
         }
-        if (bootstrap_cli_try_flag(arg, "--interactive-setup", &args->force_bootstrap_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--print-config", &args->print_config_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--dump-config-template", &args->dump_template_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_validate_option(argc, argv, &i, args)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--strict-config", &args->strict_config_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_profile_option(argc, argv, &i, args)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--list-profiles", &args->list_profiles_cli)) {
-            continue;
-        }
-        if (bootstrap_cli_try_flag(arg, "--no-config", &args->no_config_cli)) {
-            continue;
-        }
-        (void)bootstrap_cli_try_file_rate_override(argc, argv, &i, args);
     }
 }
 
@@ -279,13 +257,22 @@ bootstrap_handle_loaded_user_config(dsd_opts* opts, dsd_state* state, const boot
 
 static int
 bootstrap_handle_failed_user_config_load(const bootstrap_cli_args* args, int explicit_profile_selected,
-                                         const char* config_env, const char* cfg_path, int* out_exit_rc) {
+                                         const char* config_env, const char* cfg_path, int load_rc, int* out_exit_rc) {
+    /* A read error is said by the loader, once, with the file it is in (issue #931): no missing profile. */
+    const int read_error = load_rc == DSD_USER_CONFIG_READ_ERROR;
+    if (explicit_profile_selected && read_error) {
+        LOG_ERROR("Profile '%s' not loaded: the config could not be read (see above)\n", args->profile_cli);
+        bootstrap_set_exit_rc(out_exit_rc, 1);
+        return DSD_BOOTSTRAP_ERROR;
+    }
     if (explicit_profile_selected) {
         LOG_ERROR("Profile '%s' not found in config file %s\n", args->profile_cli, cfg_path);
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
-    if (args->config_path_cli || config_env || args->enable_config_cli) {
+    if (read_error) {
+        LOG_WARN("WARNING: Config not loaded: a read error (see above); proceeding without config.\n");
+    } else if (args->config_path_cli || config_env || args->enable_config_cli) {
         LOG_WARN("WARNING: Failed to load config file from %s; proceeding without config.\n", cfg_path);
     }
     return DSD_BOOTSTRAP_CONTINUE;
@@ -331,15 +318,17 @@ bootstrap_load_user_config_if_requested(dsd_opts* opts, dsd_state* state, const 
         return DSD_BOOTSTRAP_CONTINUE;
     }
 
-    return bootstrap_handle_failed_user_config_load(args, explicit_profile_selected, config_env, cfg_path, out_exit_rc);
+    return bootstrap_handle_failed_user_config_load(args, explicit_profile_selected, config_env, cfg_path, load_rc,
+                                                    out_exit_rc);
 }
 
 static int
 bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** argv, int cfg_path_positional_ini,
-                             const dsdneoUserConfig* user_cfg, int user_cfg_loaded, int cli_file_rate_override,
-                             int* argc_effective, int* out_exit_rc) {
+                             const dsdneoUserConfig* user_cfg, int user_cfg_loaded, int* argc_effective,
+                             int* out_exit_rc) {
     int parse_exit_rc = 1;
     const int parse_argc = cfg_path_positional_ini ? 1 : argc;
+    opts->input_rate_cli_seen = 0; /* set by getopt's -s (issue #931) */
     int parse_rc = dsd_parse_args(parse_argc, argv, opts, state, argc_effective, &parse_exit_rc);
     if (parse_rc == DSD_PARSE_ONE_SHOT) {
         bootstrap_set_exit_rc(out_exit_rc, parse_exit_rc);
@@ -353,7 +342,9 @@ bootstrap_parse_runtime_args(dsd_opts* opts, dsd_state* state, int argc, char** 
         bootstrap_set_exit_rc(out_exit_rc, 1);
         return DSD_BOOTSTRAP_ERROR;
     }
-    if (user_cfg_loaded && !cli_file_rate_override && user_cfg) {
+    /* A -s getopt read keeps its rate; the config's file input rate comes back otherwise. Only the parse's own getopt
+       knows which -s it reads: one that stops at the first operand (POSIXLY_CORRECT, MSVC) reads none after it. */
+    if (user_cfg_loaded && !opts->input_rate_cli_seen && user_cfg) {
         dsd_finalize_user_config_file_input_after_cli(user_cfg, opts, state);
     }
     /* The config and the command line are both in: say once that a journaled run keeps its uploads (issue #708). */
@@ -438,6 +429,12 @@ bootstrap_compacted_arg_disables_inherited_trunk_scan(int argc, char** argv) {
             break;
         }
         if (arg[1] == '-') {
+            /* An unconsumed "--" ends the options: whatever follows it is an operand, a positional input that turns
+               the inherited scan off as any other does ("-- --iq-replay" too, issue #931). */
+            if (arg[2] == '\0') {
+                disables = i + 1 < compacted_argc && argv_copy[i + 1] != NULL;
+                break;
+            }
             continue;
         }
 
@@ -463,13 +460,16 @@ bootstrap_cli_disables_inherited_trunk_scan(int argc, char** argv, int cfg_path_
         if (!arg) {
             break;
         }
-        /* The option first (--p25-bandplan takes a free value and disables the inherited scan), then its value: a
-           token or a file name is any text, "--iq-replay" included; the compacted pass below drops it with its
-           option. */
+        /* The options end at a "--" that is no value. The option first (--p25-bandplan takes a free value and
+           disables the inherited scan), then its value, by the parser's arity: a token, a key or a file name is any
+           text, "--iq-replay" included; the compacted pass below drops it with its option. */
+        if (strcmp(arg, "--") == 0) {
+            break;
+        }
         if (bootstrap_long_arg_disables_inherited_trunk_scan(arg)) {
             return 1;
         }
-        if (bootstrap_cli_try_skip_free_value(argc, argv, &i)) {
+        if (bootstrap_cli_try_skip_long_option(argc, argv, &i)) {
             continue;
         }
     }
@@ -485,6 +485,19 @@ bootstrap_apply_trunk_scan_pre_cli_gating(dsd_opts* opts, int argc, char** argv,
     if (bootstrap_cli_disables_inherited_trunk_scan(argc, argv, cfg_path_positional_ini)) {
         opts->trunk_scan_enabled = 0;
         opts->trunk_scan_off_by_cli = 1;
+    }
+}
+
+/* --print-config's copy leaves out what can be a credential (issue #931): the rdio-scanner API key and URL (a URL can
+   carry user:password@) and the RadioReference app key, with or without --show-keys, which reveals radio keys only. A
+   save renders the full config to a private file (config_write_temp_file()). */
+static void
+bootstrap_print_config_drop_secrets(dsdneoUserConfig* eff) {
+    DSD_SECURE_ZERO(eff->rdio_api_key, sizeof eff->rdio_api_key);
+    DSD_SECURE_ZERO(eff->rdio_api_url, sizeof eff->rdio_api_url);
+    DSD_SECURE_ZERO(eff->rr_app_key, sizeof eff->rr_app_key);
+    if (eff->rr_username[0] == '\0') {
+        eff->has_radioreference = 0; /* no empty [radioreference] header saying a key exists */
     }
 }
 
@@ -508,6 +521,7 @@ bootstrap_handle_print_config(const bootstrap_cli_args* args, dsd_opts* opts, co
     }
     dsdneoUserConfig eff;
     dsd_snapshot_opts_to_user_config(opts, state, &eff);
+    bootstrap_print_config_drop_secrets(&eff);
     dsd_user_config_render_ini(&eff, stdout);
     bootstrap_set_exit_rc(out_exit_rc, 0);
     return DSD_BOOTSTRAP_EXIT;
@@ -931,7 +945,7 @@ dsd_runtime_bootstrap(int argc, char** argv, dsd_opts* opts, dsd_state* state, i
     bootstrap_apply_trunk_scan_pre_cli_gating(opts, argc, argv, args.cfg_path_positional_ini, user_cfg_loaded,
                                               explicit_profile_selected);
     boot_rc = bootstrap_parse_runtime_args(opts, state, argc, argv, args.cfg_path_positional_ini, &user_cfg,
-                                           user_cfg_loaded, args.cli_file_rate_override, &argc_effective, out_exit_rc);
+                                           user_cfg_loaded, &argc_effective, out_exit_rc);
     if (boot_rc != DSD_BOOTSTRAP_CONTINUE) {
         return boot_rc;
     }

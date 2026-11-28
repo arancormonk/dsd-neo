@@ -83,18 +83,28 @@ typedef enum {
 } dsd_squelch_window_class;
 
 /**
- * @brief The classifier's constants for one channel plan: the channel taps, the half-band stage before them, and the
- * channel rate. A zeroed plan is not valid, and a tracker with no valid plan keeps its gate open.
+ * @brief The classifier's constants for one channel plan: the channel taps, the noise that reaches them (white noise
+ * through the half-band cascade ahead of them, through the live I/Q rate step when one runs, and through a replay or
+ * network reader's resampler ahead of the cascade when one resamples), and the channel rate.
+ * A zeroed plan is not valid, and a tracker with no valid plan keeps its gate open.
  */
 typedef struct {
     int valid;
-    int rate_hz;       /**< channel rate, samples per second */
-    int lag;           /**< L, from the channel taps' autocorrelation */
-    double rho_lag;    /**< the noise autocorrelation at L */
-    double beta;       /**< the coherence complex Gaussian noise shows at L */
-    double neff;       /**< effective samples in a 40 ms window */
-    double sqrt_neff;  /**< its square root */
-    double noise_gain; /**< noise power out for unit white complex noise in (the cache's density scale) */
+    int rate_hz;      /**< channel rate, samples per second */
+    int lag;          /**< L, from the channel taps' autocorrelation */
+    double rho_lag;   /**< the noise autocorrelation at L */
+    double beta;      /**< the coherence complex Gaussian noise shows at L */
+    double neff;      /**< effective samples in a 40 ms window */
+    double sqrt_neff; /**< its square root */
+    /** Noise power out for white complex noise in, the cache's density scale. In the pipeline's plans the input is at
+        the capture rate with variance 2^(passes - 1), 1 with no pass (unit white noise at the last half-band stage's
+        input, in the passband): the step model's convention, so plans with and without a step agree. For unit
+        capture variance divide by 2^(passes - 1) (6 passes to 16 kHz unfiltered: 0.23852161, 0.00745380 per unit).
+        Behind a reader's resampler the same variance is at the source's rate, ahead of the reader (8 kHz read into
+        16 kHz unfiltered: 0.98030280).
+        The explicit designs take their own input: dsd_squelch_floor_plan_design() unit white noise ahead of its
+        half-band stage, the periodic designs whatever covariance they are given. */
+    double noise_gain;
 } dsd_squelch_floor_plan;
 
 /** @brief What the tracker publishes. */
@@ -155,6 +165,11 @@ typedef struct {
     int32_t chain;     /**< capture chain (live, replay, the decimation cascade) */
     int32_t step_l;    /**< the live I/Q rate step's L/M (issue #806); 0 and 0 with no step */
     int32_t step_m;
+    /** The replay or network reader's resampler ahead of the cascade (dsd_iq_reader_plan, issue #899): its source
+        rate, DSP input rate and protected band; 0, 0 and 0 with none. */
+    int32_t reader_in_hz;
+    int32_t reader_out_hz;
+    int32_t reader_protect_hz;
 } dsd_squelch_floor_key;
 
 /** @brief One remembered floor. */
@@ -178,9 +193,13 @@ typedef struct {
  * channel rate @p rate_hz.
  *
  * L is the smallest lag >= 1 at which the channel taps' autocorrelation |R_h(L)| / R_h(0) drops below 0.1. The noise
- * the classifier sees is white complex noise through the half-band stage (at twice the rate) and the channel taps;
- * rho_n is its autocorrelation, N_eff = N / sum_m rho_n(m)^2 for a 40 ms window of N samples, and
- * beta = (pi/4) rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2).
+ * this design models is unit white complex noise through the one half-band stage given (at twice the rate) and the
+ * channel taps; rho_n is its autocorrelation, N_eff = N / sum_m rho_n(m)^2 for a 40 ms window of N = rate / 25.0
+ * samples, and beta = (pi/4) rho_n(L) 2F1(1/2, 1/2; 2; rho_n(L)^2). That is the chain's noise with no half-band pass or
+ * one, where the pipeline runs this design. With more passes the pipeline's plan models the whole cascade
+ * (dsd_squelch_cascade_noise_floor_plan() in src/dsp, issue #899), behind the live I/Q rate step it takes the step
+ * model's (issue #806), and behind a replay or network reader's resampler the reader model's, whatever the passes
+ * (dsd_squelch_reader_model_floor_plan(), issue #899).
  *
  * @return 0, or -1 (plan not valid) for a rate below 100 Hz (two samples per 20 ms) or a lag past
  * DSD_SQUELCH_FLOOR_MAX_LAG.
@@ -189,7 +208,8 @@ int dsd_squelch_floor_plan_design(dsd_squelch_floor_plan* out, const float* taps
                                   int hb_len, int rate_hz);
 
 /**
- * @brief Noise whose statistics repeat with a period of output samples (the live I/Q rate step's, issue #806): its
+ * @brief Noise whose statistics repeat with a period of output samples (the live I/Q rate step's, issue #806, or a
+ * reader's resampler's, issue #899): its
  * covariance at every phase of one period. cov[n * lags + m] = E{z_n conj(z_{n+m})} for n in 0..period - 1 and m in
  * 0..lags - 1, zero at lag lags and beyond; z_{n + period} has the statistics of z_n.
  */
@@ -214,6 +234,18 @@ typedef struct {
  */
 int dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
                                            const dsd_squelch_floor_periodic_noise* noise, int rate_hz);
+
+/**
+ * @brief dsd_squelch_floor_plan_design_periodic() over the tracker's own windows: their boundaries fall at
+ * floor(k fs / 25), so they are floor(fs / 25) samples or one more, fs / 25.0 on average (the stationary design's
+ * window, dsd_squelch_floor_plan_design()), and N_eff, beta and rho are the means over both lengths weighted by how
+ * often each runs. The same as dsd_squelch_floor_plan_design_periodic() where 25 divides the rate; at an odd kept
+ * replay rate such as 39,062 Hz the window is 1,562.48 samples, not 1,562 (issue #899).
+ *
+ * @return As dsd_squelch_floor_plan_design_periodic().
+ */
+int dsd_squelch_floor_plan_design_periodic_mean(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                                const dsd_squelch_floor_periodic_noise* noise, int rate_hz);
 
 /** @brief Whether @p a and @p b classify the same way (rate, lag and constants equal within a relative 1e-12). */
 int dsd_squelch_floor_plan_equal(const dsd_squelch_floor_plan* a, const dsd_squelch_floor_plan* b);

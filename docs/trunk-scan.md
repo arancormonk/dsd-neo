@@ -1210,10 +1210,14 @@ turned it on).
 ### What the check measures
 
 - The receiver measures the power inside the channel and compares it with the receiver's own noise, read across the
-  whole band it takes in. It takes a low reading of that band (the level three quarters of it stand above), so other
-  transmitters in the band, busy neighbours included, do not raise it. It reads nine back-to-back slices of at least
+  whole band it takes in, or with the noise just beside the channel where that is lower. It takes a low reading of
+  the band (the level three quarters of it stand above), so other transmitters in the band, busy neighbours included,
+  do not raise it, as long as they leave much of the band on the noise: when transmitters or a raised floor fill most
+  of the band and the channel's sides too, with the channel itself clear, both noises read high, the channel reads
+  that much quieter, and a weak signal on it can be skipped (docs/signal-search.md "Limits"). It reads nine back-to-back slices of at least
   10 ms each, so the reading covers at least 90 ms (90 to 96 ms at the RTL-SDR's default 1.536 Msps, depending on the
-  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise. One busy slice
+  channel width). The channel is silent only when every slice reads less than 5.0 dB above that noise (3.2 dB on a
+  native Airspy, `-i airspy`). One busy slice
   is enough to keep the channel.
 - It also reads the noise just beside the channel, on both sides. If that stands more than 8.7 dB over the band's
   noise, the band's noise does not stand for the noise at the channel, and the check gives up (below).
@@ -1222,8 +1226,11 @@ turned it on).
   its mode's width. An untyped `-Y` row is judged in every width of the decoders the session runs, and is silent only
   if it is silent in all of them. With the analog monitor on beside digital decoders (`-8`) the monitor's width is
   judged too, on an untyped row and on a typed digital row or target alike, since the monitor plays there as well; an
-  `-8` monitor with no NFM width set gets those rows and targets no check. Judging more widths can only mean fewer
-  skips, never an extra one.
+  `-8` monitor with no NFM width set gets those rows and targets no check. Every width in a reading must read silent
+  for the channel to be skipped, but judging another width is not only an added test: it changes the measurement
+  itself (the transform size follows the narrowest width), so the other widths' levels move too. In rendered noise
+  with a weak tone near the channel, 12.5 kHz alone read 5.015 dB (busy) while 12.5 kHz with a 5 kHz analog width read
+  4.996 dB (silent): adding a width can add a skip.
 - An ongoing DMR transmission from a single radio sends a 27.5 ms burst every 60 ms (ETSI TS 102 361-1 clauses 4.2.2
   and 10.2.3). Back-to-back slices of at most 13.75 ms hold one slice wholly inside one of those bursts at any phase
   once there are at least ceil(32.5 / slice length) + 2 of them: six at the check's slice lengths. The nine slices of
@@ -1231,12 +1238,26 @@ turned it on).
   about an ongoing train of bursts: a single short burst (a wake-up, a data or status burst) can fall outside the
   reading (see the [limits](#limits)).
 - The threshold and the rest of the measurement come from a calibration against DSD-neo's own reception: a signal
-  1 dB weaker than the weakest one DSD-neo still receives was never read as silent in testing, in any mode, width or
-  supported sample rate, with or without busy neighbours (10,316 signal conditions, 30.9 million trials). Every NFM
+  1 dB weaker than the weakest one DSD-neo still receives was never read as silent in the earlier calibration's tested
+  conditions, in any mode, width or supported sample rate (10,316 signal conditions, 30.9 million trials). Those
+  conditions were the RTL-SDR capture geometry, with busy neighbours at 1.536 Msps only, rendered rather than
+  received; they do not cover the raised-sideband case under "Limits" below. Every NFM
   width was tested with both a narrow-band transmitter (one made for 12.5 kHz channels) and a wide-band one (made for
   25 kHz channels), each with a test tone and with speech-like audio. Noise alone on a flat noise floor read silent in
   every test (1,136 noise conditions, 3.41 million trials). The method and figures are in
-  [Quiet-channel calibration](signal-search.md#quiet-channel-calibration).
+  [Quiet-channel calibration](signal-search.md#quiet-channel-calibration). The native Airspy's 3.2 dB threshold has
+  its own calibration, on the Airspy's centred capture at each of its four rates through modelled receiver responses
+  (computed passband shapes, a dip at the channel and ADC noise levels; rendered, not received), with the occupancy
+  check and the `-8` masks below.
+
+  The native Airspy's calibration rendered 7,992 conditions at each of its four rates under each of eight modelled
+  responses, 7,223 of them with a signal 1 dB weaker than the weakest one DSD-neo still receives: 2,000 selection and
+  3,000 validation trials per condition under the nominal response, 300 and 600 under the others (52.0 million
+  validation readings of a signal at each rate). No signal read silent at 3.2 dB. The lowest reading kept in validation
+  was 3.81 dB with the 2 dB dip at the channel and 5.67 dB under every other response. With no miss, the one-sided 95%
+  bound per condition is about 1.0e-3 under the nominal response and 5.0e-3 under the others. The tables, per response
+  and rate, are under [Native Airspy calibration](signal-search.md#native-airspy-calibration).
+
 
 ### What a skip costs and logs
 
@@ -1287,16 +1308,17 @@ so the reading lasts that many slices of it: 60 reads for 60 to 69 ms. Unset (or
 its calibrated nine slices, exactly as without the option. It is session-wide, like `--scan-skip-silent`, and an
 `options` cell refuses it.
 
-- Only the nine-slice reading was calibrated. The 5.0 dB threshold and the 8.7 dB guard stay the same at every
-  length, but below nine slices they are not calibrated: a weak signal, or one that fades during the reading, is more
-  likely to read silent and be skipped. A short check at 1.536 Msps (not a calibration) found no live signal read
-  silent at six slices, live DMR read silent at three, and weak M17 and dPMR read silent at one.
+- Only the nine-slice reading was calibrated, on the RTL-SDR's capture and on the native Airspy's alike. The 5.0 dB
+  threshold (3.2 dB on a native Airspy) and the 8.7 dB guard stay the same at every length, but below nine slices they
+  are not calibrated: a weak signal, or one that fades during the reading, is more likely to read silent and be
+  skipped. A short check at 1.536 Msps (not a calibration) found no live signal read silent at six slices, live DMR
+  read silent at three, and weak M17 and dPMR read silent at one; no such check was run on a native Airspy.
 - A channel that can carry a single DMR radio is still read for at least six slices (60 to 69 ms): a typed DMR row or
   `dmr-conventional` target, or an untyped row or a row in mode `inherit` while the DMR decoder is on. Six slices is
   the fewest that always hold one slice wholly inside a burst of an ongoing DMR transmission (above).
 - Longer readings (above 90 ms) skip less often and are less likely to skip a weak live signal, at the cost of a
   longer skip. The time the scan waits for the answer grows with them.
-- When the setting shortens the reading, the first check logs
+- When the setting shortens the reading, the first check logs, on every receiver,
   `WARNING: scan: --scan-skip-silent-ms 50 reads 5 slices (50 to 53 ms), shorter than the calibrated 9: a weak or fading signal can read silent and be skipped.`
   (with the span at the receiver's rate), and the first DMR channel read for its floor logs
   `WARNING: scan: --scan-skip-silent-ms 50: DMR channels are read for 6 slices (60 to 64 ms), the fewest that always hold one whole slice inside a burst of an ongoing DMR transmission.`
@@ -1329,6 +1351,10 @@ its calibrated nine slices, exactly as without the option. It is session-wide, l
 - A Signal search start, or turning the setting off, ends the check. Turning the setting on (from the terminal, the API
   or a loaded config) leaves the channel on air, or the one being tuned, unchecked: calls it carried while the setting
   was off were not counted, so the setting applies from the next tune.
+- A band where more of it stands over the noise than noise alone explains: when the share of the band's noise
+  reading that stands over its noise is more than 5% over the 2% noise alone puts there (strong transmitters or a
+  raised floor over part of the band), the check gives up on that visit (the occupancy check). In a crowded band that
+  means fewer skips; it never adds one.
 - A channel whose neighbours on both sides raise the noise beside it by more than 8.7 dB over the receiver's own
   noise: the check gives up on it. A steeply sloping noise floor or a broad interferer usually makes it give up too.
   That costs speed, never a missed signal.
@@ -1339,15 +1365,23 @@ On these the scan keeps its normal timing, as if the setting were off. The Scan 
 brackets below), and the log says how to fix it; see
 [What the screens and the log show](#what-the-screens-and-the-log-show).
 
-- A native Airspy input (`-i airspy`): its samples lack the frequency shift the measurement needs (`tuner`). An
-  Airspy through SoapySDR is checked at 2.5, 3, 6 and 10 MS/s, and a HackRF through SoapySDR at the 10 MS/s it normally
-  runs (a HackRF moved to a lower rate near the top of the tuning range is checked only if that rate is one the check
-  covers).
+- An Airspy through SoapySDR (`-i soapy:driver=airspy`), at any rate (`rate`): use the native Airspy input
+  (`-i airspy`), which is checked at 2.5, 3, 6 and 10 MS/s. A SoapySDR device reached through SoapyRemote (named or
+  found by discovery), or opened by a SoapySDR module dsd-neo does not know, gets no check at any rate either, since
+  it may be an Airspy (`rate`). A
+  HackRF through SoapySDR is checked at the 10 MS/s it normally runs (a HackRF moved to a lower rate near the top of
+  the tuning range is checked only if that rate is one the check covers).
 - An RTL-SDR whose tuner takes offset tuning (an E4000, for example), which DSD-neo turns on by default over USB and
   which also removes that shift (`tuner`).
   Setting `DSD_NEO_RTL_OFFSET_TUNING=0` gives it the check. The common R820T and R828D tuners refuse offset tuning
   and are checked, and so is rtl_tcp unless `DSD_NEO_RTL_OFFSET_TUNING=1` turns offset tuning on there.
-- `DSD_NEO_DISABLE_FS4_SHIFT=1`, which turns that shift off (`tuner`).
+- `DSD_NEO_DISABLE_FS4_SHIFT=1` on an RTL-SDR, rtl_tcp or SoapySDR input, which turns that shift off (`tuner`). A
+  native Airspy (`-i airspy`) takes no shift, so the setting leaves its check as it is.
+- A native Airspy (`-i airspy`) at a rate its firmware lists other than 2.5, 3, 6 and 10 MS/s (`rate`): set
+  `--airspy-sample-rate` to one of those four that the Airspy lists (in samples per second, for example 2500000 or
+  10000000 on an R2, 3000000 or 6000000 on a Mini). Leaving the rate to the device does not choose among those four:
+  it takes the highest rate the firmware lists on the desktop and the lowest on Android. At those four rates it is
+  checked at 3.2 dB.
 - A sample rate the calibration did not cover (`rate`). Checked rates are 0.96, 1.024, 1.152, 1.2, 1.28, 1.44, 1.536,
   1.6, 1.8, 1.92, 2.048 and 2.4 Msps, and an Airspy's 2.5, 3, 6 and 10 MS/s, exactly. An RTL-SDR or rtl_tcp stream
   runs 1.024, 1.152 or 1.536 Msps at every DSP bandwidth; a SoapySDR device picks its own rate and gets no check at
@@ -1390,20 +1424,31 @@ check channels on this input. Normal scan timing applies."
 
 When a reason first applies, the log gets one line that says what cannot be checked and how to fix it. Each line
 starts with `WARNING: scan: silent channel skip cannot check` and ends with `Normal scan timing applies.` A reason
-that covers the whole receiver is logged once, and again when the input or its sample rate changes; a channel's
-reason is logged once for each channel, and again after that channel, its list or the decoders change. Turning the
-setting off and on logs them again. `<channel>` is a target's label (or its id when it has none), or `row N` for a
-`-Y` row, counted from 1:
+that covers the whole receiver is logged once, and again when the input changes, or, for a line that names a sample
+rate, when that rate changes; the SoapySDR Airspy and SoapySDR device lines below name no rate and are logged once for
+the input, whatever rates its lists run at. A channel's reason is logged once for each channel, and again after that
+channel, its list or the decoders change. Turning the setting off and on logs them again. `<channel>` is a target's
+label (or its id when it has none), or `row N` for a `-Y` row, counted from 1:
 
-- `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp or soapy).`,
+- `input`: `... channels on audio input; it needs a radio input (rtl, rtltcp, soapy or airspy).`,
   `... channels in an I/Q replay; it needs a live radio input.`,
   `... channels on an I/Q stream; it needs a radio input DSD-neo tunes.`, or
   `... channels: this build has no radio support.` Use a radio input, live.
-- `tuner`: `... channels on a native Airspy input; open the Airspy through SoapySDR (-i soapy:driver=airspy) to have
-  them checked.`, or `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
-  DSD_NEO_RTL_OFFSET_TUNING=0, or unset DSD_NEO_DISABLE_FS4_SHIFT, to have them checked.`
+- `tuner`: `... channels while offset tuning is on or DSD_NEO_DISABLE_FS4_SHIFT is set; set
+  DSD_NEO_RTL_OFFSET_TUNING=0, or unset DSD_NEO_DISABLE_FS4_SHIFT, to have them checked.`, or, on a native Airspy
+  capture that is not centred (which a working native input never gives), `... channels on this native Airspy
+  capture: its I/Q is not centred on the tuned frequency, which the check needs.`
 - `rate`: `... channels at 3.2 Msps, a sample rate it was not calibrated for; docs/trunk-scan.md lists the rates it
-  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them.
+  checks.` The checked rates are in the list above; on SoapySDR choose a device rate among them. A native Airspy at a
+  rate its firmware lists beyond those logs `... channels on this native Airspy at 5 Msps, a sample rate it was not
+  calibrated for; it checks 2.5, 3, 6 and 10 Msps: set --airspy-sample-rate to 2500000, 3000000, 6000000 or
+  10000000, one the Airspy lists, to have them checked.` An Airspy through SoapySDR logs `... channels on an Airspy
+  through SoapySDR; use the native Airspy input (-i airspy, in a build with native Airspy support) to have them
+  checked.`, and a SoapySDR device that may be an Airspy `... channels on this SoapySDR device: it is reached through a
+  proxy, or its driver did not say which device it is, so an Airspy, which it cannot check through SoapySDR, cannot be
+  ruled out. For an Airspy, use the native Airspy input (-i airspy, in a build with native Airspy support).` A build
+  without native Airspy support (`DSD_ENABLE_AIRSPY=OFF`, or no libairspy found) has no `-i airspy`: an Airspy gets no
+  check there.
 - `width`: `... <channel> <MHz> MHz at NFM 13.5 kHz, a width it was not calibrated for; set --nfm-bandwidth-hz to
   8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000 or 25000 to have it checked.` (on AM: `--am-bandwidth-hz` to
   5000, 6000, 8000, 8333, 10000, 15000 or 20000), `... <channel> <MHz> MHz: it has no NFM width set; set
@@ -1428,13 +1473,33 @@ Turning the setting on accepts these:
   transmission can be skipped.
 - The calibration used steady signals (with the power droop inside a DMR burst), not fading: a signal that fades
   through the whole reading, from a radio on the move for example, can read silent and be skipped.
-- An always-keyed channel (a control channel, a repeater that never drops) is never skipped, so the setting saves
-  nothing there.
+- A channel left clear while transmitters or a raised floor fill much of the band round it and its sides (about three
+  quarters of the band, sometimes less) reads quieter by about the raise, which the check cannot see; a raise of
+  1.5 dB is enough for a signal DSD-neo receives to read silent and be skipped (docs/signal-search.md "Limits").
+- An always-keyed channel (a control channel, a repeater that never drops) is normally not skipped, since its carrier
+  reads busy at every visit and the setting saves nothing there. That holds only while the reading sees the carrier:
+  a weak one in a band raised round it (the raised-sideband limit above) can still read silent and be skipped before
+  the decoder hears it.
 - Busy neighbours were tested 12.5 or 25 kHz away, on one side and on both, from 5 to 50 dB stronger than the wanted
-  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour at
-  1.536 Msps only; other sample rates and other kinds of neighbour were not tested.
+  signal, and never made a signal DSD-neo can receive read silent. Those tests used a P25 Phase 1 neighbour, at
+  1.536 Msps on the RTL-SDR path and at each of a native Airspy's four rates; other sample rates and other kinds of
+  neighbour were not tested.
 - An AM carrier outside the configured channel width is not seen: on a wide offset-carrier AM system set a width that
   takes in every carrier.
+- With the `-8` monitor on, a digital row or target is judged in its own width and the monitor's analog width
+  together. The calibration rendered each digital mode under each such pair on a plain noise floor, and with busy
+  neighbours only beside the narrowest and the widest analog width (AM 5 kHz and NFM 25 kHz); it rendered no sloped
+  floor, broad interferer or crowded band under a pair.
+
+  The lowest reading kept under a pair, over selection and validation, was 5.77 dB on the RTL-SDR path (threshold
+  5.0 dB), and 5.79 dB in the cross group, which adds busy neighbours, offsets and a DMR mobile's droop beside AM 5 kHz
+  and NFM 25 kHz. On a native Airspy (threshold 3.2 dB) it was 3.92, 3.93, 3.99 and 3.87 dB at 2.5, 3, 6 and 10 MS/s
+  with the 2 dB dip, and 5.83, 5.83, 5.79 and 5.81 dB under the other responses. No pair read silent in validation: the
+  one-sided 95% bound per condition is about 1.0e-3 on the RTL-SDR path and under the native nominal response
+  (3,000 trials), and 5.0e-3 under the other native responses (600).
+- The occupancy check gives up on a band it reads as crowded, which only withdraws skips, but it reads its level from
+  the band itself: a band raised almost everywhere, the channel's sides included, looks like plain noise to it (the
+  raised-band limit above).
 - Every receiver, input, width, rate and decoder set listed above runs without the check.
 - The check assumes the receiver's noise floor is about level across the band it takes in. A floor that sits lower
   right at the channel than across the rest of the band makes a weak signal there read quieter. Real RTL-SDR noise

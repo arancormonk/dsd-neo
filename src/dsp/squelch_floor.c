@@ -209,11 +209,22 @@ typedef struct {
 static sqf_periodic_sample
 sqf_periodic_sample_at(const dsd_squelch_floor_periodic_noise* noise, int n, int lag) {
     sqf_periodic_sample out;
-    const double r0 = sqf_periodic_cov(noise, n, 0);
+    /* sqf_periodic_cov() at every lag, its phases stepped instead of divided out: a period of thousands of phases
+       (a reader's, issue #899) runs this for every sample of a window and a period, over every lag. */
+    const int period = noise->period;
+    const size_t lags = (size_t)noise->lags;
+    int phase = n % period;
+    if (phase < 0) {
+        phase += period;
+    }
+    const double* row = noise->cov + ((size_t)phase * lags);
+    const double r0 = row[0];
     double sq = r0 * r0;
-    for (int m = 1; m < noise->lags; m++) {
-        const double ahead = sqf_periodic_cov(noise, n, m);
-        const double back = sqf_periodic_cov(noise, n, -m);
+    int back_phase = phase;
+    for (size_t m = 1; m < lags; m++) {
+        back_phase = back_phase > 0 ? back_phase - 1 : period - 1;
+        const double ahead = row[m];
+        const double back = noise->cov[((size_t)back_phase * lags) + m];
         sq += (ahead * ahead) + (back * back);
     }
     const double r_prev = sqf_periodic_cov(noise, n - lag, 0);
@@ -280,9 +291,31 @@ sqf_periodic_phase_means(const dsd_squelch_floor_periodic_noise* noise, int lag,
     return 0;
 }
 
-int
-dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
-                                       const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+/* The means over every window start phase for windows of @p window samples, and when @p longer is above 0 that share
+   of the windows one sample longer (the tracker's windows, floor(k fs / 25) boundaries, are fs / 25 samples on average,
+   floor(fs / 25) or one more): N_eff, beta and rho of both lengths weighted by how often each runs. */
+static int
+sqf_periodic_window_means(const dsd_squelch_floor_periodic_noise* noise, int lag, int window, double longer,
+                          dsd_squelch_floor_plan* out) {
+    if (sqf_periodic_phase_means(noise, lag, window, out) != 0) {
+        return -1;
+    }
+    if (longer > 0.0) {
+        dsd_squelch_floor_plan more;
+        if (sqf_periodic_phase_means(noise, lag, window + 1, &more) != 0) {
+            return -1;
+        }
+        out->neff = ((1.0 - longer) * out->neff) + (longer * more.neff);
+        out->beta = ((1.0 - longer) * out->beta) + (longer * more.beta);
+        out->rho_lag = ((1.0 - longer) * out->rho_lag) + (longer * more.rho_lag);
+    }
+    return 0;
+}
+
+/* The periodic design over windows of rate_hz / 25 samples (integer division), @p longer of them one sample longer. */
+static int
+sqf_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                         const dsd_squelch_floor_periodic_noise* noise, int rate_hz, double longer) {
     if (!out) {
         return -1;
     }
@@ -302,7 +335,7 @@ dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float*
     for (int n = 0; n < noise->period; n++) {
         gain += sqf_periodic_cov(noise, n, 0);
     }
-    if (!(gain > 0.0) || sqf_periodic_phase_means(noise, lag, rate_hz / SQF_WINDOWS_PER_S, out) != 0) {
+    if (!(gain > 0.0) || sqf_periodic_window_means(noise, lag, rate_hz / SQF_WINDOWS_PER_S, longer, out) != 0) {
         DSD_MEMSET(out, 0, sizeof(*out));
         return -1;
     }
@@ -312,6 +345,19 @@ dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float*
     out->noise_gain = gain / (double)noise->period;
     out->valid = 1;
     return 0;
+}
+
+int
+dsd_squelch_floor_plan_design_periodic(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                       const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+    return sqf_plan_design_periodic(out, taps, taps_len, noise, rate_hz, 0.0);
+}
+
+int
+dsd_squelch_floor_plan_design_periodic_mean(dsd_squelch_floor_plan* out, const float* taps, int taps_len,
+                                            const dsd_squelch_floor_periodic_noise* noise, int rate_hz) {
+    const double longer = rate_hz > 0 ? (double)(rate_hz % SQF_WINDOWS_PER_S) / (double)SQF_WINDOWS_PER_S : 0.0;
+    return sqf_plan_design_periodic(out, taps, taps_len, noise, rate_hz, longer);
 }
 
 static int
@@ -653,18 +699,19 @@ dsd_squelch_floor_get_status(const dsd_squelch_floor* t, dsd_squelch_floor_statu
     out->windows = t->windows;
 }
 
-int
-dsd_squelch_floor_key_equal(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
-    return a && b && a->freq_hz == b->freq_hz && a->gain == b->gain && a->tuner_agc == b->tuner_agc
-           && a->bias == b->bias && a->device == b->device && a->rate_hz == b->rate_hz && a->chain == b->chain
-           && a->step_l == b->step_l && a->step_m == b->step_m;
+/* Everything but the frequency: the tuner, the device, and the chain that shapes the noise (the rate, the cascade, the
+   live step, the reader's resampler). */
+static int
+sqf_key_chain_same(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
+    return a->gain == b->gain && a->tuner_agc == b->tuner_agc && a->bias == b->bias && a->device == b->device
+           && a->rate_hz == b->rate_hz && a->chain == b->chain && a->step_l == b->step_l && a->step_m == b->step_m
+           && a->reader_in_hz == b->reader_in_hz && a->reader_out_hz == b->reader_out_hz
+           && a->reader_protect_hz == b->reader_protect_hz;
 }
 
-/* Everything but the frequency matches. */
-static int
-sqf_key_neighbour(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
-    return a->gain == b->gain && a->tuner_agc == b->tuner_agc && a->bias == b->bias && a->device == b->device
-           && a->rate_hz == b->rate_hz && a->chain == b->chain && a->step_l == b->step_l && a->step_m == b->step_m;
+int
+dsd_squelch_floor_key_equal(const dsd_squelch_floor_key* a, const dsd_squelch_floor_key* b) {
+    return a && b && a->freq_hz == b->freq_hz && sqf_key_chain_same(a, b);
 }
 
 void
@@ -720,7 +767,7 @@ dsd_squelch_floor_cache_find(dsd_squelch_floor_cache* c, const dsd_squelch_floor
     int64_t near_dist = 0;
     for (int i = 0; i < DSD_SQUELCH_FLOOR_CACHE_SIZE; i++) {
         dsd_squelch_floor_cache_entry* e = &c->entries[i];
-        if (!sqf_cache_fresh(c, e) || !sqf_key_neighbour(&e->key, key)) {
+        if (!sqf_cache_fresh(c, e) || !sqf_key_chain_same(&e->key, key)) {
             continue;
         }
         const int64_t dist =

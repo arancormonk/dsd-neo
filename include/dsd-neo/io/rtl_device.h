@@ -408,8 +408,9 @@ dsd_rate_plan_backend rtl_device_rate_plan_backend(const struct rtl_device* dev)
  * capture that carries the Fs/4 shift rotates bytes (255 - x mirrors them on three phases of four) and widens them with
  * (x - 128) / 127.5 instead (rails at 0.996 and 1.004; byte 1 after the rotation, at 0.996, counts with byte 0, as the
  * input-level meter's cu8 rule does): 0.992. Every other source (Airspy, SoapySDR, a CF32 or CS16 replay, NULL) answers
- * DSD_SIGNAL_CLIP_LEVEL_DEFAULT; libairspy's real-to-complex conversion keeps its ADC rails near half scale, so an
- * Airspy's overload is not visible in its samples at all.
+ * DSD_SIGNAL_CLIP_LEVEL_DEFAULT. On an Airspy (native or through SoapySDR) the clip level is not a reliable indication
+ * of ADC overload: libairspy's real-to-complex conversion keeps an in-band signal at about half of full scale even at
+ * the ADC's rails (derived from its code), so its samples rarely reach the level.
  *
  * Reads only what the device was created with, so any thread may ask while the device exists.
  *
@@ -434,6 +435,37 @@ float rtl_device_signal_clip_level(const struct rtl_device* dev, int fs4_shift_a
  * @param rate_hz The rate the demodulator is fed at.
  */
 int32_t rtl_device_signal_rotation_hz(const struct rtl_device* dev, int fs4_shift_active, uint32_t rate_hz);
+
+/**
+ * @brief The Signal search and quiet measurement geometry policy of @p dev's captures
+ * (dsd_signal_capture.geometry, a dsd_signal_capture_geometry value).
+ *
+ * DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED for a native Airspy, which is tuned on the channel and whose hardware centre
+ * carries no DC artifact (libairspy removes the ADC's DC and its real-to-complex conversion moves the IF's DC to the
+ * capture's band edge, derived from its code), so no hardware-DC exclusion applies. DSD_SIGNAL_GEOMETRY_DEFAULT for
+ * every other source (an RTL-SDR, rtl_tcp, SoapySDR including a SoapySDR Airspy, an I/Q replay) and NULL. The policy
+ * says nothing about spurs or overload.
+ *
+ * Reads only what the device was created with, so any thread may ask while the device exists.
+ */
+int rtl_device_signal_geometry(const struct rtl_device* dev);
+
+/**
+ * @brief The receiver behind @p dev's captures (dsd_signal_capture.receiver, a dsd_signal_capture_receiver value).
+ *
+ * For a SoapySDR device, from the factory SoapySDR selected to open it (the enumeration record's driver, or with no
+ * record the arguments' driver= as the SDK parses them) and the driver and hardware keys it reported, taken only as
+ * evidence of an Airspy; argument text and the requested profile play no part. Latched over the open and every
+ * configure: DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN for a proxy (the remote factory, auto-discovered or not) whatever its
+ * device forwards, or a factory dsd-neo does not know; DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY when anything named an Airspy
+ * (an Airspy HF+ is not one), so a bare -i soapy that opened an Airspy is one; DSD_SIGNAL_RECEIVER_OTHER for a known
+ * local factory. DSD_SIGNAL_RECEIVER_OTHER for every other backend (a
+ * native Airspy included: its own policy, DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) and NULL.
+ *
+ * The SoapySDR identity is published atomically (configure may add to it), so any thread may ask while the device
+ * exists.
+ */
+int rtl_device_signal_receiver(const struct rtl_device* dev);
 
 /**
  * @brief Query the current device sample rate.

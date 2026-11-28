@@ -72,6 +72,8 @@ struct rtl_net_iq_state {
     uint64_t known_losses = 0U;     /* locked-sender losses (gap marks) */
     uint64_t input_restarts = 0U;   /* partial blocks discarded with the resampler history cleared */
     uint64_t resampler_clears = 0U; /* ... of those, with a resampler to clear */
+    uint64_t drop_clears = 0U;      /* dropped blocks behind a resampler, which started over at their gap mark */
+    uint64_t samples_ingested = 0U; /* received samples whose callback returned; the counts above are read after it */
     uint64_t resampler_errors = 0U; /* resampler calls that failed (their slice lost); none with a sound design */
     int local_port = -1;          /* the socket's local port (a UDP spec on port 0 learns its port here), -1 for none */
     dsd_iq_net_counters reader{}; /* the socket reader's own counters */

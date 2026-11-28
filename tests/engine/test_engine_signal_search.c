@@ -60,7 +60,12 @@
 #include "test_env.h"
 
 static dsd_signal_search_status status;
-static dsd_signal_capture capture = {1536000, 100384000, 1, 384000, 384000, 0, 0, DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
+static dsd_signal_capture capture = {.rate_hz = 1536000,
+                                     .capture_hz = 100384000,
+                                     .generation = 1,
+                                     .rotation_hz = 384000,
+                                     .capture_offset_hz = 384000,
+                                     .clip_level = DSD_SIGNAL_CLIP_LEVEL_DEFAULT};
 static dsd_signal_measure_request request;
 static uint32_t ticket, target, generation = 1;
 static int tune_pending, buffered, defer, failed, live = 1, ready, cancelled, bypassed, carrier, boundary;

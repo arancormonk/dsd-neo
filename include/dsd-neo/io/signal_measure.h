@@ -12,9 +12,37 @@
 #ifdef __cplusplus
 extern "C" {
 #endif
-/** The clip level of a source whose float samples reach full scale at 1.0 (Airspy, SoapySDR, a CF32 or CS16 replay),
- * and of a capture that sets none. */
+/** The clip level of a source whose float samples are scaled to a full scale of 1.0 (SoapySDR, a CF32 or CS16 replay),
+ * of a native Airspy, and of a capture that sets none. On an Airspy the clip level is not a reliable indication of ADC
+ * overload: libairspy's real-to-complex conversion keeps an in-band signal at about half of 1.0 even at the ADC's
+ * rails (derived from its code), so its samples rarely reach this level. */
 #define DSD_SIGNAL_CLIP_LEVEL_DEFAULT 0.999f
+
+/** How a measurement treats a capture's geometry (dsd_signal_capture.geometry), a discrete policy of the source. */
+typedef enum {
+    /** Every source but a native Airspy: a hardware-DC guard round the hardware centre (no channel within it is
+     * measured), a capture-wide noise reference over +-0.45 Fs of hardware offset, and a quiet ratio judged against
+     * the lower of that reference and the channel's sideband floor. */
+    DSD_SIGNAL_GEOMETRY_DEFAULT = 0,
+    /** A native Airspy, tuned on the channel (no rotation, no offset): no hardware-DC exclusion, a capture-wide
+     * reference over a per-rate span, and a quiet ratio judged against the lower of that reference and the channel's
+     * sideband floor. It claims nothing about spurs or overload. */
+    DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED = 1,
+} dsd_signal_capture_geometry;
+
+/** The receiver behind a capture, where the quiet measurement treats it apart (dsd_signal_capture.receiver). */
+typedef enum {
+    /** Any receiver the measurement's policy covers as its geometry says. */
+    DSD_SIGNAL_RECEIVER_OTHER = 0,
+    /** An Airspy opened through SoapySDR (its driver or hardware key names an Airspy; an Airspy HF+ is not one). Its
+     * captures run the default policy at the Fs/4 shift, but its passband leaves the reference under or over the
+     * channel's noise by an amount nobody has measured, so a quiet request on one is refused at every rate. */
+    DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY = 1,
+    /** A SoapySDR device whose identity is unknown: a proxy (which can deliver any device at any rate), or one no
+     * exact identifying field named. It cannot be ruled out as an Airspy, so a quiet request on one is refused at every
+     * rate (dsd_signal_quiet_receiver_refused()). */
+    DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN = 2,
+} dsd_signal_capture_receiver;
 
 typedef struct {
     uint32_t rate_hz, capture_hz, generation;
@@ -27,6 +55,13 @@ typedef struct {
      * that knows its sample conversion (rtl_device_signal_clip_level()); 0 means DSD_SIGNAL_CLIP_LEVEL_DEFAULT. A
      * property of the conversion, not a capture change: reports are not invalidated by it. */
     float clip_level;
+    /** A dsd_signal_capture_geometry value, set by the source (rtl_device_signal_geometry()); 0 is the default policy.
+     * A capture change: a request armed or a report waiting under one policy fails on a capture of another. Last, so a
+     * positional initialiser of the fields before it keeps its meaning. */
+    uint8_t geometry;
+    /** A dsd_signal_capture_receiver value, set by the source (rtl_device_signal_receiver()); 0 for any other. A capture
+     * change, as the geometry is. */
+    uint8_t receiver;
 } dsd_signal_capture;
 
 typedef struct {
@@ -50,8 +85,8 @@ typedef enum {
     DSD_SIGNAL_MEASURE_CLIPPED,
     /** The input ring dropped samples (dsd_signal_capture.drops moved) and nothing else about the capture changed. */
     DSD_SIGNAL_MEASURE_DROPPED,
-    /** The capture changed: retune, rate, rotation, offset, gain or output generation; or a completed report waiting
-     * to be read was invalidated by any capture change. */
+    /** The capture changed: retune, rate, rotation, offset, gain, geometry policy or output generation; or a completed
+     * report waiting to be read was invalidated by any capture change. */
     DSD_SIGNAL_MEASURE_CAPTURE_CHANGED,
     /** A sample was NaN or infinite. */
     DSD_SIGNAL_MEASURE_NONFINITE,
@@ -156,8 +191,9 @@ typedef enum {
 } dsd_signal_quiet_floor_estimator;
 
 typedef struct {
-    /** A sub-window is below when its channel power over the capture-wide noise reference across the same bins,
-     * (S+N)/N in dB, is less than this. */
+    /** A sub-window is below when its channel power over the noise it is judged against across the same bins,
+     * (S+N)/N in dB, is less than this (centred_threshold_db on a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture when set):
+     * the lower of the capture-wide noise reference and the class's sideband floor, on every geometry. */
     float threshold_db;
     /** A dsd_signal_quiet_floor_estimator value. */
     int floor_estimator;
@@ -166,6 +202,18 @@ typedef struct {
      * channel (a front-end floor that is far from flat across the capture, or strong transmitters crowding the
      * sidebands). Finite. */
     float guard_db;
+    /** A sub-window is invalid (never quiet) when more of the capture-wide reference's bins stand over the noise than
+     * noise alone puts there: when the share of them above the 98th percentile the reference implies for noise, less
+     * the 2% noise puts there, is over this. A capture partly filled by transmitters or a raised floor lifts the
+     * reference's lower quartile off the noise (it lands on a higher quantile of the noise that is left). The ratio is
+     * judged against the sideband floor where that is lower, so this matters most when the raise covers the sidebands
+     * too; it voids such a reading rather than judging it while much of the span stays on the noise. A raise over most
+     * of the span (about three quarters; less can do it) and the sidebands, the channel clear, is not seen: the level
+     * it counts against comes from the span itself (docs/signal-search.md "Limits"). 0 turns it off; at most 1. */
+    float occupancy_max_share;
+    /** The threshold for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture in place of threshold_db; 0 means threshold_db.
+     * Finite, not negative. */
+    float centred_threshold_db;
 } dsd_signal_quiet_params;
 
 typedef struct {
@@ -198,19 +246,41 @@ typedef struct {
     /** valid: the channel and its noise sidebands fit the capture in every judged class, and no sub-window's floor
      * stands over the guard. quiet: valid, and every sub-window of every judged class is below the threshold. */
     uint8_t valid, quiet;
-    /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and the
-     * capture-wide noise reference over the same bins it was judged against (0 when nothing was valid). */
+    /** The highest (S+N)/N over every valid sub-window and class, with that measurement's channel power and the noise
+     * over the same bins it was judged against (dsd_signal_quiet_params.threshold_db: the lower of the capture-wide
+     * reference and the sideband floor), so power_dbfs - floor_dbfs is max_ratio_db (0 each when nothing was valid). */
     float max_ratio_db, power_dbfs, floor_dbfs;
     /** The highest sideband floor over the capture-wide noise reference in any sub-window and class whose geometry
-     * fits, in dB: above the guard (dsd_signal_quiet_params.guard_db) the result is not valid. 0 when no class fits or
-     * no bin of the capture qualified for the reference; the result is then not valid either. */
+     * fits, in dB, under either geometry policy: above the guard (dsd_signal_quiet_params.guard_db) the result is not
+     * valid. 0 when no class fits or no bin of the capture qualified for the reference; the result is then not valid
+     * either. */
     float floor_rise_db;
+    /** The highest share over any sub-window of the reference's bins standing over its noise, beyond what noise alone
+     * puts there (dsd_signal_quiet_params.occupancy_max_share); 0 when no bin of the capture qualified. Reported
+     * whether or not the check is on. */
+    float occupancy_share;
     /** dsd_realtime_mono_ns() when the analysis that completed (or failed) the request finished, after the feed held
      * the tap; shared tap only, else 0. */
     uint64_t completed_realtime_ns;
+    /** Why a complete result is not valid, DSD_SIGNAL_QUIET_VOID_* bits over every sub-window and class (0 when it is
+     * valid, and for a failed result). */
+    uint8_t void_causes;
 } dsd_signal_quiet_result;
 
-/** The shipped threshold, floor estimator and floor guard the shared tap measures with (calibrated:
+/** dsd_signal_quiet_result.void_causes. */
+enum {
+    /** A judged class's channel or its noise sidebands do not fit the capture. */
+    DSD_SIGNAL_QUIET_VOID_GEOMETRY = 1,
+    /** No bin of the capture qualified for the noise reference. */
+    DSD_SIGNAL_QUIET_VOID_REFERENCE = 2,
+    /** A sideband floor stood over the reference by more than the guard (dsd_signal_quiet_params.guard_db). */
+    DSD_SIGNAL_QUIET_VOID_GUARD = 4,
+    /** The occupancy check: too many of the reference's bins stood over its noise
+     * (dsd_signal_quiet_params.occupancy_max_share). */
+    DSD_SIGNAL_QUIET_VOID_OCCUPANCY = 8,
+};
+
+/** The shipped thresholds, floor estimator, floor guard and occupancy check the shared tap measures with (calibrated:
  * docs/signal-search.md "Quiet-channel calibration"). */
 dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 
@@ -220,6 +290,20 @@ dsd_signal_quiet_params dsd_signal_quiet_params_default(void);
 int dsd_signal_quiet_rate_supported(uint32_t rate_hz);
 /** How many capture rates dsd_signal_quiet_rate_supported() admits. */
 #define DSD_SIGNAL_QUIET_RATE_COUNT 16
+
+/** 1 when @p capture's receiver gets no quiet check: anything but DSD_SIGNAL_RECEIVER_OTHER (a SoapySDR Airspy, a
+ * SoapySDR device of unknown identity, or a receiver value this build does not know), at every rate; else 0. The
+ * detector refuses such a request (dsd_signal_quiet_detector_begin()), and the scan refuses the visit first: inline so
+ * both read this one rule. */
+static inline int
+dsd_signal_quiet_receiver_refused(const dsd_signal_capture* capture) {
+    return !capture || capture->receiver != DSD_SIGNAL_RECEIVER_OTHER;
+}
+
+/** 1 when the calibration validated capture rate @p rate_hz (exactly) for a DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED capture,
+ * whose capture-wide reference spans a per-rate share of the capture, else 0: the native Airspy rates only. A quiet
+ * request under that policy at any other rate is refused (dsd_signal_quiet_detector_begin()). */
+int dsd_signal_quiet_airspy_centred_rate_supported(uint32_t rate_hz);
 
 /** 1 when an analog class of @p width_hz for analog @p kind (dsd_analog_demod: DSD_ANALOG_DEMOD_FM or
  * DSD_ANALOG_DEMOD_AM, as dsd_opts.analog_demod carries it) at capture rate @p rate_hz was rendered and validated as
@@ -233,8 +317,10 @@ dsd_signal_quiet_detector* dsd_signal_quiet_detector_create(void);
 void dsd_signal_quiet_detector_destroy(dsd_signal_quiet_detector* detector);
 /** Arm @p detector for @p request, measured with @p params (NULL: dsd_signal_quiet_params_default()); the previous
  * request is dropped either way. Returns 0, or -1 with the reason in @p out_failure (optional): UNSUPPORTED for a
- * request, width class, rate or parameter it cannot measure, NO_MEMORY when its transform cannot be prepared. Buffers
- * are prepared once per transform size, so a request at an unchanged size allocates nothing. */
+ * request, width class, rate, geometry policy (an unknown one, or AIRSPY_CENTRED at a rate
+ * dsd_signal_quiet_airspy_centred_rate_supported() refuses) or parameter it cannot measure, NO_MEMORY when its
+ * transform cannot be prepared. Buffers are prepared once per transform size, so a request at an unchanged size
+ * allocates nothing. */
 int dsd_signal_quiet_detector_begin(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* request,
                                     const dsd_signal_quiet_params* params, dsd_signal_request_failure* out_failure);
 /** Accumulate complete IQ pairs. Returns 1 once the request is complete, -1 once it failed (a capture change, clipping

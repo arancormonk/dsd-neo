@@ -5919,6 +5919,20 @@ class Setup : public QObject {
     }
 
     /**
+     * @brief The set-focus action's name, as accessibleNode()'s `actions` list it and accessibleDoAction() takes it.
+     *
+     * Read from Qt rather than written out: Qt 6.11 names it "SetFocus" and Qt 6.12 "Set Focus", so a literal finds
+     * no action on one of them. accessibleDoAction() then does nothing and a check that the action is absent passes
+     * whatever the node offers.
+     */
+    Q_PROPERTY(QString setFocusAction READ setFocusAction CONSTANT)
+
+    QString
+    setFocusAction() const {
+        return QAccessibleActionInterface::setFocusAction();
+    }
+
+    /**
      * @brief Issue #782: how the accessibility tree presents @p item, as a platform bridge reads it.
      *
      * `exists` is whether the item has an accessible interface. `inTree` is whether it can be reached from the top:

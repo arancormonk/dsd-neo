@@ -289,7 +289,7 @@ test_included_unknown_and_invalid_value_diagnostics(void) {
     for (int i = 0; i < diags.count; i++) {
         found_invalid_enum |= diags.items[i].level == DSDCFG_DIAG_ERROR
                               && strstr(diags.items[i].source_path, path_basename(included_path)) != NULL
-                              && strstr(diags.items[i].message, "Invalid value 'definitely-invalid'") != NULL;
+                              && strstr(diags.items[i].message, "Invalid value (allowed: ") != NULL;
     }
     if (validate_rc == 0 || !found_invalid_enum) {
         DSD_FPRINTF(stderr, "included invalid enum should fail validation (rc=%d errors=%d)\n", validate_rc,
@@ -1661,8 +1661,7 @@ test_scan_skip_silent_ms_validation(void) {
     }
     for (const char* value : {"abc", "50ms"}) {
         char ini[128];
-        char text[64];
-        DSD_SNPRINTF(text, sizeof text, "Invalid integer value '%s'", value);
+        const char* text = "Invalid integer value"; /* the value is never quoted (issue #931) */
         DSD_SNPRINTF(ini, sizeof ini, "[trunking]\nscan_skip_silent_ms = %s\n", value);
         rc |= run_scan_skip_silent_ms_case(ini, "trunking", "scan_skip_silent_ms", DSDCFG_DIAG_ERROR, text);
         DSD_SNPRINTF(ini, sizeof ini, "[profile.quick]\ntrunking.scan_skip_silent_ms = %s\n", value);
@@ -1747,8 +1746,8 @@ test_analog_max_gap_validation(void) {
     rc |= run_analog_max_gap_case("10000", -1, NULL);
     rc |= run_analog_max_gap_case("-1", DSDCFG_DIAG_ERROR, "Value -1 is out of range [0, 10000] and is refused");
     rc |= run_analog_max_gap_case("10001", DSDCFG_DIAG_ERROR, "Value 10001 is out of range [0, 10000] and is refused");
-    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value '99999999999'");
-    rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    rc |= run_analog_max_gap_case("99999999999", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    rc |= run_analog_max_gap_case("2s", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 
@@ -1763,28 +1762,294 @@ test_analog_preroll_validation(void) {
                                  "Value -1 is out of range [0, 1000] and is refused");
     rc |= run_recording_key_case("analog_preroll_ms", "1001", DSDCFG_DIAG_ERROR,
                                  "Value 1001 is out of range [0, 1000] and is refused");
-    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value '2s'");
+    rc |= run_recording_key_case("analog_preroll_ms", "2s", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 
-/* Issue #668: [recording] rdio_analog_system_id (0..65535) and rdio_analog_talkgroup (0..2147483647) are refused
- * outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning. */
+/* Issue #931: [recording] rdio_system_by_frequency takes the project's bool values, and anything else is an ERROR. */
+int
+test_rdio_system_by_frequency_validation(void) {
+    int rc = 0;
+    rc |= run_recording_key_case("rdio_system_by_frequency", "true", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "false", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "yes", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "0", -1, NULL);
+    rc |= run_recording_key_case("rdio_system_by_frequency", "maybe", DSDCFG_DIAG_ERROR, "Invalid boolean value");
+    return rc;
+}
+
+/* Issue #668: [recording] rdio_analog_system_id and rdio_analog_talkgroup (0..2147483647, the system ID since issue
+ * #931) are refused outside their range, as the NFM max gap is: an ERROR, never the schema walk's clamping warning.
+ * Issue #931: rdio_system_id is refused the same way. */
 int
 test_rdio_analog_validation(void) {
     int rc = 0;
-    rc |= run_recording_key_case("rdio_analog_system_id", "0", -1, NULL);
-    rc |= run_recording_key_case("rdio_analog_system_id", "65535", -1, NULL);
-    rc |= run_recording_key_case("rdio_analog_system_id", "65536", DSDCFG_DIAG_ERROR,
-                                 "Value 65536 is out of range [0, 65535] and is refused");
-    rc |= run_recording_key_case("rdio_analog_system_id", "-1", DSDCFG_DIAG_ERROR,
-                                 "Value -1 is out of range [0, 65535] and is refused");
-    rc |= run_recording_key_case("rdio_analog_system_id", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    /* Issue #931 (B7): the loader refuses an invalid or empty rdio_mode, and the validator reports both as errors. */
+    rc |= run_recording_key_case("rdio_mode", "DirWatch", -1, NULL);
+    rc |= run_recording_key_case("rdio_mode", "dirwach", DSDCFG_DIAG_ERROR, "Invalid value (allowed: ");
+    rc |= run_recording_key_case("rdio_mode", "\"\"", DSDCFG_DIAG_ERROR, "Invalid value (allowed: ");
+    for (const char* key : {"rdio_system_id", "rdio_analog_system_id"}) {
+        rc |= run_recording_key_case(key, "0", -1, NULL);
+        rc |= run_recording_key_case(key, "65536", -1, NULL);
+        rc |= run_recording_key_case(key, "154437", -1, NULL);
+        rc |= run_recording_key_case(key, "2147483647", -1, NULL);
+        rc |= run_recording_key_case(key, "-1", DSDCFG_DIAG_ERROR,
+                                     "Value -1 is out of range [0, 2147483647] and is refused");
+        rc |= run_recording_key_case(key, "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
+        rc |= run_recording_key_case(key, "9x", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    }
     rc |= run_recording_key_case("rdio_analog_talkgroup", "0", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483647", -1, NULL);
     rc |= run_recording_key_case("rdio_analog_talkgroup", "-1", DSDCFG_DIAG_ERROR,
                                  "Value -1 is out of range [0, 2147483647] and is refused");
-    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
-                                 "Invalid integer value '2147483648'");
+    rc |= run_recording_key_case("rdio_analog_talkgroup", "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    return rc;
+}
+
+/* Issue #931 (gate r1): --validate-config reads a physical line longer than 8191 bytes as one line, an error that
+ * quotes none of it: its tail used to be read as a line of its own, and "PRIVATE-SUFFIX=value" past the cut of a key
+ * was reported as an unknown key, part of the credential printed. The lines after it keep their numbers. */
+int
+test_config_line_too_long_validation(void) {
+    const std::string prefix = "rdio_api_key = \"";
+    const std::string ini = std::string("[recording]\n") + prefix + std::string(8191U - prefix.size(), 'q')
+                            + "PRIVATE-SUFFIX=value\"\nno_such_key = 1\n";
+    char path[DSD_TEST_PATH_MAX];
+    if (write_temp_config(ini.c_str(), path, sizeof path) != 0) {
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(path, &diags);
+    int long_line = 0;
+    int unknown_on_3 = 0;
+    bool leaked = false;
+    for (int i = 0; i < diags.count; i++) {
+        if (strstr(diags.items[i].message, "PRIVATE") || strstr(diags.items[i].key, "PRIVATE")
+            || strstr(diags.items[i].message, "qqqq") || strstr(diags.items[i].key, "qqqq")) {
+            leaked = true;
+        }
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 2
+            && strstr(diags.items[i].message, "longer than 8191 bytes") != nullptr) {
+            long_line++;
+        }
+        if (diags.items[i].line_number == 3 && strcmp(diags.items[i].key, "no_such_key") == 0) {
+            unknown_on_3++;
+        }
+    }
+    int rc = 0;
+    if (leaked || long_line != 1 || unknown_on_3 != 1) {
+        DSD_FPRINTF(stderr, "FAIL: oversized line: leaked=%d long_line=%d unknown_on_3=%d\n", leaked ? 1 : 0, long_line,
+                    unknown_on_3);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %d %s.%.40s: %.80s\n", diags.items[i].line_number, diags.items[i].section,
+                        diags.items[i].key, diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+    return rc;
+}
+
+/* Issue #931 (gate r2): --validate-config reads lines by the loader's rule. A line holding a NUL is one error that
+ * quotes none of it, and so is an oversized line in an included file, reported against that file
+ * (child.ini:1, never the root's include line). */
+int
+test_config_line_invalid_validation(void) {
+    int rc = 0;
+    std::string nul_ini = "[recording]\nrdio_api_key = \"PRIVATE";
+    nul_ini.push_back('\0');
+    nul_ini += "SUFFIX=value\"\nno_such_key = 1\n";
+    char path[DSD_TEST_PATH_MAX];
+    const int fd = dsd_test_mkstemp(path, sizeof path, "dsdneo_config_val_nul");
+    if (fd < 0) {
+        return 1;
+    }
+    const ssize_t wr = dsd_write(fd, nul_ini.data(), nul_ini.size());
+    (void)dsd_close(fd);
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    if (wr < 0 || (size_t)wr != nul_ini.size()) {
+        (void)remove(path);
+        return 1;
+    }
+    (void)dsd_user_config_validate(path, &diags);
+    int nul_error = 0;
+    bool leaked = false;
+    for (int i = 0; i < diags.count; i++) {
+        leaked = leaked || strstr(diags.items[i].message, "PRIVATE") || strstr(diags.items[i].key, "PRIVATE")
+                 || strstr(diags.items[i].message, "SUFFIX") || strstr(diags.items[i].key, "SUFFIX");
+        nul_error += diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 2
+                     && strstr(diags.items[i].message, "NUL byte") != nullptr;
+    }
+    if (leaked || nul_error != 1) {
+        DSD_FPRINTF(stderr, "FAIL: a line with a NUL: leaked=%d errors=%d\n", leaked ? 1 : 0, nul_error);
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(path);
+
+    /* An oversized first line of an included file is that file's line 1. */
+    char child[DSD_TEST_PATH_MAX];
+    const std::string child_ini = std::string("rdio_api_key = \"") + std::string(9000U, 'q') + "\"\n";
+    if (write_temp_config(child_ini.c_str(), child, sizeof child) != 0) {
+        return 1;
+    }
+    char root_ini[DSD_TEST_PATH_MAX + 32];
+    DSD_SNPRINTF(root_ini, sizeof root_ini, "include = \"%s\"\n", child);
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config(root_ini, root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    (void)dsd_user_config_validate(root, &diags);
+    int attributed = 0;
+    for (int i = 0; i < diags.count; i++) {
+        attributed += diags.items[i].line_number == 1 && strstr(diags.items[i].message, "longer than 8191") != nullptr
+                      && strstr(diags.items[i].source_path, path_basename(child)) != nullptr;
+    }
+    if (attributed != 1) {
+        DSD_FPRINTF(stderr, "FAIL: an included file's oversized line is not reported against it\n");
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s:%d %.80s\n", diags.items[i].source_path, diags.items[i].line_number,
+                        diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(root);
+    (void)remove(child);
+    return rc;
+}
+
+/* Issue #931 (gate r3fix): --validate-config never quotes a value it refuses: a credential put in an rdio key by
+ * mistake is reported by key and expected form, and printed nowhere, whatever the key's type. */
+int
+test_validation_never_quotes_values(void) {
+    int rc = 0;
+
+    static const struct {
+        const char* key;
+        const char* want;
+    } cases[] = {
+        {"rdio_system_id", "Invalid integer value"},
+        {"rdio_analog_system_id", "Invalid integer value"},
+        {"rdio_upload_retries", "Invalid integer value"},
+        {"rdio_mode", "Invalid value (allowed: off|dirwatch|api|both)"},
+        {"rdio_system_by_frequency", "Invalid boolean value (use true/false/yes/no/1/0)"},
+    };
+
+    for (const auto& c : cases) {
+        char ini[192];
+        DSD_SNPRINTF(ini, sizeof ini, "[recording]\n%s = \"https://u:SENTINELPW@host.invalid/\"\n", c.key);
+        char path[DSD_TEST_PATH_MAX];
+        if (write_temp_config(ini, path, sizeof path) != 0) {
+            return 1;
+        }
+        dsdcfg_diagnostics_t diags;
+        DSD_MEMSET(&diags, 0, sizeof(diags));
+        (void)dsd_user_config_validate(path, &diags);
+        int want = 0;
+        bool leaked = false;
+        for (int i = 0; i < diags.count; i++) {
+            leaked = leaked || strstr(diags.items[i].message, "SENTINEL") != nullptr;
+            want += strcmp(diags.items[i].key, c.key) == 0 && strcmp(diags.items[i].message, c.want) == 0;
+        }
+        if (leaked || want != 1) {
+            DSD_FPRINTF(stderr, "FAIL: %s with a credential: leaked=%d matched=%d\n", c.key, leaked ? 1 : 0, want);
+            rc = 1;
+        }
+        dsdcfg_diags_free(&diags);
+        (void)remove(path);
+    }
+    return rc;
+}
+
+/* Issue #931 (gate r3): --validate-config parses an include directive from the whole line, as the loader does, so a
+ * directive after 1030 spaces still has its file checked: the child's 9001-byte comment line is an error reported
+ * against the child, and the validation fails. */
+int
+test_config_include_after_long_indent_validation(void) {
+    char child[DSD_TEST_PATH_MAX];
+    const std::string child_ini = std::string("#") + std::string(9000U, 'c') + "\n[recording]\nrdio_system_id = 5\n";
+    if (write_temp_config(child_ini.c_str(), child, sizeof child) != 0) {
+        return 1;
+    }
+    const std::string root_ini = std::string(1030U, ' ') + "include = \"" + child + "\"\n";
+    char root[DSD_TEST_PATH_MAX];
+    if (write_temp_config(root_ini.c_str(), root, sizeof root) != 0) {
+        (void)remove(child);
+        return 1;
+    }
+    dsdcfg_diagnostics_t diags;
+    DSD_MEMSET(&diags, 0, sizeof(diags));
+    const int rc_validate = dsd_user_config_validate(root, &diags);
+    int child_errors = 0;
+    for (int i = 0; i < diags.count; i++) {
+        child_errors += diags.items[i].level == DSDCFG_DIAG_ERROR && diags.items[i].line_number == 1
+                        && strstr(diags.items[i].source_path, path_basename(child)) != nullptr;
+    }
+    int rc = 0;
+    if (rc_validate == 0 || child_errors != 1) {
+        DSD_FPRINTF(stderr, "FAIL: an include after a long indent: rc=%d child errors=%d\n", rc_validate, child_errors);
+        for (int i = 0; i < diags.count; i++) {
+            DSD_FPRINTF(stderr, "  %s:%d %.80s\n", diags.items[i].source_path, diags.items[i].line_number,
+                        diags.items[i].message);
+        }
+        rc = 1;
+    }
+    dsdcfg_diags_free(&diags);
+    (void)remove(root);
+    (void)remove(child);
+    return rc;
+}
+
+/* Issue #931 (B11): an rdio_api_url or rdio_api_key the loader refuses as too long is an error that never quotes the
+ * value; the largest value that fits is none. */
+int
+test_rdio_credential_length_validation(void) {
+    static const struct {
+        const char* key;
+        size_t capacity;
+    } fields[] = {
+        {"rdio_api_url", sizeof(dsdneoUserConfig::rdio_api_url)},
+        {"rdio_api_key", sizeof(dsdneoUserConfig::rdio_api_key)},
+    };
+
+    int rc = 0;
+    for (const auto& field : fields) {
+        for (size_t len = field.capacity - 1U; len <= field.capacity; len++) {
+            std::string value(len, 'q');
+            value.replace(0, 10, "SECRETMARK");
+            const std::string ini = std::string("[recording]\n") + field.key + " = \"" + value + "\"\n";
+            char path[DSD_TEST_PATH_MAX];
+            if (write_temp_config(ini.c_str(), path, sizeof path) != 0) {
+                return 1;
+            }
+            dsdcfg_diagnostics_t diags;
+            DSD_MEMSET(&diags, 0, sizeof(diags));
+            (void)dsd_user_config_validate(path, &diags);
+            const bool fits = len < field.capacity;
+            bool ok = diags.count == (fits ? 0 : 1);
+            for (int i = 0; i < diags.count; i++) {
+                ok = ok && diags.items[i].level == DSDCFG_DIAG_ERROR && strcmp(diags.items[i].key, field.key) == 0
+                     && strstr(diags.items[i].message, "too long") != nullptr
+                     && strstr(diags.items[i].message, "SECRETMARK") == nullptr;
+            }
+            if (!ok) {
+                DSD_FPRINTF(stderr, "FAIL: %s of %zu bytes: %d diagnostic(s)\n", field.key, len, diags.count);
+                for (int i = 0; i < diags.count; i++) {
+                    DSD_FPRINTF(stderr, "  %s.%s: %s\n", diags.items[i].section, diags.items[i].key,
+                                diags.items[i].message);
+                }
+                rc = 1;
+            }
+            dsdcfg_diags_free(&diags);
+            (void)remove(path);
+        }
+    }
     return rc;
 }
 
@@ -1797,9 +2062,8 @@ test_rdio_unknown_talkgroup_validation(void) {
     rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483647", -1, NULL);
     rc |= run_recording_key_case("rdio_unknown_talkgroup", "-1", DSDCFG_DIAG_ERROR,
                                  "Value -1 is out of range [0, 2147483647] and is refused");
-    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR,
-                                 "Invalid integer value '2147483648'");
-    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value '9x'");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "2147483648", DSDCFG_DIAG_ERROR, "Invalid integer value");
+    rc |= run_recording_key_case("rdio_unknown_talkgroup", "9x", DSDCFG_DIAG_ERROR, "Invalid integer value");
     return rc;
 }
 } // namespace
@@ -2117,16 +2381,17 @@ test_profile_invalid_enum(void) {
         result = 1;
     }
 
-    // Check error mentions the invalid value
+    // The error names the allowed values, never the invalid one (issue #931: a value can be a credential)
     int found_error = 0;
     for (int i = 0; i < diags.count; i++) {
-        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "invalid_mode")) {
+        if (diags.items[i].level == DSDCFG_DIAG_ERROR && strstr(diags.items[i].message, "Invalid value (allowed: ")
+            && !strstr(diags.items[i].message, "invalid_mode")) {
             found_error = 1;
             break;
         }
     }
     if (!found_error) {
-        DSD_FPRINTF(stderr, "FAIL: error doesn't mention invalid_mode\n");
+        DSD_FPRINTF(stderr, "FAIL: error doesn't name the allowed values, or quotes invalid_mode\n");
         result = 1;
     }
 
@@ -2549,6 +2814,12 @@ main(void) {
     rc |= test_analog_max_gap_validation();
     rc |= test_analog_preroll_validation();
     rc |= test_rdio_analog_validation();
+    rc |= test_rdio_system_by_frequency_validation();
+    rc |= test_rdio_credential_length_validation();
+    rc |= test_config_line_too_long_validation();
+    rc |= test_config_line_invalid_validation();
+    rc |= test_config_include_after_long_indent_validation();
+    rc |= test_validation_never_quotes_values();
     rc |= test_rdio_unknown_talkgroup_validation();
     rc |= test_analog_nfm_bandwidth_validation();
     rc |= test_input_warn_db_double_validation();

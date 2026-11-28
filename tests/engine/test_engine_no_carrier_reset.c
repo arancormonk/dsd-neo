@@ -16478,7 +16478,10 @@ static struct {
     int active;
     int real_widths;   /* judge the analog width with the shipped admission table rather than accept every width */
     int centred;       /* the capture has no Fs/4 rotation (a native Airspy, issue #834 R6) */
+    int native;        /* a native Airspy's capture: centred, under the AIRSPY_CENTRED policy */
     int rate_refused;  /* the capture's rate is one the calibration did not validate */
+    uint32_t rate_hz;  /* the capture's rate (0: the RTL chain's 1.536 MS/s) */
+    uint8_t receiver;  /* the capture's receiver (dsd_signal_capture_receiver) */
     int quiet;         /* the answer: quiet (1) or busy (0) */
     uint32_t gen_base; /* the stream generation is gen_base + the tunes made */
     /* When set, the stream's generation moves on while the check judges a capture's rate: the RTL thread opened a new
@@ -16548,9 +16551,16 @@ __wrap_rtl_signal_capture_get(dsd_signal_capture* capture) {
     }
     DSD_MEMSET(capture, 0, sizeof *capture);
     capture->generation = yq_stream_gen();
-    capture->rate_hz = 1536000U;
-    capture->capture_hz = g_rtl_tune_freq;
-    capture->rotation_hz = g_yq.centred ? 0 : 384000;
+    /* The RTL chain's: tuned Fs/4 above the channel and rotated back. */
+    capture->rate_hz = g_yq.rate_hz != 0U ? g_yq.rate_hz : 1536000U;
+    const uint32_t shift = (g_yq.centred || g_yq.native) ? 0U : capture->rate_hz / 4U;
+    if (g_yq.native) {
+        capture->geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    }
+    capture->capture_hz = g_rtl_tune_freq + shift;
+    capture->rotation_hz = (int32_t)shift;
+    capture->capture_offset_hz = (int32_t)shift;
+    capture->receiver = g_yq.receiver;
     capture->gain = 20;
     return 1;
 }
@@ -17277,6 +17287,132 @@ yq_cause_case(int which) {
     yq_finish(opts, state);
     if (rc) {
         DSD_FPRINTF(stderr, "FAIL #834: -Y cause %d (warns %d, last '%s')\n", which, g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* issue #834: a SoapySDR receiver's reason reaches the -Y WARN line: a SoapySDR Airspy (@p receiver
+   DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY) and a SoapySDR device that may be one, at the 2.5 MS/s an Airspy runs, have no check
+   (No check: rate), and the one WARN line says which, pointing to the native Airspy input. */
+static int
+yq_soapy_receiver_case(uint8_t receiver, int detail) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.rate_hz = 2500000U;
+    g_yq.receiver = receiver;
+    const long int base_hz = 561012500L + (long int)receiver * 10000000L;
+    int rc = expect_true("the first step lands typed row 0", yq_list(opts, state, 3, 1, 1, base_hz) == 0);
+    yq_timing_tick(opts, state);
+    yq_timing_tick(opts, state);
+    rc |= yq_expect_quiet(state, "a SoapySDR receiver it cannot check", DSD_SCAN_STAY_HANGTIME,
+                          DSD_SCAN_QUIET_STATUS_NO_CHECK, DSD_SCAN_QUIET_REASON_RATE);
+    char want[512];
+    (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_RATE, detail, 2500000U, NULL, 0, 0U, 0, 0U);
+    rc |= expect_true("one WARN line saying which receiver, nothing requested",
+                      g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0 && g_yq.requests == 0);
+    rc |= expect_true("it points to the native Airspy input",
+                      strstr(g_yq.warn, "-i airspy") != NULL && strstr(g_yq.warn, "soapy:") == NULL);
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y SoapySDR receiver %u (warns %d, last '%s')\n", (unsigned)receiver,
+                    g_yq.warns, g_yq.warn);
+    }
+    return rc;
+}
+
+/* Three NFM -Y rows on RTL-family input, row 0 at @p row0_width_hz (0: no width set), skip-silent on; the first step
+   is taken and lands row 0. Returns 0 when it did. */
+static int
+yq_nfm_rows_land(dsd_opts* opts, dsd_state* state, long int base_hz, int row0_width_hz) {
+    int rc = 0;
+    reset_rtl_profile_fakes();
+    dsd_trunk_tuning_requests_reset();
+    opts->audio_in_type = AUDIO_IN_RTL;
+    opts->scanner_mode = 1;
+    mark_scan_list_imported(opts);
+    opts->trunk_hangtime = 10;
+    opts->scan_skip_silent = 1;
+    yq_dmr_only(opts);
+    state->rtl_ctx = (RtlSdrContext*)state;
+    state->lcn_freq_count = 3;
+    for (int row = 0; row < 3; row++) {
+        state->trunk_lcn_freq[row] = base_hz + (long int)row * 1000000L;
+        rc |= expect_true("an NFM row", dsd_channel_mode_set(state, (size_t)row, DSD_SCAN_MODE_NFM) == 0);
+    }
+    if (row0_width_hz > 0) {
+        /* The row takes the profile (the state frees it). */
+        dsd_scan_row_profile* profile = NULL;
+        rc |= expect_true("row profile", dsd_scan_profile_ensure(&profile) == 0 && profile);
+        if (profile) {
+            profile->values.present = DSD_SCAN_OPT_BANDWIDTH;
+            profile->values.channel_bw_hz = row0_width_hz;
+            rc |= expect_true("row 0's width", dsd_channel_profile_set(state, 0, profile) == 0);
+        }
+    }
+    state->lcn_freq_roll = 0;
+    g_rtl_tune_result = RTL_STREAM_TUNE_OK;
+    state->last_cc_sync_time = dsd_decode_time() - 11;
+    noCarrier(opts, state);
+    g_yq.gen_base += (uint32_t)g_rtl_tune_calls;
+    g_rtl_tune_calls = 0;
+    rc |= expect_true("the first step lands NFM row 0",
+                      dsd_engine_scan_landing_is_row(state, 0) && g_rtl_tune_freq == (uint32_t)base_hz);
+    return rc;
+}
+
+/* issue #834: the user's case on a native Airspy through -Y (the trunk scan's twin is
+   test_scan_quiet_trunk_native_airspy_users_case()): a typed NFM row at 15 kHz on the Airspy's centred capture at
+   2.5 MS/s is measured as it lands (Quiet check), and an NFM row with no width set has No check: width with one WARN
+   line; at a rate the centred calibration did not validate, a row has No check: rate and the native Airspy's rate
+   line. @p which: 0 the 15 kHz row, 1 no width, 2 the 5 MS/s rate. */
+static int
+yq_native_airspy_case(int which) {
+    dsd_opts* opts = NULL;
+    dsd_state* state = NULL;
+    if (init_test_runtime(&opts, &state) != 0) {
+        return 1;
+    }
+    yq_start(0);
+    g_yq.native = 1;
+    g_yq.real_widths = 1;
+    g_yq.rate_hz = which == 2 ? 5000000U : 2500000U;
+    DSD_SNPRINTF(opts->audio_in_dev, sizeof opts->audio_in_dev, "%s", "airspy");
+    opts->analog_nfm_bandwidth_hz = 0;
+    const long int base_hz = 591012500L + (long int)which * 10000000L;
+    int rc = yq_nfm_rows_land(opts, state, base_hz, which != 1 ? 15000 : 0);
+    yq_timing_tick(opts, state);
+    yq_timing_tick(opts, state);
+    if (which == 0) {
+        rc |= yq_expect_quiet(state, "a native Airspy: the 15 kHz NFM row is measured", DSD_SCAN_STAY_HANGTIME,
+                              DSD_SCAN_QUIET_STATUS_CHECKING, DSD_SCAN_QUIET_REASON_NONE);
+        rc |= expect_true("on the Airspy's centred capture, at 15 kHz",
+                          g_yq.requests == 1 && g_yq.last.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                              && g_yq.last.classes == DSD_SIGNAL_QUIET_CLASS_ANALOG
+                              && g_yq.last.analog_width_hz == 15000U);
+        rc |= expect_true("a checked row logs nothing", g_yq.warns == 0);
+    } else {
+        const unsigned reason = which == 1 ? DSD_SCAN_QUIET_REASON_NO_WIDTH : DSD_SCAN_QUIET_REASON_RATE;
+        rc |= yq_expect_quiet(state, "a native Airspy row it cannot check", DSD_SCAN_STAY_HANGTIME,
+                              DSD_SCAN_QUIET_STATUS_NO_CHECK, reason);
+        char want[512];
+        if (which == 1) {
+            (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_NO_WIDTH, 0, 0U, NULL, 0,
+                                         (uint32_t)base_hz, DSD_ANALOG_DEMOD_FM, 0U);
+        } else {
+            (void)scan_quiet_format_warn(want, sizeof want, DSD_SCAN_QUIET_REASON_RATE, SCAN_QUIET_WARN_AIRSPY_RATE,
+                                         5000000U, NULL, 0, 0U, 0, 0U);
+        }
+        rc |= expect_true("one WARN line, nothing requested",
+                          g_yq.warns == 1 && strcmp(g_yq.warn, want) == 0 && g_yq.requests == 0);
+    }
+    yq_finish(opts, state);
+    if (rc) {
+        DSD_FPRINTF(stderr, "FAIL #834: -Y native Airspy case %d (warns %d, last '%s')\n", which, g_yq.warns,
+                    g_yq.warn);
     }
     return rc;
 }
@@ -19305,6 +19441,11 @@ test_scan_quiet_decisions(void) {
     rc |= test_y_quiet_timing_says_why();
     for (int which = YQ_CAUSE_INPUT; which < YQ_CAUSE_COUNT; which++) {
         rc |= yq_cause_case(which);
+    }
+    rc |= yq_soapy_receiver_case(DSD_SIGNAL_RECEIVER_SOAPY_AIRSPY, SCAN_QUIET_WARN_SOAPY_AIRSPY);
+    rc |= yq_soapy_receiver_case(DSD_SIGNAL_RECEIVER_SOAPY_UNKNOWN, SCAN_QUIET_WARN_SOAPY_UNKNOWN);
+    for (int which = 0; which < 3; which++) {
+        rc |= yq_native_airspy_case(which);
     }
     rc |= test_y_quiet_input_shows_until_a_call();
     rc |= test_y_quiet_analog_call_explains_the_stay();

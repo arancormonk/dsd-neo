@@ -291,7 +291,8 @@ test_user_info_and_zip(void) {
     DSD_MEMSET(&user, 0, sizeof(user));
     if (parse_fixture("user_data.xml", RR_SHAPE_USER_INFO, &user, &err) == 0) {
         expect_str("username", user.username, "user");
-        expect_str("subExpireDate", user.sub_expire, "11-24-2099");
+        /* The capture said 11-24-2026; the year was moved (fixtures NOTES.md, edit 3). */
+        expect_str("subExpireDate", user.sub_expire, "11-24-2999");
     }
 
     dsd_rr_zip_info zip;
@@ -1255,7 +1256,7 @@ test_unknown_elements_are_ignored(void) {
                                    "<SOAP-ENV:Envelope xmlns:SOAP-ENV=\"http://schemas.xmlsoap.org/soap/envelope/\">"
                                    "<SOAP-ENV:Body><ns1:getUserDataResponse xmlns:ns1=\"urn:x\"><return>"
                                    "<username>user</username><brandNewField>1</brandNewField>"
-                                   "<subExpireDate>11-24-2099</subExpireDate>"
+                                   "<subExpireDate>11-24-2026</subExpireDate>"
                                    "</return></ns1:getUserDataResponse></SOAP-ENV:Body></SOAP-ENV:Envelope>";
     dsd_rr_user_info user;
     dsd_rr_error err;
@@ -1264,7 +1265,7 @@ test_unknown_elements_are_ignored(void) {
     expect("unknown element tolerated",
            rr_soap_parse(k_future, sizeof(k_future) - 1U, RR_SHAPE_USER_INFO, &user, &err, NULL) == 0);
     expect_str("known fields still decoded", user.username, "user");
-    expect_str("later field still decoded", user.sub_expire, "11-24-2099");
+    expect_str("later field still decoded", user.sub_expire, "11-24-2026");
 }
 
 /*

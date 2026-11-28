@@ -164,6 +164,10 @@ struct dsd_opts {
     // Per-call slot files whose last open failed (a full disk): bit 0 wav_out_f, bit 1 wav_out_fR. The slot's next call
     // end opens it again, rather than leaving the slot unrecorded for the rest of the run (issue #708).
     int wav_out_reopen;
+    /* 1: a call whose frequency is known (at least 1 kHz) is exported to the rdio-scanner system numbered by that
+       frequency in kHz, rounded down, unless an analog call takes rdio_analog_system_id (issue #931); 0 (default): every
+       call keeps rdio_system_id / rdio_analog_system_id. Kept beside wav_out_reopen, where it fills an alignment hole. */
+    int rdio_system_by_frequency;
     SNDFILE* wav_out_raw;
     double rtl_pwr;
     dsd_audio_stream* audio_in_stream;   /* Primary audio input stream */
@@ -242,12 +246,12 @@ struct dsd_opts {
     int dmr_stereo_wav;  //per-call wav file use (rename later)
     int static_wav_file; //single static wav file for decoding duration
     int rdio_mode;       //0=off, 1=dirwatch, 2=api, 3=both
-    int rdio_system_id;  //rdio-scanner system id used for API upload
+    int rdio_system_id;  //rdio-scanner system id used for API upload, 0..2147483647 (issue #931; refused outside)
     int rdio_upload_timeout_ms;
     int rdio_upload_retries;
     int rdio_api_delete_after_upload; //delete per-call WAV after successful API-only upload
-    /* The rdio-scanner system a conventional analog (NFM) call is exported to, 0..65535 (issue #668); 0 uses
-       rdio_system_id. */
+    /* The rdio-scanner system an analog call (any DSD_SYNC_ANALOG row: NFM, AM, audio input) is exported to, 0..2147483647
+       (issue #668); 0 uses rdio_system_id. */
     int rdio_analog_system_id;
     /* The rdio-scanner talkgroup of an analog call heard with no frequency (audio input), 0..2147483647 (issue #668); 0
        leaves such calls unexported. A call with a frequency is exported under it in kHz. */
@@ -493,6 +497,9 @@ struct dsd_opts {
     uint8_t trunk_cli_seen;
     /* Flag set when the command line names the input (-i), which replaces a loaded config's [input] (issue #743). */
     uint8_t input_cli_seen;
+    /* Flag set when getopt reads -s, the file input's rate, which a loaded config's file rate then does not replace
+       (bootstrap; issue #931). */
+    uint8_t input_rate_cli_seen;
     uint8_t p25_lcw_retune;
     uint8_t p25_prefer_candidates;
     uint8_t use_dsp_output;

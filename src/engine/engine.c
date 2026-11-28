@@ -5550,6 +5550,8 @@ dsd_engine_run_common_setup(dsd_opts* opts, dsd_state* state, int* early_exit) {
        opens before the run's first recording does, and a journal that does not open leaves decoding and recording
        running, reported by the recording view. */
     dsd_wav_recording_session_reset();
+    /* So are its once-a-run rdio warnings, a second Android session's included. */
+    dsd_rdio_session_reset();
     create_per_call_folder_if_needed(opts);
     (void)dsd_wav_journal_open(opts->wav_journal_file);
     open_recording_outputs_if_needed(opts, state);

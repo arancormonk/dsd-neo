@@ -65,6 +65,12 @@ float rtl_device_test_signal_clip_level(const rtl_device_test_conversion* conver
  * (rtl_device_rate_written_for()) in @p out_written_hz. Returns 0 when both queries answer. */
 int rtl_device_test_rate_queries(int backend, uint32_t device_rate_hz, uint32_t requested_hz, uint32_t* out_planned_hz,
                                  uint32_t* out_written_hz);
+/* rtl_device_signal_geometry() of a device converting as @p conversion says (NULL: no device). */
+int rtl_device_test_signal_geometry(const rtl_device_test_conversion* conversion);
+/* rtl_device_signal_receiver() of a device on @p backend (RTL_DEVICE_TEST_BACKEND_*) whose SoapySDR device was opened
+   by @p factory and reported @p driver_key and @p hardware_key, with @p requested_profile asked for. */
+int rtl_device_test_signal_receiver(int backend, const char* factory, const char* driver_key, const char* hardware_key,
+                                    const char* requested_profile);
 /* The floats that device's cu8 conversion makes of @p len (even, at most 64) bytes, starting at Fs/4 phase 0: 0, or -1
    on bad arguments. */
 int rtl_device_test_widen_cu8(const rtl_device_test_conversion* conversion, int fs4_shift_active,
@@ -79,6 +85,12 @@ void rtl_signal_measure_test_set_ticket(uint32_t ticket);
 void rtl_signal_measure_test_set_clock(uint64_t (*now_ns)(void));
 /* How many times rtl_signal_quiet_request() was called since the process started, whatever it answered. */
 uint32_t rtl_signal_measure_test_quiet_requests(void);
+/* The quiet detector's occupancy count against the count over every reference bin: from a call with @p on set, every
+   window's two counts are compared. Each call reports the windows checked since the call before, those whose counts
+   differed and the bins the full count found over the upper level (any pointer may be NULL), then starts the counts
+   again and turns the check on or off. */
+void rtl_signal_measure_test_occupancy_audit(int on, uint64_t* out_windows, uint64_t* out_mismatches,
+                                             uint64_t* out_above);
 int rtl_stream_test_prepare_reconfigure_input(size_t queued_samples, size_t* out_used_after,
                                               uint32_t* out_generation_before, uint32_t* out_generation_after);
 int rtl_stream_test_retune_output_pending(size_t queued_samples, int cached_symbols, size_t* out_ring_pending,
@@ -117,7 +129,9 @@ int dsd_rtl_stream_test_ppm_store_if_applied(int ppm_rc, int requested_ppm, int*
 int rtl_stream_test_retune_mute_plan(uint32_t sample_rate_hz, int cfg_mute_ms, int cfg_mute_ms_is_set, int post_retune,
                                      int buffered_backend, uint32_t min_bytes);
 /* The retune mute, in bytes, the stream arms on @p dev at @p sample_rate_hz with the configured window (a buffered
- * backend when @p buffered_backend), as controller_arm_retune_mute() sizes it. */
+ * backend when @p buffered_backend), as controller_arm_retune_mute() sizes it. A running stream's own device
+ * (rtl_stream_test_device()) is read in place; any other stands in for the open device during the call, so only while
+ * no stream runs. */
 int rtl_stream_test_retune_mute_bytes_for_device(struct rtl_device* dev, uint32_t sample_rate_hz, int post_retune,
                                                  int buffered_backend);
 /* While @p on, the open's input-ring sizing fails as when its memory is not there. Set while no stream runs. */
@@ -635,6 +649,10 @@ typedef struct {
     /* The stream open's mark for the auto squelch (demod_state::squelch_new_stream), which a session's start sets as a
        stream open does (issue #899): a retune to another centre drops it, one on the same centre keeps it. */
     int new_stream_mark;
+    /* rtl_stream_test_open_radio_capture() only: the receiver a block of the programmed capture carries into the shared
+       tap, stamped by the demod's own path (demod_feed_signal_search()) and read back (rtl_signal_capture_get()); -1
+       when the programming failed or the tap holds no capture. */
+    int tap_receiver;
 } rtl_stream_test_capture_result;
 
 /* Plan every later programming for @p backend (a dsd_rate_plan_backend) in place of the open device's, -1 for the
@@ -765,6 +783,18 @@ typedef struct {
     double readback_rate_hz;
     /* setSampleRate() takes the rate, then throws, as a driver whose write fails after it moved the rate does. */
     int rate_write_throws;
+    /* Identity: the device reads its keys from the driver as the open does (getDriverKey(), getHardwareKey()), the
+       next driver_key_throws / hardware_key_throws lookups throwing; else the keys are set as configured. args: the
+       device arguments it was opened with (NULL: none, a bare -i soapy). */
+    int identity_from_device;
+    /* getStreamFormats() offers CS16 and CF32 (0: none, as a driver whose formats cannot be listed). */
+    int stream_formats;
+    int driver_key_throws;
+    int hardware_key_throws;
+    const char* args;
+    /* The factory of the enumeration record the open selected (NULL: no record; the arguments' driver= as the SDK
+       parses them). */
+    const char* factory;
     /* The next bandwidth_write_throws setBandwidth() calls throw without taking the bandwidth. */
     int bandwidth_write_throws;
     /* The bandwidth getBandwidth() reports (0: the bandwidth last set), as a driver whose filter write did not take. */
@@ -781,6 +811,27 @@ typedef struct {
 } rtl_device_test_soapy_gain_fake;
 /* A control-only Soapy driver with quantized gain readback, counting its tuning writes. NULL without SoapySDR. */
 struct rtl_device* rtl_device_test_soapy_gain_device(rtl_device_test_soapy_gain_fake* fake, int named_override);
+/* The factory the open keeps for @p args when enumerating them found @p records (each a SoapySDR markup string, the
+   records in order; @p count 0: none), into @p out: 0, or -1 without SoapySDR. */
+int rtl_device_test_soapy_selected_factory(const char* const* records, size_t count, const char* args, char* out,
+                                           size_t out_size);
+
+/* What the open's device selection did (rtl_device_test_soapy_open_selection()). */
+typedef struct {
+    char factory[64]; /* the factory the open keeps: "" unknown */
+    char opened[256]; /* what is left open: "args:<arguments>" (make() of the arguments), "record:<markup>" (make() of
+                         a discovery record filled with the arguments), "" nothing */
+    int discoveries;  /* discoveries made */
+    int failed;       /* the open failed (make() threw) */
+} rtl_device_test_soapy_open_result;
+
+/* The open's device selection, with SoapySDR's discovery and make() stood in for: the first discovery of @p args finds
+   @p first (@p first_count records, SoapySDR markup strings), every later one @p second; make() of the arguments opens
+   a device only when @p make_args_opens (as when they name a driver, or the SDK's own discovery inside make() finds
+   one), and make() of a record opens it unless @p record_make_throws. 0, or -1 without SoapySDR. */
+int rtl_device_test_soapy_open_selection(const char* args, const char* const* first, size_t first_count,
+                                         const char* const* second, size_t second_count, int make_args_opens,
+                                         int record_make_throws, rtl_device_test_soapy_open_result* out);
 void rtl_device_test_soapy_gain_device_free(struct rtl_device* dev);
 
 /* Run one of the stream's tuner-gain callers with @p dev as the open device and report the tuner gain it left
@@ -922,6 +973,11 @@ enum {
 /* Call @p probe(event, @p ctx) on the waiting thread as each such wait starts and returns; NULL removes it. */
 void rtl_stream_test_set_demod_idle_wait_probe(void (*probe)(int event, void* ctx), void* ctx);
 
+/* Call @p hook(has_demod, @p ctx) on the demod thread each time it takes a queued demod profile request, before it
+ * applies it (rtl_stream_consume_demod_profile_request()), with whether the request holds a symbol profile; NULL
+ * removes it. A hook that waits holds the request taken and not yet applied (issue #899). */
+void rtl_stream_test_set_profile_taken_hook(void (*hook)(int has_demod, void* ctx), void* ctx);
+
 /* A live block's output write into a full output ring once the stream stops, with no decoder reading
  * (rtl_stream_test_full_output_write_on_stop()). */
 typedef struct {
@@ -1019,6 +1075,15 @@ typedef struct {
     int step_l;
     int step_m;
     int squelch_step_model; /* the squelches' noise model is the running step's (dsd_demod_squelch_step_model_sync()) */
+    /* The reader's resampler ahead of the cascade (demod_state::iq_reader, issue #899): on, its plan, and the
+       squelches' noise model built for it (dsd_demod_squelch_reader_model_sync()). Never on with the step. */
+    int reader_enabled;
+    int reader_in_hz;
+    int reader_out_hz;
+    int reader_protect_hz;
+    int squelch_reader_model;
+    long long squelch_plan_designs; /* the auto squelch's floor plans the open designed (behind a reader: its first) */
+    int squelch_plan_valid;         /* the floor plan's validity after the open, -1 while none was designed */
     int complex_rate_hz;
     int rate_out_hz;
     int ted_sps;
@@ -1903,7 +1968,8 @@ void rtl_stream_test_session_boundary(void);
  *   8-11 the output ring: a block's samples and flags go in at the same positions across the ring's wrap and come out
  *        together through the live and the replay reads; a block with no flags reads open, not the flags left from
  *        before; a read without flags takes the samples alone;
- *   12   the status the demod thread publishes. */
+ *   12   the status the demod thread publishes;
+ *   16   a replay or I/Q stream reader's resampler names the context while it resamples (issue #899). */
 int rtl_stream_test_squelch_plumbing(void);
 
 /* The device part of the auto squelch's floor context for input spec @p spec (NULL: none), as a stream open stores it
@@ -2476,6 +2542,11 @@ typedef struct rtl_stream_test_replay_state {
     uint64_t replay_output_truncated; /* output samples a replay block could not publish (none should be) */
     uint32_t dongle_rate_hz;          /* the rate the chain runs from: a resampled replay's DSP input rate (#701) */
     uint64_t input_gap_reset_count;   /* demod resets at producer gaps in the input (issue #806 X12), process-wide */
+    /* The reader's resampler the demodulator's squelches model (demod_state::iq_reader, issue #899): its source and DSP
+       input rates (0 and 0 with none), and whether its squelch model is built. */
+    int reader_in_hz;
+    int reader_out_hz;
+    int reader_model;
 } rtl_stream_test_replay_state;
 
 int dsd_rtl_stream_test_get_replay_state(rtl_stream_test_replay_state* out_state);

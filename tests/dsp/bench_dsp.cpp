@@ -22,6 +22,7 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <dsd-neo/core/power.h>
 #include <dsd-neo/dsp/costas.h>
 #include <dsd-neo/dsp/demod_pipeline.h>
 #include <dsd-neo/dsp/demod_state.h>
@@ -39,10 +40,12 @@
 #include <dsd-neo/dsp/snr_estimator.h>
 #include <dsd-neo/dsp/sps_filters.h>
 #include <dsd-neo/dsp/squelch_floor.h>
+#include <dsd-neo/dsp/squelch_reader_model.h>
 #include <dsd-neo/dsp/squelch_step_model.h>
 #include <dsd-neo/dsp/sync_hamming.h>
 #include <dsd-neo/dsp/ted.h>
 #include <dsd-neo/platform/threading.h>
+#include <dsd-neo/runtime/analog_channel.h>
 #include <dsd-neo/runtime/config.h>
 #include <dsd-neo/runtime/input_ring.h>
 #include <dsd-neo/runtime/mem.h>
@@ -55,6 +58,7 @@
 #include "dsd-neo/core/state_fwd.h"
 #include "dsd-neo/core/sync_patterns.h"
 #include "frame_sync_level.h"
+#include "squelch_cascade_noise.h"
 
 #if defined(__x86_64__) || defined(_M_X64)
 extern "C" int simd_hb_decim2_complex_sse2(const float* in, int in_len, float* out, float* hist_i, float* hist_q,
@@ -113,6 +117,7 @@ struct DemodHolder {
         }
         dsd_fsk_modem_release(&s->fsk_modem_state);
         dsd_live_iq_step_disable(&s->live_iq_step);
+        dsd_squelch_reader_model_release(&s->squelch_reader_model);
         if (s->post_polydecim_taps) {
             dsd_neo_aligned_free(s->post_polydecim_taps);
         }
@@ -1582,6 +1587,190 @@ bench_one_squelch_plan(const BenchOptions& opts, const char* name, int target_hz
     return ran;
 }
 
+/* The floor plan the demod thread designs at a squelch plan key change on a chain with no step (issue #899): the
+   cascade of @p passes ahead of NFM @p width_hz (0: no channel filter) at @p target_hz, the production design
+   (dsd_squelch_cascade_noise_floor_plan(), what squelch_floor_ensure_plan() runs with two passes or more). */
+static int
+bench_one_cascade_floor_plan(const BenchOptions& opts, const char* name, int target_hz, int width_hz, int passes) {
+    std::vector<float> taps(DSD_NOISE_SQUELCH_MAX_TAPS);
+    const int taps_len =
+        width_hz > 0 ? dsd_channel_lpf_design_analog(target_hz, width_hz, taps.data(), DSD_NOISE_SQUELCH_MAX_TAPS) : 0;
+    if (width_hz > 0 && taps_len <= 0) {
+        DSD_FPRINTF(stderr, "%s: setup failed\n", name);
+        return 0;
+    }
+    const float* run = taps_len > 0 ? taps.data() : NULL;
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    for (int i = 0; i < passes; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    dsd_squelch_floor_plan fp;
+    BenchMeta meta;
+    meta.rate_hz = target_hz;
+    meta.profile = "floor_plan";
+    meta.tap_count = taps_len;
+    meta.variant = passes == 8 ? "cascade_8pass" : "cascade";
+    return run_named_case(
+        opts, name, "plan", 1.0,
+        [&]() -> float {
+            (void)dsd_squelch_cascade_noise_floor_plan(&fp, run, taps_len, st, passes, target_hz);
+            return (float)fp.neff;
+        },
+        &meta);
+}
+
+/* How a bench block takes the floor plan: designed afresh each block (the plan key and the kept plans cleared, as at a
+   stream's first block), alternating widths (the channel taps designed each block, the plan of each width once and
+   then taken from the kept plans, a scan alternating NFM widths), or the same key every block (no design). */
+enum { BENCH_BLOCK_FIRST_BUILD = 0, BENCH_BLOCK_ALTERNATING = 1, BENCH_BLOCK_SAME_KEY = 2 };
+
+/* One small block (8 channel samples) through full_demod() on the FM monitor under AUTO with no step, the cascade of
+   @p passes ahead of NFM @p width_hz (0: no channel filter) at @p rate_hz, the floor plan taken as @p kind says
+   (@p width_alt: the other width when alternating). What the demod thread spends on a block, design included. Behind
+   @p reader (NULL: none) the reader model is built first, as the rate plan's commit builds it (issue #899), so a block
+   designs only the plan from it. */
+static int
+bench_one_floor_plan_block(const BenchOptions& opts, const char* name, int rate_hz, int passes, int width_hz,
+                           int width_alt, int kind, const dsd_iq_reader_plan* reader = NULL) {
+    DemodHolder holder;
+    demod_state* s = holder.s;
+    if (!s) {
+        DSD_FPRINTF(stderr, "demod_state allocation failed\n");
+        return 0;
+    }
+    s->mode_demod = &dsd_fm_demod;
+    s->analog_family = 1;
+    s->analog_demod = DSD_ANALOG_DEMOD_FM;
+    s->output_kind = DSD_DEMOD_OUTPUT_AUDIO_MONITOR;
+    s->channel_lpf_profile = DSD_CH_LPF_PROFILE_WIDE;
+    s->channel_lpf_enable = width_hz > 0 ? 1 : 0;
+    s->channel_lpf_width_hz = width_hz;
+    s->rate_in = rate_hz;
+    s->rate_out = rate_hz;
+    s->complex_rate = rate_hz;
+    s->post_downsample = 1;
+    s->downsample_passes = passes;
+    s->squelch_mode = DSD_SQUELCH_MODE_AUTO;
+    s->squelch_margin_db = 10;
+    if (reader != NULL && !opts.list_cases && opts.case_filter && std::strcmp(opts.case_filter, name) == 0) {
+        s->iq_reader = *reader;
+        if (dsd_demod_squelch_reader_model_sync(s) != 0) {
+            DSD_FPRINTF(stderr, "%s: the reader model did not build\n", name);
+            return 0;
+        }
+    }
+    const int pairs = 8 << passes;
+    std::vector<float> in((size_t)pairs * 2U);
+    fill_noise(&in, 0x899u + (uint32_t)passes);
+    int turn = 0;
+    uint64_t blocks = 0U;
+    const auto block = [&]() -> float {
+        blocks++;
+        if (kind == BENCH_BLOCK_FIRST_BUILD) {
+            s->squelch_plan.set = 0;
+            DSD_MEMSET(s->floor_plan_cache, 0, sizeof(s->floor_plan_cache));
+        } else if (kind == BENCH_BLOCK_ALTERNATING) {
+            turn ^= 1;
+            s->channel_lpf_width_hz = turn ? width_alt : width_hz;
+        }
+        DSD_MEMCPY(s->input_cb_buf, in.data(), in.size() * sizeof(float));
+        s->lowpassed = s->input_cb_buf;
+        s->lp_len = pairs * 2;
+        full_demod(s);
+        return (float)s->squelch_floor.plan.neff + (float)s->result_len;
+    };
+    /* The first block that leaves channel samples designs the channel taps and the plan (the cascade's look-ahead can
+       hold a first block's few samples). */
+    for (int i = 0; i < 16 && s->squelch_plan_designs == 0U; i++) {
+        (void)block();
+    }
+    BenchMeta meta;
+    meta.rate_hz = rate_hz;
+    meta.profile = "floor_plan_block";
+    meta.tap_count = s->channel_lpf_enable ? s->channel_lpf_plan_taps_len : 0;
+    meta.variant = kind == BENCH_BLOCK_FIRST_BUILD ? "first_build"
+                                                   : (kind == BENCH_BLOCK_ALTERNATING ? "alternating" : "same_key");
+    const uint64_t designs = s->squelch_plan_designs;
+    blocks = 0U;
+    const int ran = run_named_case(opts, name, "block", 1.0, block, &meta);
+    /* The same key every block designs nothing; a first build designs at every block (warm-up and timed calls, the key
+       and the kept plans cleared); alternating widths design the width the warm-up did not visit once, then take both
+       from the kept plans (issue #899). */
+    const uint64_t made = s->squelch_plan_designs - designs;
+    uint64_t want = kind == BENCH_BLOCK_FIRST_BUILD ? blocks : 0U;
+    if (kind == BENCH_BLOCK_ALTERNATING && blocks > 0U) {
+        want = 1U;
+    }
+    if (ran > 0 && !opts.list_cases && made != want) {
+        DSD_FPRINTF(stderr, "%s: %llu floor plan designs over %llu blocks, %llu expected\n", name,
+                    (unsigned long long)made, (unsigned long long)blocks, (unsigned long long)want);
+        return 0;
+    }
+    return ran;
+}
+
+/* The reader model's build (issue #899), what the rate plan's commit runs for a replay or I/Q stream the reader
+   resamples from @p source_hz into @p dsp_in_hz ahead of @p passes passes. */
+static int
+bench_one_reader_model_build(const BenchOptions& opts, const char* name, uint32_t source_hz, uint32_t dsp_in_hz,
+                             int passes) {
+    dsd_iq_reader_plan plan;
+    (void)dsd_iq_reader_plan_for(&plan, source_hz, dsp_in_hz, dsp_in_hz >> passes);
+    dsd_noise_squelch_stage st[DSD_NOISE_SQUELCH_MAX_STAGES];
+    for (int i = 0; i < passes; i++) {
+        st[i].taps = i == 0 ? hb31_q15_taps : hb_q15_taps;
+        st[i].len = i == 0 ? 31 : HB_TAPS;
+    }
+    dsd_squelch_reader_model m;
+    dsd_squelch_reader_model_init(&m);
+    BenchMeta meta;
+    meta.rate_hz = (int)(dsp_in_hz >> passes);
+    meta.profile = "reader_model";
+    meta.variant = "build";
+    const int ran = run_named_case(
+        opts, name, "build", 1.0,
+        [&]() -> float {
+            dsd_squelch_reader_model_release(&m);
+            return dsd_squelch_reader_model_build(&m, &plan, st, passes) == 0 ? (float)m.period : -1.0f;
+        },
+        &meta);
+    dsd_squelch_reader_model_release(&m);
+    return ran;
+}
+
+/* bench_one_floor_plan_block() behind a reader from @p source_hz into @p rate_hz << @p passes. */
+static int
+bench_one_reader_floor_plan_block(const BenchOptions& opts, const char* name, uint32_t source_hz, int rate_hz,
+                                  int passes, int width_hz, int width_alt, int kind) {
+    dsd_iq_reader_plan plan;
+    (void)dsd_iq_reader_plan_for(&plan, source_hz, (uint32_t)rate_hz << passes, (uint64_t)rate_hz);
+    return bench_one_floor_plan_block(opts, name, rate_hz, passes, width_hz, width_alt, kind, &plan);
+}
+
+static int
+bench_reader_plans(const BenchOptions& opts) {
+    int ran = 0;
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8k_16k", 8000U, 16000U, 0);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_250k_192k_2pass", 250000U, 192000U, 2);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_8046_72k", 8046U, 72000U, 0);
+    ran += bench_one_reader_model_build(opts, "squelch_reader_model_build_864058_576k_3pass", 864058U, 576000U, 3);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8k_16k", 8000U, 16000, 0, 0,
+                                             0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_250k_192k_nfm12k5", 250000U,
+                                             48000, 2, 12500, 0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_8046_72k_nfm16k", 8046U,
+                                             72000, 0, 16000, 0, BENCH_BLOCK_FIRST_BUILD);
+    /* Q = 32,752 input phases behind three passes, 201 taps: the covariance route (issue #899). */
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_first_build_864058_72k_5k", 864058U,
+                                             72000, 3, 5000, 0, BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_alternating_8046_72k_nfm16k_25k", 8046U,
+                                             72000, 0, 16000, 25000, BENCH_BLOCK_ALTERNATING);
+    ran += bench_one_reader_floor_plan_block(opts, "squelch_floor_block_reader_same_key_8046_72k_nfm16k", 8046U, 72000,
+                                             0, 16000, 0, BENCH_BLOCK_SAME_KEY);
+    return ran;
+}
+
 static int
 bench_squelch_plans(const BenchOptions& opts) {
     int ran = 0;
@@ -1589,15 +1778,27 @@ bench_squelch_plans(const BenchOptions& opts) {
     ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_78k125_48k", 48000, 0);
     ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_93k75_48k", 48000, 1);
     ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_72k_nfm25k", 72000, 25000, 0, BENCH_PLAN_STEP);
-    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_72k_nfm25k", 72000, 25000, 0, 0);
     ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_72k_nfm25k", 72000, 25000, 1, BENCH_PLAN_STEP);
     ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_72k_nfm25k", 72000, 25000, 1, 0);
     ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_48k_nfm12k5", 48000, 12500, 0, BENCH_PLAN_STEP);
-    ran += bench_one_squelch_plan(opts, "squelch_floor_plan_cascade_48k_nfm12k5", 48000, 12500, 0, 0);
     ran += bench_one_squelch_plan(opts, "squelch_noise_plan_step_48k_nfm12k5", 48000, 12500, 1, BENCH_PLAN_STEP);
     ran += bench_one_squelch_plan(opts, "squelch_noise_plan_cascade_48k_nfm12k5", 48000, 12500, 1, 0);
     ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_exact_72k_nfm25k", 72000, 25000, 0,
                                   BENCH_PLAN_STEP_EXACT);
+    ran += bench_one_cascade_floor_plan(opts, "squelch_floor_plan_cascade_72k_nfm25k", 72000, 25000, 4);
+    ran += bench_one_cascade_floor_plan(opts, "squelch_floor_plan_cascade_48k_nfm12k5", 48000, 12500, 5);
+    ran += bench_one_cascade_floor_plan(opts, "squelch_floor_plan_cascade_16k_8pass_nfm12k5", 16000, 12500, 8);
+    ran += bench_one_cascade_floor_plan(opts, "squelch_floor_plan_cascade_4k_8pass", 4000, 0, 8);
+    ran += bench_one_floor_plan_block(opts, "squelch_floor_block_first_build_72k_nfm25k", 72000, 4, 25000, 0,
+                                      BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_floor_plan_block(opts, "squelch_floor_block_first_build_4k_8pass", 4000, 8, 0, 0,
+                                      BENCH_BLOCK_FIRST_BUILD);
+    ran += bench_one_floor_plan_block(opts, "squelch_floor_block_alternating_72k_nfm16k_25k", 72000, 4, 16000, 25000,
+                                      BENCH_BLOCK_ALTERNATING);
+    ran += bench_one_floor_plan_block(opts, "squelch_floor_block_same_key_72k_nfm25k", 72000, 4, 25000, 0,
+                                      BENCH_BLOCK_SAME_KEY);
+    ran +=
+        bench_one_floor_plan_block(opts, "squelch_floor_block_same_key_4k_8pass", 4000, 8, 0, 0, BENCH_BLOCK_SAME_KEY);
     ran += bench_one_squelch_model_build(opts, "squelch_step_model_build_soapy_m4093_48k", 48000, 2);
     ran += bench_one_squelch_plan(opts, "squelch_floor_plan_step_soapy_m4093_48k_nfm25k", 48000, 25000, 0,
                                   BENCH_PLAN_STEP, 2);
@@ -1936,6 +2137,7 @@ main(int argc, char** argv) {
     ran += bench_full_demod(opts);
     ran += bench_live_step(opts);
     ran += bench_squelch_plans(opts);
+    ran += bench_reader_plans(opts);
     ran += bench_matched_filters(opts);
     ran += bench_noise_squelch(opts, false);
     ran += bench_noise_squelch(opts, true);

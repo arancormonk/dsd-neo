@@ -473,21 +473,16 @@ cli_add_dmr_udp_comp_port(dsd_opts* opts, const char* value, int* seen_on_cli, i
     return 1;
 }
 
-/* --profile: bootstrap reads its name (bootstrap_cli_try_profile_option()) before this parser runs, as the next
-   argument whatever it starts with, and dsd_cli_compact_args() steps over it the same way. A pre-scan here steps over it
-   too, so a profile named "--" or "--print-config" is the name it is, never the end of the options or a one-shot. */
-static int
-cli_option_value_read_by_bootstrap(const char* arg) {
-    return strcmp(arg, "--profile") == 0;
-}
-
+/* Whether bootstrap runs a config one-shot for this argv. Every long option's value is stepped over by the parser's
+   arity (dsd_cli_long_option_span()), as bootstrap steps over it (issue #931), so a value that reads like a one-shot
+   ("--rdio-api-key --print-config", a profile named "--print-config") is a value; the options end at a "--" that is no
+   value. */
 static int
 cli_has_config_one_shot_arg(int argc, char** argv) {
     if (argc <= 1 || !argv) {
         return 0;
     }
     for (int i = 1, advance = 1; i < argc; i += advance) {
-        advance = 1;
         const char* arg = argv[i];
         if (!arg) {
             break;
@@ -495,15 +490,13 @@ cli_has_config_one_shot_arg(int argc, char** argv) {
         if (strcmp(arg, "--") == 0) {
             break;
         }
-        if (dsd_cli_option_takes_free_value(arg) || cli_option_value_read_by_bootstrap(arg)) {
-            advance = 2; /* a token or a profile name is any text, a one-shot option's name included */
-            continue;
-        }
         if (strcmp(arg, "--validate-config") == 0 || strncmp(arg, "--validate-config=", 18) == 0
             || strcmp(arg, "--print-config") == 0 || strcmp(arg, "--list-profiles") == 0
             || strcmp(arg, "--dump-config-template") == 0) {
             return 1;
         }
+        const int span = dsd_cli_long_option_span(argc, argv, i);
+        advance = span > 0 ? span : 1;
     }
     return 0;
 }
@@ -826,6 +819,47 @@ cli_parse_int_range_option(const char* option_name, const char* in, int min_valu
     }
     *out = (int)parsed;
     return 1;
+}
+
+/* --rdio-system-id and --rdio-analog-system-id (issue #931): an rdio-scanner system ID is a whole number
+   0..2147483647, the largest one every server's database holds. Anything else is refused with that range named, a value
+   past a 32-bit long's range included, never clamped. */
+static int
+cli_parse_rdio_system_id_option(const char* option_name, const char* in, int* out, int* out_exit_rc) {
+    int parsed = 0;
+    if (dsd_parse_int_strict(in, 10, 0, 2147483647, &parsed) != 0) {
+        LOG_ERROR("Invalid %s value (expected 0..2147483647)\n", option_name); /* never the value (issue #931) */
+        cli_set_exit_rc(out_exit_rc, 1);
+        return 0;
+    }
+    *out = parsed;
+    return 1;
+}
+
+/* --rdio-mode (issue #931): one of off|dirwatch|api|both in any case. Each occurrence is checked as it is read, so a
+   later valid one does not hide an earlier typo, and an empty value is refused rather than read as off. */
+static int
+cli_parse_rdio_mode_option(const char* value, int* out, int* out_exit_rc) {
+    int mode = DSD_RDIO_MODE_OFF;
+    if (value && value[0] != '\0' && dsd_rdio_mode_from_string(value, &mode) == 0) {
+        *out = mode;
+        return 1;
+    }
+    LOG_ERROR("Invalid --rdio-mode value (expected off|dirwatch|api|both)\n"); /* never the value (issue #931) */
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
+}
+
+/* --frontend (issue #931): each occurrence, in either form, is checked as it is read, so a later valid one does not
+   hide an earlier invalid one. */
+static int
+cli_parse_frontend_option(const char* value, dsd_frontend_kind* out, int* out_exit_rc) {
+    if (cli_parse_frontend_kind(value, out)) {
+        return 1;
+    }
+    LOG_ERROR("Invalid --frontend value (expected none|terminal|native)\n"); /* never the value (issue #931) */
+    cli_set_exit_rc(out_exit_rc, 1);
+    return 0;
 }
 
 static int
@@ -1404,7 +1438,7 @@ cli_parse_airspy_option(int argc, char** argv, int i, dsd_opts* opts) {
     key[len] = '\0';
     const char* value = eq ? eq + 1 : (i + 1 < argc ? argv[i + 1] : NULL);
     if (!value || dsd_airspy_config_set(&opts->airspy, key, value) != 0) {
-        LOG_ERROR("Invalid Airspy option: %s\n", argv[i]);
+        LOG_ERROR("Invalid Airspy option: --%.*s\n", (int)len, name); /* the option, never its value */
         return -1;
     }
     if (strcmp(key, "airspy_serial") == 0) {
@@ -1461,7 +1495,7 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         if (strcmp(argv[i], "--") == 0) {                                                                              \
             break;                                                                                                     \
         }                                                                                                              \
-        if (strcmp(argv[i], "--profile") == 0) { /* cli_option_value_read_by_bootstrap(): bootstrap reads the name */  \
+        if (strcmp(argv[i], "--profile") == 0) { /* bootstrap reads the name (bootstrap_cli_try_profile_option()) */   \
             if (i + 1 < argc) {                                                                                        \
                 arg_advance = 2;                                                                                       \
             }                                                                                                          \
@@ -2224,10 +2258,16 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             frontend_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                  \
+            if (!cli_parse_frontend_option(frontend_cli, &opts->frontend_kind, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strncmp(argv[i], "--frontend=", 11) == 0) {                                                                \
             frontend_cli = argv[i] + 11;                                                                               \
+            if (!cli_parse_frontend_option(frontend_cli, &opts->frontend_kind, out_exit_rc)) {                         \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--input-volume") == 0) {                                                                  \
@@ -2270,6 +2310,9 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             rdio_mode_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                                 \
+            if (!cli_parse_rdio_mode_option(rdio_mode_cli, &opts->rdio_mode, out_exit_rc)) {                           \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-system-id") == 0) {                                                                \
@@ -2277,20 +2320,32 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             rdio_system_id_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                            \
+            if (!cli_parse_rdio_system_id_option("--rdio-system-id", rdio_system_id_cli, &opts->rdio_system_id,        \
+                                                 out_exit_rc)) {                                                       \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-url") == 0) {                                                                  \
             if (!cli_has_value("--rdio-api-url", i, argc, out_exit_rc)) {                                              \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            rdio_api_url_cli = DSD_PARSE_ARGS_NEXT_ARG(); /* refused, never cut to another endpoint (issue #931) */    \
+            if (!cli_value_fits("--rdio-api-url", "value", rdio_api_url_cli, sizeof opts->rdio_api_url,                \
+                                out_exit_rc)) {                                                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-api-key") == 0) {                                                                  \
             if (!cli_has_value("--rdio-api-key", i, argc, out_exit_rc)) {                                              \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
-            rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG();                                                              \
+            rdio_api_key_cli = DSD_PARSE_ARGS_NEXT_ARG(); /* refused, never cut to another key (issue #931) */         \
+            if (!cli_value_fits("--rdio-api-key", "value", rdio_api_key_cli, sizeof opts->rdio_api_key,                \
+                                out_exit_rc)) {                                                                        \
+                return DSD_PARSE_ERROR;                                                                                \
+            }                                                                                                          \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-upload-timeout-ms") == 0) {                                                        \
@@ -2313,8 +2368,8 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         }                                                                                                              \
         if (strcmp(argv[i], "--rdio-analog-system-id") == 0) {                                                         \
             if (!cli_has_value("--rdio-analog-system-id", i, argc, out_exit_rc)                                        \
-                || !cli_parse_int_range_option("--rdio-analog-system-id", DSD_PARSE_ARGS_NEXT_ARG(), 0, 65535,         \
-                                               &opts->rdio_analog_system_id, out_exit_rc)) {                           \
+                || !cli_parse_rdio_system_id_option("--rdio-analog-system-id", DSD_PARSE_ARGS_NEXT_ARG(),              \
+                                                    &opts->rdio_analog_system_id, out_exit_rc)) {                      \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             continue;                                                                                                  \
@@ -2333,6 +2388,14 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
                                                &opts->rdio_unknown_talkgroup, out_exit_rc)) {                          \
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--rdio-system-by-frequency") == 0) {                                                      \
+            opts->rdio_system_by_frequency = 1;                                                                        \
+            continue;                                                                                                  \
+        }                                                                                                              \
+        if (strcmp(argv[i], "--no-rdio-system-by-frequency") == 0) {                                                   \
+            opts->rdio_system_by_frequency = 0;                                                                        \
             continue;                                                                                                  \
         }                                                                                                              \
         if (strcmp(argv[i], "--record-unknown-only") == 0) {                                                           \
@@ -2847,18 +2910,11 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         return DSD_PARSE_ERROR;                                                                                        \
     }                                                                                                                  \
                                                                                                                        \
-    if (frontend_cli) {                                                                                                \
-        dsd_frontend_kind frontend = DSD_FRONTEND_NONE;                                                                \
-        if (!cli_parse_frontend_kind(frontend_cli, &frontend)) {                                                       \
-            LOG_ERROR("Invalid --frontend value \"%s\" (expected none|terminal|native)\n", frontend_cli);              \
-            cli_set_exit_rc(out_exit_rc, 1);                                                                           \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-        opts->frontend_kind = frontend;                                                                                \
+    if (frontend_cli) { /* each occurrence was read and checked where it stands (cli_parse_frontend_option()) */       \
         if (dsd_strcasecmp(frontend_cli, "native") == 0) {                                                             \
             LOG_INFO("NOTICE: Frontend: native compatibility alias uses headless mode\n");                             \
         } else {                                                                                                       \
-            LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(frontend));                                      \
+            LOG_INFO("NOTICE: Frontend: %s\n", cli_frontend_kind_name(opts->frontend_kind));                           \
         }                                                                                                              \
     }                                                                                                                  \
                                                                                                                        \
@@ -2929,28 +2985,16 @@ cli_parse_tetra_net(const char* spec, dsd_opts* opts) {
         LOG_INFO("NOTICE: P25 SM log file: %s\n", opts->p25_sm_log_file);                                              \
     }                                                                                                                  \
                                                                                                                        \
-    if (rdio_mode_cli) {                                                                                               \
-        int mode = DSD_RDIO_MODE_OFF;                                                                                  \
-        if (dsd_rdio_mode_from_string(rdio_mode_cli, &mode) == 0) {                                                    \
-            opts->rdio_mode = mode;                                                                                    \
-            LOG_INFO("NOTICE: Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));                      \
-        } else {                                                                                                       \
-            LOG_WARN("Invalid --rdio-mode value \"%s\" (expected off|dirwatch|api|both)\n", rdio_mode_cli);            \
-        }                                                                                                              \
+    if (rdio_mode_cli) { /* each occurrence was read and checked where it stands (cli_parse_rdio_mode_option()) */     \
+        LOG_INFO("NOTICE: Rdio export mode: %s\n", dsd_rdio_mode_to_string(opts->rdio_mode));                          \
     }                                                                                                                  \
-    if (rdio_system_id_cli) {                                                                                          \
-        long parsed_sid = 0;                                                                                           \
-        if (!cli_parse_long_option("--rdio-system-id", rdio_system_id_cli, 10, &parsed_sid, out_exit_rc)) {            \
-            return DSD_PARSE_ERROR;                                                                                    \
-        }                                                                                                              \
-        const int sid = cli_clamp_long_to_int(parsed_sid, 0, 65535);                                                   \
-        opts->rdio_system_id = sid;                                                                                    \
+    if (rdio_system_id_cli) { /* read and checked where each occurrence stands */                                      \
         LOG_INFO("NOTICE: Rdio system ID: %d\n", opts->rdio_system_id);                                                \
     }                                                                                                                  \
     if (rdio_api_url_cli) {                                                                                            \
         DSD_SNPRINTF(opts->rdio_api_url, sizeof opts->rdio_api_url, "%s", rdio_api_url_cli);                           \
         opts->rdio_api_url[sizeof opts->rdio_api_url - 1] = '\0';                                                      \
-        LOG_INFO("NOTICE: Rdio API URL: %s\n", opts->rdio_api_url);                                                    \
+        LOG_INFO("NOTICE: Rdio API URL configured\n"); /* a URL can carry credentials: never printed (issue #931) */   \
     }                                                                                                                  \
     if (rdio_api_key_cli) {                                                                                            \
         DSD_SNPRINTF(opts->rdio_api_key, sizeof opts->rdio_api_key, "%s", rdio_api_key_cli);                           \
@@ -3336,9 +3380,17 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
         return;
     }
     /* A token the long-option pass did not recognize reaches getopt as "--name", which it reads as option '-'.
-     * getopt has not finished that element, so it is still argv[optind]. */
+     * getopt has not finished that element, so it is still argv[optind]. Only its name is said: the text after an '='
+     * can be a credential ("--rdio-api-key=...", a form the parser does not take), which is never printed (issue
+     * #931). */
     if (optopt == '-' && optind > 0 && optind < argc && argv[optind] != NULL && strncmp(argv[optind], "--", 2) == 0) {
-        LOG_ERROR("Unrecognized option '%s'\n", argv[optind]);
+        const char* token = argv[optind];
+        const size_t name_len = strcspn(token, "=");
+        if (token[name_len] == '=') {
+            LOG_ERROR("Unrecognized option '%.*s' (given with a value, not shown)\n", (int)name_len, token);
+        } else {
+            LOG_ERROR("Unrecognized option '%s'\n", token);
+        }
         return;
     }
     if (optopt > ' ' && optopt < 0x7f) {
@@ -4167,6 +4219,7 @@ cli_report_short_opt_error(int c, int argc, char** argv) {
                 return DSD_PARSE_ERROR;                                                                                \
             }                                                                                                          \
             const int sr = cli_clamp_long_to_int(parsed_sr, 8000, 192000);                                             \
+            opts->input_rate_cli_seen = 1; /* bootstrap keeps this rate over a config's file rate (issue #931) */      \
             int old_effective_rate = dsd_opts_effective_input_rate(opts);                                              \
             dsd_opts_clear_staged_file_sample_rate(opts);                                                              \
             dsd_opts_apply_input_sample_rate(opts, sr);                                                                \

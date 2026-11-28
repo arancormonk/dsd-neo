@@ -149,7 +149,7 @@ static bool
 same_capture(const dsd_signal_capture& a, const dsd_signal_capture& b) {
     return a.rate_hz == b.rate_hz && a.capture_hz == b.capture_hz && a.generation == b.generation
            && a.rotation_hz == b.rotation_hz && a.drops == b.drops && a.gain == b.gain
-           && a.capture_offset_hz == b.capture_offset_hz;
+           && a.capture_offset_hz == b.capture_offset_hz && a.geometry == b.geometry && a.receiver == b.receiver;
 }
 
 /* Why the capture @p now is not the request's @p asked: dropped samples alone, any other change, or neither. */
@@ -1188,12 +1188,13 @@ struct channel_level {
 
 /* Measure the channel at @p frequency_hz, @p width Hz wide, in the @p n-point spectrum whose prefix sums @p bins reads,
    scaled by @p norm. Valid when the channel and its sidebands, three widths either side, clear the hardware DC guard
-   and stay inside 0.45 Fs, with at least one channel bin and four sideband bins a side. Signal search and quiet
-   requests measure every channel through this. The window assumes the tap is the whole capture shifted circularly by
-   the rotation, as every live capture is. A shifted I/Q replay resampled to another rate keeps only the band around
-   its rotated DC, so a channel far from it would read another channel's bins: such a capture is safe only because
-   measurement is refused on replay, which callers key on the input in force (dsd_opts_radio_can_tune()), never on the
-   decode clock. */
+   and stay inside 0.45 Fs, with at least one channel bin and four sideband bins a side. A native Airspy's centred
+   capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) has no DC artifact at its hardware centre and no guard there, so the
+   channel it is tuned on measures. Signal search and quiet requests measure every channel through this. The window
+   assumes the tap is the whole capture shifted circularly by the rotation, as every live capture is. A shifted I/Q
+   replay resampled to another rate keeps only the band around its rotated DC, so a channel far from it would read
+   another channel's bins: such a capture is safe only because measurement is refused on replay, which callers key on
+   the input in force (dsd_opts_radio_can_tune()), never on the decode clock. */
 template <typename S>
 channel_level
 measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double frequency_hz, double width, double norm,
@@ -1203,7 +1204,9 @@ measure_channel(const S& bins, const dsd_signal_capture& capture, int n, double 
     const double rotation = capture.rotation_hz;
     const double delta = frequency_hz - capture.capture_hz;
     const double dc_guard = std::max(bin_hz * 3, capture.rate_hz / 100.0);
-    if (!(std::abs(delta) > dc_guard + 3 * width && std::abs(delta) + 3 * width < capture.rate_hz * 0.45)) {
+    const bool clears_dc =
+        capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED || std::abs(delta) > dc_guard + 3 * width;
+    if (!(clears_dc && std::abs(delta) + 3 * width < capture.rate_hz * 0.45)) {
         return out;
     }
     /* The channel's bins, and the local noise of its sidebands. */
@@ -1394,15 +1397,39 @@ dsd_signal_detector_feed(dsd_signal_detector* detector, const float* iq, size_t 
 }
 
 /* The shipped quiet threshold, floor estimator and floor guard, from tests/io/signal_quiet_calibrate.cpp
-   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the capture-wide noise reference,
-   so the estimator sets only the floor the guard compares. The guard is 0.5 dB under the lowest floor rise of any
-   active trial whose ratio sat within the threshold's margin when the ratio was judged against the sideband floor
-   (9.23 dB, a weak NFM 8 kHz channel between +30 dB neighbours), rounded down; noise alone rises at most 2.4 dB.
+   (docs/signal-search.md "Quiet-channel calibration"). The ratio is judged against the lower of the capture-wide noise
+   reference and the sideband floor (quiet_judged_noise()), so the estimator sets the floor the guard compares and the
+   floor that may lower the noise. The
+   guard is 0.5 dB under the lowest floor rise of any active trial whose ratio sat within the threshold's margin when
+   the ratio was judged against the sideband floor (9.23 dB, a weak NFM 8 kHz channel between +30 dB neighbours),
+   rounded down; noise alone rises at most 2.4 dB.
    Judged against the reference, the threshold's interval is (2.02, 5.08] dB and the threshold is its top, rounded
    down. */
-#define DSD_SIGNAL_QUIET_THRESHOLD_DB    5.0f
-#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
-#define DSD_SIGNAL_QUIET_GUARD_DB        8.7f
+#define DSD_SIGNAL_QUIET_THRESHOLD_DB         5.0f
+#define DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR      DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
+#define DSD_SIGNAL_QUIET_GUARD_DB             8.7f
+/* The occupancy check (dsd_signal_quiet_params.occupancy_max_share): a sub-window whose reference bins stand over the
+   noise's 98th percentile more than 5% more often than noise alone puts them there is void. When a share p of the
+   reference span stands well over the noise, the lower quartile the reference takes lands on the 0.25 / (1 - p)
+   quantile of the noise left, so the reference reads high: about +0.1 dB at p = 10%, +0.4 to +0.6 dB at a third,
+   +0.8 to +1.1 dB at a half (6 to 32 transforms a sub-window; more for the narrowest widths). Where the sidebands stand
+   on the channel's own noise, the ratio is judged against them instead (quiet_judged_noise()), so the check is for a
+   raise that also covers the sidebands, and for a strong one it voids the reading whatever the denominator while
+   enough of the span stays on the noise. It reads its level from the span itself, so once a raise fills much of the
+   span (about three quarters, less with a dip at the channel) and the sidebands, with the channel clear, it is blind
+   and the channel reads low by about the raise (a documented limit, docs/signal-search.md "Limits"). A reference it
+   keeps can read high: about 0.3 dB in simulation for a floor raised 2.6 to 3 dB over part of the span, but 0.95 dB
+   on average with 70% of the span raised only 1.5 dB (six transforms, 2,000 bins), which moves few bins over the
+   percentile. Noise alone typically stays under 1.5% in simulation but can reach it: the RTL-SDR validation voided 8 of
+   its 3,408,000 noise-only trials (docs/signal-search.md), each a silent channel kept at its normal timing. It only
+   voids readings, so it never adds a quiet verdict. */
+#define DSD_SIGNAL_QUIET_OCCUPANCY_SHARE      0.05f
+/* A native Airspy's centred capture (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) is judged at its own threshold. Its
+   calibration rendered the Airspy's passband in hardware coordinates, and a floor 2 dB lower over the three channel
+   widths round the channel (which no reference taken outside the channel can see) lowered every reading by about
+   2 dB: the lowest valid active reading over every response and rate was 3.79 dB, and the highest noise-only 95th
+   percentile 2.50 dB, so the interval is (2.50, 3.29] dB and the threshold its top, rounded down. */
+#define DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB 3.2f
 /* The capture rates and analog widths the calibration rendered and validated; nothing between them is admitted. Rates:
    the RTL rate planner's (1.024, 1.152, 1.536 Msps for every selectable DSP bandwidth, rtl_sdr_fm.cpp
    rtl_downsample_passes_for_rate_in()), an Airspy's (2.5, 3, 6, 10 MS/s), and the common RTL-SDR rates a SoapySDR
@@ -1425,6 +1452,51 @@ static_assert(sizeof kQuietRatesHz / sizeof kQuietRatesHz[0] == DSD_SIGNAL_QUIET
               "DSD_SIGNAL_QUIET_RATE_COUNT names every supported quiet rate");
 static const uint32_t kQuietNfmWidthsHz[] = {8000, 10000, 11250, 12000, 12500, 15000, 16000, 20000, 25000};
 static const uint32_t kQuietAmWidthsHz[] = {5000, 6000, 8000, 8333, 10000, 15000, 20000};
+/* The capture-wide noise reference's span under the default policy, each side of the hardware centre, as a share of
+   the rate: every rate. */
+constexpr double kQuietReferenceSpan = 0.45;
+
+/* A native Airspy's centred captures (DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED): the rates admitted, and at each the
+   capture-wide noise reference's span either side of the capture centre, as a share of the rate. Nothing else is
+   admitted under that policy. An Airspy's passband is not flat to 0.45 Fs: 2.5 and 3 MS/s are I/Q output rates (ADC 5
+   and 6 MS/s; the host's real-to-complex conversion halves the rate) with a narrower tuner IF filter; libairspy's
+   half-band is flat to about +-0.42 Fs (computed from its taps); one published measurement (an R2 at 2.5 MS/s) puts
+   the -3 dB edges at -0.335 and +0.302 Fs, lopsided; +-0.375 Fs at 6 MS/s is a reviewer's report for a Mini, not a
+   flatness bound. Each span is the part of the band the reference is taken over; the calibration
+   (docs/signal-search.md "Quiet-channel calibration") keeps or narrows it. */
+namespace {
+struct quiet_centred_span {
+    uint32_t rate_hz;
+    double span;
+};
+} // namespace
+
+static const quiet_centred_span kQuietAirspyCentredSpans[] = {
+    {2500000, 0.25},
+    {3000000, 0.25},
+    {6000000, 0.375},
+    {10000000, 0.375},
+};
+
+/* The capture-wide noise reference's span for @p capture's policy and rate, as a share of the rate, into @p span:
+   false for a policy it does not know or a centred capture at a rate the table does not admit. */
+static bool
+quiet_reference_span(const dsd_signal_capture& capture, double* span) {
+    if (capture.geometry == DSD_SIGNAL_GEOMETRY_DEFAULT) {
+        *span = kQuietReferenceSpan;
+        return true;
+    }
+    if (capture.geometry != DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED) {
+        return false;
+    }
+    const auto entry = std::find_if(std::begin(kQuietAirspyCentredSpans), std::end(kQuietAirspyCentredSpans),
+                                    [&](const quiet_centred_span& e) { return e.rate_hz == capture.rate_hz; });
+    if (entry == std::end(kQuietAirspyCentredSpans)) {
+        return false;
+    }
+    *span = entry->span;
+    return true;
+}
 
 struct dsd_signal_quiet_detector {
     /* Keep aligned buffers first so records never require interior alignment padding. */
@@ -1440,6 +1512,8 @@ struct dsd_signal_quiet_detector {
     /* The judged classes' widths. */
     double widths[3]{};
     int width_count = 0;
+    /* The capture-wide noise reference's span for the request's policy and rate (quiet_reference_span()). */
+    double reference_span = 0;
     double energy = 0;
     size_t filled = 0, window_samples = 0, total_samples = 0, clipped = 0;
     /* The request's lead still to drop, and its sub-window count (DSD_SIGNAL_QUIET_WINDOWS for a request's 0). */
@@ -1450,7 +1524,10 @@ struct dsd_signal_quiet_detector {
     /* Over the sub-windows so far: whether every class measured was valid, whether any was, and the highest ratio with
        its power and floor (dB). */
     bool all_valid = true, any_valid = false, any_rise = false;
+    uint8_t void_causes = 0; /* why not all valid so far (DSD_SIGNAL_QUIET_VOID_*) */
     double max_ratio_db = 0, max_power_db = 0, max_floor_db = 0, max_rise_db = 0;
+    /* The highest occupancy share over the sub-windows so far (wide_reference()). */
+    double max_occupancy = 0;
     /* The result of the request last begun once it finished: 1 complete, -1 failed, 0 not yet. */
     dsd_signal_quiet_result result{};
     int finished = 0;
@@ -1462,12 +1539,23 @@ dsd_signal_quiet_params_default(void) {
     params.threshold_db = DSD_SIGNAL_QUIET_THRESHOLD_DB;
     params.floor_estimator = DSD_SIGNAL_QUIET_FLOOR_ESTIMATOR;
     params.guard_db = DSD_SIGNAL_QUIET_GUARD_DB;
+    params.occupancy_max_share = DSD_SIGNAL_QUIET_OCCUPANCY_SHARE;
+    params.centred_threshold_db = DSD_SIGNAL_QUIET_CENTRED_THRESHOLD_DB;
     return params;
 }
 
 extern "C" int
 dsd_signal_quiet_rate_supported(uint32_t rate_hz) {
     return std::find(std::begin(kQuietRatesHz), std::end(kQuietRatesHz), rate_hz) != std::end(kQuietRatesHz);
+}
+
+extern "C" int
+dsd_signal_quiet_airspy_centred_rate_supported(uint32_t rate_hz) {
+    dsd_signal_capture capture{};
+    capture.rate_hz = rate_hz;
+    capture.geometry = DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED;
+    double span = 0;
+    return quiet_reference_span(capture, &span) ? 1 : 0;
 }
 
 extern "C" int
@@ -1524,16 +1612,28 @@ quiet_widths(const dsd_signal_quiet_request& request, double* widths, int* count
     return true;
 }
 
+/* Whether @p params' thresholds, guard and occupancy limit are usable: finite, the share in [0, 1], the centred
+   threshold not negative. */
+static bool
+quiet_params_usable(const dsd_signal_quiet_params& params) {
+    return std::isfinite(params.threshold_db) && std::isfinite(params.guard_db) && params.occupancy_max_share >= 0.0f
+           && params.occupancy_max_share <= 1.0f && std::isfinite(params.centred_threshold_db)
+           && !(params.centred_threshold_db < 0.0f);
+}
+
 /* Arm @p detector, whose transform buffers are kept between requests of one size. */
 static dsd_signal_request_failure
 quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* request,
           const dsd_signal_quiet_params& params) {
     double widths[3] = {0, 0, 0};
     int count = 0;
-    if (!request || !request->request_id || !std::isfinite(params.threshold_db) || !std::isfinite(params.guard_db)
+    double span = 0;
+    if (!request || !request->request_id || !quiet_params_usable(params)
+        || dsd_signal_quiet_receiver_refused(&request->capture)
         || (params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_TRIMMED_MEAN
             && params.floor_estimator != DSD_SIGNAL_QUIET_FLOOR_LOWEST_BLOCK)
-        || request->windows > DSD_SIGNAL_QUIET_WINDOWS_MAX || !quiet_widths(*request, widths, &count)) {
+        || request->windows > DSD_SIGNAL_QUIET_WINDOWS_MAX || !quiet_widths(*request, widths, &count)
+        || !quiet_reference_span(request->capture, &span)) {
         return DSD_SIGNAL_REQUEST_UNSUPPORTED;
     }
     const int n = dsd_signal_fft_size_for_width(request->capture.rate_hz, *std::min_element(widths, widths + count));
@@ -1549,6 +1649,7 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     detector->params = params;
     DSD_MEMCPY(detector->widths, widths, sizeof(widths));
     detector->width_count = count;
+    detector->reference_span = span;
     detector->energy = 0;
     for (int i = 0; i < n; ++i) {
         detector->energy += (double)window[i] * window[i];
@@ -1559,7 +1660,9 @@ quiet_arm(dsd_signal_quiet_detector* detector, const dsd_signal_quiet_request* r
     detector->lead_left = request->lead_pairs;
     detector->all_valid = true;
     detector->any_valid = detector->any_rise = false;
+    detector->void_causes = 0;
     detector->max_ratio_db = detector->max_power_db = detector->max_floor_db = detector->max_rise_db = 0;
+    detector->max_occupancy = 0;
     DSD_MEMSET(detector->power, 0, (size_t)n * sizeof(detector->power[0]));
     detector->armed = true;
     return DSD_SIGNAL_REQUEST_OK;
@@ -1594,46 +1697,108 @@ quiet_finish(dsd_signal_quiet_detector* detector, dsd_signal_measure_failure rea
 
 /* The capture-wide noise reference per FFT bin, in the units of the sub-window's power (summed over its transforms):
    the 25th percentile of the bins whose hardware offset (the bin's frequency less the ingest rotation, folded into
-   -Fs/2..Fs/2 as measure_channel() reads its bins) clears the hardware DC guard, stays inside 0.45 Fs and lies outside
-   the channel's widest class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of
-   2 * frames degrees of freedom, Wilson-Hilferty). A low percentile of the whole span stays on the noise however many
-   transmitters stand in up to three quarters of it. @p scratch (n doubles) takes the copies the selection reorders.
-   Negative when no bin qualifies. */
+   -Fs/2..Fs/2 as measure_channel() reads its bins) clears the hardware DC guard (none on a centred capture), stays
+   inside the policy's span (0.45 Fs, or the rate's in kQuietAirspyCentredSpans) and lies outside the channel's widest
+   class, scaled to the mean that percentile implies for Gaussian noise (a chi-square of 2 * frames degrees of freedom,
+   Wilson-Hilferty). That scaling holds only while the bins are noise: transmitters or a raised floor over a share p of
+   the span move the quartile to the 0.25 / (1 - p) quantile of the noise left, and the reference reads high. So
+   @p occupancy takes the share of the bins over the 98th percentile that reference implies for noise, less the 2% noise
+   alone puts there (DSD_SIGNAL_QUIET_OCCUPANCY_SHARE has its edge). @p scratch (n doubles) takes the copies the
+   selection reorders. Negative when no bin qualifies (@p occupancy 0 then). */
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+namespace {
+/* rtl_signal_measure_test_occupancy_audit(): while on, every occupancy count is checked against the count over every
+   reference bin (the windows checked, those whose two counts differ, and the bins the full count found over the
+   upper level). */
+std::atomic<int> test_occupancy_audit{0};
+std::atomic<uint64_t> test_occupancy_windows{0};
+std::atomic<uint64_t> test_occupancy_mismatches{0};
+std::atomic<uint64_t> test_occupancy_above{0};
+
+void
+test_audit_occupancy(const double* scratch, int count, double upper, long above) {
+    if (!test_occupancy_audit.load(std::memory_order_relaxed)) {
+        return;
+    }
+    const long full = std::count_if(scratch, scratch + count, [upper](double v) { return v > upper; });
+    test_occupancy_windows.fetch_add(1, std::memory_order_relaxed);
+    test_occupancy_above.fetch_add((uint64_t)full, std::memory_order_relaxed);
+    if (full != above) {
+        test_occupancy_mismatches.fetch_add(1, std::memory_order_relaxed);
+    }
+}
+} // namespace
+#endif
+
 static double
-wide_reference(const dsd_signal_quiet_detector* detector, double* scratch) {
+wide_reference(const dsd_signal_quiet_detector* detector, double* scratch, double* occupancy) {
     const dsd_signal_capture& capture = detector->request.capture;
     const int n = detector->n;
     const double rate = capture.rate_hz, bin_hz = rate / n;
-    const double dc_guard = std::max(bin_hz * 3, rate / 100.0);
+    /* A centred capture has no DC artifact to keep out: every offset clears a negative guard. */
+    const double dc_guard =
+        capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED ? -1.0 : std::max(bin_hz * 3, rate / 100.0);
+    const double span = detector->reference_span;
     const double channel = (double)detector->request.frequency_hz - capture.capture_hz;
     const double half_width = *std::max_element(detector->widths, detector->widths + detector->width_count) / 2;
     int count = 0;
     for (int m = -n / 2; m < n / 2; ++m) {
         double delta = m * bin_hz - capture.rotation_hz;
         delta -= rate * std::floor((delta + rate / 2) / rate);
-        if (std::abs(delta) > dc_guard && std::abs(delta) < rate * 0.45 && std::abs(delta - channel) > half_width) {
+        if (std::abs(delta) > dc_guard && std::abs(delta) < rate * span && std::abs(delta - channel) > half_width) {
             scratch[count++] = detector->power[(m + n) % n];
         }
     }
+    *occupancy = 0;
     if (count == 0) {
         return -1;
     }
     double* rank = scratch + count / 4;
     std::nth_element(scratch, rank, scratch + count);
     constexpr double kLowerQuartileZ = -0.6744897501960817;
+    constexpr double kUpperZ = 2.0537489106318225; /* the 98th percentile */
     const double k = 2.0 * detector->frames, wh = 2.0 / (9.0 * k);
-    return *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
+    const double reference = *rank / std::pow(1.0 - wh + kLowerQuartileZ * std::sqrt(wh), 3);
+    const double upper = reference * std::pow(1.0 - wh + kUpperZ * std::sqrt(wh), 3);
+    /* Only bins the selection left after the quartile can stand over the upper level: those before it are at most the
+       quartile, and the upper level is above it (reference / quartile and upper / reference both exceed 1, for any
+       number of transforms). */
+    const long above = std::count_if(rank + 1, scratch + count, [upper](double v) { return v > upper; });
+#ifdef DSD_NEO_ENABLE_INTERNAL_TEST_HOOKS
+    test_audit_occupancy(scratch, count, upper, above);
+#endif
+    *occupancy = std::max(0.0, (double)above / count - 0.02);
+    return reference;
+}
+
+/* The noise per FFT bin a channel is judged against, scaled as @p level: the lower of the capture-wide @p reference and
+   the channel's sideband floor, on every geometry. The lower one can only raise the ratio, so it never adds a quiet
+   verdict. It keeps a floor that sits lower round the channel than over the reference span from hiding a weak
+   channel: a passband's roll-off, ripple or tilt, and a share of the span raised by transmitters or a broad floor too
+   low for the occupancy check to see (a raise of 1.5 dB over 70% of the span lifted the reference's quartile and read
+   a channel 0.8 dB low), whenever the sidebands stand on the channel's own noise. A depression narrower than the
+   sidebands is not seen, and both can stand over the channel's own noise: the rule is bounded by the validation, not
+   a proof. */
+static double
+quiet_judged_noise(double reference, const channel_level& level) {
+    return level.floor < reference ? level.floor : reference;
 }
 
 /* Measure one sub-window in every judged class, keeping the highest ratio and floor rise over the request. The ratio
-   is the channel's power over the capture-wide noise reference across the same bins, so transmitters beside the
-   channel that lift its sideband floor do not lower it; the sideband floor serves only the guard, and a floor over the
-   guard leaves the request invalid. */
+   is the channel's power over the noise it is judged against (quiet_judged_noise()) across the same bins, so
+   transmitters beside the channel that lift its sideband floor do not lower it; the floor rise is the sideband floor
+   over the capture-wide reference whatever the policy, and a rise over the guard leaves the request invalid. */
 static void
 quiet_measure_window(dsd_signal_quiet_detector* detector) {
     const int n = detector->n;
     const double norm = 1.0 / (n * detector->energy * detector->frames);
-    const double reference = wide_reference(detector, detector->prefix);
+    double occupancy = 0;
+    const double reference = wide_reference(detector, detector->prefix, &occupancy);
+    detector->max_occupancy = std::max(detector->max_occupancy, occupancy);
+    if (detector->params.occupancy_max_share > 0 && occupancy > detector->params.occupancy_max_share) {
+        detector->all_valid = false;
+        detector->void_causes |= DSD_SIGNAL_QUIET_VOID_OCCUPANCY;
+    }
     prefix_sums(detector->power, n, detector->prefix);
     auto bins = [&](long long first, long long last) {
         return circular_sum(detector->prefix, n, first, last - first + 1);
@@ -1644,6 +1809,7 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
                             detector->widths[c], norm, detector->params.floor_estimator);
         if (!level.valid || reference <= 0) {
             detector->all_valid = false;
+            detector->void_causes |= !level.valid ? DSD_SIGNAL_QUIET_VOID_GEOMETRY : DSD_SIGNAL_QUIET_VOID_REFERENCE;
             continue;
         }
         const double rise = power_db(level.floor) - power_db(reference * norm);
@@ -1653,8 +1819,10 @@ quiet_measure_window(dsd_signal_quiet_detector* detector) {
         detector->any_rise = true;
         if (rise > detector->params.guard_db) {
             detector->all_valid = false;
+            detector->void_causes |= DSD_SIGNAL_QUIET_VOID_GUARD;
         }
-        const double power = power_db(level.signal), floor = power_db(reference * norm * level.bins);
+        const double judged = quiet_judged_noise(reference * norm, level);
+        const double power = power_db(level.signal), floor = power_db(judged * level.bins);
         if (!detector->any_valid || power - floor > detector->max_ratio_db) {
             detector->max_ratio_db = power - floor;
             detector->max_power_db = power;
@@ -1679,11 +1847,17 @@ quiet_finish_window(dsd_signal_quiet_detector* detector) {
     quiet_finish(detector, DSD_SIGNAL_MEASURE_OK);
     dsd_signal_quiet_result& result = detector->result;
     result.valid = detector->all_valid && detector->any_valid;
+    result.void_causes = result.valid ? 0 : detector->void_causes;
     result.max_ratio_db = (float)detector->max_ratio_db;
     result.power_dbfs = (float)detector->max_power_db;
     result.floor_dbfs = (float)detector->max_floor_db;
     result.floor_rise_db = (float)detector->max_rise_db;
-    result.quiet = result.valid && result.max_ratio_db < detector->params.threshold_db;
+    result.occupancy_share = (float)detector->max_occupancy;
+    const float threshold = detector->request.capture.geometry == DSD_SIGNAL_GEOMETRY_AIRSPY_CENTRED
+                                    && detector->params.centred_threshold_db > 0.0f
+                                ? detector->params.centred_threshold_db
+                                : detector->params.threshold_db;
+    result.quiet = result.valid && result.max_ratio_db < threshold;
     return 1;
 }
 
@@ -1870,6 +2044,23 @@ rtl_signal_measure_test_set_ticket(uint32_t ticket) {
 extern "C" uint32_t
 rtl_signal_measure_test_quiet_requests(void) {
     return test_quiet_requests.load(std::memory_order_relaxed);
+}
+
+extern "C" void
+rtl_signal_measure_test_occupancy_audit(int on, uint64_t* out_windows, uint64_t* out_mismatches, uint64_t* out_above) {
+    if (out_windows) {
+        *out_windows = test_occupancy_windows.load(std::memory_order_relaxed);
+    }
+    if (out_mismatches) {
+        *out_mismatches = test_occupancy_mismatches.load(std::memory_order_relaxed);
+    }
+    if (out_above) {
+        *out_above = test_occupancy_above.load(std::memory_order_relaxed);
+    }
+    test_occupancy_windows.store(0, std::memory_order_relaxed);
+    test_occupancy_mismatches.store(0, std::memory_order_relaxed);
+    test_occupancy_above.store(0, std::memory_order_relaxed);
+    test_occupancy_audit.store(on ? 1 : 0, std::memory_order_relaxed);
 }
 #endif
 

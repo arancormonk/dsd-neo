@@ -129,7 +129,9 @@ int dsd_rdio_call_fallback_eligible(const Event_History* event, int allow_fallba
 
 /**
  * The rdio-scanner system a call is exported to, as the sidecar's `system` and the API upload's `system` part: @p
- * opts->rdio_analog_system_id for an analog row when it is set, else @p opts->rdio_system_id. 0 for a NULL @p opts.
+ * opts->rdio_analog_system_id for an analog row when it is set; else, with @p opts->rdio_system_by_frequency (issue
+ * #931), the row's frequency in whole kHz, rounded down, when that is 1..2147483647; else @p opts->rdio_system_id. 0
+ * for a NULL @p opts.
  */
 int dsd_rdio_call_system_id(const dsd_opts* opts, const Event_History* event);
 
@@ -163,6 +165,14 @@ int dsd_rdio_journal_keeps_uploads(const dsd_opts* opts);
  * after the config and the command line are applied, and after a live config apply. Returns 1 when it warned.
  */
 int dsd_rdio_warn_journal_keeps_uploads(const dsd_opts* opts, int kept_before);
+
+/**
+ * Start a decoder run's once-a-run rdio warnings over: the first call an API upload skips for want of a system ID, the
+ * first private upload input that cannot be removed, and delete-after-upload ignored beside DirWatch, are each said once
+ * in the log per run. Called where a run sets up (the CLI's and the Android app's alike), before its first recording; a
+ * no-op in builds without libcurl.
+ */
+void dsd_rdio_session_reset(void);
 
 /**
  * Drain queued rdio API uploads and stop the background worker.
