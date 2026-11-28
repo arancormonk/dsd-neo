@@ -27,24 +27,33 @@
 
 #include <QColor>
 #include <QCoreApplication>
+#include <QEventLoop>
 #include <QGuiApplication>
 #include <QImage>
+#include <QList>
 #include <QMatrix4x4>
+#include <QObject>
+#include <QPointF>
 #include <QQuickWindow>
+#include <QRectF>
 #include <QSGGeometry>
 #include <QSGGeometryNode>
 #include <QSGImageNode>
-#include <QSGNode>
+#include <QSGMaterial>
 #include <QSGTextureMaterial>
-#include <QSGTransformNode>
 #include <QSizeF>
+#include <QString>
 #include <QThread>
+#include <QVariant>
 #include <Qt>
+#include <QtGlobal>
 #include <algorithm>
 #include <cassert>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
+#include <qflags.h>
+#include <vector>
 
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
@@ -53,9 +62,12 @@
 
 #include "map_math.h"
 #include "map_tile_cache.h"
+#include "map_tile_worker.h"
 #include "map_view_item.h"
 #include "position_model.h"
 #include "qml_map_stub.h"
+
+class QSGTexture;
 
 namespace stub = dsd_neo_qml_stub;
 namespace mm = dsd_qt::map_math;

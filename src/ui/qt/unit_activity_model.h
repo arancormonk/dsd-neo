@@ -16,21 +16,18 @@
 #define DSD_NEO_SRC_UI_QT_UNIT_ACTIVITY_MODEL_H_
 
 #include <QAbstractListModel>
-#include <QByteArray>
-#include <QHash>
 #include <QList>
-#include <QModelIndex>
 #include <QObject>
 #include <QSortFilterProxyModel>
 #include <QString>
 #include <QVariant>
-#include <QVector>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/state_fwd.h>
 #include <dsd-neo/core/unit_activity.h>
 #include <memory>
+#include <sys/types.h>
 
 namespace dsd_qt {
 

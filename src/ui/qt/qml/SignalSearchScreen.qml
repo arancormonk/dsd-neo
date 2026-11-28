@@ -43,6 +43,10 @@ Item {
     // host's failure, else the search's later message, then the model's error
     // and the store's lines follow it.
     property string localFailure: ""
+    // Issue #909 (B3): a recording's problem its sheet could not show, as it
+    // closed when the detection's last recording went; until the next
+    // recordings sheet opens, or Back closes the screen.
+    property string recordingFailure: ""
     property string sourceType: "usb"
     property string host: ""
     property int port: 1234
@@ -150,11 +154,13 @@ Item {
         if (openedSource.length && sourceValue() !== openedSource) {
             discard.ask(function () {
                 screen.localFailure = "";
+                screen.recordingFailure = "";
                 screen.closed();
             });
             return;
         }
         localFailure = "";
+        recordingFailure = "";
         closed();
     }
     DiscardDialog {
@@ -1179,11 +1185,12 @@ Item {
                     parent: screen.sessionActive ? sessionMessageSlot : idleMessageSlot
                     width: parent.width
                     // One line each, in this order: this screen's own refusal,
-                    // which never hides what the search says now; the host's
+                    // which never hides what the search says now; a recording's
+                    // problem its closed sheet left (issue #909); the host's
                     // failure, else the search's message; the model's own error;
                     // what the store couldn't read or save; then the overload
                     // warning (issue #828).
-                    readonly property var lines: [screen.localFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""]
+                    readonly property var lines: [screen.localFailure, screen.recordingFailure, screen.failure || screen.status.message, searchModel ? searchModel.error : "", searchModel ? searchModel.storeMessage || "" : ""]
                     text: lines.concat([screen.overloadLine]).filter(function (s) { return !!s && s.length > 0; }).join("\n")
                     // A failure can name a device, host or path.
                     textFormat: Text.PlainText
@@ -1550,6 +1557,13 @@ Item {
         id: recordingsSheet
         onCallDetailsRequested: function (record) {
             callDetails.open(record);
+        }
+        onClosedWithNotice: function (text) {
+            screen.recordingFailure = text;
+        }
+        onVisibleChanged: {
+            if (visible)
+                screen.recordingFailure = "";
         }
     }
     HistoryDetailSheet {

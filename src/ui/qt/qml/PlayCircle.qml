@@ -15,6 +15,9 @@ Item {
     property bool showPause: false
     property string accessibleName: qsTr("Listen")
     signal clicked
+    // Issue #909: what a tap acts on (GatedTapHandler.pressKey): a tap whose
+    // press began on another key is dropped.
+    property var pressKey: null
     // Held while it has the focus (see OutlineButton).
     activeFocusOnTab: (Navigation.allows(control) && visible && enabled) || activeFocus
     Accessible.role: Accessible.Button
@@ -103,6 +106,7 @@ Item {
 
     GatedTapHandler {
         enabled: control.enabled
+        pressKey: control.pressKey
         onAllowedTap: control.activate()
     }
 }

@@ -13,21 +13,23 @@
  * snapshot publish would. Every coordinate, ID and scope here is made up.
  */
 
+#include <QAbstractListModel>
 #include <QByteArray>
 #include <QGuiApplication>
 #include <QHash>
 #include <QList>
+#include <QMap>
 #include <QObject>
 #include <QSignalSpy>
 #include <QString>
 #include <QVariant>
+#include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
 #include <cmath>
 #include <cstdint>
 #include <cstdio>
 #include <cstdlib>
-#include <cstring>
 #include <dsd-neo/app_control/position_view.h>
 #include <dsd-neo/core/position.h>
 #include <dsd-neo/core/safe_api.h>
@@ -154,6 +156,7 @@ fix_of(uint32_t source, int32_t step, int64_t rx, uint8_t clock = DSD_DECODE_CLO
 std::vector<dsd_position_fix>
 run_of(uint32_t source, int count, int64_t rx, uint8_t clock = DSD_DECODE_CLOCK_SYSTEM) {
     std::vector<dsd_position_fix> fixes;
+    fixes.reserve(static_cast<std::size_t>(count));
     for (int i = 0; i < count; ++i) {
         fixes.push_back(fix_of(source, i, rx + i, clock));
     }
@@ -490,6 +493,7 @@ test_loss_breaks_trails_and_one_gap_row() {
     f.model.poll();
     // More than the ring holds arrives between two polls: the oldest are gone.
     std::vector<dsd_position_fix> burst;
+    burst.reserve(DSD_POSITION_FEED_CAPACITY + 10U);
     for (int i = 0; i < DSD_POSITION_FEED_CAPACITY + 10; ++i) {
         burst.push_back(fix_of(7U, i + 1, kT0 + 10 + i));
     }
@@ -510,6 +514,7 @@ test_loss_breaks_trails_and_one_gap_row() {
 
     // A second loss moves the one gap row up, below only the tracks that appear after it.
     std::vector<dsd_position_fix> second;
+    second.reserve(DSD_POSITION_FEED_CAPACITY + 1U);
     for (int i = 0; i < DSD_POSITION_FEED_CAPACITY + 1; ++i) {
         second.push_back(fix_of(9U, i, kT0 + 3000 + i));
     }

@@ -15,9 +15,11 @@
 #ifndef DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_OWNERS_H_
 #define DSD_NEO_SRC_UI_QT_HEARD_TALKGROUP_OWNERS_H_
 
-#include "backup_apply.h"
-
 namespace dsd_qt {
+
+namespace backup {
+enum class ApplyOutcome;
+} // namespace backup
 
 class HeardTalkgroupStore;
 class SavedSystemsModel;

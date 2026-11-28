@@ -51,7 +51,6 @@
 #ifndef DSD_NEO_SRC_UI_QT_MAP_TILE_WORKER_H_
 #define DSD_NEO_SRC_UI_QT_MAP_TILE_WORKER_H_
 
-#include <QImage>
 #include <QList>
 #include <QObject>
 #include <QString>
@@ -61,6 +60,9 @@
 #include <memory>
 
 #include "map_tile_cache.h"
+
+class QByteArray;
+class QImage;
 
 namespace dsd_qt {
 

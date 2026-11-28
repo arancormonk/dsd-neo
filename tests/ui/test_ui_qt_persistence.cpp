@@ -14,7 +14,6 @@
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDebug>
 #include <QDir>
 #include <QFile>
@@ -38,7 +37,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QUuid>
 #include <QVariant>
 #include <QVariantList>
@@ -428,10 +426,13 @@ test_json_store_keep_aside_posix(void) {
     const QByteArray latePath = QFile::encodeName(json_store_path(late));
     expect("late fifo: fixture", write_raw(late, "[6"));
     expect("late fifo: loads empty", json_store_load_array(late).isEmpty());
-    dsd_qt::json_store_test_after_aside(
-        [](const QString& path, const QString&) { (void)mkfifo(QFile::encodeName(path).constData(), 0600); });
+    bool fifoMade = false;
+    dsd_qt::json_store_test_after_aside([&fifoMade](const QString& path, const QString&) {
+        fifoMade = mkfifo(QFile::encodeName(path).constData(), 0600) == 0;
+    });
     expect("late fifo: the save fails", !json_store_save_array(late, rows));
     dsd_qt::json_store_test_after_aside({});
+    expect("late fifo: the FIFO was made at the path", fifoMade);
     expect("late fifo: kept", raw(kept(late, 1)) == "[6");
     expect("late fifo: the retry fails too", !json_store_save_array(late, rows));
     expect("late fifo: still a FIFO, no temporary file",
@@ -445,11 +446,13 @@ test_json_store_keep_aside_posix(void) {
     const QString left = QStringLiteral("source-left.json");
     expect("source left: fixture", write_raw(left, "[5"));
     expect("source left: loads empty", json_store_load_array(left).isEmpty());
-    dsd_qt::json_store_test_after_aside([](const QString& path, const QString& keptPath) {
-        (void)::link(QFile::encodeName(keptPath).constData(), QFile::encodeName(path).constData());
+    bool relinked = false;
+    dsd_qt::json_store_test_after_aside([&relinked](const QString& path, const QString& keptPath) {
+        relinked = ::link(QFile::encodeName(keptPath).constData(), QFile::encodeName(path).constData()) == 0;
     });
     expect("source left: saved", json_store_save_array(left, rows));
     dsd_qt::json_store_test_after_aside({});
+    expect("source left: the old name was linked back", relinked);
     expect("source left: kept, and the path holds the new list",
            raw(kept(left, 1)) == "[5" && json_store_load_array(left) == rows && !QFile::exists(kept(left, 2)));
     remove_kept(left, 1);

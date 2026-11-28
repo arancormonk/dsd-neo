@@ -26,9 +26,24 @@ Item {
         var row = logPlace.rowOf(uid);
         if (row < 0 || !logList.model)
             return null;
+        // The row placed here is the answer now: a return to the top that a
+        // filter change still has queued would take it off screen again.
+        logToStart.stop();
+        settleListLayout();
         logList.positionViewAtIndex(row, ListView.Contain);
         var item = logList.itemAtIndex(row);
         return item ? item.node : null;
+    }
+    // The list's place and rows as the next frame shows them, for a row to be
+    // brought into view against: the list hangs under the header, whose
+    // Column and the positioners in it (the filters' Flow, each pill's Row)
+    // lay out on their next polish. A header that changed since the last
+    // frame (the log's first calls offer Export… and Clear on a line of their
+    // own) would otherwise leave a row contained against the old height, and
+    // cut off once the list moves.
+    function settleListLayout() {
+        Theme.settlePositioners(chrome);
+        logList.forceLayout();
     }
     // Back from the map when the row it showed has left the log: the focus
     // goes to the list, where the row was.
@@ -53,6 +68,12 @@ Item {
             // A picker still out ends with the screen, as a cancel; a file
             // already being written finishes.
             exportPicker.cancel();
+            // Issue #909 (B5): a row's sheet ends with the screen, as the
+            // Monitor's do: the session's History hidden under a Stop came
+            // back with the sheet of a call from before. A "Show on map" has
+            // closed its sheet already, and Back from the map opens it again
+            // by its row's uid.
+            detailSheet.visible = false;
             return;
         }
         forgetHeardExportMessage();
@@ -231,6 +252,57 @@ Item {
         historyView.filterKind = 0;
     }
 
+    // ---- Play all (issue #909): the recorded calls the list shows ----
+    // Main's playlistStatus, which the bar at the bottom shows (null: no bar).
+    property var playlistStatus: null
+    readonly property bool canPlayAll: decoderHost.playbackSupported === true
+    // Oldest first, from what the list shows at the press; the bar takes it
+    // from there. A press refused says why on the header's message line,
+    // which Export shares (the newer replaces), and what played plays on.
+    function playAll() {
+        if (!canPlayAll || historyView.count === 0)
+            return;
+        flushPendingSearch();
+        setExportMessage("", false);
+        var outcome = historyPlaylist.start(0) || {};
+        var result = String(outcome.result || "");
+        if (result === "accepted")
+            return;
+        if (result === "none")
+            setExportMessage(qsTr("None of the shown calls has a recording that can be played now."), false);
+        else if (result === "unsupported")
+            setExportMessage(qsTr("Recordings can't be played on this device."), true);
+        else
+            setExportMessage(qsTr("Couldn't start playing. Try again."), true);
+    }
+    // Clear history ends a History playlist that plays, as the bar's ✕ does,
+    // and lets go of an ended one's result: its rows are gone.
+    function endPlaylist() {
+        if (!playlistStatus)
+            return;
+        if (playlistStatus.live)
+            playlistStatus.stop();
+        else
+            playlistStatus.dismiss();
+    }
+    // The bar's Show in list: the row logged under @p uid, looked up through
+    // the list's filter now, scrolled into view and its sheet opened (which
+    // follows what plays by itself). False when the list does not show it.
+    function showPlaying(uid) {
+        // Text typed less than the debounce ago is part of what the list shows.
+        flushPendingSearch();
+        var row = logPlace.rowOf(uid);
+        if (row < 0 || !logList.model)
+            return false;
+        // The flush's filter change queued the list's return to its top,
+        // which would run after the row is placed: the row supersedes it.
+        logToStart.stop();
+        settleListLayout();
+        logList.positionViewAtIndex(row, ListView.Contain);
+        detailSheet.open(callHistory.recordFor(uid));
+        return true;
+    }
+
     // Cycles: 0 everything, 1 clear calls, 2 encrypted calls, 3 messages
     // (SMS, GPS positions, data and control notices).
     readonly property var kindLabels: [qsTr("All activity"), qsTr("Unencrypted calls"), qsTr("Encrypted"), qsTr("Messages")]
@@ -246,7 +318,37 @@ Item {
     // warning shown it is taller than a phone screen, and as one fixed column it
     // pushed the list off the bottom and its last controls out of reach. A
     // header that fits does not move.
+    //
+    // Issue #909: the now-playing bar docks at the bottom and the list ends
+    // above it, so the bar never covers the last row. The bar's height comes
+    // out of the list's share, down to one whole row of list (and its day's
+    // heading) above it, before the header gives any room up. While the
+    // keyboard is up (a search being typed) the bar hides and History is laid
+    // out as it is without one; the notification keeps the playlist's
+    // controls, and its events wait.
+    //
+    // That reservation never takes the whole header: in a short window at a
+    // large text size the bar and a row of list leave it nothing, and Search,
+    // the filters, Export and Clear could not be reached without ending the
+    // playlist. While the bar takes room, the header keeps its top row (the
+    // title's line, with Map and Play all), or at least a 48 px control row,
+    // within what the bar leaves, and scrolls for the rest. Squeezed below its
+    // top row, it scrolls that row's controls whole into view (alignTopRow()).
+    // With no bar the list keeps its 40% share, as before the playlist.
     readonly property real listMinHeight: Math.ceil(height * 0.4)
+    // By the keyboard's visibility, not its overlap: a window Android has
+    // resized above the keyboard has none, and the bar would keep taking
+    // room from the list it already shortened.
+    readonly property bool keyboardUp: Theme.keyboardShown()
+    readonly property real barHeight: nowPlaying.shown && !keyboardUp ? nowPlaying.height : 0
+    // A day's heading over the rows (the list's section delegate).
+    readonly property real sectionHeight: 34
+    readonly property real listShare: Math.max(listMinHeight, barHeight > 0 ? barHeight + sectionHeight + rowHeight : 0)
+    readonly property real topRowBottom: chrome.y + headerButtons.places.topRow
+    readonly property real headerFloor: barHeight > 0 ? Math.min(headerScroll.contentHeight,
+                                                                 Math.max(Theme.minimumTouchSize, topRowBottom),
+                                                                 Math.max(0, height - barHeight - logList.anchors.topMargin))
+                                                      : 0
 
     PlexFlickable {
         id: headerScroll
@@ -256,7 +358,7 @@ Item {
         anchors.top: parent.top
         anchors.left: parent.left
         anchors.right: parent.right
-        height: Math.min(contentHeight, Math.max(0, screen.height - screen.listMinHeight - logList.anchors.topMargin))
+        height: Math.min(contentHeight, Math.max(screen.headerFloor, screen.height - screen.listShare - logList.anchors.topMargin))
         contentWidth: width
         // A few pixels under the filters for their focus ring, which the clip
         // would otherwise cut; the list's top margin gives them back.
@@ -265,8 +367,11 @@ Item {
         interactive: contentHeight > height
         boundsBehavior: Flickable.StopAtBounds
         // A smaller room (the keyboard up, a larger text size) keeps the
-        // focused control in view.
-        onHeightChanged: revealFocusLater.restart()
+        // focused control in view, or (nothing focused there) the top row's.
+        onHeightChanged: {
+            revealFocusLater.restart();
+            alignTopRowLater.restart();
+        }
         // TapHandlers never take exclusive grabs, so with the confirm sheet up a
         // tap on the dimmed search field would still pop the keyboard, a dimmed
         // pill would cycle its filter, and the dimmed Clear label would re-open
@@ -282,21 +387,18 @@ Item {
             width: headerScroll.width - 2 * Theme.screenPadding
             spacing: Theme.gap
 
-            // Title on the left, Export… and Clear on the right, on one line when
-            // they fit. When they do not (a narrow phone, a large text size), the
-            // buttons take their own line under the title, still on the right,
-            // rather than running over it.
+            // Title on the left, the buttons (Map, Play all, Export…, Clear) on the
+            // right, on one line when they fit. When they do not (a narrow phone,
+            // a large text size), the glyphs stay on the title's line while they
+            // fit there and Export… and Clear take a line under it, still on the
+            // right, rather than running over the title.
             Item {
                 id: header
 
                 readonly property real titleHeight: screen.showTitle ? Math.max(48, Theme.fontSize(24) + 20) : 0
-                // Map is always offered (issue #800); Export… and Clear only with calls.
-                readonly property bool stacked: screen.showTitle
-                                                 && historyTitle.implicitWidth + Theme.gap + headerButtons.implicitWidth > width
 
                 width: parent.width
-                height: stacked ? titleHeight + headerButtons.implicitHeight
-                                : Math.max(titleHeight, headerButtons.implicitHeight)
+                height: headerButtons.places.height
                 visible: height > 0
 
                 ReadableText {
@@ -305,7 +407,7 @@ Item {
                     heading: true
                     visible: screen.showTitle
                     anchors.left: parent.left
-                    y: ((header.stacked ? header.titleHeight : header.height) - height) / 2
+                    y: (headerButtons.places.titleLine - height) / 2
                     text: qsTr("History")
                     font.family: Theme.sans
                     font.pixelSize: Theme.fontSize(24)
@@ -314,18 +416,116 @@ Item {
                     color: Theme.textPrimary
                 }
 
-                Row {
+                // Issue #909: a flow set against the right edge, in two groups
+                // kept whole while each fits a line: the glyphs (Map, Play all)
+                // and the text buttons (Export…, Clear). Everything on the
+                // title's line when it fits beside the title; else the glyphs
+                // there and the text buttons on the lines under it; else the
+                // title alone and the groups under it. The buttons keep their
+                // order, and the keyboard's. Placed from the buttons' widths and
+                // whether each is offered, never from their positions or the
+                // screen's visibility, so a hidden screen keeps its layout.
+                Item {
                     id: headerButtons
 
-                    anchors.right: parent.right
-                    y: header.stacked ? header.titleHeight : (header.height - height) / 2
-                    spacing: 10
+                    readonly property var controls: [historyMapButton, historyPlayAll, historyExportButton, clearHistory]
+                    readonly property real spacing: 10
+                    anchors.fill: parent
 
-                    // A glyph, as the top bars' other icon actions, so the
-                    // title, Export… and Clear still share one line on a phone.
+                    // {height, titleLine (the first line's height), topRow (the bottom of the first line with
+                    // controls on it), at: [{x, y}, ...] per control, in its order}.
+                    readonly property var places: {
+                        var room = header.width;
+                        var titleRoom = screen.showTitle ? room - historyTitle.implicitWidth - Theme.gap : room;
+                        var controls = headerButtons.controls, spacing = headerButtons.spacing;
+                        var groups = [[0, 1], [2, 3]].map(function (group) {
+                            return group.filter(function (index) {
+                                return controls[index].offered;
+                            });
+                        }).filter(function (group) {
+                            return group.length > 0;
+                        });
+                        // The glyphs' 48 px targets sit side by side, as a top
+                        // bar's icon actions do; framed buttons keep a gap.
+                        var gapBefore = function (list, n) {
+                            return n === 0 ? 0 : list[n] < 2 && list[n - 1] < 2 ? 0 : spacing;
+                        };
+                        var widthOf = function (list) {
+                            var total = 0;
+                            for (var n = 0; n < list.length; n++)
+                                total += gapBefore(list, n) + controls[list[n]].implicitWidth;
+                            return total;
+                        };
+                        var heightOf = function (list) {
+                            var tallest = 0;
+                            for (var index of list)
+                                tallest = Math.max(tallest, controls[index].implicitHeight);
+                            return tallest;
+                        };
+                        var all = [].concat.apply([], groups);
+                        var first = [], rest = groups;
+                        if (widthOf(all) <= titleRoom) {
+                            first = all;
+                            rest = [];
+                        } else if (screen.showTitle && groups.length > 1 && widthOf(groups[0]) <= titleRoom) {
+                            first = groups[0];
+                            rest = groups.slice(1);
+                        }
+                        // The rest from the end, each line as wide as the screen:
+                        // a group whole while it fits one, else button by button.
+                        var units = [];
+                        for (var group of rest) {
+                            if (widthOf(group) <= room)
+                                units.push(group);
+                            else
+                                for (var index of group)
+                                    units.push([index]);
+                        }
+                        var lines = [], line = [];
+                        for (var u = units.length - 1; u >= 0; u--) {
+                            if (line.length > 0 && widthOf(units[u].concat(line)) > room) {
+                                lines.unshift(line);
+                                line = [];
+                            }
+                            line = units[u].concat(line);
+                        }
+                        if (line.length > 0)
+                            lines.unshift(line);
+                        var at = controls.map(function () {
+                            return {x: 0, y: 0};
+                        });
+                        var place = function (list, top, height) {
+                            var left = room - widthOf(list);
+                            for (var n = 0; n < list.length; n++) {
+                                var index = list[n];
+                                left += gapBefore(list, n);
+                                at[index] = {x: left, y: top + (height - controls[index].implicitHeight) / 2};
+                                left += controls[index].implicitWidth;
+                            }
+                        };
+                        var titleLine = Math.max(header.titleHeight, heightOf(first));
+                        place(first, 0, titleLine);
+                        var top = titleLine;
+                        var topRow = first.length > 0 ? titleLine : 0;
+                        for (var l = 0; l < lines.length; l++) {
+                            if (top > 0)
+                                top += spacing;
+                            var lineHeight = heightOf(lines[l]);
+                            place(lines[l], top, lineHeight);
+                            top += lineHeight;
+                            if (topRow === 0)
+                                topRow = top;
+                        }
+                        return {height: top, titleLine: titleLine, topRow: topRow, at: at};
+                    }
+
+                    // A glyph, as the top bars' other icon actions.
                     MapControlButton {
+                        id: historyMapButton
+                        readonly property bool offered: true
                         objectName: "historyMapButton"
-                        anchors.verticalCenter: parent.verticalCenter
+                        x: headerButtons.places.at[0].x
+                        y: headerButtons.places.at[0].y
                         framed: false
                         shape: "map"
                         accessibleName: qsTr("Map")
@@ -333,9 +533,31 @@ Item {
                         onClicked: screen.openMap()
                     }
 
+                    // Issue #909: beside Map and drawn as it is; on Export's rule,
+                    // where the host has a player.
+                    MapControlButton {
+                        id: historyPlayAll
+                        readonly property bool offered: callHistory.count > 0 && screen.canPlayAll
+                        objectName: "historyPlayAll"
+                        visible: offered
+                        x: headerButtons.places.at[1].x
+                        y: headerButtons.places.at[1].y
+                        framed: false
+                        shape: "play"
+                        accessibleName: qsTr("Play all")
+                        accessibleDescription: qsTr("Plays the recorded calls shown, oldest first")
+                        // While the list shows rows (its empty state says why not).
+                        enabled: historyView.count > 0
+                        onClicked: screen.playAll()
+                    }
+
                     OutlineButton {
+                        id: historyExportButton
+                        readonly property bool offered: callHistory.count > 0
                         objectName: "historyExportButton"
-                        visible: callHistory.count > 0
+                        visible: offered
+                        x: headerButtons.places.at[2].x
+                        y: headerButtons.places.at[2].y
                         text: qsTr("Export…")
                         accessibleName: qsTr("Export history as a CSV file")
                         // Held while this screen's picker is out, while either
@@ -347,8 +569,11 @@ Item {
 
                     OutlineButton {
                         id: clearHistory
+                        readonly property bool offered: callHistory.count > 0
                         objectName: "clearHistoryButton"
-                        visible: callHistory.count > 0
+                        visible: offered
+                        x: headerButtons.places.at[3].x
+                        y: headerButtons.places.at[3].y
                         text: qsTr("Clear")
                         onClicked: confirmClear.open()
                     }
@@ -458,8 +683,28 @@ Item {
     // into the header's view, as it does on the other scrolling screens.
     function revealHeaderFocus() {
         var window = screen.Window.window;
-        if (window && visible)
-            Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        if (!window || !visible)
+            return;
+        Theme.revealFocus(headerScroll, chrome, window.activeFocusItem);
+        // Clear filters reached by keyboard scrolls into the empty state's view.
+        Theme.revealFocus(emptyArea, emptyState, window.activeFocusItem);
+    }
+    // A header squeezed below its top row (a short window, the bar docked)
+    // with nothing of it focused shows that row's controls whole, its title's
+    // margin above them scrolled away.
+    function alignTopRow() {
+        var window = screen.Window.window;
+        for (var item = window ? window.activeFocusItem : null; item; item = item.parent) {
+            if (item === chrome)
+                return;
+        }
+        if (visible && headerScroll.height < topRowBottom)
+            Theme.revealFocus(headerScroll, chrome, historyMapButton);
+    }
+    Timer {
+        id: alignTopRowLater
+        interval: 0
+        onTriggered: screen.alignTopRow()
     }
     Connections {
         target: screen.Window.window
@@ -494,6 +739,8 @@ Item {
         anchors.left: parent.left
         anchors.right: parent.right
         anchors.bottom: parent.bottom
+        // Above the now-playing bar (issue #909).
+        anchors.bottomMargin: screen.barHeight
         clip: true
         // TapHandlers never take exclusive grabs, so a tap on the confirm sheet
         // would also scroll the list under the overlay.
@@ -506,7 +753,7 @@ Item {
             required property string section
 
             width: ListView.view ? ListView.view.width : 0
-            height: 34
+            height: screen.sectionHeight
             leftPadding: Theme.screenPadding
             verticalAlignment: Text.AlignBottom
             bottomPadding: 8
@@ -593,6 +840,8 @@ Item {
             enc: model.enc
             emergency: model.emergency
             hasRecording: model.hasRecording
+            // Issue #909: the call a History playlist is on.
+            playback: Util.playlistMark(decoderHost, model.uid)
             // The frequency a search found is not added: the meta line, read as
             // the row's description, already leads with it. A row with no start
             // time has no time to read.
@@ -607,6 +856,20 @@ Item {
         }
     }
 
+    // Issue #909: the History playlist, docked under the list.
+    NowPlayingBar {
+        id: nowPlaying
+        objectName: "nowPlayingBar"
+        status: screen.playlistStatus
+        showRow: screen.showPlaying
+        visible: shown && !screen.keyboardUp
+        anchors.left: parent.left
+        anchors.right: parent.right
+        anchors.bottom: parent.bottom
+        // As the list: a tap on the confirm sheet over it reaches nothing here.
+        enabled: !confirmClear.visible
+    }
+
     ChoiceSheet {
         id: filterChoices
         objectName: "historyFilterChoices"
@@ -614,6 +877,8 @@ Item {
     HistoryDetailSheet {
         id: detailSheet
         objectName: "historyDetailSheet"
+        showPlayFromHere: true
+        onPlayFromHereRequested: screen.flushPendingSearch()
         onShowOnMapRequested: function (record) {
             screen.showOnMap(record, detailSheet);
         }
@@ -666,7 +931,9 @@ Item {
         // still applying the filter's row changes, and a position asserted there
         // does not survive them. Setting several filters at once (the empty
         // state's Clear filters button sets three) coalesces into one call, and
-        // repositioning an already-topped list is a no-op either way.
+        // repositioning an already-topped list is a no-op either way. A timer
+        // the screen owns, so a row placed after the change (Show in list
+        // flushing a search, Back from the map) cancels it (issue #909).
         //
         // A hidden log has no rows to reposition, so the place it will come
         // back to is dropped as well (issue #782). That covers the filter the
@@ -674,7 +941,7 @@ Item {
         // (flushPendingSearch), which runs after the log noted its place.
         function onFilterChanged() {
             logPlace.forget();
-            Qt.callLater(logList.positionViewAtBeginning);
+            logToStart.restart();
         }
     }
 
@@ -683,7 +950,8 @@ Item {
     // the place it held. Deferred so the rows take their new height first, by
     // a timer the screen owns, so nothing runs after it closes; the rows are
     // laid out at their new height before the view is placed, or the start it
-    // found was the old layout's and a log read deep stayed off its top.
+    // found was the old layout's and a log read deep stayed off its top. A
+    // filter change uses the same timer, and a row placed after either stops it.
     onCompactViewChanged: {
         logPlace.forget();
         logToStart.restart();
@@ -699,60 +967,76 @@ Item {
 
     // A sibling of the view, not a child: ListView reparents declared children
     // into its contentItem, where `parent.count` is undefined and the empty state
-    // would never show.
-    Column {
-        objectName: "callLogEmptyState"
-        anchors.centerIn: logList
-        width: logList.width - 2 * Theme.screenPadding
+    // would never show. Its own clipped area over the list's (issue #909): a
+    // short window with the bar docked scrolls the text and Clear filters there,
+    // never over the bar.
+    Flickable {
+        id: emptyArea
+        objectName: "callLogEmptyArea"
+        anchors.fill: logList
         // The filter's count, not the view's: the view holds no rows while hidden.
         visible: historyView.count === 0
-        spacing: 8
+        clip: true
+        contentWidth: width
+        contentHeight: Math.max(height, emptyState.height)
+        interactive: contentHeight > height
+        boundsBehavior: Flickable.StopAtBounds
 
-        // An empty filtered view and an empty log are different situations: the
-        // first must say the calls are hidden, not gone, or the filter pill left
-        // active yesterday reads as a decoder that stopped logging.
-        readonly property bool filtered: callHistory.count > 0
-        // Each count spelled as a whole sentence rather than one %n plural: the
-        // app installs no QTranslator, and an untranslated %n form substitutes the
-        // number but never picks a plural form — this read "1 logged call(s) are
-        // hidden". Two strings also let the verb agree.
-        readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
+        Column {
+            id: emptyState
+            objectName: "callLogEmptyState"
+            x: Theme.screenPadding
+            // Centred while it fits; from the top, scrolled, when it does not.
+            y: Math.max(0, (emptyArea.height - height) / 2)
+            width: emptyArea.width - 2 * Theme.screenPadding
+            spacing: 8
 
-        ReadableText {
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(16)
-            font.weight: Font.DemiBold
-            color: Theme.textSecondary
-        }
+            // An empty filtered view and an empty log are different situations: the
+            // first must say the calls are hidden, not gone, or the filter pill left
+            // active yesterday reads as a decoder that stopped logging.
+            readonly property bool filtered: callHistory.count > 0
+            // Each count spelled as a whole sentence rather than one %n plural: the
+            // app installs no QTranslator, and an untranslated %n form substitutes the
+            // number but never picks a plural form — this read "1 logged call(s) are
+            // hidden". Two strings also let the verb agree.
+            readonly property string hiddenText: callHistory.count === 1 ? qsTr("1 logged call is hidden by the search or filters.") : qsTr("%1 logged calls are hidden by the search or filters.").arg(callHistory.count)
 
-        ReadableText {
-            objectName: "logEmptyDetail"
+            ReadableText {
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? qsTr("No matching activity") : qsTr("No calls yet")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(16)
+                font.weight: Font.DemiBold
+                color: Theme.textSecondary
+            }
 
-            width: parent.width
-            horizontalAlignment: Text.AlignHCenter
-            text: parent.filtered ? parent.hiddenText : qsTr("Start listening on a system and every call lands here.")
-            font.family: Theme.sans
-            font.pixelSize: Theme.fontSize(13)
-            color: Theme.textSubdued
-            wrapMode: Text.Wrap
-        }
+            ReadableText {
+                objectName: "logEmptyDetail"
 
-        Item {
-            width: 1
-            height: 6
-            visible: parent.filtered
-        }
+                width: parent.width
+                horizontalAlignment: Text.AlignHCenter
+                text: parent.filtered ? parent.hiddenText : qsTr("Start listening on a system and every call lands here.")
+                font.family: Theme.sans
+                font.pixelSize: Theme.fontSize(13)
+                color: Theme.textSubdued
+                wrapMode: Text.Wrap
+            }
 
-        OutlineButton {
-            objectName: "historyClearFilters"
-            anchors.horizontalCenter: parent.horizontalCenter
-            visible: parent.filtered
-            width: Math.min(parent.width, 220)
-            text: qsTr("Clear filters")
-            onClicked: screen.clearFilters()
+            Item {
+                width: 1
+                height: 6
+                visible: parent.filtered
+            }
+
+            OutlineButton {
+                objectName: "historyClearFilters"
+                anchors.horizontalCenter: parent.horizontalCenter
+                visible: parent.filtered
+                width: Math.min(parent.width, 220)
+                text: qsTr("Clear filters")
+                onClicked: screen.clearFilters()
+            }
         }
     }
 
@@ -765,6 +1049,10 @@ Item {
         message: qsTr("Every logged call and message is removed. A call playing right now still gets logged.")
         confirmText: qsTr("Clear history")
         destructive: true
-        onConfirmed: callHistory.clearAll()
+        onConfirmed: {
+            // Issue #909: a History playlist ends with the log it came from.
+            screen.endPlaylist();
+            callHistory.clearAll();
+        }
     }
 }

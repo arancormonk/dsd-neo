@@ -12,6 +12,9 @@ Item {
     // finishes only the keyboard's word: a control inside a field that acts on
     // it, such as a search field's ×.
     property bool finishesEditing: true
+    // Issue #909: what a tap acts on (GatedTapHandler.pressKey): a tap whose
+    // press began on another key is dropped.
+    property var pressKey: null
     signal clicked
     implicitWidth: Theme.minimumTouchSize
     implicitHeight: Theme.minimumTouchSize
@@ -67,6 +70,7 @@ Item {
     GatedTapHandler {
         id: tap
         gesturePolicy: TapHandler.ReleaseWithinBounds
+        pressKey: control.pressKey
         onAllowedTap: control.activate()
     }
 }

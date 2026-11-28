@@ -204,12 +204,14 @@ def kotlin_codes(path, names):
     return {name: int(value) for name, value in re.findall(r"const val ([A-Z_]+) = (\d+)", text) if name in names}
 
 
-def native_enum_matches(enum_name, prefix, source, names):
-    """Whether DecoderHost's `enum_name` (members `prefix<Name>`) and the Kotlin `source`'s `names` agree."""
+def native_enum_matches(enum_name, prefix, source, names, jvm_prefix=""):
+    """Whether DecoderHost's `enum_name` (members `prefix<Name>`) and the Kotlin `source`'s `names` agree; the Kotlin
+    constants are `jvm_prefix<NAME>`."""
     header = REPO / "src/ui/qt/decoder_host.h"
     try:
         enum = re.search(rf"enum\s+{enum_name}\s*\{{([^}}]*)\}}", header.read_text(encoding="utf-8"))
-        jvm = kotlin_codes(REPO / APP_SOURCES / source, names)
+        codes = kotlin_codes(REPO / APP_SOURCES / source, {jvm_prefix + name for name in names})
+        jvm = {name[len(jvm_prefix) :]: value for name, value in codes.items()}
     except OSError as error:
         return f"cannot read the {enum_name} codes: {error}"
     if not enum:
@@ -232,8 +234,145 @@ def recording_transfer_codes_match():
 
 def playback_states_match():
     """#708: the call recording player's state crosses JNI as a plain int."""
-    names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED")
+    names = ("STOPPED", "PREPARING", "PLAYING", "PAUSED", "FAILED", "STARTING")
     return native_enum_matches("PlaybackState", "Playback", "RecordingPlayer.kt", names)
+
+
+def playback_modes_match():
+    """#909: the play's mode (one recording, a call's parts, History's playlist) crosses JNI as a plain int."""
+    names = ("SINGLE", "PARTS", "PLAYLIST")
+    return native_enum_matches("PlaybackMode", "Playback", "RecordingPlayer.kt", names, jvm_prefix="MODE_")
+
+
+def playback_codes_match():
+    """#909: a status record whose reason is not one of its field's codes is ignored, so the codes the parser takes
+    (playback_status_record.h) must be the ones RecordingPlayer.kt writes: its ERROR_*, PAUSED_* and ENDED_* values,
+    less ENDED_REPLACED, which no record carries."""
+    header = REPO / "android/playback_status_record.h"
+    kotlin = REPO / APP_SOURCES / "RecordingPlayer.kt"
+    try:
+        header_text = header.read_text(encoding="utf-8")
+        kotlin_text = kotlin.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read the playback reason codes: {error}"
+    jvm_codes = dict(re.findall(r'const val ((?:ERROR|PAUSED|ENDED)_[A-Z_]+) = "([a-z]*)"', kotlin_text))
+    jvm_codes.pop("ENDED_REPLACED", None)
+    for field, prefix in (("Error", "ERROR_"), ("Paused", "PAUSED_"), ("Ended", "ENDED_")):
+        table = re.search(rf"kPlayback{field}Codes\[\]\s*=\s*\{{([^}}]*)\}}", header_text)
+        if not table:
+            return f"{header.relative_to(REPO)}: no kPlayback{field}Codes"
+        native = sorted(re.findall(r'"([a-z]*)"', table.group(1)))
+        jvm = sorted(value for name, value in jvm_codes.items() if name.startswith(prefix))
+        if native != jvm:
+            return (
+                f"kPlayback{field}Codes in {header.relative_to(REPO)} ({native}) and the {prefix}* codes in "
+                f"{kotlin.relative_to(REPO)} ({jvm}) must name the same values"
+            )
+    return None
+
+
+def top_level_items(text):
+    """The comma-separated items of @p text outside any parentheses, empty ones (a trailing comma's) left out."""
+    items, depth, item = [], 0, []
+    for char in text:
+        if char == "," and depth == 0:
+            items.append("".join(item).strip())
+            item = []
+            continue
+        depth += {"(": 1, ")": -1}.get(char, 0)
+        item.append(char)
+    items.append("".join(item).strip())
+    return [entry for entry in items if entry]
+
+
+def playback_requests_checked_before_begin():
+    """#909 R63/R70: RecordingPlayback refuses a request RecordingPlayer.validRequest() refuses before begin() accepts
+    it, so a refused one changes neither the play running nor the service's ownership. RecordingPlayback has Android
+    imports, so the JVM suites cannot run it: each play() entry is checked here to call validRequest( before begin(."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    entries = (
+        ("play(context, path)", r"fun play\(context: Context, path: String\): Int \{.*?\n    \}"),
+        ("play(context, arrays)", r"fun play\(\s*context: Context,\s*paths: Array<String>,.*?\n    \}"),
+    )
+    for name, pattern in entries:
+        body = re.search(pattern, source, re.S)
+        if not body:
+            return f"{playback.relative_to(REPO)}: {name} not found"
+        text = body.group(0)
+        checked = text.find("RecordingPlayer.validRequest(")
+        begun = text.find("begin(")
+        if checked < 0 or begun < 0 or checked > begun:
+            return f"{playback.relative_to(REPO)}: {name} must call RecordingPlayer.validRequest( before begin("
+    return None
+
+
+def playback_scoped_commands_check_first():
+    """#909 R73: RecordingPlayback's token- and generation-scoped commands (pauseFor, resumeFor, stopGeneration) go
+    through PlayPauseTaps.scoped() (itemCommand() for the item ones), which checks the command before it cancels a
+    waiting headset tap; never through explicit(), which cancels first. RecordingPlayback cannot run in the JVM suites,
+    so its source is checked here."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    for name in ("pauseFor", "resumeFor", "stopGeneration"):
+        body = re.search(rf"fun {name}\(.*?(?=\n    @JvmStatic|\n    private fun |\n    /\*\*)", source, re.S)
+        if not body:
+            return f"{playback.relative_to(REPO)}: {name} not found"
+        text = body.group(0)
+        if "explicit" in text or ("itemCommand(" not in text and "PlayPauseTaps.scoped(" not in text):
+            return f"{playback.relative_to(REPO)}: {name} must go through PlayPauseTaps.scoped(), not explicit()"
+    item = re.search(r"private fun itemCommand\(.*?\n\n", source, re.S)
+    if not item or "PlayPauseTaps.scoped(" not in item.group(0):
+        return f"{playback.relative_to(REPO)}: itemCommand() must go through PlayPauseTaps.scoped()"
+    return None
+
+
+def playback_looper_reads_no_main_service():
+    """#909: RecordingPlayback's `service` field is the main thread's. The noisy receiver, delivered on the
+    playback looper, reads the instance's taps through the volatile `serviceTaps`, as the looper commands do; every
+    other read of `service` sits inside a `main.post` block."""
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        source = playback.read_text(encoding="utf-8")
+    except OSError as error:
+        return f"cannot read {playback.relative_to(REPO)}: {error}"
+    noisy = re.search(r"private object Noisy : BroadcastReceiver\(\) \{.*?\n    \}\n", source, re.S)
+    if not noisy:
+        return f"{playback.relative_to(REPO)}: the Noisy receiver not found"
+    code = re.sub(r"//[^\n]*", "", noisy.group(0))
+    if re.search(r"\bservice\b", code) or "serviceTaps" not in code:
+        return f"{playback.relative_to(REPO)}: the Noisy receiver must read serviceTaps, not the main-thread service"
+    return None
+
+
+def playback_record_fields_match():
+    """#909: the status record's fields are read by position, so Status.record() and the idle record in
+    RecordingPlayback.kt must list as many as playback_status_record.h's kPlaybackStatusFields."""
+    header = REPO / "android/playback_status_record.h"
+    player = REPO / APP_SOURCES / "RecordingPlayer.kt"
+    playback = REPO / APP_SOURCES / "RecordingPlayback.kt"
+    try:
+        count = re.search(r"constexpr int kPlaybackStatusFields = (\d+);", header.read_text(encoding="utf-8"))
+        record = re.search(r"fun record\(nowMs: Long\): String = listOf\((.*?)\)\.joinToString",
+                           player.read_text(encoding="utf-8"), re.S)
+        idle = re.search(r"fun idleRecord\(\): String =\s*listOf\((.*?)\)\.joinToString",
+                         playback.read_text(encoding="utf-8"), re.S)
+    except OSError as error:
+        return f"cannot read the playback status record: {error}"
+    if not count or not record or not idle:
+        return "kPlaybackStatusFields, Status.record() and RecordingPlayback's idleRecord() must all be found"
+    for source, found in ((player, record), (playback, idle)):
+        fields = len(top_level_items(found.group(1)))
+        if fields != int(count.group(1)):
+            return (f"{source.relative_to(REPO)} writes {fields} status record fields, and "
+                    f"{header.relative_to(REPO)} reads {count.group(1)}")
+    return None
 
 
 def recordings_provider_contract():
@@ -1559,17 +1698,43 @@ SUITES = {
     "downloads_save": Suite(
         builds=(
             Build(
-                sources=("DownloadsSave.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "RecordingExport.kt"),
+                sources=(
+                    "DownloadsSave.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                ),
                 tests=("DownloadsSaveTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),
         ),
     ),
-    # The call recording player's state machine (#708). Plain Kotlin with no Android imports, so no stubs;
-    # RecordingPlayback runs it with a MediaPlayer and the audio focus.
+    # The call recording player's state machine (#708, #909) and the playlist service's order (#909): which play the
+    # service serves, what each delivery does, when it retires and the teardown by phase. Plain Kotlin with no Android
+    # imports, so no stubs; RecordingPlayback runs the machine with a MediaPlayer and the audio focus, and
+    # RecordingPlaybackService carries out the phases.
     "recording_player": Suite(
-        checks=(playback_states_match,),
-        builds=(Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),),
+        checks=(
+            playback_states_match,
+            playback_modes_match,
+            playback_codes_match,
+            playback_record_fields_match,
+            playback_requests_checked_before_begin,
+            playback_scoped_commands_check_first,
+            playback_looper_reads_no_main_service,
+        ),
+        builds=(
+            Build(sources=("RecordingPlayer.kt",), tests=("RecordingPlayerTest.kt",)),
+            Build(
+                sources=("PlaybackServicePhases.kt", "RecordingPlayer.kt", "MediaKeys.kt"),
+                tests=("PlaybackServicePhasesTest.kt",),
+            ),
+            # The media keys the Activity hands past Qt to the playlist's media session (#909).
+            Build(sources=("MediaKeys.kt",), tests=("MediaKeysTest.kt",)),
+            # A player's owner thread: one platform seek in flight (R59), and silence only once the audio stopped (R62).
+            Build(sources=("PlayerOwnerState.kt",), tests=("PlayerOwnerStateTest.kt",)),
+        ),
     ),
     # Call recording export and save (#708): the ZIP writer and the transfer into a document, through DocumentCopies'
     # managed write, against the same resolver stubs as the backup's copies.
@@ -1577,7 +1742,13 @@ SUITES = {
         checks=(recording_transfer_codes_match,),
         builds=(
             Build(
-                sources=("RecordingExport.kt", "DocumentCopies.kt", "DocumentTransfer.kt", "DownloadsSave.kt"),
+                sources=(
+                    "RecordingExport.kt",
+                    "RecordingDescriptor.kt",
+                    "DocumentCopies.kt",
+                    "DocumentTransfer.kt",
+                    "DownloadsSave.kt",
+                ),
                 tests=("RecordingExportTest.kt",),
                 stubs=DOWNLOADS_SAVE_STUBS,
             ),

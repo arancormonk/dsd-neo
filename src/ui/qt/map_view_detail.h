@@ -11,6 +11,7 @@
 #ifndef DSD_NEO_SRC_UI_QT_MAP_VIEW_DETAIL_H_
 #define DSD_NEO_SRC_UI_QT_MAP_VIEW_DETAIL_H_
 
+#include <QtGlobal>
 #include <cmath>
 
 #include "map_view_item.h"

@@ -26,6 +26,7 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QChar>
 #include <QColor>
 #include <QCoreApplication>
 #include <QDateTime>
@@ -40,11 +41,10 @@
 #include <QList>
 #include <QLocale>
 #include <QObject>
-#include <QPair>
 #include <QString>
-#include <QStringList>
 #include <QTemporaryDir>
 #include <QTimeZone>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <chrono>
@@ -55,13 +55,17 @@
 #include <dsd-neo/runtime/tile_fetch.h>
 #include <functional>
 #include <mutex>
+#include <qflags.h>
+#include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <thread>
+#include <utility>
 #include <vector>
 
 #include "../test_support/qt_test_paths.h"
 #include "map_tile_cache.h"
+#include "map_tile_http.h"
 #include "map_tile_worker.h"
 
 using dsd_qt::MapTileCache;
@@ -79,8 +83,19 @@ int g_failures = 0;
 std::atomic<qint64> g_wall{1700000000};
 std::atomic<quint64> g_mono{1000000};
 
-const QString kTemplate = QStringLiteral("https://tiles.example.test/{z}/{x}/{y}.png");
-const QByteArray kHost = QByteArrayLiteral("tiles.example.test");
+/* Built on first use: a namespace-scope QString or QByteArray would run its constructor before main(), where it may throw. */
+const QString&
+templateUrl() {
+    static const QString url = QStringLiteral("https://tiles.example.test/{z}/{x}/{y}.png");
+    return url;
+}
+
+const QByteArray&
+tileHost() {
+    static const QByteArray host = QByteArrayLiteral("tiles.example.test");
+    return host;
+}
+
 constexpr MapTileWorker::ViewOrigin kByHand = MapTileWorker::ViewOrigin::ByHand;
 constexpr MapTileWorker::ViewOrigin kFromDevice = MapTileWorker::ViewOrigin::FromDevice;
 constexpr MapTileCache::Storage kMemoryOnly = MapTileCache::Storage::MemoryOnly;
@@ -135,7 +150,7 @@ MapTileRequestFields
 fields(const QByteArray& ua = QByteArrayLiteral("dsd-neo/1.0 (+https://github.com/arancormonk/dsd-neo)")) {
     MapTileRequestFields f;
     f.userAgent = ua;
-    f.host = kHost;
+    f.host = tileHost();
     return f;
 }
 
@@ -286,9 +301,10 @@ test_freshness_rules() {
     expect("an Expires entry goes stale at its date", !dsd_qt::mapTileFreshness(exp, t0 + 50).fresh);
     f = dsd_qt::mapTileFreshness(meta_of({"Cache-Control: max-age=100", "Age: 60"}, t0, t0 + 5), t0 + 30);
     expect("Age plus the response delay plus residence is the age", f.currentAge == 60 + 5 + 25 && f.fresh);
-    f = dsd_qt::mapTileFreshness(meta_of({"ETag: \"a\""}, t0, t0), t0 + 6 * 86400);
-    expect("no freshness at all gets seven days", f.fresh && f.lifetime == 7 * 86400);
-    expect("the seven days run out", !dsd_qt::mapTileFreshness(meta_of({"ETag: \"a\""}, t0, t0), t0 + 7 * 86400).fresh);
+    f = dsd_qt::mapTileFreshness(meta_of({"ETag: \"a\""}, t0, t0), t0 + qint64{6} * 86400);
+    expect("no freshness at all gets seven days", f.fresh && f.lifetime == qint64{7} * 86400);
+    expect("the seven days run out",
+           !dsd_qt::mapTileFreshness(meta_of({"ETag: \"a\""}, t0, t0), t0 + qint64{7} * 86400).fresh);
     f = dsd_qt::mapTileFreshness(meta_of({"Cache-Control: max-age=soon"}, t0, t0), t0);
     expect("a malformed max-age is stale, not seven days", !f.fresh && f.malformed);
     f = dsd_qt::mapTileFreshness(meta_of({"Expires: 0"}, t0, t0), t0);
@@ -310,9 +326,9 @@ test_freshness_rules() {
 
 void
 test_namespace_and_round_trip(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     expect("the directory is the template's hash under the root",
-           cache.directory() == root + QLatin1Char('/') + MapTileCache::namespaceFor(kTemplate));
+           cache.directory() == root + QLatin1Char('/') + MapTileCache::namespaceFor(templateUrl()));
     expect("the template never appears in the path", !cache.directory().contains(QStringLiteral("example")));
     const MapTileKey k = key(3, 2, 1);
     expect("a tile with freshness is stored", store_tile(cache, k, {"Cache-Control: max-age=600", "ETag: \"r1\""}));
@@ -320,24 +336,24 @@ test_namespace_and_round_trip(const QString& root) {
     expect("the entry file is private",
            QFile(cache.pathFor(k)).permissions()
                == (QFileDevice::ReadOwner | QFileDevice::WriteOwner | QFileDevice::ReadUser | QFileDevice::WriteUser));
-    MapTileCache reopened(root, kTemplate, wall_now);
+    MapTileCache reopened(root, templateUrl(), wall_now);
     const MapTileCache::Lookup hit = reopened.lookup(k, fields());
     expect("a reopened cache serves the entry fresh from disk",
            hit.reuse == MapTileCache::Reuse::Fresh && hit.image.width() == 256 && hit.ifNoneMatch == "\"r1\"");
     expect("an invalid key is a miss", reopened.lookup(key(1, 2, 0), fields()).reuse == MapTileCache::Reuse::Miss);
-    MapTileCache other(root, kTemplate + QStringLiteral("?v=2"), wall_now);
+    MapTileCache other(root, templateUrl() + QStringLiteral("?v=2"), wall_now);
     expect("another template does not see it", other.lookup(k, fields()).reuse == MapTileCache::Reuse::Miss);
 }
 
 void
 test_no_cache_and_must_revalidate(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(4, 1, 1);
     expect("a no-cache tile is stored", store_tile(cache, k, {"Cache-Control: no-cache, max-age=600", "ETag: \"n\""}));
     MapTileCache::Lookup found = cache.lookup(k, fields());
     expect("a fresh no-cache entry still needs a revalidation, and is not shown before it",
            found.reuse == MapTileCache::Reuse::NeedsValidation && found.image.isNull() && found.ifNoneMatch == "\"n\"");
-    MapTileCache reopened(root, kTemplate, wall_now);
+    MapTileCache reopened(root, templateUrl(), wall_now);
     expect("the same from disk", reopened.lookup(k, fields()).reuse == MapTileCache::Reuse::NeedsValidation);
 
     const MapTileKey m = key(4, 2, 2);
@@ -359,7 +375,7 @@ test_no_cache_and_must_revalidate(const QString& root) {
 
 void
 test_vary(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(5, 1, 1);
     expect("an older entry exists", store_tile(cache, k, {"Cache-Control: max-age=600"}));
     expect("Vary: * is not stored", !store_tile(cache, k, {"Cache-Control: max-age=600", "Vary: *"}));
@@ -370,7 +386,7 @@ test_vary(const QString& root) {
     expect("a Vary tile is stored",
            store_tile(cache, v,
                       {"Cache-Control: max-age=600", "ETag: \"e\"", "Vary: User-Agent, Accept-Encoding, Accept"}));
-    MapTileCache reopened(root, kTemplate, wall_now);
+    MapTileCache reopened(root, templateUrl(), wall_now);
     expect("the same request fields reuse it", reopened.lookup(v, fields()).reuse == MapTileCache::Reuse::Fresh);
     const MapTileCache::Lookup upgraded =
         reopened.lookup(v, fields("dsd-neo/9.9 (+https://github.com/arancormonk/dsd-neo)"));
@@ -383,7 +399,7 @@ test_vary(const QString& root) {
 
 void
 test_no_store(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(6, 1, 1);
     expect("an older entry exists", store_tile(cache, k, {"Cache-Control: max-age=600"}));
     expect("a no-store response is not stored", !store_tile(cache, k, {"Cache-Control: no-store, max-age=600"}));
@@ -396,7 +412,7 @@ test_no_store(const QString& root) {
 
 void
 test_not_modified_merge(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(7, 1, 1);
     expect("a tile is stored",
            store_tile(cache, k,
@@ -409,7 +425,7 @@ test_not_modified_merge(const QString& root) {
         cache.refresh(k, response(DSD_TILE_FETCH_NOT_MODIFIED, {"Cache-Control: max-age=300", "ETag: \"m\""}),
                       wall_now(), wall_now(), newer);
     expect("a 304 with the same (weakly compared) ETag returns the stored image", !image.isNull());
-    MapTileCache reopened(root, kTemplate, wall_now);
+    MapTileCache reopened(root, templateUrl(), wall_now);
     MapTileCache::Lookup found = reopened.lookup(k, newer);
     expect("the merged max-age and the new nominated User-Agent are stored on disk",
            found.reuse == MapTileCache::Reuse::Fresh && found.ifNoneMatch == "\"m\""
@@ -438,7 +454,7 @@ test_not_modified_merge(const QString& root) {
 
 void
 test_unreadable_and_oversized(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(8, 1, 1);
     QDir().mkpath(cache.directory());
     QFile junk(cache.pathFor(k));
@@ -453,7 +469,7 @@ test_unreadable_and_oversized(const QString& root) {
     if (probe.open(QIODevice::ReadOnly)) {
         probe.close(); /* Running with privileges that ignore file permissions: nothing to check here. */
     } else {
-        MapTileCache reader(root, kTemplate, wall_now);
+        MapTileCache reader(root, templateUrl(), wall_now);
         expect("an entry that cannot be opened is a miss",
                reader.lookup(locked, fields()).reuse == MapTileCache::Reuse::Miss);
         expect("and is deleted, not retried on every lookup", !QFileInfo::exists(cache.pathFor(locked)));
@@ -477,7 +493,7 @@ test_unreadable_and_oversized(const QString& root) {
     QFile tmp(stray);
     expect("a stray temporary file is written", tmp.open(QIODevice::WriteOnly) && tmp.write("x", 1) == 1);
     tmp.close();
-    MapTileCache scanned(root, kTemplate, wall_now);
+    MapTileCache scanned(root, templateUrl(), wall_now);
     (void)scanned.diskBytes();
     expect("the first scan deletes it", !QFileInfo::exists(stray));
 }
@@ -507,7 +523,7 @@ test_disk_lru_and_memory_bound(const QString& root) {
     expect("the new tile stayed", QFileInfo::exists(reader.pathFor(key(2, 3, 0))));
     expect("the budget holds", reader.diskBytes() <= cap);
 
-    MapTileCache memory(QString(), kTemplate, wall_now);
+    MapTileCache memory(QString(), templateUrl(), wall_now);
     for (int i = 0; i < MapTileCache::kMemoryTiles + 6; ++i) {
         (void)store_tile(memory, key(7, i, 0), {"Cache-Control: max-age=600"});
     }
@@ -524,7 +540,7 @@ test_disk_lru_and_memory_bound(const QString& root) {
 void
 test_memory_only_storage(const QString& root) {
     {
-        MapTileCache fresh(root + QStringLiteral("/never"), kTemplate, wall_now);
+        MapTileCache fresh(root + QStringLiteral("/never"), templateUrl(), wall_now);
         const MapTileKey k = key(7, 1, 1);
         expect("a device-placed view's tile is kept",
                store_tile(fresh, k, {"Cache-Control: max-age=600"}, fields(), kMemoryOnly));
@@ -533,7 +549,7 @@ test_memory_only_storage(const QString& root) {
         expect("a later view by hand gets it from memory, still without writing it",
                fresh.lookup(k, fields()).reuse == MapTileCache::Reuse::Fresh && !QFileInfo::exists(fresh.directory()));
     }
-    MapTileCache hand(root, kTemplate, wall_now);
+    MapTileCache hand(root, templateUrl(), wall_now);
     const MapTileKey k = key(7, 2, 2);
     expect("a tile viewed by hand is stored",
            store_tile(hand, k, {"Cache-Control: max-age=60", "ETag: \"h1\"", "Date: " + imf_date(wall_now())}));
@@ -546,7 +562,7 @@ test_memory_only_storage(const QString& root) {
     const FileState before = file_state(path);
     g_wall += 120;
 
-    MapTileCache device(root, kTemplate, wall_now);
+    MapTileCache device(root, templateUrl(), wall_now);
     expect("a device-placed view does not read the disk",
            device.lookup(k, fields(), kMemoryOnly).reuse == MapTileCache::Reuse::Miss);
     expect("so the hit stamps nothing", file_state(path) == before);
@@ -562,7 +578,7 @@ test_memory_only_storage(const QString& root) {
            !store_tile(device, k, {"Cache-Control: no-store"}, fields(), kMemoryOnly) && file_state(path) == before);
 
     /* A 304 merged in a device-placed view is never written, not even by a later 304 by hand. */
-    MapTileCache mixed(root, kTemplate, wall_now);
+    MapTileCache mixed(root, templateUrl(), wall_now);
     expect("a view by hand loads the entry", mixed.lookup(k, fields()).reuse != MapTileCache::Reuse::Miss);
     const FileState loaded = file_state(path);
     g_wall += 120;
@@ -611,7 +627,7 @@ struct FakeServer {
     void
     script(const MapTileKey& k, const FakeReply& reply) {
         std::lock_guard<std::mutex> lock(mutex);
-        scripted[MapTileWorker::tileUrl(kTemplate, k)].push_back(reply);
+        scripted[MapTileWorker::tileUrl(templateUrl(), k)].push_back(reply);
     }
 
     size_t
@@ -741,7 +757,7 @@ struct Harness {
         options.monoMs = mono_now;
         options.afterAnswerForTest = std::move(afterAnswer);
         worker = new MapTileWorker(options);
-        worker->setUrlTemplate(kTemplate);
+        worker->setUrlTemplate(templateUrl());
         QObject::connect(worker, &MapTileWorker::tileReady, worker,
                          [this](quint64 gen, int z, int x, int y, const QImage& image, bool stale, bool reusable) {
                              if (image.isNull()) {
@@ -832,8 +848,8 @@ test_order_and_memory_hit(const QString& root) {
     const quint64 gen = h.worker->requestTiles({a, b, a, key(3, 9, 0)}, kByHand);
     expect("both tiles arrive", wait_for([&h] { return h.tiles.size() == 2U; }));
     expect("one at a time, in the order asked, duplicates and invalid keys skipped",
-           h.server.seenCount() == 2U && h.server.seenAt(0).url == MapTileWorker::tileUrl(kTemplate, a)
-               && h.server.seenAt(1).url == MapTileWorker::tileUrl(kTemplate, b));
+           h.server.seenCount() == 2U && h.server.seenAt(0).url == MapTileWorker::tileUrl(templateUrl(), a)
+               && h.server.seenAt(1).url == MapTileWorker::tileUrl(templateUrl(), b));
     expect("each carries the request's generation, fresh",
            h.tiles[0].generation == gen && h.tiles[0].key == a && !h.tiles[0].stale && h.tiles[1].key == b);
     expect("a first request is unconditional", h.server.seenAt(0).ifNoneMatch.isEmpty());
@@ -1066,9 +1082,9 @@ test_templates() {
     expect("a template too long for the URL cap is refused",
            !MapTileWorker::validTemplate(QStringLiteral("https://a.example.test/") + QString(2010, QLatin1Char('a'))
                                          + QStringLiteral("/{z}/{x}/{y}")));
-    expect("the URL is filled in", MapTileWorker::tileUrl(kTemplate, key(12, 345, 678))
+    expect("the URL is filled in", MapTileWorker::tileUrl(templateUrl(), key(12, 345, 678))
                                        == QStringLiteral("https://tiles.example.test/12/345/678.png"));
-    expect("an invalid key fills nothing", MapTileWorker::tileUrl(kTemplate, key(1, 2, 0)).isEmpty());
+    expect("an invalid key fills nothing", MapTileWorker::tileUrl(templateUrl(), key(1, 2, 0)).isEmpty());
 }
 
 void
@@ -1081,7 +1097,7 @@ test_invalid_template_and_unavailable(const QString& root) {
     expect("requests are ignored", h.worker->requestTiles({key(1, 0, 0)}, kByHand) == gen);
     settle();
     expect("nothing goes out", h.server.seenCount() == 0U);
-    h.worker->setUrlTemplate(kTemplate);
+    h.worker->setUrlTemplate(templateUrl());
     FakeReply unsupported;
     unsupported.failure = DSD_TILE_FETCH_ERR_UNSUPPORTED;
     h.server.script(key(1, 1, 0), unsupported);
@@ -1134,10 +1150,10 @@ test_user_agent_stored_for_vary(const QString& root) {
     const QByteArray ua(agent);
     expect("it names the app and its project page",
            ua.startsWith("dsd-neo/") && ua.endsWith(" (+https://github.com/arancormonk/dsd-neo)"));
-    MapTileCache cache(dir, kTemplate, wall_now);
+    MapTileCache cache(dir, templateUrl(), wall_now);
     expect("the stored entry matches the app's own User-Agent",
            cache.lookup(a, fields(ua)).reuse == MapTileCache::Reuse::Fresh);
-    MapTileCache upgraded(dir, kTemplate, wall_now);
+    MapTileCache upgraded(dir, templateUrl(), wall_now);
     expect("and not another version's",
            upgraded.lookup(a, fields("dsd-neo/0.0.1 (+https://github.com/arancormonk/dsd-neo)")).reuse
                == MapTileCache::Reuse::Miss);
@@ -1260,7 +1276,7 @@ test_shutdown_joins_threads(const QString& root) {
     stuck.server.releaseStall();
     expect("the released thread still ends", wait_threads_gone());
     expect("without decoding or storing what its fetch brought after the stop",
-           !QFileInfo::exists(MapTileCache(stuckRoot, kTemplate, wall_now).pathFor(key(1, 1, 0))));
+           !QFileInfo::exists(MapTileCache(stuckRoot, templateUrl(), wall_now).pathFor(key(1, 1, 0))));
 }
 
 void
@@ -1290,7 +1306,7 @@ test_device_view_stays_off_disk(const QString& root) {
     const QString dir = root + QStringLiteral("/device");
     Harness h(dir);
     h.worker->setEnabled(true);
-    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileCache paths(dir, templateUrl(), wall_now);
     const MapTileKey a = key(8, 1, 1);
     h.worker->requestTiles({a}, kFromDevice);
     expect("the worker knows the view came from the device", h.worker->memoryOnlyForTest());
@@ -1340,7 +1356,7 @@ void
 test_device_view_leaves_disk_entries_alone(const QString& root) {
     const QString dir = root + QStringLiteral("/device-hit");
     const MapTileKey a = key(9, 5, 5);
-    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileCache paths(dir, templateUrl(), wall_now);
     {
         Harness h(dir);
         h.worker->setEnabled(true);
@@ -1481,7 +1497,7 @@ test_late_device_result_stays_off_disk(const QString& root) {
         const QString dir = root + QStringLiteral("/late-") + QString::number(variant);
         Harness h(dir);
         h.worker->setEnabled(true);
-        const MapTileCache paths(dir, kTemplate, wall_now);
+        const MapTileCache paths(dir, templateUrl(), wall_now);
         const MapTileKey late = key(12, variant, 1);
         const MapTileKey next = key(12, variant, 2);
         FakeReply deaf;
@@ -1532,7 +1548,7 @@ gone_on_revalidation(const QString& root, MapTileWorker::ViewOrigin origin) {
     const QString dir = root + (origin == kByHand ? QStringLiteral("/gone-hand") : QStringLiteral("/gone-device"));
     Harness h(dir);
     h.worker->setEnabled(true);
-    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileCache paths(dir, templateUrl(), wall_now);
     const MapTileKey a = key(14, 3, 3);
     FakeReply first;
     first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
@@ -1594,12 +1610,12 @@ test_vary_on_validator(const QString& root) {
         expect("it was conditional", h.server.seenAt(1).ifNoneMatch == "\"v1\"");
         expect("and, chosen by a conditional field, the canvas may not show it for another view", !h.tiles[2].reusable);
     }
-    MapTileCache cache(dir, kTemplate, wall_now);
+    MapTileCache cache(dir, templateUrl(), wall_now);
     expect("an unconditional request does not match a response that varies on If-None-Match",
            cache.lookup(a, fields()).reuse == MapTileCache::Reuse::Miss);
     MapTileRequestFields conditional = fields();
     conditional.ifNoneMatch = QByteArrayLiteral("\"v1\"");
-    MapTileCache again(dir, kTemplate, wall_now);
+    MapTileCache again(dir, templateUrl(), wall_now);
     expect("the same conditional request does", again.lookup(a, conditional).reuse == MapTileCache::Reuse::Fresh);
 }
 
@@ -1633,7 +1649,7 @@ test_reusable_flag(const QString& root) {
 /* PR2 r2: a memory hit by hand renews its file's LRU stamp (at most hourly); a device-placed view's hit never does. */
 void
 test_memory_hit_recency(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     const MapTileKey k = key(22, 1, 1);
     expect("a tile is stored", store_tile(cache, k, {"Cache-Control: max-age=86400"}));
     const QString path = cache.pathFor(k);
@@ -1641,7 +1657,7 @@ test_memory_hit_recency(const QString& root) {
     g_wall += 600;
     expect("a memory hit by hand", cache.lookup(k, fields()).reuse == MapTileCache::Reuse::Fresh);
     expect("within the hour renews nothing", QFileInfo(path).lastModified().toSecsSinceEpoch() == stored);
-    g_wall += 2 * 3600;
+    g_wall += qint64{2} * 3600;
     expect("a device-placed view's memory hit",
            cache.lookup(k, fields(), kMemoryOnly).reuse == MapTileCache::Reuse::Fresh);
     expect("touches nothing on disk", QFileInfo(path).lastModified().toSecsSinceEpoch() == stored);
@@ -1652,12 +1668,12 @@ test_memory_hit_recency(const QString& root) {
 /* PR2 r1: a lookup miss creates no file, not even for a moment (the directory is not written). */
 void
 test_lookup_miss_writes_nothing(const QString& root) {
-    MapTileCache cache(root, kTemplate, wall_now);
+    MapTileCache cache(root, templateUrl(), wall_now);
     expect("a tile is stored", store_tile(cache, key(17, 1, 1), {"Cache-Control: max-age=600"}));
     const QString dir = cache.directory();
     const QDateTime before = QFileInfo(dir).lastModified();
     std::this_thread::sleep_for(std::chrono::milliseconds(20));
-    MapTileCache cold(root, kTemplate, wall_now);
+    MapTileCache cold(root, templateUrl(), wall_now);
     expect("a cold lookup of another tile misses",
            cold.lookup(key(17, 2, 1), fields()).reuse == MapTileCache::Reuse::Miss);
     expect("and leaves no file", !QFileInfo::exists(cold.pathFor(key(17, 2, 1))));
@@ -1685,7 +1701,7 @@ test_answer_closes_adoption(const QString& root) {
         }
     });
     h.worker->setEnabled(true);
-    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileCache paths(dir, templateUrl(), wall_now);
     const MapTileKey a = key(18, 1, 1);
     FakeReply first;
     first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
@@ -1722,7 +1738,7 @@ test_oversized_error_backs_off(const QString& root) {
     const QString dir = root + QStringLiteral("/oversized-error");
     Harness h(dir);
     h.worker->setEnabled(true);
-    const MapTileCache paths(dir, kTemplate, wall_now);
+    const MapTileCache paths(dir, templateUrl(), wall_now);
     const MapTileKey a = key(19, 1, 1);
     FakeReply first;
     first.headers = {"Cache-Control: max-age=60", "ETag: \"v1\""};
@@ -1779,7 +1795,7 @@ test_cached_view_clears_retrying(const QString& root) {
     h.worker->requestTiles({k}, kByHand);
     expect("the tile fails: Retrying", wait_for([&h, k] {
                return h.worker->state() == MapTileWorker::State::Retrying && h.server.seenCount() >= 3U
-                      && h.server.seenAt(h.server.seenCount() - 1U).url == MapTileWorker::tileUrl(kTemplate, k);
+                      && h.server.seenAt(h.server.seenCount() - 1U).url == MapTileWorker::tileUrl(templateUrl(), k);
            }));
     const int stalledBefore = h.server.stalledCount();
     g_mono += 600000; /* past the doubled wait */

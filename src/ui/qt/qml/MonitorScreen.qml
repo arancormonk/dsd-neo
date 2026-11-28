@@ -57,6 +57,16 @@ Item {
         var row = source < 0 ? -1 : monitorView.mapFromSource(callHistory.index(source, 0)).row;
         if (row < 0 || !recentList.model)
             return null;
+        // Issue #909: the list's place as the next frame shows it. Below tier
+        // 5 it hangs between the header and hero's Column and the call
+        // actions' Column, each laid out on its next polish, so a part that
+        // changed since the last frame (a scan's timing line) would leave the
+        // row contained against the old room, and cut off once the list
+        // moves. The list header's Column (which holds both in tier 5) needs
+        // no settling: it grows above the rows, not into them.
+        Theme.settlePositioners(topGroup);
+        Theme.settlePositioners(liveActions);
+        recentList.forceLayout();
         recentList.positionViewAtIndex(row, ListView.Contain);
         var item = recentList.itemAtIndex(row);
         return item ? item.node : null;
@@ -2263,6 +2273,8 @@ Item {
             metaSaysEnc: model.kind !== 1
             emergency: model.emergency
             hasRecording: model.hasRecording
+            // Issue #909: the call a History playlist is on.
+            playback: Util.playlistMark(decoderHost, model.uid)
         }
     }
 

@@ -7,6 +7,7 @@ package io.github.arancormonk.dsdneo
 
 import android.content.Intent
 import android.content.res.Configuration
+import android.media.session.MediaController
 import android.view.KeyEvent
 import android.view.MotionEvent
 import android.view.ViewTreeObserver
@@ -43,7 +44,8 @@ import org.qtproject.qt.android.bindings.QtActivity
  * queued behind the main thread — the service's own callbacks included — times out into
  * "DSD-neo isn't responding".
  *
- * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording (#708).
+ * The foreground goes to [RecordingPlayback] too: leaving it pauses a call recording a sheet plays (#708); a History
+ * playlist plays on under its own service (#909).
  *
  * [SignInAutofill] puts its host view into the content once `super.onCreate()` has set Qt's layout there, re-reads the
  * autofill service on each resume, and cancels an open framework session and takes the host away on destroy: Qt's
@@ -222,10 +224,21 @@ class DsdNeoActivity : QtActivity() {
     // Qt also translates hardware Back into a key/close event. Consume that
     // path here so each physical press reaches the shell exactly once. Gesture
     // Back uses the dispatcher above; QML dismisses the IME before navigation.
+    // While a History playlist's session is open, media keys (a headset's
+    // button, Bluetooth or car controls) skip Qt, which would consume them,
+    // and go to that playlist's own session through a controller on its
+    // token, then are consumed: left unhandled, Android would give them to
+    // whichever session it routes media buttons to, another app's while the
+    // playlist is paused (#909). With no playlist open they stay with Qt.
     override fun dispatchKeyEvent(event: KeyEvent): Boolean {
         if (event.action == KeyEvent.ACTION_DOWN) ScreenSupport.userInteraction(this)
         if (event.keyCode == KeyEvent.KEYCODE_BACK) {
             if (event.action == KeyEvent.ACTION_UP && !event.isCanceled) AppSupport.requestBack()
+            return true
+        }
+        val session = MediaKeys.sessionFor(event.keyCode, RecordingPlayback.playlistSession())
+        if (session != null) {
+            MediaController(this, session).dispatchMediaButtonEvent(event)
             return true
         }
         return super.dispatchKeyEvent(event)
@@ -307,7 +320,9 @@ class DsdNeoActivity : QtActivity() {
             // about to block.
             timedStage("stopService") { stopService(Intent(this, DecoderService::class.java)) }
 
-            // A call recording playing ends with the app, and gives the audio focus back (#708).
+            // A call recording playing ends with the app, and gives the audio focus back (#708). A History playlist's
+            // service is withdrawn by its phase (#909): a promoted one is stopped here, as the decoder's is; a start
+            // not promoted yet is left to promote and retire, since stopping it first would crash the app.
             RecordingPlayback.release()
 
             // The process may end with Qt's teardown; start writing the last diagnostics now, without waiting. main() in

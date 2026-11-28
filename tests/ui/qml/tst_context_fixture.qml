@@ -176,6 +176,84 @@ TestCase {
         compare(decoderHost.locationSupported, false);
     }
 
+    SignalSpy {
+        id: playbackSpy
+        signalName: "playbackChanged"
+    }
+
+    SignalSpy {
+        id: positionSpy
+        signalName: "playbackPositionChanged"
+    }
+
+    // Issue #909: the decoderHost map's queue, as the screens' cases drive it: plays under their own generations, the
+    // readings at rest, the item commands gated by the token shown, and one publish for a record's readings.
+    function test_playback_queue_model() {
+        testContext.useLifecycleHost(false);
+        testContext.resetHostPlayback();
+        playbackSpy.target = decoderHost;
+        positionSpy.target = decoderHost;
+        compare(decoderHost.playbackGeneration, 0);
+        compare(decoderHost.playbackCallIndex, -1);
+        compare(decoderHost.playbackEndedReason, "");
+        compare(decoderHost.playbackSupported, false, "no player until a case says");
+        testContext.setPlaybackSupported(true);
+        compare(decoderHost.playbackSupported, true);
+
+        var items = [{path: "/r/a.wav", size: 1000, mtimeSec: 1700000100, mtimeNanos: 0, call: 0, partOrdinal: 1, partCount: 2, title: "A", key: "ua"},
+                     {path: "/r/b.wav", size: 2000, mtimeSec: 1700000200, mtimeNanos: 0, call: 1, partOrdinal: 1, partCount: 1, title: "B", key: "ub"}];
+        compare(decoderHost.playRecordings([{path: "/r/a.wav", size: 1000, mtimeSec: 1700000100, mtimeNanos: 0, call: 1}], 2, "history"), 0, "calls from 0 only");
+        compare(decoderHost.playRecordings([{path: "/r/a.wav", call: 0}], 2, "history"), 0, "a queued item names its identity");
+        compare(decoderHost.playbackGeneration, 0, "a refused play changes nothing");
+        var first = decoderHost.playRecordings(items, 2, "history");
+        verify(first > 0);
+        compare(testContext.lastPlaybackGeneration(), first);
+        compare(testContext.playedItems().length, 2);
+        compare(decoderHost.playbackState, 1);
+        compare(decoderHost.playbackOrigin, "history");
+        compare(decoderHost.playbackKey, "ua");
+        compare(decoderHost.playbackCallCount, 2);
+        compare(decoderHost.playbackHoldPath, "", "a playlist holds no file");
+
+        playbackSpy.clear();
+        positionSpy.clear();
+        testContext.publishPlaybackReading({item: 1, playbackState: 2, playbackToken: 7, playbackCanSeek: true,
+                                            playbackDurationMs: 30000, playbackPositionMs: 100});
+        compare(playbackSpy.count, 1, "one record is one change");
+        compare(positionSpy.count, 1);
+        compare(decoderHost.playbackPath, "/r/b.wav");
+        compare(decoderHost.playbackTitle, "B");
+        compare(decoderHost.playbackCallIndex, 1);
+        testContext.publishPlaybackReading({playbackPositionMs: 200});
+        compare(playbackSpy.count, 1, "a position alone moves the position only");
+
+        decoderHost.seekPlaybackFor(6, 5000);
+        decoderHost.pausePlaybackFor(6);
+        compare(decoderHost.playbackPositionMs, 200, "a stale token is dropped");
+        compare(decoderHost.playbackState, 2);
+        decoderHost.seekPlaybackFor(7, 5000);
+        decoderHost.pausePlaybackFor(7);
+        compare(decoderHost.playbackPositionMs, 5000);
+        compare(decoderHost.playbackState, 3);
+        compare(decoderHost.playbackPausedReason, "user");
+
+        decoderHost.stopPlaybackGeneration(first - 1);
+        compare(decoderHost.playbackGeneration, first, "a stop for another play leaves it");
+        var owned = decoderHost.playRecordingOwned("/r/c.wav");
+        compare(owned, first + 1, "each play takes the next generation");
+        compare(decoderHost.playbackHoldPath, "/r/c.wav", "a single recording holds its file");
+        testContext.setPlaybackAccepted(false);
+        compare(decoderHost.playRecordingOwned("/r/d.wav"), 0);
+        compare(decoderHost.playbackPath, "/r/c.wav");
+        decoderHost.stopPlaybackGeneration(owned);
+        compare(decoderHost.playbackGeneration, 0);
+        compare(decoderHost.playbackPath, "");
+        var names = testContext.hostCalls().map(function (call) { return call.name; });
+        verify(names.indexOf("playRecordings") >= 0 && names.indexOf("stopPlaybackGeneration") >= 0);
+        testContext.resetHostPlayback();
+        testContext.setPlaybackSupported(false);
+    }
+
     function test_01_the_fixture_carries_every_reading_the_screens_read() {
         // The screens the other cases load, plus Theme.qml: the screens pull it
         // in as a singleton and it reads prefs itself.

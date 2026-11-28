@@ -83,6 +83,7 @@ target_sources(
         text_order.cpp
         call_history_export.cpp
         call_history_exporter.cpp
+        call_history_playlist.cpp # Issue #909
         csv_text.cpp
         document_export_writer.cpp
         pending_export.cpp
@@ -185,6 +186,8 @@ qt_add_resources(
         qml/FrequencyField.qml
         qml/GradientButton.qml
         qml/HistoryScreen.qml
+        qml/NowPlayingBar.qml
+        qml/PlaylistStatus.qml
         qml/ActivityScreen.qml
         qml/HomeScreen.qml
         qml/SavedSystemsControls.qml

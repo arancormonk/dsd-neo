@@ -10,7 +10,11 @@ import QtQuick
 //   "fit"             four frame corners: show every radio;
 //   "locate"          a crosshair ring: find my position;
 //   "follow"          the same ring with its centre filled: following it;
-//   "map"             a folded map: open the map (History's top bar).
+//   "map"             a folded map: open the map (History's top bar);
+//   "play"            a triangle, nudged right of centre as PlayCircle's is:
+//                     History's Play all (issue #909);
+//   "previous" / "next"  a bar and a filled triangle: the now-playing bar's
+//                     Previous call and Next call (issue #909).
 Item {
     id: glyph
 
@@ -51,6 +55,23 @@ Item {
                 ctx.closePath()
                 ctx.moveTo(7, 3); ctx.lineTo(7, 15)
                 ctx.moveTo(13, 5); ctx.lineTo(13, 17)
+                ctx.stroke()
+            } else if (glyph.shape === "play") {
+                ctx.moveTo(6, 3.5); ctx.lineTo(16.5, 10); ctx.lineTo(6, 16.5)
+                ctx.closePath()
+                ctx.stroke()
+            } else if (glyph.shape === "previous" || glyph.shape === "next") {
+                // Drawn as "next", mirrored for "previous".
+                if (glyph.shape === "previous") {
+                    ctx.translate(w, 0)
+                    ctx.scale(-1, 1)
+                }
+                ctx.moveTo(4, 4); ctx.lineTo(13, 10); ctx.lineTo(4, 16)
+                ctx.closePath()
+                ctx.fill()
+                ctx.stroke()
+                ctx.beginPath()
+                ctx.moveTo(16, 4); ctx.lineTo(16, 16)
                 ctx.stroke()
             } else if (glyph.shape === "fit") {
                 var a = 3, b = 8

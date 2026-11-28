@@ -167,16 +167,20 @@ PresentationScale::refreshFonts(Platform& platform, qreal ratio) {
 
 bool
 PresentationScale::refreshKeyboard(Platform& platform, qreal ratio) {
+    // Whether the host has a word on the keyboard at all is news too: the UI asks Qt's input method without one.
+    const bool available = platform.keyboardAvailable();
+    const bool reported = available != m_keyboard_reported;
+    m_keyboard_reported = available;
     int pixels = -1;
-    if (!platform.keyboardTopPixels(&pixels)) {
-        return false; // unreadable: keep the inset the UI has
+    if (!available || !platform.keyboardTopPixels(&pixels)) {
+        return reported; // unreadable: keep the inset the UI has
     }
     const qreal top = pixels < 0 ? qreal(-1) : pixels / (usable(ratio) ? ratio : qreal(1));
     const bool changed = (top < 0) != (m_keyboard_top < 0) || std::fabs(top - m_keyboard_top) > kKeyboardTolerance;
     if (changed) {
         m_keyboard_top = top;
     }
-    return changed;
+    return reported || changed;
 }
 
 bool

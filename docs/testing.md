@@ -190,18 +190,154 @@ cancel before the start, in a held lookup or open and between chunks (`CANCELLED
 refusing its later copies until it is forgotten while another request runs on, progress, a full disk (`ENOSPC` as an
 errno or a message) reported apart, and the abort answering `FAILED`.
 Call recordings (issue #708) have three suites. `ANDROID_RECORDING_PLAYER_JVM` (`recording_player`) runs
-`RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player: a pause or the background while
-preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's late callbacks;
-`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs `RecordingExport.kt` with `DocumentCopies.kt` against the
-provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the export after
-it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
+`RecordingPlayer.kt`, the player's state machine, with no stubs against a fake player, opener, focus, clock and
+scheduler: an invalid request refused leaving the play running untouched (R63; R70: every rule the host checks, an
+empty path, two SINGLE items, PARTS of two calls, a hole in the calls, calls going back, the path-only play;
+`run_jvm_tests.py` checks that both of RecordingPlayback's play() entries call validRequest() before begin(), and that
+its pauseFor, resumeFor and stopGeneration go through PlayPauseTaps.scoped(), R73), a pause or the background while
+preparing, focus denied or lost, completion, seeks before the player is ready, a replaced player's late callbacks, and
+for the History playlist (issue #909) the order across calls and parts, the gap and its frozen reading, Next and
+Previous (3,000/3,001 ms, a later part, the first call, the gap, while paused with the deadline unchanged, and a Resume
+while the next call opens whose focus is refused ending 10 minutes from the
+pause, and one pressed 0.2 s before the deadline whose part prepares after it: granted, it plays; refused, it ends
+then), skips of gone, changed and damaged recordings first, middle and last, per recording and in both directions (A
+good, B all failed, C good), all failed, a player-wide error, the queue let go at the end (finished, stopped, timed
+out, unplayable, the host's own stop) with the terminal record unchanged after a later publish, a start played only from
+its acknowledgement (held: not playing, the position still; a held start reading starting (5), with Pause and seek, for
+a first start and for a part opened paused; a resume just before the deadline then a focus loss keeping the old
+stretch; Stop, Next or a sheet play before it leaving the start unmade and its late acknowledgement ignored; a failed
+start a player failure; the 3,000 ms rule from the acknowledgement; during a held start the reading starting (5) with
+Pause and seek, the session buffering, a Pause taking it back unmade, and a headset tap in the phases suite pausing it;
+a held start failing as the player's at 10 s with the focus given back, one acknowledged at 9.9 s playing, a late
+acknowledgement ignored, a Pause before the expiry taking it back; a held seek leaving the confirmed position and its
+clock until its completion, publishing nothing until then, a superseded seek's completion landing nothing, and
+Previous reading the confirmed position; a seek taking a pending start back and asking again,
+the old acknowledgement stale and the new one playing from the target; the next part's start posted only once the
+outgoing player's held silence comes, the watchdog ending a play whose silence never comes, five Next with the silence
+late starting only the last candidate once, a player never started asked for none, a sheet play replacing a sounding
+playlist starting on its silence or failing at 10 s without it, a silence outliving a finished end and a Stop so the
+next play waits for it, Stop, the host's stop, a lasting focus loss and a player failure each pausing a sounding
+player and asking for its silence, an ended owner thread taken as silent, and a wait failed at its watchdog not
+waited for again), each move
+making only the candidates it tries (N calls or N parts played make N, Previous from the last call one;
+`candidatesMade`), a candidate that prepared and failed
+before it played continuing its move (Previous from C with B failing: A plays; Next from A: C opens with no gap), a part
+opened after one that failed while it played reading 0 and unknown (Previous then going to the call before, and the gap
+naming the part that played), the skip notice on the call a part played on after the skips (A skipped, B plays, C opens:
+none; a call's own parts adding up; never the gap after the call the skip happened on), queued items with a negative
+size refused and only SINGLE opening unchecked, by its mode, the refusal count moving on each refused focus request, the
+recheck list across Stop and replacement, the state/action table row by row (a command a state forbids is dropped),
+interruption with a system Play and with the app's Pause, noisy in each state, the 10-minute deadline with a clock jump,
+a late task and deep sleep (the screen turning on ends it, `onAwake()`), play tokens (Pause and Resume for the item in a
+gap with no player after its last part failed, no seek there), task ids and focus epochs against late callbacks after
+Next, Previous, Stop and replace, promotion before and after the play, refused, timed out and late, PARTS's failure rule
+and duration 0, a throwing player factory, a prepare that never answers (skipped at 10 s in a playlist and in PARTS,
+where part 2 then plays, Failed alone, none at 9.9 s or after a move, its late prepare ignored, and a Resume pressed in
+time waiting on across a hung part or a fast error to a part prepared after the deadline, which plays, ending finished
+when every remaining part fails, "timeout" when refused), each player's own thread (a fake setup held, run late, failed
+or refused: a setup stuck in a read failing its part at 10 s with Stop working meanwhile and the late results released,
+every part stuck ending "unplayable", a result after a move released, a prepare answering before the result, an error
+before it, SINGLE and PARTS on the same path, and a player that cannot be made on its thread, a thread that cannot start
+and a refused hand-off ending the play), a stuck setup holding only its own thread, at its timeout or when Stop or Next
+leaves it (the next item and a later sheet play set up at once, never failing; a hung prepare is not counted as stuck),
+at most two threads let go still running at once, counted until they end (a third open waits with no player made: it
+goes on when one ends, and times out and is skipped one at a time when both are stuck; a stalled prepare dropped by its
+timeout whose release is held stays counted, two of them make the next open wait until one release returns, and a thread
+dropped during its setup then released counts once; a completed part counted before the next part opens, so a Stop with
+releases out leaves two, never three; a setup done but not delivered counts until it lands; Stop drops the wait; five
+Next then five Previous fail nothing, with every setup in flight, with releases ending at once, or with every release
+held until after the burst and returning one by one, the waiting open going on at the first), a prepare timeout past a
+paused deadline ending "timeout" at once, a setup's gone file rechecked when its result comes after Stop or Next,
+Previous while a part opens opening it again (deleted meanwhile: skipped), no player ever reused (a completion around a
+Previous, in either order, never reaching the new pass; Previous in the gap opening the call again, and staying paused
+in a paused gap; an error from a part completed or left reaching nothing; the next part handed off before the completed
+one is released; Previous on a recording deleted while it played skipping it for the call before, also from the last
+call; the last played part named at the end after a gap and the skips that followed it, R81), a resume from the paused
+gap or the focus back while the next part opens keeping the paused stretch until a part plays (paused again 600.05 s
+from the first pause: "timeout"), and `FocusRequests` (only a granted focus request kept; a refused one given back at
+once, every time). A second build of the same suite runs `PlaybackServicePhases.kt`, the playlist service's order, with
+`PlaybackServicePhasesTest.kt`: a PROMOTE for a current, a settled and a foreign-token request, at most one start
+outstanding (join, hand-over), a stale PROMOTE while another playlist owns, stale transport before and after the end,
+the retire check after every delivery, `onDestroy` fenced to its generation (a late destroy leaving the next
+instance's key handoff and notification), the notification paced (a burst ending on its latest status, a trailing
+post shown only for the owner and dropped by a start's notification that covers it), `release()` with a promoted
+service and with a start issued but not delivered, a media session command acting only on the playlist it was queued
+for (`SessionTarget`, one per playlist: another playlist's commands dropped, a seek on the item current when it runs,
+and Next, Next, Stop queued on one callback all acting), and the headset's taps
+(`PlayPauseTaps`: a tap kept across a part change and toggling at its timeout, a double tap as Next, a long press or
+another key settling it, another playlist, the end and the teardown dropping it with its timeout), and the transport
+keys (`SessionKeys`: paused, a tap, then a dedicated Pause within the wait: the tap plays, then the Pause pauses; ups
+and repeats ignored; each key its command on the player's state). A third build runs
+`MediaKeys.kt` with `MediaKeysTest.kt`: the media keys the Activity hands past Qt to the playlist's own media session
+while it is open, the same keys left with Qt while none is, every other key (Back, volume, typing, the
+microphone mute) left with Qt either way, and `ActiveSession` (not before the owner's session is rendered active, nor
+for another playlist, nor after its end, an inactive render or the release). A fourth build runs
+`PlayerOwnerState.kt` with `PlayerOwnerStateTest.kt` against a fake platform player: one platform seek in flight, two
+seeks before the first completes each landing under its own serial, five quick seeks reaching the platform as the
+first and the newest, and a seek that throws holding nothing (R59); a seek given up at its 2 s bound not landing then,
+the held seek matched to the next completion, and a lone slow seek landing on its late completion (M1, m1); a start
+behind a held seek reaching the platform after it, and a pause dropping it (M2); a completed player never started again
+by a queued or held start, a seek after it dropped, its silence at once, one waiting for the release answered at
+completion (R66); a completion while paused held, the part current at its end until Resume moves on to the next part
+or the gap, Previous reading the end (a 5 s part restarts, a 2 s part moves back, a part of unknown length how far it
+played), a late seek landing moving nothing, the held player let go and counted until its thread ends with its later
+failure and completion reaching nothing, the held token current to the sheet's Resume and Pause (a SINGLE finished, a
+PARTS play's next part opened, a seek still dropped), an interrupted part held until the focus returns at a part and a
+call joint, a sheet's SINGLE and PARTS held too, the deadline counting on; silence at once with nothing started or
+after a pause that returned, after a pause that threw only once the release has returned, never for a release that threw
+(its ended thread counts as silent instead, M3), and none unasked (R62).
+`ANDROID_RECORDING_EXPORT_JVM` (`recording_export`) runs
+`RecordingExport.kt` with `RecordingDescriptor.kt` (the checked open the playlist shares) and `DocumentCopies.kt`
+against the provider stubs: a ZIP into a regular file and into a pipe, a short write, a failed close, a cancel and the
+export after it, recordings gone, a single save, more than 65,535 entries (ZIP64), the teardown abort;
 `ANDROID_RECORDING_SHARE_JVM` (`recording_share`) runs
 `RecordingShare.kt` against stubs of the context and `FileProvider`: the roots, the path checks, the share copy that
 outlives its original, the copies' clean and the share intent.
 Each first checks what crosses JNI or the manifest (the playback states and transfer results against `DecoderHost`'s
-enums, the provider serving only the two "Call recordings" folders and the share copies' cache folder, with a read
-grant). They skip the FIFO and
+enums, the status record's reason codes and field count against `playback_status_record.h`'s, the provider serving only
+the two "Call recordings" folders and the share copies' cache folder, with a read grant). They skip the FIFO and
 symbolic-link cases where the host cannot make them.
+The History playlist's C++ and QML (issue #909) run in `UI_QT_CALL_HISTORY_PLAYLIST`, the builder over the real
+`historyView` filter (two proxies with different filters, order, the start uid, a uid gone after a search flush, parts
+and withdrawn fragments, notices, interleaved timestamps, 1,000 rows with multi-part rows in one store read, and every
+result code); `UI_QT_RECORDING_STORE` (`recordingsForFragmentLists()` per-row order in one reader lock, the map's
+identity tuple taken from the indexed identity and not `bytes` after a limit pass, a checked delete refused when the
+identity under its id changed, and one for an id no longer indexed answering gone); `UI_QT_CALL_HISTORY_MODEL`
+(`playlistRows()`); `UI_QT_ANDROID_HOST` (the JNI arrays, the 23-field status record and malformed ones ignored (a
+reason not among its own field's codes included), the terminal record after a platform stop (its items let go, the
+reading unchanged), the recheck paths on a serial change, on a foreground return (Inactive included, an end between
+polls read at once on Active) and with the next play, a PARTS or PLAYLIST item without its identity (no size, a negative
+one, no mtime or one that is no number, nanoseconds outside 0 to 999,999,999, an integer past 32 bits as a number or
+text, a fraction, or text with junk, R80) or a part outside its count refused with the play open left playing while a
+single item needs none and is sent as part 1 of 1 of call 0 (R63), keys holding no value read as absent by the check and
+the request alike (M4), a legacy single play reading part 1 of 1 (M5), token commands (a stale token's dropped, and no
+position shown for any seek: only the player's record moves it), the replacement point, the legacy `playRecording()`
+missing-file reading, a sheet's own play whose file goes right after its one check (`decoder_host_test_hooks.h`)
+stopping nothing, and no status reads while idle or on position-only ticks); and `UI_QT_QML_CALL_LISTS`
+(`tst_history_playlist.qml`, `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml` and the playlist cases in
+`tst_call_recording_player.qml`, a call opening paused read as paused with Resume on all three, a press acting only on
+the target it began on (the bar's ✕, Previous and Next held across a new playlist, Show in list held while the playlist
+moves on, an ended result's ✕, the sheet's Play across a reread of the same path with another size, a part chip held
+across a reread that put another recording at its place or across storage turning its select into a play, and a keyboard
+activation during a held press, each followed by a fresh press that acts), a sheet's Play all parts waiting for its
+first token, a pending delete ended with its sheet (and with History hidden), History's header keeping a 48 px control
+row with its top row's controls whole at 360×240 and 2x text and the list its 40% share with no bar (260×145 at 2x text:
+58 px), a row placed by Show in list or Back from the map staying in view when the press flushed a search whose filter
+change queued the list's return to its top, a refused resume the sheet that follows the play read out heard by the bar
+(one a sheet on another call did not read waiting for the bar) and one the bar read out shown by a sheet opened after it
+without being read again, one shown under the sheet's Delete confirmation read on the sheet once the confirmation is
+cancelled (once, the bar then silent; still pending while the app is inactive and read once it is active, and still
+pending if the line is covered again before the sheet's turn, and read once it is reachable again) or by the bar once
+both close, the keyboard decided by the host first (Android's -1 hidden whatever Qt's input method says, Qt's fallback
+only with a keyboard of some height), the bar hidden for a keyboard whose top is at or below the screen's bottom (a
+window resized above it), the row marker paused while a call opens interrupted, a sheet's own play kept its own after it
+refused a gone part, and Play all parts playing on when its row's last listed part is deleted, against the fake host's
+queue model in `qml_test_context.h` (which, as the real host does, publishes no change for a reading published again as
+it stands), with `playbackSupported` set by each case) and `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`, the bar's
+reach, names and gating). What only Android decides (the service's promotion, the media session and notification, the
+media keys and the session's own handling of a headset's taps (`onMediaButtonEvent`), the noisy and screen-on receivers,
+the lock screen, the 10-minute pause with the real clock and the release APK's R8 keeps) is checked on emulators;
+`ANDROID_R8` checks the keep rules against the native upcalls, and `tools/check_android_r8.py` the release APK.
 `ANDROID_DOCUMENT_PICKER_JVM` (the `document_picker` suite, issue #829) runs `DocumentPicker.kt` against stubs of the
 activity, intents, package manager and resolver. Its request core runs against a fake activity: OPEN_DOCUMENT first,
 then the GET_CONTENT fallback straight to the one app that takes documents or through a chooser without the media-only

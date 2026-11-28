@@ -23,6 +23,9 @@ Rectangle {
     signal clicked
 
     property string accessibleName: text
+    // Issue #909: what a tap acts on (GatedTapHandler.pressKey): a tap whose
+    // press began on another key is dropped.
+    property var pressKey: null
     // Issue #718: the part of the gate that depends on typed input, kept apart
     // from `enabled` (busy, permission and other real guards). While a field
     // holds the keyboard's composing word the button stays live, so a tap can
@@ -141,6 +144,7 @@ Rectangle {
     GatedTapHandler {
         id: tap
         enabled: control.enabled
+        pressKey: control.pressKey
         onAllowedTap: control.activate()
     }
 }

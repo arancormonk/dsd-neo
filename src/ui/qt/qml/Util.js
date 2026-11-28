@@ -1152,6 +1152,13 @@ function countText(n) {
     return Number(n || 0).toLocaleString(Qt.locale(), "f", 0)
 }
 
+// Issue #909: the recordings a play skipped, as History's playlist bar and a
+// sheet's Play all parts say it.
+function skippedText(count) {
+    return count === 1 ? qsTr("Skipped 1 recording that couldn't be played")
+        : qsTr("Skipped %1 recordings that couldn't be played").arg(countText(count))
+}
+
 // "312 MB of 1 GB · 1,204 recordings", or without "of …" under no limit.
 function recordingUsageText(usedBytes, limitMb, count) {
     var used = limitMb > 0 ? fill(qsTr("%1 of %2"), [sizeText(usedBytes), limitText(limitMb)]) : sizeText(usedBytes)
@@ -1165,6 +1172,25 @@ function recordingUsageText(usedBytes, limitMb, count) {
 // spaces.
 function fileNameText(name) {
     return String(name || "").replace(/[\u0000-\u001f\u007f\/\\:*?"<>|]/g, "_").replace(/^[\s.]+|[\s.]+$/g, "")
+}
+
+// Issue #909: where @p host's History playlist stands on the call row logged
+// under @p uid, for its marker (CallRow.playback): 1 playing that call (or
+// opening it, or in the pause after it), 2 paused on it (also while it opens
+// paused: the player names why it pauses; and halted for another app's audio,
+// opening or not, as the bar and the sheet read "Paused for another app's
+// audio"), 0 neither (no History playlist open, or it is on another call).
+// Bound per row; it reads only readings that change with playbackChanged,
+// never the position.
+function playlistMark(host, uid) {
+    if (!host || host.playbackOrigin !== "history" || host.playbackMode !== 2)
+        return 0
+    var state = host.playbackState
+    // 5: a start asked for and not yet made (issue #909, R49), marked playing.
+    if (state < 1 || state > 5 || state === 4 || !host.playbackKey || host.playbackKey !== String(uid))
+        return 0
+    var pausedOpening = state === 1 && String(host.playbackPausedReason || "").length > 0
+    return state === 3 || pausedOpening || host.playbackInterrupted === true ? 2 : 1
 }
 
 // A player position in milliseconds as "m:ss", whole seconds played.

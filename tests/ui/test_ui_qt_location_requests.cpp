@@ -8,12 +8,15 @@
  * inside the request call, and a host replacement. The host is scripted; coordinates are made up.
  */
 #include <QCoreApplication>
+#include <QLatin1String>
 #include <QList>
+#include <QMap>
 #include <QObject>
-#include <QPair>
 #include <QString>
 #include <QStringList>
+#include <QVariant>
 #include <QVariantMap>
+#include <QtGlobal>
 #include <cmath>
 #include <cstdio>
 #include "decoder_host.h"

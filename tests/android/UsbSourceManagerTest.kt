@@ -1112,7 +1112,7 @@ private fun theTakeFollowsTheArgumentsSerial() {
     check(rig.record().optString("serial") == RTL_SERIAL_B && DsdNative.usbFd == rig.usb.opened.last().fileDescriptor) {
         "its descriptor is the one published: ${rig.record()}"
     }
-    check(rig.usb.opened.first().closed) { "the other dongle's connection is closed" }
+    awaitClosed(rig.usb.opened.first(), "the other dongle's connection is closed")
     check(rig.usb.prompts.isEmpty()) { "no prompt while permission holds" }
     val same = rig.take("usb", RTL_SERIAL_B)
     check(same.failureKind == "" && same.device == RTL_B) { "a later session reopens it as before: $same" }

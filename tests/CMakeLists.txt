@@ -28345,7 +28345,10 @@ if(DSD_ENABLE_QT_UI)
         dsd-neo_test_ui_qt_recording_store
         ui/test_ui_qt_recording_store.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/app_prefs.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_filter.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_model.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_playlist.cpp
+        ${PROJECT_SOURCE_DIR}/src/ui/qt/frequency_query.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/local_day_watch.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_payload.cpp
         ${PROJECT_SOURCE_DIR}/src/ui/qt/call_history_heard.cpp
@@ -30569,6 +30572,8 @@ if(DSD_ENABLE_QT_UI)
             ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
             ${LIBS}
     )
+    # A detection with a NaN power and an infinite noise floor, which fast-math folds away (and clang rejects).
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_signal_search)
     add_test(NAME UI_QT_SIGNAL_SEARCH COMMAND dsd-neo_test_ui_qt_signal_search)
     # Exercise Ubuntu's shared-library retention policy on local Linux builds too.
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
@@ -30604,6 +30609,39 @@ if(DSD_ENABLE_QT_UI)
     if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
         target_link_options(
             dsd-neo_test_ui_qt_call_history_export
+            PRIVATE "LINKER:--as-needed"
+        )
+    endif()
+
+    # Issue #909: History's playlist builder over the real filter view: the rows shown, oldest first from the start
+    # row, every row's recordings in one provider read, the playable parts with their place in the call, every result
+    # code, and the base host's play. Linked as the History export test is.
+    add_executable(
+        dsd-neo_test_ui_qt_call_history_playlist
+        ui/test_ui_qt_call_history_playlist.cpp
+    )
+    target_include_directories(
+        dsd-neo_test_ui_qt_call_history_playlist
+        PRIVATE ${PROJECT_SOURCE_DIR}/src/ui/qt
+    )
+    target_link_libraries(
+        dsd-neo_test_ui_qt_call_history_playlist
+        PRIVATE
+            dsd-neo_ui_qt
+            dsd-neo_feature_rtlsdr
+            dsd-neo_feature_codec2
+            ${_DSD_RUNTIME_CONFIG_APPLY_LIBS}
+            ${LIBS}
+    )
+    # A start uid of NaN or infinity is refused, which fast-math folds away (and clang rejects).
+    dsd_neo_test_ieee_semantics(dsd-neo_test_ui_qt_call_history_playlist)
+    add_test(
+        NAME UI_QT_CALL_HISTORY_PLAYLIST
+        COMMAND dsd-neo_test_ui_qt_call_history_playlist
+    )
+    if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+        target_link_options(
+            dsd-neo_test_ui_qt_call_history_playlist
             PRIVATE "LINKER:--as-needed"
         )
     endif()

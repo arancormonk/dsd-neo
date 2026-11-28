@@ -19,18 +19,15 @@
  * about) is skipped, saying so; the fixed-offset cases run everywhere. */
 
 #include <QByteArray>
-#include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QGuiApplication>
-#include <QMetaObject>
 #include <QObject>
-#include <QTime>
 #include <QTimeZone>
 #include <QTimer>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/safe_api.h>
+#include <stdio.h>
 #include "local_day_watch.h"
 #include "realtime_clock.h"
 
@@ -240,7 +237,7 @@ sao_paulo_shape(const QTimeZone& zone) {
     return QDate(2018, 11, 4).startOfDay(zone).time() == QTime(1, 0)
            && QDate(2019, 2, 17).startOfDay(zone).toMSecsSinceEpoch()
                       - QDateTime(QDate(2019, 2, 16), QTime(23, 0), zone).toMSecsSinceEpoch()
-                  == 2 * 3600000;
+                  == qint64{2} * 3600000;
 }
 
 void
@@ -315,7 +312,7 @@ test_clock_back_across_midnight(LocalDayWatch* watch) {
            spy.count == 1 && watch->today() == seventh.addDays(-1));
     expect("the 6th's next midnight is behind the sample: the minute cap",
            armed_ms(watch) == LocalDayWatch::kMaxCheckDelayMs);
-    g_nowMs += 59 * 60000; /* 00:00:30 standard time on the 7th */
+    g_nowMs += qint64{59} * 60000; /* 00:00:30 standard time on the 7th */
     watch->check();
     expect("the second midnight: the 7th again", spy.count == 2 && watch->today() == seventh);
 }
@@ -332,7 +329,7 @@ test_zone_change_moves_midnight(LocalDayWatch* watch) {
     DaySpy spy(watch);
     use_offset(-5);
     expect("a zone change on the same date publishes the new start once",
-           spy.count == 1 && watch->today() == day && watch->dayStartMs() == westStart - 3 * 3600000);
+           spy.count == 1 && watch->today() == day && watch->dayStartMs() == westStart - qint64{3} * 3600000);
     watch->check();
     expect("and nothing more", spy.count == 1);
 }

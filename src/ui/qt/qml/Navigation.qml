@@ -408,6 +408,14 @@ QtObject {
             speaker.Accessible.announce(text);
         return true;
     }
+    // Issue #909: the refused resume read out last, by a recording sheet
+    // that follows the play or by History's now-playing bar, as its play and
+    // the host's refusal count (refusalKey()). The one record both read, so a
+    // refusal the sheet said is not said again by the bar when it closes.
+    property string refusalSaid: ""
+    function refusalKey(generation, refusals) {
+        return (Number(generation) || 0) + "|" + (Number(refusals) || 0);
+    }
     function presented(item) {
         for (var node = item; node; node = node.parent) {
             if (!node.visible || (node !== item && node.opacity < 0.9))

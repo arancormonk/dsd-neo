@@ -14,6 +14,7 @@
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
+#include <array>
 #include <dsd-neo/runtime/log.h>
 #include <initializer_list> // IWYU pragma: keep -- braced range-for lists require this header.
 #include <iterator>

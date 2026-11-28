@@ -17,23 +17,22 @@
 #define DSD_NEO_SRC_UI_QT_POSITION_MODEL_H_
 
 #include <QAbstractListModel>
-#include <QByteArray>
 #include <QHash>
 #include <QList>
-#include <QModelIndex>
 #include <QObject>
 #include <QSortFilterProxyModel>
 #include <QString>
 #include <QTimer>
 #include <QVariant>
 #include <QVariantMap>
-#include <QVector>
 #include <Qt>
 #include <QtGlobal>
 #include <dsd-neo/core/position.h>
 #include <memory>
 
 #include "position_tap.h"
+
+class QByteArray;
 
 namespace dsd_qt {
 

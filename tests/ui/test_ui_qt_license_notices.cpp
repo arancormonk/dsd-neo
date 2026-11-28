@@ -12,7 +12,7 @@
 #include <QDir>
 #include <QFile>
 #include <QLatin1Char>
-#include <QLatin1String>
+#include <QList>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
@@ -20,6 +20,7 @@
 #include <cstdio>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/platform/file_compat.h>
+#include <initializer_list>
 
 #include "decoder_host.h"
 

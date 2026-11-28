@@ -15,7 +15,16 @@ import QtQuick
 //
 // Callers handle allowedTap and allowedLongPress, not tapped and longPressed.
 // Keyboard and accessibility presses do not come through here: they keep the
-// control's own guarded activation.
+// control's own guarded activation. pressBegan() marks a press's start.
+//
+// Issue #909: a control whose tap depends on what it shows sets pressKey, a
+// function naming what a tap would do now and what it would do it to (its
+// action, the playlist, the item). The key is taken at the press, and the tap
+// acts only when the key at the release is the same; otherwise it is dropped,
+// never turned into another action on another target. Only that press's own
+// tap uses the key: a keyboard or screen reader activation in between acts on
+// the state at its moment and leaves the press alone, and a release with no
+// press taken is dropped.
 TapHandler {
     id: handler
 
@@ -23,18 +32,35 @@ TapHandler {
     property Item gate: parent
     /** Whether the gate item could take input when the press now held began. */
     property bool pressAllowed: false
+    /** What a tap acts on now, as a string (null: a tap acts on whatever the control shows at the release). */
+    property var pressKey: null
+    /** The key the press now held began on; null with none taken. */
+    property var keyAtPress: null
 
     /** tapped(), for a tap whose press began, and which ends, while the gate item can take input. */
     signal allowedTap(var eventPoint, int button)
     /** longPressed(), likewise. */
     signal allowedLongPress
+    /** A press began (before any tap or drag it turns into). */
+    signal pressBegan
 
     onPressedChanged: {
-        if (pressed)
+        if (pressed) {
             pressAllowed = !!gate && Navigation.allows(gate);
+            keyAtPress = typeof pressKey === "function" ? String(pressKey()) : null;
+            handler.pressBegan();
+        }
+    }
+    // The press's key, taken by its tap: whether the control still shows what it began on.
+    function keyHeld() {
+        if (typeof pressKey !== "function")
+            return true;
+        var began = keyAtPress;
+        keyAtPress = null;
+        return began !== null && began === String(pressKey());
     }
     onTapped: function (eventPoint, button) {
-        if (pressAllowed && Navigation.allows(gate))
+        if (keyHeld() && pressAllowed && Navigation.allows(gate))
             handler.allowedTap(eventPoint, button);
     }
     onLongPressed: {

@@ -16,10 +16,10 @@
 
 #include <QBuffer>
 #include <QByteArray>
+#include <QByteArrayView>
 #include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDir>
 #include <QFile>
 #include <QFileInfo>
@@ -33,14 +33,13 @@
 #include <QMap>
 #include <QModelIndex>
 #include <QObject>
-#include <QPair>
 #include <QSet>
 #include <QSignalSpy>
 #include <QStandardPaths>
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
+#include <QThread>
 #include <QTimeZone>
 #include <QUrl>
 #include <QVariant>
@@ -50,6 +49,8 @@
 #include <algorithm>
 #include <atomic>
 #include <chrono>
+#include <condition_variable>
+#include <cstdlib>
 #include <dsd-neo/core/file_io.h>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/core/state.h>
@@ -58,16 +59,16 @@
 #include <dsd-neo/platform/file_compat.h>
 #include <dsd-neo/runtime/decode_clock.h>
 #include <functional>
-#include <initializer_list>
 #include <limits>
 #include <memory>
 #include <mutex>
 #include <qflags.h>
+#include <qtenvironmentvariables.h>
 #include <stdint.h>
 #include <stdio.h>
-#include <stdlib.h>
 #include <thread>
 #include <time.h>
+#include <utility>
 #ifndef _WIN32
 #include <sys/socket.h>
 #include <sys/stat.h>
@@ -76,11 +77,14 @@
 #endif
 #include "../test_support/qt_test_paths.h"
 #include "app_prefs.h"
+#include "call_history_filter.h"
 #include "call_history_model.h"
+#include "call_history_playlist.h"
 #include "call_recording_provider.h"
 #include "decoder_host.h"
 #include "platform_path.h"
 #include "recording_journal.h"
+#include "recording_selection_token.h"
 #include "recording_store.h"
 #include "wav_journal.h"
 
@@ -111,6 +115,16 @@ expect(const char* what, bool ok) {
     if (!ok) {
         DSD_FPRINTF(stderr, "FAIL: %s\n", what);
         g_failures++;
+    }
+}
+
+/* expect(), fatal: a failure stops the run at once (std::abort()), for a check a test cannot go on past safely (its
+ * worker may still call a hook whose captures would go out of scope). */
+void
+expect_or_stop(const char* what, bool ok) {
+    if (!ok) {
+        DSD_FPRINTF(stderr, "FAIL (fatal): %s\n", what);
+        std::abort();
     }
 }
 
@@ -280,6 +294,23 @@ link_line(const QString& id, qint64 row, int slot = 0) {
 QString
 fragment(qint64 row, int slot = 0) {
     return dsd_qt::call_history_fragment_key(kRing, slot, static_cast<qulonglong>(row));
+}
+
+/* Whether @p store's passes reach @p count within 5 s, asking for none (a bounded wait on the realtime clock). */
+bool
+passes_reach(const RecordingStore& store, quint64 count) {
+    const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+    while (store.passCountForTest() < count && dsd_realtime_mono_ms() < deadline) {
+        QThread::msleep(5);
+    }
+    return store.passCountForTest() >= count;
+}
+
+/* One recording of row @p row listed, available or not as @p available says. */
+bool
+listed_as(const RecordingStore& store, qint64 row, bool available) {
+    const QVariantList list = store.recordingsForFragments({fragment(row)});
+    return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
 }
 
 /* A recording published into @p folder with its file's modification time set to @p mtime first: the file is whole,
@@ -2696,6 +2727,22 @@ class ServedHost : public dsd_qt::DecoderHost {
         publishPlayback(path, PlaybackPlaying, 1000, 4000, QString());
     }
 
+    /* Issue #909: @p path playing as an item of a @p mode play (a sheet's parts or History's playlist). */
+    void
+    playingItem(const QString& path, int mode) {
+        PlaybackReading reading;
+        reading.generation = 3;
+        reading.mode = mode;
+        reading.path = path;
+        reading.state = PlaybackPlaying;
+        reading.positionMs = 1000;
+        reading.durationMs = 4000;
+        reading.token = 7;
+        reading.callIndex = 0;
+        reading.callCount = 1;
+        publishPlayback(reading);
+    }
+
     void
     finish(int result, const QStringList& missing = {}) {
         finishRecordingTransfer(result, missing);
@@ -2743,6 +2790,47 @@ class ServedHost : public dsd_qt::DecoderHost {
         return true;
     }
 };
+
+/* Issue #909: only a single recording's play holds its file. A sheet's parts and History's playlist hold none: a
+ * delete goes ahead under them, and one starting lets go of the single recording held before. */
+void
+test_single_play_hold_only(void) {
+    Roots roots;
+    Store s(roots.list());
+    ServedHost host;
+    dsd_qt::recording_store_serve_host(&s.store, &host);
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    for (int i = 1; i <= 3; i++) {
+        record(folder, QStringLiteral("0000000000000098-%1").arg(i), QStringLiteral("p%1.wav").arg(i), 1754715000 + i,
+               900 + i);
+    }
+    s.pass();
+    const auto path = [&folder](int i) { return folder + QStringLiteral("/p%1.wav").arg(i); };
+    const auto id = [](int i) { return QStringLiteral("0000000000000098-%1").arg(i); };
+    const auto waitGone = [&s](const QString& file) {
+        const uint64_t deadline = dsd_realtime_mono_ms() + 5000U;
+        while (QFileInfo::exists(file) && dsd_realtime_mono_ms() < deadline) {
+            s.pass();
+        }
+        return !QFileInfo::exists(file);
+    };
+
+    host.playRecording(path(1));
+    host.playing(path(1));
+    expect("a single recording's play holds its file", host.playbackHoldPath() == path(1));
+    s.store.deleteRecording(id(1));
+    s.pass();
+    expect("so its delete waits", QFileInfo::exists(path(1)) && s.store.deletesWaiting() == 1);
+    host.playingItem(path(2), dsd_qt::DecoderHost::PlaybackParts);
+    expect("parts starting hold nothing", host.playbackHoldPath().isEmpty());
+    expect("and let go of the single file held before", waitGone(path(1)));
+    s.store.deleteRecording(id(2));
+    expect("a part playing is deleted under it", waitGone(path(2)));
+    host.playingItem(path(3), dsd_qt::DecoderHost::PlaybackPlaylist);
+    s.store.deleteRecording(id(3));
+    expect("so is a playlist item", waitGone(path(3)) && host.playbackHoldPath().isEmpty());
+    s.store.endSession();
+}
 
 /* Issue #708: the host's playback, export, save and share through the store: the file playing and the files a
  * transfer selected are held until the player and the transfer let them go, every transfer releases its selection,
@@ -3367,7 +3455,7 @@ test_queries_between_rebuild_slices(void) {
     expect("between slices: the storage comes back", QDir().rename(away, roots.dir.path() + QStringLiteral("/ext")));
     int slices = 0;
     int partial = 0;
-    int unplayable = 0;
+    int shareHeld = 0;
     int accepted = 0;
     s.store.setSliceHookForTest([&](const QString& path) {
         if (path != folder) {
@@ -3376,12 +3464,12 @@ test_queries_between_rebuild_slices(void) {
         slices++;
         partial += whole() ? 0 : 1;
         accepted += refused() ? 0 : 1;
-        // Played (the player's hold, selectPath()), never saved: a save between slices is refused as loading.
+        // A share's hold (selectPath()) is refused too: the rows held from before the read again are not
+        // available (R78), and a save between slices is refused as loading.
         const int selection = s.store.selectPath(folder + QStringLiteral("/k.wav"));
         if (selection > 0) {
             s.store.releaseSelection(selection);
-        } else {
-            unplayable++;
+            shareHeld++;
         }
         const QVariantMap save = s.store.selectRecordings({keyedId});
         accepted +=
@@ -3392,7 +3480,10 @@ test_queries_between_rebuild_slices(void) {
     s.store.setSliceHookForTest({});
     expect("between slices: read again slice by slice", slices >= 3);
     expect("between slices: every query read the folder whole", partial == 0);
-    expect("between slices: the listed recording could be played", unplayable == 0);
+    expect("between slices: no share took a held row", shareHeld == 0);
+    const int after = s.store.selectPath(folder + QStringLiteral("/k.wav"));
+    expect("between slices: read again, its share is held", after > 0);
+    s.store.releaseSelection(after);
     expect("between slices: every export, save and delete request was refused", accepted == 0);
     expect("between slices: read again, whole", whole() && exportWhole() && deletesWhole());
 }
@@ -4328,8 +4419,10 @@ test_changed_file_reads_its_folder_again(void) {
            QFileInfo::exists(a + QStringLiteral("/r.wav")) && QFileInfo::exists(b + QStringLiteral("/r.wav")));
 }
 
-/* Issue #902: a session folder a start makes on a root while the worker lists that root again (a delete request saw
- * the root missing, back before the pass) is the start's: the listing never saw it, and its recordings are indexed. */
+/* Issue #902: a start while the worker lists a root again (a delete request saw the root missing, back before the
+ * pass) never records onto it, the root not read in full since it came back: it records on the fallback, and its
+ * recordings are indexed. A start during a listing of a root that is not away (its directory found again, I1) makes
+ * its folder there, and that folder is the start's: the listing never saw it (keepSessionFoldersLocked()). */
 void
 test_rescan_keeps_a_session_folder_made_meanwhile(void) {
     Roots roots;
@@ -4362,12 +4455,35 @@ test_rescan_keeps_a_session_folder_made_meanwhile(void) {
     s.store.setRootReadHookForTest({});
     expect("made meanwhile: the delete found the storage missing, back before the next pass",
            seen.load() && QFileInfo::exists(ext));
-    expect("made meanwhile: the start's folder is on that root", made.startsWith(roots.external + QLatin1Char('/')));
+    expect("made meanwhile: the start records on the fallback, not the unlisted root",
+           made.startsWith(roots.internal + QLatin1Char('/')));
     record(made, QStringLiteral("0000000000000933-2"), QStringLiteral("c.wav"), 1754000100, 2);
     s.store.endSession();
     s.pass();
     expect("made meanwhile: its recording is indexed",
            s.store.recordingCount() == 2 && s.store.isIndexedPath(made + QStringLiteral("/c.wav")));
+
+    // A root not away, listed because its directory is there again (I1): a start during that listing records there.
+    const Roots fresh;
+    Store t(fresh.list());
+    const QString staged = fresh.dir.path() + QStringLiteral("/staged");
+    expect("made meanwhile: a folder made elsewhere",
+           write_owner_json(staged + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA), QStringLiteral("County")));
+    QString there;
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == fresh.external && there.isEmpty()) {
+            there = t.store.beginSession(QStringLiteral("saved"), kUidC, QStringLiteral("Metro"));
+        }
+    });
+    expect("made meanwhile: the directory there again", QDir().rename(staged, fresh.external));
+    t.pass();
+    t.store.setRootReadHookForTest({});
+    expect("made meanwhile: during that listing the start's folder is on that root",
+           there.startsWith(fresh.external + QLatin1Char('/')));
+    record(there, QStringLiteral("0000000000000933-3"), QStringLiteral("d.wav"), 1754000200, 3);
+    t.store.endSession();
+    t.pass();
+    expect("made meanwhile: kept, its recording is indexed", t.store.isIndexedPath(there + QStringLiteral("/d.wav")));
 }
 
 /* Issue #902: at the end of the next pass, on the worker (so no pass marks the root away meanwhile), the storage goes,
@@ -4393,8 +4509,9 @@ storage_seen_away_and_back(Store& s, const QString& ext, const QString& away, co
     return seen.load();
 }
 
-/* Issue #902: a session folder removed while its storage was away and made again by a start while the returning root is
- * listed is a new folder: its earlier recordings are not counted, only what is recorded into it now. */
+/* Issue #902: a session folder removed while its storage was away is not made again by a start while the
+ * returning root is listed (not read in full since it came back): the start records on the fallback, and the listing
+ * drops the removed folder's earlier recordings; only what is recorded now counts. */
 void
 test_rescan_drops_a_recreated_folders_old_recordings(void) {
     Roots roots;
@@ -4417,16 +4534,65 @@ test_rescan_drops_a_recreated_folders_old_recordings(void) {
            storage_seen_away_and_back(s, ext, away, QString(kUidA),
                                       [&awayFolder]() { (void)QDir(awayFolder).removeRecursively(); }));
     s.store.setRootReadHookForTest({});
-    expect("recreated: the start made the same folder again", made == a);
-    record(a, QStringLiteral("0000000000000936-2"), QStringLiteral("new.wav"), 1754000100, 2, 3000);
+    expect("recreated: the start records on the fallback", made.startsWith(roots.internal + QLatin1Char('/')));
+    record(made, QStringLiteral("0000000000000936-2"), QStringLiteral("new.wav"), 1754000100, 2, 3000);
     s.store.endSession();
     s.pass();
     expect("recreated: only the new recording counts", s.store.recordingCount() == 1 && s.store.usedBytes() == 3000
                                                            && !s.store.isIndexedPath(a + QStringLiteral("/old.wav")));
+
+    // The same path made again, through the one exception (a start that finds the directory absent may make it
+    // anew). The listing omits the removed folder; in its read hook the recordings directory is moved aside and the
+    // start makes it, and the same owner path, again. At that pass's end, before the read again it asks for, the old
+    // row is gone (installRootTableLocked() drops what the index held at a path a start made during the listing).
+    const Roots again;
+    const QString ext2 = again.dir.path() + QStringLiteral("/ext");
+    const QString away2 = again.dir.path() + QStringLiteral("/ext-away");
+    const QString aside = again.dir.path() + QStringLiteral("/aside");
+    Store t(again.list());
+    const QString b = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    t.store.endSession();
+    record(b, QStringLiteral("0000000000000936-3"), QStringLiteral("old.wav"), 1754000200, 3, 5000);
+    t.pass();
+    expect("recreated, same path: indexed", listed_as(t.store, 3, true));
+    std::atomic<int> ends{0};
+    std::atomic<bool> seen{false};
+    std::atomic<bool> oldGone{false};
+    QString remade;
+    std::atomic<quint64> listedAt{0};
+    t.store.setPassEndHookForTest([&]() {
+        const int end = ends++;
+        if (end == 0 && QDir().rename(ext2, away2)) {
+            seen = !t.store.deleteFolder(QString(kUidA));
+            (void)QDir(away2 + QStringLiteral("/Call recordings/") + QFileInfo(b).fileName()).removeRecursively();
+            (void)QDir().rename(away2, ext2);
+        } else if (end == 1) {
+            oldGone = t.store.recordingsForFragments({fragment(3)}).isEmpty();
+        }
+    });
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == again.external && remade.isEmpty() && QDir().rename(again.external, aside)) {
+            listedAt = t.store.passCountForTest(); // the passes done before this listing's
+            remade = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        }
+    });
+    t.pass();
+    t.pass();
+    // The listing asked for a follow-up listing; the hooks are cleared only once it has run. Timed out, the
+    // worker may still call the root-read hook, so the run stops here rather than tear the hook down under it.
+    expect_or_stop("recreated, same path: its follow-up listing ran",
+                   listedAt.load() > 0 && passes_reach(t.store, listedAt + 2));
+    t.store.setRootReadHookForTest({});
+    t.store.setPassEndHookForTest({});
+    expect("recreated, same path: seen away and back", seen.load());
+    expect("recreated, same path: the start made the same path again", remade == b);
+    expect("recreated, same path: at that pass's end the old row is gone", oldGone.load());
+    t.store.endSession();
 }
 
-/* Issue #902: a start that relabels its owner's folder while the returning root is listed (the listing read the old
- * folder.json already) keeps the new label. */
+/* Issue #902: a start while the returning root is listed (the listing read the old folder.json already) leaves
+ * its owner's folder there alone, that root not read in full since it came back: it records on the fallback under the
+ * new label, and the folder on the returning root keeps its own. */
 void
 test_rescan_keeps_a_relabel_made_meanwhile(void) {
     Roots roots;
@@ -4447,14 +4613,52 @@ test_rescan_keeps_a_relabel_made_meanwhile(void) {
     expect("relabel: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
     s.store.setRootReadHookForTest({});
     s.pass();
-    QString name;
-    for (const QVariant& folder : s.store.folders()) {
-        if (folder.toMap().value(QStringLiteral("uid")).toString() == QString(kUidA)) {
-            name = folder.toMap().value(QStringLiteral("name")).toString();
+    expect("relabel: the start records on the fallback", relabelled.startsWith(roots.internal + QLatin1Char('/')));
+    QFile marker(a + QStringLiteral("/folder.json"));
+    const QString onDisk = marker.open(QIODevice::ReadOnly) ? QString::fromUtf8(marker.readAll()) : QString();
+    expect("relabel: the folder on the returning root keeps its label",
+           onDisk.contains(QStringLiteral("County")) && !onDisk.contains(QStringLiteral("Metro"))
+               && s.store.folderPathsForTest().contains(a));
+
+    // A relabel during a listing that is permitted, of an available root whose directory is there again
+    // (I1), the listing's only folder change. The folder is known first; its directory, missing at one pass's look and
+    // back right after it, is listed by the next pass; in that listing's read hook a start relabels it. The installed
+    // table keeps the start's label (noteFolderAddedLocked(), keepSessionFoldersLocked()), seen before the folder's
+    // own read could repair it.
+    const Roots fresh;
+    const QString listed = fresh.external + QStringLiteral("/County (1a2b3c4d)");
+    const QString moved = fresh.dir.path() + QStringLiteral("/ext/moved");
+    expect("relabel, listed: a folder on the root", write_owner_json(listed, QString(kUidA), QStringLiteral("County")));
+    Store t(fresh.list());
+    expect("relabel, listed: the folder known", t.store.folderPathsForTest().contains(listed));
+    std::atomic<bool> lookedAway{false};
+    t.store.setRootLookHookForTest([&](const QString& root) {
+        if (root == fresh.external && !lookedAway.exchange(true)) {
+            (void)QDir().rename(moved, fresh.external); // missing at this look, back right after it
         }
-    }
-    expect("relabel: the same folder", relabelled == a);
-    expect("relabel: the new label stands", name == QStringLiteral("Metro"));
+    });
+    expect("relabel, listed: the directory moved before a pass", QDir().rename(fresh.external, moved));
+    t.pass();
+    t.store.setRootLookHookForTest({});
+    expect("relabel, listed: missing at the look, back after it", lookedAway.load() && QFileInfo(listed).isDir());
+    QString relabel;
+    t.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == fresh.external && relabel.isEmpty()) {
+            relabel = t.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("Metro"));
+            t.store.endSession();
+        }
+    });
+    QString indexedLabel;
+    t.store.setFolderLoadHookForTest([&](const QString& path) {
+        if (path == listed && indexedLabel.isEmpty()) {
+            indexedLabel = t.store.folderNameForTest(path); // the table's, before this read installs its own
+        }
+    });
+    t.pass();
+    t.store.setRootReadHookForTest({});
+    t.store.setFolderLoadHookForTest({});
+    expect("relabel, listed: relabelled during the listing", relabel == listed);
+    expect("relabel, listed: the installed table keeps the new label", indexedLabel == QStringLiteral("Metro"));
 }
 
 /* Issue #902: storage plugged in again after a pass marked it away wakes no pass on its own; an export (or a save)
@@ -5059,6 +5263,573 @@ test_session_start_remembers_storage_away(void) {
     expect("seen at start: the session went to the other storage", elsewhere.startsWith(roots.internal));
     expect("seen at start: Export all has the folder put on it while away",
            all.value(QStringLiteral("count")).toInt() == 2);
+}
+
+/* I1: a root whose recordings folder is missing at a cold start (its parent there) holds nothing, and is looked at
+ * again each pass: once the folder is there, holding recordings, it is listed in full and they are indexed. A fresh
+ * install records into it as before: the session's start makes the folder, and its recordings are indexed. */
+void
+test_folder_missing_at_a_cold_start(void) {
+    {
+        const Roots roots;
+        Store s(roots.list());
+        expect("cold start, folder missing: the store is there to record into", s.store.available());
+        const QString staged = roots.dir.path() + QStringLiteral("/staged");
+        const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+        expect("cold start: a folder made elsewhere",
+               write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+        record(owner, QStringLiteral("0000000000000961-1"), QStringLiteral("a.wav"), 1754000000, 1);
+        expect("cold start: the folder put in place", QDir().rename(staged, roots.external));
+        // An export pressed before any pass finds it there: refused as loading, its read asked for at once (I1).
+        const QVariantMap early = s.store.selectForExport(QString(), QStringLiteral("all"));
+        s.store.releaseSelection(early.value(QStringLiteral("selection")).toInt());
+        expect("cold start: an export before the pass is refused as loading",
+               early.value(QStringLiteral("loading")).toBool() && early.value(QStringLiteral("count")).toInt() == 0);
+        s.pass();
+        expect("cold start: its recording is indexed and available", listed_as(s.store, 1, true));
+        const QVariantMap after = s.store.selectForExport(QString(), QStringLiteral("all"));
+        s.store.releaseSelection(after.value(QStringLiteral("selection")).toInt());
+        expect("cold start: after the pass, the export has it", after.value(QStringLiteral("count")).toInt() == 1);
+    }
+    {
+        const Roots roots;
+        Store s(roots.list());
+        // The folder the session makes is the store's own: no pass after the start lists it (its flag cleared, I1).
+        // Counted from before the start, so the pass the start wakes cannot run before the count does.
+        std::atomic<int> listings{0};
+        s.store.setRootReadHookForTest([&](const QString& root) {
+            if (root.startsWith(roots.external)) {
+                listings++;
+            }
+        });
+        const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+        expect("fresh install: the session made its folder", made.startsWith(roots.external + QLatin1Char('/')));
+        record(made, QStringLiteral("0000000000000961-2"), QStringLiteral("b.wav"), 1754000100, 2);
+        s.store.endSession();
+        s.pass();
+        s.store.setRootReadHookForTest({});
+        expect("fresh install: the pass after the session lists nothing", listings.load() == 0);
+        expect("fresh install: its recording is indexed and available", listed_as(s.store, 2, true));
+    }
+}
+
+/* m1, scenario B: a session start that makes a flagged root's directory between a pass's look at that root (which
+ * found it missing) and the write of what the look found: the stale look writes no flag, so the next pass does not
+ * list the store's own new folder. */
+void
+test_session_made_root_inside_a_look_writes_no_flag(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("made in a look: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    QString made;
+    s.store.setRootLookHookForTest([&](const QString& root) {
+        if (root == roots.internal && made.isEmpty()) {
+            made = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+        }
+    });
+    s.pass();
+    s.store.setRootLookHookForTest({});
+    expect("made in a look: the session made the internal folder inside the look",
+           made.startsWith(roots.internal + QLatin1Char('/')) && QFileInfo(made).isDir());
+    std::atomic<int> listings{0};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            listings++;
+        }
+    });
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("made in a look: the internal root was not listed after", listings.load() == 0);
+}
+
+/* m1: a pass looks at each root's missing flag as it is at that root's turn. A session start during the pass (here,
+ * while the storage before it is listed) that makes a flagged root's directory clears the flag, and the pass then
+ * lists nothing there: its folder is the store's own, new and read. */
+void
+test_session_made_root_during_a_pass_is_not_listed(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("made in a pass: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/Call recordings/County (1a2b3c4d)");
+    expect("made in a pass: a folder made elsewhere",
+           write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000964-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    std::atomic<int> internalListings{0};
+    QString made;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            internalListings++;
+        } else if (root.startsWith(ext + QLatin1Char('/')) && made.isEmpty()) {
+            made = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+        }
+    });
+    expect("made in a pass: the external storage back", QDir().rename(staged, ext));
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("made in a pass: the session made the internal folder", made.startsWith(roots.internal + QLatin1Char('/')));
+    expect("made in a pass: the internal root was not listed", internalListings.load() == 0);
+    expect("made in a pass: the external recording is indexed", listed_as(s.store, 1, true));
+}
+
+/* m1: an export pressed during a pass, before a flagged root's turn, that finds its folder there notes it seen away;
+ * the pass's listing of it (its folder appeared) takes that note, so the next pass does not list it again. */
+void
+test_export_note_during_a_pass_is_taken_by_its_listing(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    expect("note in a pass: the external storage away at the start", QDir(ext).removeRecursively());
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    expect("note in a pass: a parent made elsewhere", QDir().mkpath(staged + QStringLiteral("/Call recordings")));
+    const QString inbound = roots.dir.path() + QStringLiteral("/inbound");
+    const QString owner = inbound + QStringLiteral("/County (1a2b3c4d)");
+    expect("note in a pass: a folder made elsewhere",
+           write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000965-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    std::atomic<int> internalListings{0};
+    std::atomic<bool> pressed{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(roots.internal)) {
+            internalListings++;
+        } else if (root.startsWith(ext + QLatin1Char('/')) && !pressed.exchange(true)) {
+            // Before the internal root's turn: its folder appears, and an export finds it there.
+            (void)QDir().rename(inbound, roots.internal);
+            const QVariantMap all = s.store.selectForExport(QString(), QStringLiteral("all"));
+            s.store.releaseSelection(all.value(QStringLiteral("selection")).toInt());
+        }
+    });
+    expect("note in a pass: the external storage back", QDir().rename(staged, ext));
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("note in a pass: the export was pressed during the pass", pressed.load());
+    expect("note in a pass: the internal root was listed once", internalListings.load() == 1);
+    expect("note in a pass: its recording is indexed", listed_as(s.store, 1, true));
+}
+
+/* A root's directory that goes missing during its listing, after entryList() and before the final check,
+ * with nothing indexed on it, is installed there and empty but remembered as missing, so the pass after it is back
+ * lists it and indexes what it holds. */
+void
+test_directory_gone_during_its_listing_is_remembered_missing(void) {
+    const Roots roots;
+    expect("gone in listing: the recordings folder there at the start", QDir().mkpath(roots.external));
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    Store s(roots.list(), false);
+    std::atomic<bool> taken{false};
+    std::atomic<bool> back{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root == roots.external && !taken.exchange(true)) {
+            (void)QDir().rename(roots.external, staged); // listed: the directory goes before the final check
+        }
+    });
+    // Back, holding a recording, as that pass ends: before any other pass looks at it.
+    s.store.setPassEndHookForTest([&]() {
+        if (taken.load() && !back.exchange(true)) {
+            (void)write_owner_json(owner, QString(kUidA), QStringLiteral("County"));
+            record(owner, QStringLiteral("0000000000000966-1"), QStringLiteral("a.wav"), 1754000000, 1);
+            (void)QDir().rename(staged, roots.external);
+        }
+    });
+    s.start();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    s.store.setPassEndHookForTest({});
+    expect("gone in listing: it went during the listing and came back", taken.load() && back.load());
+    expect("gone in listing: the store reads as there", s.store.available());
+    expect("gone in listing: back, its recording is indexed", listed_as(s.store, 1, true));
+}
+
+/* A root with no rows whose directory goes after the pass's look at it, seen by a folder read in that pass, is
+ * remembered as missing as the look itself would, so the pass after it is back lists it: an owner folder put on it
+ * meanwhile is found. */
+void
+test_directory_gone_during_a_folder_read_is_remembered_missing(void) {
+    const Roots roots;
+    const QString emptied = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("gone in a read: a folder with no recording",
+           write_owner_json(emptied, QString(kUidA), QStringLiteral("County")));
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString other = staged + QStringLiteral("/Metro (5e6f7a8b)");
+    Store s(roots.list(), false);
+    std::atomic<bool> taken{false};
+    std::atomic<bool> back{false};
+    s.store.setFolderLoadHookForTest([&](const QString& folder) {
+        if (folder == emptied && !taken.exchange(true)) {
+            (void)QDir().rename(roots.external, staged); // the folder's read is under way: the directory goes
+        }
+    });
+    s.store.setPassEndHookForTest([&]() {
+        if (taken.load() && !back.exchange(true)) {
+            (void)write_owner_json(other, QString(kUidC), QStringLiteral("Metro"));
+            record(other, QStringLiteral("0000000000000967-1"), QStringLiteral("m.wav"), 1754000000, 1);
+            (void)QDir().rename(staged, roots.external);
+        }
+    });
+    s.start();
+    s.pass();
+    s.store.setFolderLoadHookForTest({});
+    s.store.setPassEndHookForTest({});
+    expect("gone in a read: it went during the read and came back", taken.load() && back.load());
+    expect("gone in a read: the store reads as there", s.store.available());
+    expect("gone in a read: back, the folder put on it is found", listed_as(s.store, 1, true));
+}
+
+/* A session start that sees a returning root's directory gone while its listing is in flight queues another
+ * listing, though it records elsewhere (its owner's folder on the internal storage): a different directory back before
+ * the listing's end has its folders found by the listing after it. */
+void
+test_session_seeing_a_listing_root_gone_queues_another(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString extAway = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString aside = roots.dir.path() + QStringLiteral("/aside");
+    expect("listing gone: the external storage away", QDir().rename(ext, extAway));
+    Store s(roots.list());
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+    s.store.endSession();
+    expect("listing gone: the owner's folder on the internal storage", b.startsWith(roots.internal + QLatin1Char('/')));
+    s.pass();
+    expect("listing gone: the external storage back",
+           QDir().rename(extAway, ext)
+               && write_owner_json(roots.external + QStringLiteral("/County (1a2b3c4d)"), QString(kUidA),
+                                   QStringLiteral("County")));
+    std::atomic<int> listings{0};
+    QString again;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root != roots.external || listings++ != 0) {
+            return;
+        }
+        // Listed: its directory goes, a session start sees it gone (recording on the internal storage), and another
+        // directory is there before the listing's last look.
+        (void)QDir().rename(roots.external, aside);
+        again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+        s.store.endSession();
+        const QString metro = roots.external + QStringLiteral("/Metro (5e6f7a8b)");
+        (void)write_owner_json(metro, QString(kUidC), QStringLiteral("Metro"));
+        record(metro, QStringLiteral("0000000000000968-1"), QStringLiteral("m.wav"), 1754000000, 1);
+    });
+    s.pass();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("listing gone: the session recorded on the internal storage", again == b);
+    expect("listing gone: another listing ran after it", listings.load() >= 2);
+    expect("listing gone: the other directory's folder is found", listed_as(s.store, 1, true));
+}
+
+/* A folder's first read is unavailable to every reader until its last slice, as a read again is (R78): between
+ * slices a sheet's read, a playlist's admission and a share's hold all refuse its rows; after the last, they take
+ * them. */
+void
+test_first_read_waits_for_its_last_slice(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    expect("first read: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    QByteArray journal;
+    for (int i = 0; i < 400; i++) {
+        const QString file = QStringLiteral("n%1.wav").arg(i);
+        make_file(owner + QLatin1Char('/') + file, 1000);
+        journal.append(publish_line(QStringLiteral("0000000000000969-%1").arg(100 + i), file, 1754000100 + i, -1));
+    }
+    make_file(owner + QStringLiteral("/k.wav"), 1000);
+    journal.append(publish_line(QStringLiteral("0000000000000969-1"), QStringLiteral("k.wav"), 1754000000, 1));
+    append(journal_of(owner), journal);
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("first read: the folder put in place",
+           QDir().mkpath(QFileInfo(roots.external).absolutePath()) && QDir().rename(staged, roots.external));
+    std::atomic<int> slices{0};
+    std::atomic<int> taken{0};
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != folder) {
+            return;
+        }
+        slices++;
+        const QVariantList sheet = s.store.recordingsForFragments({fragment(1)});
+        const QVariantList listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0);
+        const int hold = s.store.selectPath(folder + QStringLiteral("/n0.wav"));
+        s.store.releaseSelection(hold);
+        const auto available = [](const QVariantList& rows) {
+            return !rows.isEmpty() && rows.value(0).toMap().value(QStringLiteral("available")).toBool();
+        };
+        taken += (available(sheet) ? 1 : 0) + (available(listed) ? 1 : 0) + (hold > 0 ? 1 : 0);
+    });
+    s.pass();
+    s.store.setSliceHookForTest({});
+    expect("first read: read slice by slice", slices.load() >= 2);
+    expect("first read: between slices no reader took a row", taken.load() == 0);
+    expect("first read: after its last slice, the row is available", listed_as(s.store, 1, true));
+    const int after = s.store.selectPath(folder + QStringLiteral("/n0.wav"));
+    expect("first read: after its last slice, a share's hold is taken", after > 0);
+    s.store.releaseSelection(after);
+}
+
+/* A session start that sees an indexed root's recordings folder missing (its parent there) notes the root seen
+ * away though it records on another root: its rows are unavailable at once, and the folder back before any pass is
+ * read again in full, its rows available after. */
+void
+test_session_on_another_root_notes_a_missing_indexed_root(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString extAway = roots.dir.path() + QStringLiteral("/ext-away");
+    const QString renamed = roots.dir.path() + QStringLiteral("/ext/renamed");
+    expect("other root: the external storage away", QDir().rename(ext, extAway));
+    // Its folder made whole while it is away, so no pass can list it half made.
+    const QString awayFolder = extAway + QStringLiteral("/Call recordings/County (1a2b3c4d)");
+    expect("other root: a folder on it", write_owner_json(awayFolder, QString(kUidA), QStringLiteral("County")));
+    record(awayFolder, QStringLiteral("0000000000000970-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    Store s(roots.list());
+    const QString b = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+    s.store.endSession();
+    expect("other root: the owner's folder on the internal storage", b.startsWith(roots.internal + QLatin1Char('/')));
+    s.pass();
+    expect("other root: the external storage back", QDir().rename(extAway, ext));
+    s.pass();
+    expect("other root: indexed", listed_as(s.store, 1, true));
+    // On the worker, between two passes (so no pass marks the root away meanwhile): the recordings folder goes, a
+    // session start on the other root sees it missing, a new owner folder is put on it, and it comes back.
+    std::atomic<int> ends{0};
+    std::atomic<bool> unavailableAtOnce{false};
+    QString again;
+    s.store.setPassEndHookForTest([&]() {
+        if (ends++ != 0 || !QDir().rename(roots.external, renamed)) {
+            return;
+        }
+        again = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+        s.store.endSession();
+        unavailableAtOnce = listed_as(s.store, 1, false);
+        const QString metro = renamed + QStringLiteral("/Metro (5e6f7a8b)");
+        (void)write_owner_json(metro, QString(kUidC), QStringLiteral("Metro"));
+        record(metro, QStringLiteral("0000000000000970-2"), QStringLiteral("m.wav"), 1754000100, 2);
+        (void)QDir().rename(renamed, roots.external);
+    });
+    s.pass();
+    s.pass();
+    s.store.setPassEndHookForTest({});
+    expect("other root: the session recorded on the internal storage", ends.load() >= 1 && again == b);
+    expect("other root: the missing root's row is unavailable at once", unavailableAtOnce.load());
+    expect("other root: read again, the row is available", listed_as(s.store, 1, true));
+    expect("other root: read again in full, the folder put on it is found", listed_as(s.store, 2, true));
+}
+
+/* A session start never records onto a root held away that is back but not read in full. The card comes back
+ * between the start's look at its roots (its directory missing then) and its choice of folder, with this owner's folder
+ * under another name: the start records on the fallback; the pass after lists the card, and the next start takes the
+ * card's own folder, with no second folder made there. */
+void
+test_session_never_records_onto_a_root_back_unlisted(void) {
+    const Roots roots;
+    const QString moved = roots.dir.path() + QStringLiteral("/ext/moved");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("back unlisted: the owner's folder on the card", a.startsWith(roots.external + QLatin1Char('/')));
+    record(a, QStringLiteral("0000000000000971-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("back unlisted: the card's folder moved away", QDir().rename(roots.external, moved));
+    s.pass(); // held away, its row kept
+    expect("back unlisted: held away", listed_as(s.store, 1, false));
+    const QString renamed = QStringLiteral("Older (1a2b3c4d)");
+    expect("back unlisted: the owner's folder renamed on the card",
+           QDir(moved).rename(QFileInfo(a).fileName(), renamed));
+    std::atomic<bool> restored{false};
+    s.store.setSessionRootsHookForTest([&]() {
+        if (!restored.exchange(true)) {
+            (void)QDir().rename(moved, roots.external); // back between the look and the choice of folder
+        }
+    });
+    const QString during = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.store.setSessionRootsHookForTest({});
+    expect("back unlisted: the card came back inside the start", restored.load() && QFileInfo(roots.external).isDir());
+    expect("back unlisted: the start records on the fallback", during.startsWith(roots.internal + QLatin1Char('/')));
+    s.pass();
+    expect("back unlisted: listed, the card's row is available", listed_as(s.store, 1, true));
+    const QString after = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    expect("back unlisted: the next start takes the card's own folder",
+           after.startsWith(roots.external + QLatin1Char('/')));
+    int onCard = 0;
+    for (const QString& path : s.store.folderPathsForTest()) {
+        onCard += path.startsWith(roots.external + QLatin1Char('/')) ? 1 : 0;
+    }
+    expect("back unlisted: no second folder made on the card", onCard == 1);
+}
+
+/* A first read that read recordings, whose recordings directory goes before the read's last look at its root,
+ * is not committed: none of its rows is offered while the directory is missing; once it is back, a listing reads it
+ * and they are available. */
+void
+test_first_read_of_a_vanished_directory_is_not_committed(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString staged = roots.dir.path() + QStringLiteral("/staged");
+    const QString aside = roots.dir.path() + QStringLiteral("/aside");
+    const QString owner = staged + QStringLiteral("/County (1a2b3c4d)");
+    expect("vanished read: a folder made elsewhere", write_owner_json(owner, QString(kUidA), QStringLiteral("County")));
+    record(owner, QStringLiteral("0000000000000972-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    std::atomic<bool> taken{false};
+    s.store.setJournalReadHookForTest([&](const QString& path) {
+        if (path == folder && !taken.exchange(true)) {
+            (void)QDir().rename(roots.external, aside); // read: the directory goes before the read's last look
+        }
+    });
+    expect("vanished read: the folder put in place", QDir().rename(staged, roots.external));
+    const quint64 before = s.store.passCountForTest();
+    s.pass();
+    expect("vanished read: it went during the read", taken.load() && !QFileInfo::exists(roots.external));
+    // The discarded read asks for the next pass itself: it runs with none asked for here.
+    expect("vanished read: the pass it asked for ran", passes_reach(s.store, before + 2));
+    s.store.setJournalReadHookForTest({});
+    expect("vanished read: none of its rows is offered",
+           s.store.recordingsForFragments({fragment(1)}).isEmpty()
+               && s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).isEmpty());
+    expect("vanished read: the directory back", QDir().rename(aside, roots.external));
+    s.pass();
+    expect("vanished read: back and listed, its row is available", listed_as(s.store, 1, true));
+}
+
+/* A start that passes over a root back but not listed asks for its listing even when it finds no folder. One
+ * root, held away; it comes back between the start's look and its choice of folder: the start gets no folder, and the
+ * listing runs with no other request (no endSession(), no pass() asked for here). */
+void
+test_start_with_no_folder_asks_for_the_listing(void) {
+    const Roots roots;
+    const QString moved = roots.dir.path() + QStringLiteral("/ext/moved");
+    Store s({roots.external});
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000973-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("no folder: the card's folder moved away", QDir().rename(roots.external, moved));
+    s.pass(); // held away
+    expect("no folder: held away", listed_as(s.store, 1, false));
+    std::atomic<bool> restored{false};
+    s.store.setSessionRootsHookForTest([&]() {
+        if (!restored.exchange(true)) {
+            (void)QDir().rename(moved, roots.external);
+        }
+    });
+    const quint64 before = s.store.passCountForTest();
+    const QString none = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.setSessionRootsHookForTest({});
+    expect("no folder: the start gets none", restored.load() && none.isEmpty());
+    expect("no folder: the listing it asked for ran", passes_reach(s.store, before + 1) && listed_as(s.store, 1, true));
+}
+
+/* The owner-folder choice is made only among roots still usable once its checks are done. The card holds two
+ * folders for one owner. A test hook walks them worst first and makes the second owner check (of the better folder,
+ * after the other was saved as best) find the card gone: the start records on the fallback, never in the saved one. */
+void
+test_owner_choice_drops_a_root_its_checks_found_gone(void) {
+    const Roots roots;
+    Store s(roots.list());
+    const QString first = roots.external + QStringLiteral("/A (1a2b3c4d)");
+    const QString second = roots.external + QStringLiteral("/B (1a2b3c4d)");
+    expect("owner choice: two folders for one owner",
+           write_owner_json(first, QString(kUidA), QStringLiteral("County"))
+               && write_owner_json(second, QString(kUidA), QStringLiteral("County")));
+    s.pass();
+    s.pass();
+    QStringList checked;
+    s.store.setOwnerCheckHookForTest([&checked](const QString& folder) {
+        checked.append(folder);
+        return checked.size() == 2; // the check after a best was saved finds the card gone
+    });
+    const QString path = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    s.store.setOwnerCheckHookForTest({});
+    expect("owner choice: the worse folder was saved, then the better one checked",
+           checked.size() == 2 && checked.value(0) == second && checked.value(1) == first);
+    expect("owner choice: the start found the card gone and recorded on the fallback",
+           path.startsWith(roots.internal + QLatin1Char('/')));
+}
+
+/* m2: only a root with indexed rows is held away. A desktop store's one root whose folder holds no recording (its only
+ * one deleted in the app) reads as there and empty when its directory is removed, so the screens never say its storage
+ * is away; it is listed again once the directory is back. */
+void
+test_root_without_rows_is_not_held_away(void) {
+    const Roots roots;
+    Store s({roots.external});
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000963-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("no rows: indexed", listed_as(s.store, 1, true));
+    expect("no rows: its only recording deleted", s.store.deleteRecording(QStringLiteral("0000000000000963-1")));
+    s.pass();
+    expect("no rows: none left, the folder kept",
+           s.store.recordingsForFragments({fragment(1)}).isEmpty() && s.store.folderPathsForTest().contains(a));
+    const QString staged = roots.dir.path() + QStringLiteral("/kept");
+    expect("no rows: the root's directory removed", QDir().rename(roots.external, staged));
+    s.pass();
+    expect("no rows: the storage still reads as there", s.store.available());
+    record(staged + QLatin1Char('/') + QFileInfo(a).fileName(), QStringLiteral("0000000000000963-2"),
+           QStringLiteral("b.wav"), 1754000100, 2);
+    expect("no rows: the directory back", QDir().rename(staged, roots.external));
+    s.pass();
+    expect("no rows: back, listed again", listed_as(s.store, 2, true));
+}
+
+/* I2: a session start that makes a root's recordings folder over folders the index holds on it (renamed away before
+ * any pass marked the root away) has the root read again in full at once: the old rows are unavailable from the start
+ * on, and after the read they are gone and the session's recordings are indexed. */
+void
+test_session_making_the_folder_reads_its_root_again(void) {
+    const Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-renamed");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000962-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    expect("made again: indexed", listed_as(s.store, 1, true));
+    expect("made again: the folder renamed away, no pass since", QDir().rename(roots.external, away));
+    // The read again the start asks for is held at its listing, before anything of it is installed, until the row
+    // has been looked at: the pass the start wakes cannot finish first.
+    std::mutex gate;
+    std::condition_variable turned;
+    bool reached = false;
+    bool released = false;
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (!root.startsWith(roots.external)) {
+            return;
+        }
+        std::unique_lock<std::mutex> lock(gate);
+        reached = true;
+        turned.notify_all();
+        turned.wait_for(lock, std::chrono::seconds(10), [&released] { return released; });
+    });
+    const QString made = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    expect("made again: the session made the folder again", made == a && QFileInfo(made).isDir());
+    {
+        std::unique_lock<std::mutex> lock(gate);
+        expect("made again: its read again is held at its listing",
+               turned.wait_for(lock, std::chrono::seconds(10), [&reached] { return reached; }));
+    }
+    expect("made again: the old row is unavailable at once", listed_as(s.store, 1, false));
+    {
+        const std::lock_guard<std::mutex> lock(gate);
+        released = true;
+    }
+    turned.notify_all();
+    record(made, QStringLiteral("0000000000000962-2"), QStringLiteral("b.wav"), 1754000100, 2);
+    s.store.endSession();
+    s.pass();
+    s.store.setRootReadHookForTest({});
+    expect("made again: read again, the old row is gone", s.store.recordingsForFragments({fragment(1)}).isEmpty());
+    expect("made again: the session's recording is indexed", listed_as(s.store, 2, true));
 }
 
 /* Issue #902: a delete whose root a session start found missing between the delete's checks and its unlink (back by
@@ -5709,6 +6480,474 @@ test_entry_names_batch(void) {
     expect("one read: each row its own names, in order", s.store.recordingEntryNames(rows) == want);
 }
 
+/* --- History playlist (issue #909): every row's recordings in one read, and the delete of the file pressed. --- */
+
+/* The value under @p key of each of @p maps, as text. */
+QStringList
+values_of(const QVariantList& maps, const QString& key) {
+    QStringList values;
+    for (const QVariant& map : maps) {
+        values.append(map.toMap().value(key).toString());
+    }
+    return values;
+}
+
+/* Each row's list is its own recordings, oldest first by start then publish order within the row (two rows whose starts
+ * interleave are never sorted together), each once, the same as recordingsForFragments() gives the row, all under one
+ * hold of the lock; every map carries the file's indexed identity, its duration, whether it plays now and whether a
+ * delete waits for it. */
+void
+test_playlist_recordings_per_row(void) {
+    Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const qint64 base = 1754800000;
+    // Row 1's parts start at +0 and +30 (a later publish at +30 too), row 2's at +10 and +40.
+    record_at(folder, QStringLiteral("0000000000000909-1"), QStringLiteral("a1.wav"), base, 1, 1100, base + 4);
+    record_at(folder, QStringLiteral("0000000000000909-2"), QStringLiteral("b1.wav"), base + 10, 2, 1200, base + 14);
+    record_at(folder, QStringLiteral("0000000000000909-3"), QStringLiteral("a2.wav"), base + 30, 1, 1300, base + 34);
+    record_at(folder, QStringLiteral("0000000000000909-4"), QStringLiteral("a3.wav"), base + 30, 1, 1400, base + 35);
+    record_at(folder, QStringLiteral("0000000000000909-5"), QStringLiteral("b2.wav"), base + 40, 2, 1500, base + 44);
+    s.pass();
+    const QStringList rowOne{fragment(1)};
+    const QStringList rowTwo{fragment(2)};
+    const QStringList merged{fragment(2), fragment(1), fragment(2)};
+    const QList<QStringList> asked{rowOne, rowTwo, {}, merged, {fragment(77)}};
+
+    const int locks = s.store.readerLocksForTest();
+    const QList<QVariantList> rows = s.store.recordingsForFragmentLists(asked);
+    expect("playlist read: one hold of the lock", s.store.readerLocksForTest() == locks + 1);
+    expect("playlist read: one list per row", rows.size() == asked.size());
+    if (rows.size() != asked.size()) {
+        return;
+    }
+    expect("playlist read: a row's parts in its own order",
+           values_of(rows.at(0), QStringLiteral("path"))
+               == QStringList{folder + QStringLiteral("/a1.wav"), folder + QStringLiteral("/a2.wav"),
+                              folder + QStringLiteral("/a3.wav")});
+    expect("playlist read: the other row's in its own",
+           values_of(rows.at(1), QStringLiteral("path"))
+               == QStringList{folder + QStringLiteral("/b1.wav"), folder + QStringLiteral("/b2.wav")});
+    expect("playlist read: a row without fragments or recordings lists none",
+           rows.at(2).isEmpty() && rows.at(4).isEmpty());
+    expect("playlist read: a merged row's parts in start order, each once",
+           ids_of(rows.at(3))
+               == QStringList{QStringLiteral("0000000000000909-1"), QStringLiteral("0000000000000909-2"),
+                              QStringLiteral("0000000000000909-3"), QStringLiteral("0000000000000909-4"),
+                              QStringLiteral("0000000000000909-5")});
+    for (int i = 0; i < asked.size(); i++) {
+        expect("playlist read: the same recordings as the row's own read",
+               ids_of(rows.at(i)) == ids_of(s.store.recordingsForFragments(asked.at(i))));
+    }
+    const QVariantMap a3 = rows.at(0).value(2).toMap();
+    expect("playlist read: the map's identity is the file's",
+           a3.value(QStringLiteral("identitySize")).toLongLong() == 1400
+               && a3.value(QStringLiteral("mtimeSec")).toLongLong() == base + 35
+               && a3.value(QStringLiteral("mtimeNanos")).toInt() == 0
+               && a3.value(QStringLiteral("durationMs")).toLongLong() == 4000);
+    expect("playlist read: plays now, no delete waits", a3.value(QStringLiteral("available")).toBool()
+                                                            && a3.contains(QStringLiteral("deleteQueued"))
+                                                            && !a3.value(QStringLiteral("deleteQueued")).toBool());
+
+    // A delete waiting on an export's hold: that recording, and only it, says so.
+    const int held =
+        s.store.selectRecordings({QStringLiteral("0000000000000909-3")}).value(QStringLiteral("selection")).toInt();
+    expect("playlist read: a delete held by an export", s.store.deleteRecording(QStringLiteral("0000000000000909-3")));
+    s.pass();
+    expect("playlist read: it waits", s.store.deletesWaiting() == 1);
+    const QVariantList waiting = s.store.recordingsForFragmentLists({rowOne}).value(0);
+    expect("playlist read: the waiting delete is told",
+           values_of(waiting, QStringLiteral("deleteQueued"))
+               == QStringList{QStringLiteral("false"), QStringLiteral("true"), QStringLiteral("false")});
+    s.store.releaseSelection(held);
+    s.pass();
+    s.pass();
+    expect("playlist read: done once released",
+           ids_of(s.store.recordingsForFragmentLists({rowOne}).value(0))
+               == QStringList{QStringLiteral("0000000000000909-1"), QStringLiteral("0000000000000909-4")});
+
+    // Storage away: still listed, none plays.
+    expect("playlist read: the storage goes", QDir().rename(roots.dir.path() + QStringLiteral("/ext"), away));
+    s.pass();
+    const QVariantList gone = s.store.recordingsForFragmentLists({rowTwo}).value(0);
+    expect("playlist read: storage away keeps them listed, not playable",
+           gone.size() == 2
+               && values_of(gone, QStringLiteral("available"))
+                      == QStringList{QStringLiteral("false"), QStringLiteral("false")});
+    const RolesOnlyProvider rolesOnly;
+    expect("playlist read: a provider without them gives one empty list per row",
+           rolesOnly.recordingsForFragmentLists({rowOne, {}, rowTwo}) == QList<QVariantList>(3)
+               && rolesOnly.recordingsForFragmentLists({}).isEmpty());
+}
+
+/* A map's identity is the file as the read that indexed it saw it, not the size the limit accounts: the limit's check
+ * found the older file shrunk (600 kB indexed, 100 kB found) and counts it at 100 kB, while the map's identity still
+ * names the 600 kB file, which a playlist then finds changed at its turn. */
+void
+test_recording_map_identity_is_the_indexed_one(void) {
+    Roots roots;
+    const QString folder = roots.external + QStringLiteral("/County (1a2b3c4d)");
+    expect("map identity: the folder", write_owner_json(folder, QString(kUidA), QStringLiteral("County")));
+    record_at(folder, QStringLiteral("000000000000090A-1"), QStringLiteral("old.wav"), 1754000000, 1, 600000,
+              1754000004);
+    record(folder, QStringLiteral("000000000000090A-2"), QStringLiteral("new.wav"), 1754000100, 2, 600000);
+    Store s(roots.list(), false);
+    std::atomic<bool> shrunk{false};
+    s.store.setUploadHoldsForTest([&](const QString& path) {
+        if (path.endsWith(QLatin1String("/old.wav")) && !shrunk.exchange(true)) {
+            make_file(path, 100000);
+        }
+        return false;
+    });
+    s.limitQuietly(1);
+    expect("map identity: shrunk right before its unlink, skipped", shrunk.load() && s.store.deletesSkipped() == 1);
+    const QVariantMap map = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("map identity: the accounting moved", map.value(QStringLiteral("bytes")).toLongLong() == 100000);
+    expect("map identity: the identity did not", map.value(QStringLiteral("identitySize")).toLongLong() == 600000
+                                                     && map.value(QStringLiteral("mtimeSec")).toLongLong() == 1754000004
+                                                     && map.value(QStringLiteral("mtimeNanos")).toInt() == 0);
+    const QVariantMap batched = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
+    expect("map identity: the playlist read gives the same",
+           batched.value(QStringLiteral("identitySize")).toLongLong() == 600000
+               && batched.value(QStringLiteral("bytes")).toLongLong() == 100000);
+}
+
+/* B11: a delete carries the file the user pressed it on. A read again that put another file under the id while the
+ * confirmation was open makes it refused as "changed", queuing and deleting nothing; an id no longer indexed is refused
+ * as "gone", where the plain delete answers as asked; the file pressed is deleted. */
+void
+test_checked_delete_refuses_another_file(void) {
+    Roots roots;
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString id = QStringLiteral("000000000000090B-1");
+    const QString path = folder + QStringLiteral("/r.wav");
+    record_at(folder, id, QStringLiteral("r.wav"), 1754000000, 1, 1000, 1754000004);
+    s.pass();
+    const QVariantMap pressed = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    const qint64 size = pressed.value(QStringLiteral("identitySize")).toLongLong();
+    const qint64 sec = pressed.value(QStringLiteral("mtimeSec")).toLongLong();
+    const int nanos = pressed.value(QStringLiteral("mtimeNanos")).toInt();
+    expect("checked delete: the identity pressed", size == 1000 && sec == 1754000004);
+
+    // Another file under the id: rewritten, then read again with its folder.
+    make_file(path, 1500);
+    set_mtime(path, 1754000100);
+    s.store.recheckRecordings({id});
+    s.pass();
+    s.pass();
+    const QVariantMap now = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked delete: the read again indexed the other file",
+           now.value(QStringLiteral("id")).toString() == id
+               && now.value(QStringLiteral("identitySize")).toLongLong() == 1500);
+    expect("checked delete: the file pressed is no longer there: refused",
+           !s.store.deleteRecordingChecked(id, path, size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("changed"));
+    expect("checked delete: nothing queued", s.taken().isEmpty());
+    s.pass();
+    expect("checked delete: nothing deleted", QFileInfo::exists(path) && s.store.recordingCount() == 1);
+
+    expect("checked delete: an id not indexed is gone",
+           !s.store.deleteRecordingChecked(QStringLiteral("000000000000090B-9"), path, size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("gone"));
+    expect("checked delete: the plain delete of it answers as before",
+           s.store.deleteRecording(QStringLiteral("000000000000090B-9")) && s.store.deleteRefusal().isEmpty());
+    s.pass();
+
+    expect("checked delete: the file as it is now is deleted",
+           s.store.deleteRecordingChecked(id, path, now.value(QStringLiteral("identitySize")).toLongLong(),
+                                          now.value(QStringLiteral("mtimeSec")).toLongLong(),
+                                          now.value(QStringLiteral("mtimeNanos")).toInt())
+               && s.store.deleteRefusal().isEmpty());
+    s.pass();
+    expect("checked delete: gone from disk and the index", !QFileInfo::exists(path) && s.store.recordingCount() == 0);
+}
+
+/* R68: a delete carries the path the user pressed it on. A read again that indexed the same id under another path,
+ * with the same size and time (a copied journal and WAV), makes the delete refused as "changed", whether it comes
+ * before the request is taken or between the request and its unlink; neither file is removed. */
+void
+test_checked_delete_refuses_another_path(void) {
+    Roots roots;
+    Store s(roots.list(), false);
+    // Armed for the last case: the id moved between the delete's two looks, as a read again would (set before start).
+    const QString id = QStringLiteral("000000000000090B-1");
+    std::atomic<bool> armed{false};
+    QString movedTo;
+    s.store.setUploadHoldsForTest([&s, &armed, &id, &movedTo](const QString&) {
+        if (armed.exchange(false)) {
+            s.store.moveEntryPathForTest(id, movedTo);
+        }
+        return false;
+    });
+    s.start();
+    const QString folder = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    const QString pressedPath = folder + QStringLiteral("/r.wav");
+    const QString copyPath = folder + QStringLiteral("/s.wav");
+    record_at(folder, id, QStringLiteral("r.wav"), 1754000000, 1, 1000, 1754000004);
+    s.pass();
+    const QVariantMap pressed = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked path: pressed at r.wav", pressed.value(QStringLiteral("path")).toString() == pressedPath);
+    const qint64 size = pressed.value(QStringLiteral("identitySize")).toLongLong();
+    const qint64 sec = pressed.value(QStringLiteral("mtimeSec")).toLongLong();
+    const int nanos = pressed.value(QStringLiteral("mtimeNanos")).toInt();
+
+    // Before the request: the copy indexed under the same id at another path, with the same identity.
+    record_at(folder, id, QStringLiteral("s.wav"), 1754000000, 1, 1000, 1754000004);
+    s.store.recheckRecordings({id});
+    s.pass();
+    s.pass();
+    const QVariantMap now = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+    expect("checked path: the read again indexed the id at s.wav",
+           now.value(QStringLiteral("path")).toString() == copyPath
+               && now.value(QStringLiteral("identitySize")).toLongLong() == size
+               && now.value(QStringLiteral("mtimeSec")).toLongLong() == sec);
+    expect("checked path: another path under the id: refused as changed",
+           !s.store.deleteRecordingChecked(id, pressedPath, size, sec, nanos)
+               && s.store.deleteRefusal() == QLatin1String("changed"));
+    s.pass();
+    expect("checked path: neither file removed", QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath));
+
+    // Between the request and its unlink: taken at s.wav and held there (the player holds the file), so the worker
+    // leaves it queued; the id moves to r.wav while the worker is idle, then the hold ends and the pass takes it.
+    const int skipped = s.store.deletesSkipped();
+    s.store.setPlayingPath(copyPath);
+    expect("checked path: the file as it is now is taken",
+           s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
+    s.pass();
+    expect("checked path: held while it plays", QFileInfo::exists(copyPath) && s.store.deletesSkipped() == skipped);
+    s.store.moveEntryPathForTest(id, pressedPath);
+    s.store.setPlayingPath(QString());
+    s.pass();
+    expect("checked path: the delete finds another path under the id: neither file removed",
+           QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath) && s.store.deletesSkipped() == skipped + 1);
+
+    // And right before the unlink, between its two looks under the lock (the uploader is asked in between). Armed
+    // before the request, with the worker idle, so the pass the request wakes meets the hook.
+    s.store.moveEntryPathForTest(id, copyPath);
+    s.pass();
+    movedTo = pressedPath;
+    armed.store(true);
+    expect("checked path: taken at s.wav again", s.store.deleteRecordingChecked(id, copyPath, size, sec, nanos));
+    s.pass();
+    expect("checked path: the unlink's look finds another path: neither file removed",
+           !armed.load() && QFileInfo::exists(pressedPath) && QFileInfo::exists(copyPath)
+               && s.store.deletesSkipped() == skipped + 2);
+}
+
+/* R74: a root seen away is not admitted. Its recordings read as unavailable to a playlist (and every reader) from the
+ * first look that found it missing, before the worker's pass marks it away, and while the pass that reads it again
+ * after it came back is still reading it; once that read is done they are available again. */
+void
+test_seen_away_root_is_not_admitted(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000934-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    const auto admitted = [&s] {
+        const QVariantMap single = s.store.recordingsForFragments({fragment(1)}).value(0).toMap();
+        const QVariantMap listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0).value(0).toMap();
+        return single.value(QStringLiteral("available")).toBool() && listed.value(QStringLiteral("available")).toBool();
+    };
+    expect("seen away: on storage that is there, the recording is admitted", admitted());
+    std::atomic<bool> beforePass{true};
+    std::atomic<bool> duringRead{true};
+    std::atomic<bool> readHooked{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (root.startsWith(ext + QLatin1Char('/')) && !readHooked.exchange(true)) {
+            duringRead = admitted();
+        }
+    });
+    // R78: through the folder's read again too, slice by slice, until its rows replace the ones held from before: those
+    // stay listed, and unavailable, to a sheet and to a playlist's admission alike.
+    std::atomic<int> slices{0};
+    std::atomic<bool> listedHeld{true};
+    std::atomic<bool> sheetAvailable{false};
+    std::atomic<bool> admissionAvailable{false};
+    s.store.setSliceHookForTest([&](const QString& path) {
+        if (path != a) {
+            return;
+        }
+        slices++;
+        const QVariantList single = s.store.recordingsForFragments({fragment(1)});
+        const QVariantList listed = s.store.recordingsForFragmentLists({{fragment(1)}}).value(0);
+        listedHeld = listedHeld && single.size() == 1 && listed.size() == 1;
+        // Each read on its own (M2): the sheet's and the admission's.
+        const auto available = [](const QVariantList& rows) {
+            return rows.value(0).toMap().value(QStringLiteral("available")).toBool();
+        };
+        sheetAvailable = sheetAvailable || available(single);
+        admissionAvailable = admissionAvailable || available(listed);
+    });
+    const bool seen = storage_seen_away_and_back(s, ext, away, QString(kUidA), [&] { beforePass = admitted(); });
+    s.store.setRootReadHookForTest({});
+    s.store.setSliceHookForTest({});
+    expect("seen away: the delete found the storage missing", seen);
+    expect("seen away: between the read again's slices, the rows are listed", slices.load() >= 1 && listedHeld.load());
+    expect("seen away: between the read again's slices, the sheet read sees them unavailable", !sheetAvailable.load());
+    expect("seen away: between the read again's slices, the admission sees them unavailable",
+           !admissionAvailable.load());
+    expect("seen away: before the worker's pass marks it, the recording is not admitted", !beforePass.load());
+    expect("seen away: back, while the pass reads it again, still not admitted",
+           readHooked.load() && !duringRead.load());
+    expect("seen away: read again, it is admitted again", admitted());
+}
+
+/* R79: a loss seen outside the pass while the root's listing in full is in flight (after its folders were listed,
+ * before the table is installed; here by a session start, which then records elsewhere) is not dropped as already
+ * seen: the storage there at the listing's end may be another card, so another listing in full runs after it. */
+void
+test_loss_during_a_listing_asks_for_another(void) {
+    const Roots roots;
+    const QString ext = roots.dir.path() + QStringLiteral("/ext");
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString a = s.store.beginSession(QStringLiteral("saved"), kUidA, QStringLiteral("County"));
+    s.store.endSession();
+    record(a, QStringLiteral("0000000000000937-1"), QStringLiteral("a.wav"), 1754000000, 1);
+    s.pass();
+    std::atomic<int> listings{0};
+    std::atomic<bool> lossSeen{false};
+    s.store.setRootReadHookForTest([&](const QString& root) {
+        if (!root.startsWith(ext + QLatin1Char('/')) || listings++ != 0) {
+            return;
+        }
+        // Listed: the storage goes, a session start sees it gone, and storage is back before the listing's last look.
+        if (QDir().rename(ext, away)) {
+            const QString elsewhere = s.store.beginSession(QStringLiteral("saved"), kUidB, QStringLiteral("Other"));
+            s.store.endSession();
+            lossSeen = elsewhere.startsWith(roots.internal + QLatin1Char('/'));
+            (void)QDir().rename(away, ext);
+        }
+    });
+    expect("listing loss: seen away and back", storage_seen_away_and_back(s, ext, away, QString(kUidA), {}));
+    expect("listing loss: the session start saw the loss during the listing", lossSeen.load());
+    s.pass(); // the listing asked for has run by now, at once or in this pass
+    s.store.setRootReadHookForTest({});
+    expect("listing loss: another listing in full ran after it", listings.load() == 2);
+}
+
+/* A host that plays: what History's playlist hands it is counted, the play running named by its generation. */
+class PlayingHost : public dsd_qt::DecoderHost {
+  public:
+    int plays = 0;
+
+    bool
+    isRunning() const override {
+        return false;
+    }
+
+    QString
+    statusText() const override {
+        return {};
+    }
+
+    bool
+    start(const QStringList& argv) override {
+        (void)argv;
+        return false;
+    }
+
+    void
+    stop() override {}
+
+    bool
+    playbackSupported() const override {
+        return true;
+    }
+
+    int
+    playRecordings(const QVariantList& items, int mode, const QString& origin) override {
+        (void)items;
+        (void)mode;
+        (void)origin;
+        return ++plays;
+    }
+};
+
+/* R83 through a playlist: a recordings folder renamed away keeps its rows indexed and unavailable once the store has
+ * noticed, so Play all is refused with the play running unchanged; renamed back and read again, Play all plays. A
+ * session start while it is away makes the folder anew, and the read after it drops the old rows. Play all admits
+ * from what the store knows: pressed before the store has noticed, it admits as before (a decided limit;
+ * the play then ends "Couldn't play these recordings"). */
+void
+test_playlist_missing_folder_keeps_its_rows_away(void) {
+    QDir(QStandardPaths::writableLocation(QStandardPaths::AppDataLocation)).removeRecursively();
+    const Roots roots;
+    const QString away = roots.dir.path() + QStringLiteral("/ext-away");
+    Store s(roots.list());
+    const QString folder = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    s.store.endSession();
+    Ring ring;
+    dsd_qt::CallHistoryModel model;
+    model.setRecordingProvider(&s.store);
+    QObject::connect(&s.store, &RecordingStore::recordingFragmentsChanged, &model,
+                     &dsd_qt::CallHistoryModel::recordingFragmentsChanged);
+    const time_t when = 1754703000;
+    ring.commit(31001, 501, when, when + 4);
+    model.refresh(ring.state);
+    record(folder, QStringLiteral("00000000000000CE-1"), QStringLiteral("a.wav"), when, ring.rings[0].push_seq);
+    s.pass();
+    dsd_qt::CallHistoryFilterModel view;
+    view.setSourceModel(&model);
+    PlayingHost host;
+    dsd_qt::CallHistoryPlaylist playlist(&view, &model, &host, nullptr);
+    const auto result = [&playlist] { return playlist.start(0).value(QStringLiteral("result")).toString(); };
+    expect("missing folder: on storage that is there, Play all plays",
+           result() == QLatin1String("accepted") && host.plays == 1);
+
+    // The decided limit: renamed, with no pass since, Play all admits from what the store knows.
+    expect("missing folder: the recordings folder renamed", QDir().rename(roots.external, away));
+    expect("missing folder: not noticed yet, Play all admits as before",
+           result() == QLatin1String("accepted") && host.plays == 2);
+
+    // R83: a root whose directory is missing (its parent there) is away, not empty. After a pass its recording is still
+    // indexed, unavailable, and Play all is refused.
+    const QString row = fragment(static_cast<qint64>(ring.rings[0].push_seq));
+    const auto held = [&s, &row](bool available) {
+        const QVariantList list = s.store.recordingsForFragments({row});
+        return list.size() == 1 && list.value(0).toMap().value(QStringLiteral("available")).toBool() == available;
+    };
+    s.pass();
+    expect("missing folder: renamed, a pass: still indexed, unavailable", held(false));
+    expect("missing folder: renamed, a pass: Play all is refused",
+           result() == QLatin1String("none") && host.plays == 2);
+    // M3, a decided limit: a delete naming its rows is refused as storage away; their files are not there to delete.
+    expect("missing folder: renamed, a pass: Delete all is refused as storage away",
+           !s.store.deleteAll() && s.store.deleteRefusal() == QLatin1String("storageAway"));
+    // Renamed back: read again, available, admitted.
+    expect("missing folder: renamed back", QDir().rename(away, roots.external));
+    s.pass();
+    expect("missing folder: renamed back, a pass: available", held(true));
+    expect("missing folder: renamed back: Play all plays", result() == QLatin1String("accepted") && host.plays == 3);
+
+    // Away again, a session start keeps its own rule (a root that can be made is one it records into) and makes the
+    // folder anew, empty: the root's read again finds what is really there, the old recording gone, the new one there.
+    expect("missing folder: renamed away again", QDir().rename(roots.external, away));
+    s.pass();
+    expect("missing folder: away again: still indexed, unavailable", held(false));
+    const QString made = s.store.beginSession(QStringLiteral("explore"), QString(), QStringLiteral("Exploring"));
+    expect("missing folder: away: a session start makes its folder there anew",
+           made.startsWith(roots.external + QLatin1Char('/')) && QFileInfo(made).isDir());
+    const QString fresh = fragment(4242);
+    record(made, QStringLiteral("00000000000000CE-2"), QStringLiteral("b.wav"), when + 60, 4242);
+    s.store.endSession();
+    s.pass();
+    const QVariantList now = s.store.recordingsForFragments({fresh});
+    expect("missing folder: read again: the old recording is gone", s.store.recordingsForFragments({row}).isEmpty());
+    expect("missing folder: read again: the new session's recording is indexed",
+           now.size() == 1 && now.value(0).toMap().value(QStringLiteral("available")).toBool());
+    model.setRecordingProvider(nullptr);
+}
+
 /* The revision moves on every change a detection list can see, carried through coalesced deliveries: membership that
  * changes while every summary figure stays the same, a later publication with nothing new before the GUI took the
  * first, and a change of availability alone. */
@@ -5904,6 +7143,7 @@ main(int argc, char** argv) {
     test_player_release_wakes_a_waiting_delete();
     test_held_recordings_over_the_limit_go_once_released();
     test_host_surface();
+    test_single_play_hold_only();
     test_transfer_reads_only_the_files_selected();
     test_limit_follows_the_preference();
     test_search_key_parse_and_compaction();
@@ -5954,6 +7194,21 @@ main(int argc, char** argv) {
     test_owner_lookup_failure_ends_a_read_in_flight();
     test_marker_retry_takes_the_label_on_disk();
     test_session_start_remembers_storage_away();
+    test_folder_missing_at_a_cold_start();
+    test_root_without_rows_is_not_held_away();
+    test_directory_gone_during_its_listing_is_remembered_missing();
+    test_directory_gone_during_a_folder_read_is_remembered_missing();
+    test_session_seeing_a_listing_root_gone_queues_another();
+    test_first_read_waits_for_its_last_slice();
+    test_session_on_another_root_notes_a_missing_indexed_root();
+    test_session_never_records_onto_a_root_back_unlisted();
+    test_first_read_of_a_vanished_directory_is_not_committed();
+    test_start_with_no_folder_asks_for_the_listing();
+    test_owner_choice_drops_a_root_its_checks_found_gone();
+    test_session_made_root_during_a_pass_is_not_listed();
+    test_session_made_root_inside_a_look_writes_no_flag();
+    test_export_note_during_a_pass_is_taken_by_its_listing();
+    test_session_making_the_folder_reads_its_root_again();
     test_delete_held_when_its_root_was_seen_away();
     test_owner_lookup_failure_ends_a_tail_in_flight();
 #ifndef _WIN32
@@ -5974,6 +7229,13 @@ main(int argc, char** argv) {
     test_requests_wait_for_a_recheck();
     test_entry_names_match_zip_selection();
     test_entry_names_batch();
+    test_playlist_recordings_per_row();
+    test_recording_map_identity_is_the_indexed_one();
+    test_checked_delete_refuses_another_file();
+    test_checked_delete_refuses_another_path();
+    test_seen_away_root_is_not_admitted();
+    test_playlist_missing_folder_keeps_its_rows_away();
+    test_loss_during_a_listing_asks_for_another();
     test_revision_coalesced_passes();
     test_detection_from_c_writer();
     test_platform_path_names_the_qt_file();

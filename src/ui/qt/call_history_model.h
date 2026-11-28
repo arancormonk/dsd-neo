@@ -327,6 +327,24 @@ class CallHistoryModel : public QAbstractListModel, public HeardTalkgroupSource 
      */
     QList<ExportRow> exportRows(const QList<int>& sourceRows) const;
 
+    /** @brief One row as a History playlist takes it (issue #909): who it was and its recordings, at the press. */
+    struct PlaylistRow {
+        qint64 uid = 0;          // UidRole
+        QString name;            // NameRole: what the row shows
+        qint64 when = 0;         // WhenRole: the start in seconds, 0 when not known
+        QVariantList recordings; // CallRecordingProvider::recordingsForFragmentLists(): every one, oldest first
+    };
+
+    /**
+     * @brief The rows at @p sourceRows (this model's rows, in the order given; a row out of range is skipped) as a
+     *        playlist takes them.
+     *
+     * Every row's recordings (its withdrawn fragments left out, as RecordingsRole) come from one
+     * recordingsForFragmentLists() call to the provider (none without one), so a playlist takes the recording store's
+     * lock once, not once per row.
+     */
+    QList<PlaylistRow> playlistRows(const QList<int>& sourceRows) const;
+
     bool
     saveFailing() const {
         return m_saveFailing;

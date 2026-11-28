@@ -17,6 +17,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <array>
 #include <cstdio>
 #include <dsd-neo/core/safe_api.h>
 #include <dsd-neo/runtime/analog_channel.h>

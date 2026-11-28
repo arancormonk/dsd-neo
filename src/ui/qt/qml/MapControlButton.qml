@@ -19,6 +19,9 @@ Rectangle {
     property bool checkable: false
     property bool checked: false
     property bool framed: true
+    // Issue #909: what a tap acts on (GatedTapHandler.pressKey): a tap whose
+    // press began on another key is dropped.
+    property var pressKey: null
     signal clicked
 
     implicitWidth: Theme.minimumTouchSize
@@ -72,6 +75,7 @@ Rectangle {
         id: tap
         enabled: control.enabled
         gesturePolicy: TapHandler.ReleaseWithinBounds
+        pressKey: control.pressKey
         onAllowedTap: control.activate()
     }
 }

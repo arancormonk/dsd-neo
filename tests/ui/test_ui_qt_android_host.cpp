@@ -22,6 +22,7 @@
 #include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <QtGlobal>
 #include <atomic>
 #include <cstdio>
@@ -40,9 +41,11 @@
 #include "../../android/session_state_map.h"
 #include "../../android/start_status.h"
 #include "decoder_host.h"
+#include "decoder_host_test_hooks.h"
 #include "diagnostics_log.h"
 #include "document_import_transport.h"
 #include "document_save_transport.h"
+#include "dsd-neo/platform/file_compat.h"
 #include "recording_journal.h"
 #include "recording_store.h"
 
@@ -140,6 +143,12 @@ struct PlatformRecordings {
     int plays = 0;
     int nextGeneration = 0;
     int statusReads = 0;
+    // #909: the arrays the last array play handed over, its count, and the recheck list takeRecheck() hands out once.
+    dsd_android::DecoderHostAndroid::PlaybackRequest request;
+    int arrayPlays = 0;
+    QStringList recheck;
+    int rechecks = 0;
+    qint64 recheckSerial = -1; // RecordingPlayback.recheckSerial(); -1: not readable (#909)
     std::atomic<int> transfers{0};
     std::atomic<int> shares{0};
     int canShares = 0;
@@ -256,6 +265,11 @@ reset_recordings() {
     r.commands.clear();
     r.status.clear();
     r.statusReads = 0;
+    r.request = {};
+    r.arrayPlays = 0;
+    r.recheck.clear();
+    r.rechecks = 0;
+    r.recheckSerial = -1;
     r.transfers = 0;
     r.transferId = 0;
     r.paths.clear();
@@ -354,6 +368,7 @@ namespace dsd_android {
 DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : DecoderHost(parent) {
     startFileBrowser();
     startRecordingShareClean();
+    followApplicationState();
 }
 
 QJsonObject
@@ -651,9 +666,54 @@ DecoderHostAndroid::platformResumePlayback() {
     recordings().commands.append(QStringLiteral("resume"));
 }
 
+int
+DecoderHostAndroid::platformPlayRecordings(const PlaybackRequest& request) {
+    PlatformRecordings& r = recordings();
+    ++r.arrayPlays;
+    r.request = request;
+    return r.nextGeneration;
+}
+
 void
-DecoderHostAndroid::platformSeekPlayback(qint64 positionMs) {
-    recordings().commands.append(QStringLiteral("seek %1").arg(positionMs));
+DecoderHostAndroid::platformNextPlayback() {
+    recordings().commands.append(QStringLiteral("next"));
+}
+
+void
+DecoderHostAndroid::platformPreviousPlayback() {
+    recordings().commands.append(QStringLiteral("previous"));
+}
+
+void
+DecoderHostAndroid::platformSeekPlaybackFor(qint64 token, qint64 positionMs) {
+    recordings().commands.append(QStringLiteral("seekFor %1 %2").arg(token).arg(positionMs));
+}
+
+void
+DecoderHostAndroid::platformPausePlaybackFor(qint64 token) {
+    recordings().commands.append(QStringLiteral("pauseFor %1").arg(token));
+}
+
+void
+DecoderHostAndroid::platformResumePlaybackFor(qint64 token) {
+    recordings().commands.append(QStringLiteral("resumeFor %1").arg(token));
+}
+
+void
+DecoderHostAndroid::platformStopPlaybackGeneration(int generation) {
+    recordings().commands.append(QStringLiteral("stopGeneration %1").arg(generation));
+}
+
+qint64
+DecoderHostAndroid::platformRecordingRecheckSerial() {
+    return recordings().recheckSerial;
+}
+
+QStringList
+DecoderHostAndroid::platformTakeRecordingRecheck() {
+    PlatformRecordings& r = recordings();
+    ++r.rechecks;
+    return std::exchange(r.recheck, QStringList());
 }
 
 void
@@ -2539,6 +2599,106 @@ check_recording_roots() {
           "the base host's root when the platform names none");
 }
 
+namespace {
+/* One RecordingPlayback.status() record (#909), as RecordingPlayer.Status.record() writes it: an open item by default. */
+struct StatusFields {
+    int generation = 0;
+    int state = dsd_qt::DecoderHost::PlaybackPlaying;
+    qint64 position = 0;
+    qint64 duration = 60000;
+    QString error;
+    int item = 0;
+    qint64 token = 1;
+    int call = 0;
+    int calls = 1;
+    int part = 1;
+    int parts = 1;
+    int gap = 0;
+    int interrupted = 0;
+    int canSeek = 1;
+    QString paused;
+    QString ended;
+    int skipped = 0;
+    int serial = 0;
+    int refusals = 0;
+    int skipCall = -1;
+    int skipCount = 0;
+    int seeksLanded = 0;
+    int canNext = 0;
+
+    QString
+    text() const {
+        QStringList f;
+        for (const qint64 n : {static_cast<qint64>(generation), static_cast<qint64>(state), position, duration}) {
+            f.append(QString::number(n));
+        }
+        f.append(error);
+        for (const qint64 n : {static_cast<qint64>(item), token, static_cast<qint64>(call), static_cast<qint64>(calls),
+                               static_cast<qint64>(part), static_cast<qint64>(parts), static_cast<qint64>(gap),
+                               static_cast<qint64>(interrupted), static_cast<qint64>(canSeek)}) {
+            f.append(QString::number(n));
+        }
+        f.append(paused);
+        f.append(ended);
+        f.append(QString::number(skipped));
+        f.append(QString::number(serial));
+        for (const int n : {refusals, skipCall, skipCount, seeksLanded, canNext}) {
+            f.append(QString::number(n));
+        }
+        return f.join(QLatin1Char('\t'));
+    }
+};
+
+/* The record of play @p generation with nothing open, as one that ended reads: @p state, its @p ended reason. */
+StatusFields
+ended_record(int generation, int state, const QString& ended, const QString& error = QString()) {
+    StatusFields f;
+    f.generation = generation;
+    f.state = state;
+    f.ended = ended;
+    f.error = error;
+    f.canSeek = 0;
+    return f;
+}
+
+/* Counts the host's playback signals. */
+struct PlaybackSignals {
+    int changed = 0;
+    int moved = 0;
+    QStringList missing;
+
+    explicit PlaybackSignals(dsd_qt::DecoderHost& host) {
+        QObject::connect(&host, &dsd_qt::DecoderHost::playbackChanged, [this]() { ++changed; });
+        QObject::connect(&host, &dsd_qt::DecoderHost::playbackPositionChanged, [this]() { ++moved; });
+        QObject::connect(&host, &dsd_qt::DecoderHost::recordingFilesMissing,
+                         [this](const QStringList& paths) { missing += paths; });
+    }
+};
+
+/* A playlist item map, as CallHistoryPlaylist builds one. */
+QVariantMap
+playlist_item(const QString& path, int call, int part, int parts, const QString& key) {
+    return {{QStringLiteral("path"), path},
+            {QStringLiteral("size"), qint64{1000} + call},
+            {QStringLiteral("mtimeSec"), qint64{1754714000} + part},
+            {QStringLiteral("mtimeNanos"), 500 + part},
+            {QStringLiteral("call"), call},
+            {QStringLiteral("partOrdinal"), part},
+            {QStringLiteral("partCount"), parts},
+            {QStringLiteral("title"), QStringLiteral("TG %1").arg(call)},
+            {QStringLiteral("line"), QStringLiteral("2026-11-25 12:0%1").arg(call)},
+            {QStringLiteral("key"), key}};
+}
+
+/* Three items: call 0's parts 2 and 3 of 3 (part 1 away), then call 1's only part. */
+QVariantList
+three_items() {
+    return {playlist_item(QStringLiteral("/r/a2.wav"), 0, 2, 3, QStringLiteral("uid-a")),
+            playlist_item(QStringLiteral("/r/a3.wav"), 0, 3, 3, QStringLiteral("uid-a")),
+            playlist_item(QStringLiteral("/r/b1.wav"), 1, 1, 1, QStringLiteral("uid-b"))};
+}
+} // namespace
+
 /* #708 D6/D10: the player's status reaches the host through its poll, for the play it opened only. */
 static void
 check_recording_playback() {
@@ -2547,40 +2707,75 @@ check_recording_playback() {
     const QTemporaryDir dir;
     const QString a = temp_recording(dir, "a.wav", "RIFF");
     DecoderHostAndroid host;
-    QStringList gone;
-    QObject::connect(&host, &DecoderHost::recordingFilesMissing, [&gone](const QStringList& paths) { gone += paths; });
+    PlaybackSignals seen(host);
     reset_recordings();
     PlatformRecordings& r = recordings();
     check(host.playbackSupported() && host.property("playbackSupported").toBool(), "the Android host plays");
+    // #909: Android's keyboard top is the platform's own word only once a reading says it can read the keyboard; this
+    // host reads none, so Qt's input method stays the fallback (UI_QT_DISPLAY_SCALE covers the reading).
+    check(!host.property("reportsKeyboard").toBool(), "#909: no keyboard reading yet: no word of the host's own");
 
     r.nextGeneration = 7;
-    host.playRecording(a);
-    check(r.plays == 1 && r.played == a, "a play reaches the platform's player");
-    check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == a, "and reads Preparing");
-    r.status = QStringLiteral("6\t2\t900\t60000\t");
+    check(host.playRecordingOwned(a) == 7, "a sheet's play answers its generation");
+    check(host.playbackSize() == -1, "a single recording's play names its file by path alone");
+    check(r.plays == 1 && r.played == a && r.arrayPlays == 0, "a single play reaches the platform's player by path");
+    check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == a
+              && host.playbackGeneration() == 7 && host.playbackMode() == DecoderHost::PlaybackSingle
+              && host.playbackHoldPath() == a,
+          "and reads Preparing under it, its file held");
+    StatusFields f;
+    f.generation = 6;
+    f.position = 900;
+    r.status = f.text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackPreparing, "an earlier play's record is not this one's");
     r.status = QStringLiteral("7\tnot a state\t0\t0\t");
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackPreparing, "a record that cannot be read says nothing");
-    r.status = QStringLiteral("7\t2\t1500\t60000\t");
+    f.generation = 7;
+    f.position = 1500;
+    f.token = 11;
+    StatusFields starting = f;
+    starting.state = DecoderHost::PlaybackStarting;
+    r.status = starting.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.playbackHoldPath() == a
+              && host.playbackCanSeek(),
+          "#909 R49: a start not yet acknowledged keeps the play open: its file held, seek allowed");
+    StatusFields unknown = starting;
+    unknown.state = DecoderHost::PlaybackStarting + 1;
+    unknown.position = 1700;
+    r.status = unknown.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.playbackPositionMs() == 1500
+              && host.playbackHoldPath() == a,
+          "a state past Starting is no record: the reading and the held file stay");
+    r.status = f.text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackPlaying && host.playbackPositionMs() == 1500
-              && host.playbackDurationMs() == 60000,
+              && host.playbackDurationMs() == 60000 && host.playbackToken() == 11 && host.playbackPath() == a
+              && host.playbackCanSeek(),
           "the play's record is published");
 
     host.pausePlayback();
     host.resumePlayback();
     host.seekPlayback(90000);
-    check(r.commands == QStringList({QStringLiteral("pause"), QStringLiteral("resume"), QStringLiteral("seek 90000")}),
-          "pause, resume and seek reach the player");
-    check(host.playbackPositionMs() == 60000, "a seek shows its target at once, inside the recording");
+    check(r.commands
+              == QStringList({QStringLiteral("pause"), QStringLiteral("resume"), QStringLiteral("seekFor 11 90000")}),
+          "pause, resume and seek reach the player, the seek for the recording open");
+    check(host.playbackPositionMs() == 1500, "a seek shows nothing itself: the player's next record says where it is");
 
-    r.status = QStringLiteral("7\t0\t60000\t60000\t");
+    StatusFields end = f;
+    end.state = DecoderHost::PlaybackStopped;
+    end.position = 60000;
+    end.canSeek = 0;
+    end.ended = QStringLiteral("finished");
+    r.status = end.text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackStopped && host.playbackPath() == a
-              && host.playbackPositionMs() == 60000,
-          "a play that ended reads Stopped at its end, its path kept");
+              && host.playbackPositionMs() == 60000 && host.playbackEndedReason() == QStringLiteral("finished")
+              && host.playbackHoldPath().isEmpty(),
+          "a play that ended reads Stopped at its end, its path kept and its file let go");
     const int reads = r.statusReads;
     host.refresh();
     host.pausePlayback();
@@ -2588,10 +2783,12 @@ check_recording_playback() {
 
     r.nextGeneration = 8;
     host.playRecording(a);
-    r.status = QStringLiteral("8\t4\t0\t0\tmissing");
+    check(host.playbackPartOrdinal() == 1 && host.playbackPartCount() == 1,
+          "#909 M5: a legacy single play reads part 1 of 1, as the player's first record will");
+    r.status = ended_record(8, DecoderHost::PlaybackFailed, QStringLiteral("failed"), QStringLiteral("missing")).text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("missing")
-              && gone == QStringList({a}),
+              && host.playbackPath() == a && seen.missing == QStringList({a}),
           "a file the player found gone fails as missing and is reported");
 
     r.nextGeneration = 9;
@@ -2599,24 +2796,719 @@ check_recording_playback() {
     r.commands.clear();
     host.stopPlayback();
     check(r.commands == QStringList({QStringLiteral("stop")}) && host.playbackState() == DecoderHost::PlaybackStopped
-              && host.playbackPath().isEmpty(),
-          "a stop reaches the player and reads Stopped with no path");
-    r.status = QStringLiteral("9\t2\t10\t60000\t");
+              && host.playbackPath().isEmpty() && host.playbackGeneration() == 0,
+          "a stop reaches the player and reads Stopped with no path and no play");
+    f.generation = 9;
+    r.status = f.text();
     host.refresh();
     check(host.playbackState() == DecoderHost::PlaybackStopped, "a stopped play's late record is not published");
 
+    // #909 (R43): a playlist open, its items held, then a sheet's play the platform cannot take: it replaces the
+    // playlist, whose items go with it.
+    r.nextGeneration = 8;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 8
+              && host.playbackItemsHeld() == 3,
+          "a playlist holds its items");
     r.nextGeneration = 0;
     r.commands.clear();
-    host.playRecording(a);
+    check(host.playRecordingOwned(a) == 0, "a play the platform cannot take answers no generation");
     check(host.playbackState() == DecoderHost::PlaybackFailed && host.playbackError() == QStringLiteral("failed"),
-          "a play the platform cannot take fails");
+          "and fails");
+    check(host.playbackItemsHeld() == 0, "the playlist it replaced lets its items go");
     check(r.commands == QStringList({QStringLiteral("stop")}),
           "and stops what plays first, as the base host's failures do");
 
     r.commands.clear();
-    host.playRecording(dir.filePath(QStringLiteral("gone.wav")));
+    const QString gone = dir.filePath(QStringLiteral("gone.wav"));
+    host.playRecording(gone);
     check(r.commands == QStringList({QStringLiteral("stop")}) && r.plays == 4,
-          "a missing file stops what plays and never reaches the player");
+          "a missing file played by path stops what plays and never reaches the player");
+    check(host.playbackError() == QStringLiteral("missing") && host.playbackPath() == gone,
+          "and fails as missing, as before");
+
+    /* A sheet's own play of a file that is gone is refused before it is taken: a playlist playing plays on. */
+    r.nextGeneration = 10;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 10,
+          "a playlist plays");
+    r.commands.clear();
+    seen.missing.clear();
+    const int changes = seen.changed;
+    const int plays = r.plays + r.arrayPlays;
+    check(host.playRecordingOwned(gone) == 0, "a missing file answers no generation");
+    check(r.commands.isEmpty() && r.plays + r.arrayPlays == plays, "it stops nothing and never reaches the player");
+    check(host.playbackGeneration() == 10 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackMode() == DecoderHost::PlaybackPlaylist && seen.changed == changes,
+          "the playlist plays on, and nothing is published");
+    check(seen.missing == QStringList({gone}), "the store is asked to look again");
+
+    /* The file goes between the sheet's check and its start (the storage limit's worker): the one check stands, so the
+     * play is taken and the platform's player finds it gone; nothing stops the playlist first or reads Failed. */
+    const QString going = temp_recording(dir, "going.wav", "RIFF");
+    r.commands.clear();
+    seen.missing.clear();
+    dsd_qt::decoder_host_test_after_recording_check([](const QString& path) { QFile::remove(path); });
+    r.nextGeneration = 11;
+    const int owned = host.playRecordingOwned(going);
+    dsd_qt::decoder_host_test_after_recording_check({});
+    check(!QFileInfo::exists(going), "the file went after its check");
+    check(owned == 11 && r.commands.isEmpty() && r.played == going,
+          "a file gone after the check: the play is taken, and nothing is stopped first");
+    check(host.playbackGeneration() == 11 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackError().isEmpty() && seen.missing.isEmpty(),
+          "and it never reads Failed missing from a second check");
+}
+
+/* #909: a playlist's items reach RecordingPlayback.play() as its arrays, and only a play it can take does. */
+static void
+check_playlist_arrays() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    r.nextGeneration = 21;
+    r.recheck = {QStringLiteral("/r/old.wav")};
+    PlaybackSignals seen(host);
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 21,
+          "an accepted playlist answers its generation");
+    const DecoderHostAndroid::PlaybackRequest& q = r.request;
+    check(r.arrayPlays == 1 && r.plays == 0 && q.mode == DecoderHost::PlaybackPlaylist && q.start == 0,
+          "it reaches the player as one array play, from its first item");
+    check(
+        q.paths == QStringList({QStringLiteral("/r/a2.wav"), QStringLiteral("/r/a3.wav"), QStringLiteral("/r/b1.wav")})
+            && q.sizes == QList<qint64>({1000, 1000, 1001})
+            && q.mtimeSecs == QList<qint64>({1754714002, 1754714003, 1754714001})
+            && q.mtimeNanos == QList<int>({502, 503, 501}) && q.calls == QList<int>({0, 0, 1})
+            && q.partOrdinals == QList<int>({2, 3, 1}) && q.partCounts == QList<int>({3, 3, 1}),
+        "each item's identity, call and part, in order");
+    check(q.titles == QStringList({QStringLiteral("TG 0"), QStringLiteral("TG 0"), QStringLiteral("TG 1")})
+              && q.lines.at(2) == QStringLiteral("2026-11-25 12:01")
+              && q.keys == QStringList({QStringLiteral("uid-a"), QStringLiteral("uid-a"), QStringLiteral("uid-b")}),
+          "and its title, line and key");
+    check(host.playbackGeneration() == 21 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackMode() == DecoderHost::PlaybackPlaylist
+              && host.playbackOrigin() == QStringLiteral("history")
+              && host.playbackPath() == QStringLiteral("/r/a2.wav") && host.playbackTitle() == QStringLiteral("TG 0")
+              && host.playbackKey() == QStringLiteral("uid-a") && host.playbackCallIndex() == 0
+              && host.playbackCallCount() == 2 && host.playbackPartOrdinal() == 2 && host.playbackPartCount() == 3
+              && host.playbackToken() == 0 && !host.playbackCanSeek(),
+          "it reads Preparing at its first item at once, as call 1 of 2, part 2 of 3");
+    check(host.playbackSize() == 1000 && host.playbackMtimeSec() == 1754714002 && host.playbackMtimeNanos() == 502
+              && host.property("playbackSize").toLongLong() == 1000,
+          "with the identity the play listed for it");
+    check(host.playbackHoldPath().isEmpty(), "a playlist holds no file in the store");
+    check(r.rechecks == 1 && seen.missing == QStringList({QStringLiteral("/r/old.wav")}),
+          "the recheck list goes to the store with the play");
+
+    // Refused before it reaches the player: nothing changes.
+    const auto refused = [&](const QVariantList& items, int mode, const char* why) {
+        const int plays = r.arrayPlays;
+        const int changed = seen.changed;
+        check(host.playRecordings(items, mode, QStringLiteral("history")) == 0 && r.arrayPlays == plays
+                  && seen.changed == changed && host.playbackGeneration() == 21,
+              why);
+    };
+    QVariantList items = three_items();
+    refused({}, DecoderHost::PlaybackPlaylist, "no items is refused");
+    refused(items, 3, "a mode that is none is refused");
+    QVariantMap pathless = items.at(1).toMap();
+    pathless.remove(QStringLiteral("path"));
+    refused({items.at(0), pathless}, DecoderHost::PlaybackPlaylist, "an item with no path is refused");
+    QVariantMap hole = items.at(2).toMap();
+    hole.insert(QStringLiteral("call"), 2);
+    refused({items.at(0), hole}, DecoderHost::PlaybackPlaylist, "a hole in the calls is refused");
+    refused({items.at(2)}, DecoderHost::PlaybackPlaylist, "calls that start past 0 are refused");
+    refused({items.at(2), items.at(0)}, DecoderHost::PlaybackPlaylist, "calls going back are refused");
+    refused(items, DecoderHost::PlaybackParts, "parts of two calls are refused");
+    refused({items.at(0), items.at(1)}, DecoderHost::PlaybackSingle, "a single play of two items is refused");
+    // #909 R63: a part numbered outside its count is refused before the platform sees it, as the player would refuse
+    // it only after replacing what plays.
+    for (const auto& numbering : {std::pair<int, int>{0, 1}, std::pair<int, int>{3, 2}, std::pair<int, int>{1, 0}}) {
+        QVariantMap outside = items.at(0).toMap();
+        outside.insert(QStringLiteral("partOrdinal"), numbering.first);
+        outside.insert(QStringLiteral("partCount"), numbering.second);
+        refused({outside}, DecoderHost::PlaybackPlaylist, "a part outside its call's count is refused");
+    }
+    QVariantMap wordy = items.at(0).toMap();
+    wordy.insert(QStringLiteral("partOrdinal"), QStringLiteral("first"));
+    refused({wordy}, DecoderHost::PlaybackPlaylist, "a part ordinal that is no number is refused");
+    // R80: each integer is read whole and in 64 bits before it is narrowed: 2^32 (which toInt() reads as 0), as a
+    // number and as text, a fraction and text with junk after its digits are refused, the play open left playing.
+    for (const char* field : {"call", "partOrdinal", "partCount", "mtimeNanos"}) {
+        const QVariant tooWide[] = {QVariant(qint64{4294967296}), QVariant(QStringLiteral("4294967296"))};
+        for (const QVariant& wide : tooWide) {
+            QVariantMap item = items.at(0).toMap();
+            item.insert(QString::fromLatin1(field), wide);
+            refused({item}, DecoderHost::PlaybackPlaylist, "an integer past 32 bits is refused, not narrowed");
+        }
+    }
+    for (const char* field : {"call", "partOrdinal", "partCount", "mtimeNanos", "mtimeSec", "size"}) {
+        // M1: text with a NUL inside is refused too, never read as the number before the NUL.
+        const QString nul = QStringLiteral("1") + QChar(0) + QStringLiteral("x");
+        const QVariant malformed[] = {QVariant(1.5), QVariant(QStringLiteral("1x")), QVariant(QStringLiteral(" 1")),
+                                      QVariant(nul)};
+        for (const QVariant& odd : malformed) {
+            QVariantMap item = items.at(0).toMap();
+            item.insert(QString::fromLatin1(field), odd);
+            refused({item}, DecoderHost::PlaybackPlaylist, "a fraction or text with junk is refused");
+        }
+    }
+    QVariantMap wholeForms = items.at(0).toMap();
+    wholeForms.insert(QStringLiteral("partOrdinal"), 1.0);
+    wholeForms.insert(QStringLiteral("size"), QStringLiteral("96044"));
+    r.nextGeneration = 21;
+    check(host.playRecordings({wholeForms}, DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 21
+              && r.request.partOrdinals == QList<int>{1} && r.request.sizes == QList<qint64>{96044},
+          "#909 R80: a whole double and decimal text are taken, as the numbers they are");
+    // #909: the store lists every recording's identity, so a queued item without one is malformed, refused before the
+    // platform sees it; the play now open (21) plays on.
+    for (const int mode : {int{DecoderHost::PlaybackParts}, int{DecoderHost::PlaybackPlaylist}}) {
+        for (const char* field : {"size", "mtimeSec", "mtimeNanos"}) {
+            QVariantMap bare = items.at(1).toMap();
+            bare.remove(QString::fromLatin1(field));
+            refused({items.at(0), bare}, mode, "a queued item without its identity is refused");
+        }
+        QVariantMap negative = items.at(1).toMap();
+        negative.insert(QStringLiteral("size"), qint64{-1});
+        refused({items.at(0), negative}, mode, "a queued item with a negative size is refused");
+        QVariantMap word = items.at(1).toMap();
+        word.insert(QStringLiteral("mtimeSec"), QStringLiteral("soon"));
+        refused({items.at(0), word}, mode, "a queued item whose identity is no number is refused");
+        // R75: nanoseconds no file identity has.
+        for (const int nanos : {-1, 1000000000}) {
+            QVariantMap impossible = items.at(1).toMap();
+            impossible.insert(QStringLiteral("mtimeNanos"), nanos);
+            refused({items.at(0), impossible}, mode, "a queued item with impossible nanoseconds is refused");
+        }
+    }
+    r.nextGeneration = 22;
+    check(host.playRecordings({items.at(0), items.at(1)}, DecoderHost::PlaybackParts, QString()) == 22,
+          "a sheet's parts of one call are taken");
+    check(host.playbackMode() == DecoderHost::PlaybackParts && host.playbackHoldPath().isEmpty()
+              && r.request.mode == DecoderHost::PlaybackParts,
+          "as parts, holding no file");
+    r.nextGeneration = 23;
+    const QVariantMap byPath{{QStringLiteral("path"), QStringLiteral("/r/one.wav")}};
+    check(host.playRecordings({byPath}, DecoderHost::PlaybackSingle, QString()) == 23
+              && r.request.sizes == QList<qint64>{-1},
+          "a single item names its file by path alone, no identity needed");
+    check(r.request.calls == QList<int>{0} && r.request.partOrdinals == QList<int>{1}
+              && r.request.partCounts == QList<int>{1} && r.request.mtimeSecs == QList<qint64>{0}
+              && r.request.mtimeNanos == QList<int>{0},
+          "#909 R63: as part 1 of 1 of call 0, as the player's Item(path) is");
+    // M4: a key holding no value is missing to the check and the request alike: a part 1 of 1, of call 0.
+    r.nextGeneration = 24;
+    QVariantMap valueless = byPath;
+    for (const char* key : {"partOrdinal", "partCount", "call", "size", "mtimeSec", "mtimeNanos"}) {
+        valueless.insert(QString::fromLatin1(key), QVariant());
+    }
+    check(host.playRecordings({valueless}, DecoderHost::PlaybackSingle, QString()) == 24
+              && r.request.partOrdinals == QList<int>{1} && r.request.partCounts == QList<int>{1}
+              && r.request.calls == QList<int>{0} && r.request.sizes == QList<qint64>{-1},
+          "#909 M4: keys holding no value read as absent, as the check read them");
+}
+
+/* #909: one record publishes every reading at once, its item's path, title and key from the play's own items. */
+static void
+check_playlist_record() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    r.nextGeneration = 30;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    PlaybackSignals seen(host);
+    StatusFields f;
+    f.generation = 30;
+    f.item = 2;
+    f.token = 41;
+    f.call = 1;
+    f.calls = 2;
+    f.part = 1;
+    f.parts = 1;
+    f.position = 1200;
+    f.duration = 31000;
+    f.skipped = 1;
+    f.serial = 0;
+    r.status = f.text();
+    host.refresh();
+    check(seen.changed == 1 && seen.moved == 1, "one record is one change, and one move");
+    check(host.playbackPath() == QStringLiteral("/r/b1.wav") && host.playbackTitle() == QStringLiteral("TG 1")
+              && host.playbackKey() == QStringLiteral("uid-b") && host.playbackToken() == 41
+              && host.playbackCallIndex() == 1 && host.playbackCallCount() == 2 && host.playbackPartOrdinal() == 1
+              && host.playbackPartCount() == 1 && host.playbackSkipped() == 1 && host.playbackCanSeek()
+              && host.playbackState() == DecoderHost::PlaybackPlaying && host.playbackPositionMs() == 1200
+              && host.playbackDurationMs() == 31000,
+          "the item the record names, from the play's items");
+    check(host.playbackSize() == 1001 && host.playbackMtimeSec() == 1754714001 && host.playbackMtimeNanos() == 501,
+          "and the identity the play listed for it");
+
+    // A position tick: one read, one parse, a move and no change; the recheck list is not asked.
+    const int reads = r.statusReads;
+    const int rechecks = r.rechecks;
+    f.position = 1450;
+    r.status = f.text();
+    host.refresh();
+    check(r.statusReads == reads + 1 && r.rechecks == rechecks && seen.changed == 1 && seen.moved == 2
+              && host.playbackPositionMs() == 1450,
+          "a position tick moves the position only");
+
+    f.gap = 1;
+    f.canSeek = 0;
+    f.position = 31000;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackGap() && !host.playbackCanSeek() && seen.changed == 2, "the gap is published");
+    f.gap = 0;
+    f.state = DecoderHost::PlaybackPaused;
+    f.interrupted = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackInterrupted() && host.playbackState() == DecoderHost::PlaybackPaused,
+          "an interruption is published");
+    f.interrupted = 0;
+    f.paused = QStringLiteral("unavailable");
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackPausedReason() == QStringLiteral("unavailable") && host.playbackError().isEmpty(),
+          "a resume refused the audio reads paused, unavailable, with no error");
+    // Refused again: the same reading but for the refusal count, which is news on its own.
+    const int refusedChanges = seen.changed;
+    f.refusals = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackRefusals() == 1 && seen.changed == refusedChanges + 1,
+          "a refusal read again moves the count, published as a change");
+    f.skipCall = 1;
+    f.skipCount = 2;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackSkipNoticeCall() == 1 && host.playbackSkipNoticeCount() == 2
+              && host.property("playbackSkipNoticeCall").toInt() == 1 && seen.changed == refusedChanges + 2,
+          "the skip notice's call and count are published");
+    f.skipCall = -1;
+    f.skipCount = 0;
+    r.status = f.text();
+    host.refresh();
+    f.seeksLanded = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackSeeksLanded() == 1 && host.property("playbackSeeksLanded").toInt() == 1
+              && seen.changed == refusedChanges + 4,
+          "#909 R56: a landing the player confirmed is counted and published as a change");
+    f.seeksLanded = 0;
+    r.status = f.text() + QStringLiteral("\t0");
+    host.refresh();
+    check(host.playbackSeeksLanded() == 1, "a record with a field too many is no record");
+    f.seeksLanded = 1;
+    f.canNext = 1;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackCanNext() && host.property("playbackCanNext").toBool() && seen.changed == refusedChanges + 5,
+          "#909: Next as the player offers it is published, as a change");
+    const qint64 kept = host.playbackPositionMs();
+    const qint64 position = f.position;
+    f.canNext = 2;
+    f.position = kept + 7000; // a record taken would move the position
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackCanNext() && host.playbackPositionMs() == kept,
+          "a can-next flag that is neither 0 nor 1 is no record: nothing of it is taken");
+    f.position = position;
+    f.canNext = 0;
+    r.status = f.text();
+    host.refresh();
+    check(!host.playbackCanNext(), "no Next offered: none published");
+    const qint64 shownBefore = host.playbackPositionMs();
+    // Every number read whole: a state field with trailing data, a NUL or a leading space is no record, so a
+    // "4" prefix (Failed) never closes a play still running.
+    for (const QString& state : {QStringLiteral("4x"), QStringLiteral("4") + QChar(0), QStringLiteral(" 4")}) {
+        QStringList fields = f.text().split(QLatin1Char('\t'));
+        fields[1] = state;
+        r.status = fields.join(QLatin1Char('\t'));
+        host.refresh();
+        check(host.playbackState() != DecoderHost::PlaybackFailed && host.playbackGeneration() == f.generation
+                  && host.playbackPositionMs() == shownBefore,
+              "#909: a state field not wholly a number is no record, the play left open");
+    }
+
+    f.item = 3;
+    f.paused.clear();
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackPausedReason() == QStringLiteral("unavailable"),
+          "a record naming no item of the play is not its");
+    f.item = -1;
+    f.state = DecoderHost::PlaybackPreparing;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPreparing && host.playbackPath() == QStringLiteral("/r/b1.wav"),
+          "a record naming none keeps the item shown");
+    // Each malformed record would show something new (Playing, another position, the gap) were it read.
+    StatusFields bad = f;
+    bad.state = DecoderHost::PlaybackPlaying;
+    bad.position = 7777;
+    bad.gap = 1;
+    const int changed = seen.changed;
+    const int moved = seen.moved;
+    const auto unread = [&](const QString& record, const char* why) {
+        r.status = record;
+        host.refresh();
+        check(seen.changed == changed && seen.moved == moved && host.playbackState() == DecoderHost::PlaybackPreparing
+                  && host.playbackPositionMs() != 7777 && !host.playbackGap(),
+              why);
+    };
+    unread(bad.text() + QStringLiteral("\t0"), "a record with a field too many says nothing");
+    unread(bad.text().replace(QStringLiteral("\t-1\t"), QStringLiteral("\tx\t")),
+           "a record with a number that is none says nothing");
+    bad.gap = 2;
+    unread(bad.text(), "a record with a flag that is neither 0 nor 1 says nothing");
+    // A reason the player never writes, though lower-case letters, is no record: each field has its own codes.
+    bad.gap = 1;
+    StatusFields code = bad;
+    code.state = DecoderHost::PlaybackStopped;
+    code.ended = QStringLiteral("finishedd");
+    unread(code.text(), "an ended reason the player never writes says nothing");
+    code.ended = QStringLiteral("user");
+    unread(code.text(), "nor a paused reason in the ended field");
+    code = bad;
+    code.paused = QStringLiteral("finished");
+    unread(code.text(), "nor an ended reason in the paused field");
+    code = bad;
+    code.paused = QStringLiteral("phonecall");
+    unread(code.text(), "nor an unknown paused reason");
+    code = bad;
+    code.state = DecoderHost::PlaybackFailed;
+    code.error = QStringLiteral("unsupported");
+    unread(code.text(), "nor an error the player never writes");
+    // #909 (R49): 5 is a start asked for and not yet made; a state past it is still no record.
+    code = bad;
+    code.state = DecoderHost::PlaybackStarting + 1;
+    unread(code.text(), "nor a state the player never writes");
+    StatusFields good = bad;
+    good.paused = QStringLiteral("noisy");
+    r.status = good.text();
+    host.refresh();
+    check(host.playbackPausedReason() == QStringLiteral("noisy") && host.playbackGap(), "a known reason is read");
+    StatusFields starting = good;
+    starting.state = DecoderHost::PlaybackStarting;
+    starting.gap = 0;
+    starting.paused.clear();
+    r.status = starting.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackStarting && host.property("playbackState").toInt() == 5
+              && host.playbackGeneration() == f.generation,
+          "a starting record is read as starting, its play still open");
+}
+
+/* #909: a play that ended from the platform (a notification Stop, its end, a failure) keeps its last reading under
+ * its generation, and nothing is read while no play is open. */
+static void
+check_playlist_terminal_record() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    for (int poll = 0; poll < 3; ++poll) {
+        host.refresh();
+    }
+    check(r.statusReads == 0, "no status is read before the first play");
+    r.nextGeneration = 40;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    check(host.playbackItemsHeld() == 3, "an open play keeps its items for its readings");
+    StatusFields stopped = ended_record(40, DecoderHost::PlaybackStopped, QStringLiteral("stopped"));
+    stopped.item = 1;
+    stopped.call = 0;
+    stopped.calls = 2;
+    r.status = stopped.text();
+    host.refresh();
+    check(host.playbackGeneration() == 40 && host.playbackState() == DecoderHost::PlaybackStopped
+              && host.playbackEndedReason() == QStringLiteral("stopped")
+              && host.playbackPath() == QStringLiteral("/r/a3.wav"),
+          "a Stop from the notification ends the play, its last reading kept under its generation");
+    // #909 (R43): the terminal poll lets the items go; the reading published keeps what its item named.
+    check(host.playbackItemsHeld() == 0, "the ended play's items are let go");
+    check(host.playbackTitle() == QStringLiteral("TG 0") && host.playbackKey() == QStringLiteral("uid-a")
+              && host.playbackSize() == 1000 && host.playbackMtimeSec() == 1754714003 && host.playbackCallCount() == 2,
+          "and the published reading is unchanged");
+    const int reads = r.statusReads;
+    for (int poll = 0; poll < 3; ++poll) {
+        host.refresh();
+    }
+    check(r.statusReads == reads && host.playbackPath() == QStringLiteral("/r/a3.wav"),
+          "an ended play is read no more, its reading kept");
+    r.commands.clear();
+    host.stopPlaybackGeneration(40);
+    host.nextPlayback();
+    host.pausePlaybackFor(1);
+    check(r.commands.isEmpty() && host.playbackEndedReason() == QStringLiteral("stopped"),
+          "and nothing is sent for it any more");
+
+    r.nextGeneration = 41;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    StatusFields unplayable =
+        ended_record(41, DecoderHost::PlaybackFailed, QStringLiteral("unplayable"), QStringLiteral("failed"));
+    unplayable.skipped = 3;
+    r.status = unplayable.text();
+    host.refresh();
+    check(host.playbackGeneration() == 41 && host.playbackState() == DecoderHost::PlaybackFailed
+              && host.playbackError() == QStringLiteral("failed")
+              && host.playbackEndedReason() == QStringLiteral("unplayable") && host.playbackSkipped() == 3,
+          "a playlist nothing of which could play ends failed, unplayable");
+
+    r.nextGeneration = 42;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    r.commands.clear();
+    host.stopPlaybackGeneration(41);
+    check(r.commands.isEmpty() && host.playbackGeneration() == 42 && host.playbackItemsHeld() == 3,
+          "a stop for another play leaves this one alone");
+    host.stopPlaybackGeneration(42);
+    check(r.commands == QStringList({QStringLiteral("stopGeneration 42")}) && host.playbackGeneration() == 0
+              && host.playbackState() == DecoderHost::PlaybackStopped && host.playbackPath().isEmpty()
+              && host.playbackItemsHeld() == 0,
+          "the bar's stop names its play, and closes it, its items let go");
+    const int after = r.statusReads;
+    host.refresh();
+    check(r.statusReads == after, "and nothing is read once it is closed");
+}
+
+/* #909: the paths the player found gone or changed reach the store when the serial moves, on every return to the
+ * foreground and with every play, each once. */
+static void
+check_playlist_recheck() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    PlaybackSignals seen(host);
+    r.nextGeneration = 50;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    check(r.rechecks == 1 && seen.missing.isEmpty(), "a play takes the list, empty here");
+    StatusFields f;
+    f.generation = 50;
+    f.serial = 3;
+    r.status = f.text();
+    host.refresh();
+    check(r.rechecks == 2, "the first record's serial is news");
+    host.refresh();
+    check(r.rechecks == 2, "the same serial again is not");
+    r.recheck = {QStringLiteral("/r/a2.wav")};
+    f.serial = 4;
+    f.item = 1;
+    f.skipped = 1;
+    r.status = f.text();
+    host.refresh();
+    check(r.rechecks == 3 && seen.missing == QStringList({QStringLiteral("/r/a2.wav")}),
+          "a moved serial hands the store the path found gone");
+
+    // Parts: a part gone ends the play as missing, and its path comes through the list, not from the reading.
+    r.nextGeneration = 51;
+    const QVariantList items = three_items();
+    (void)host.playRecordings({items.at(0), items.at(1)}, DecoderHost::PlaybackParts, QString());
+    seen.missing.clear();
+    StatusFields gone =
+        ended_record(51, DecoderHost::PlaybackFailed, QStringLiteral("failed"), QStringLiteral("missing"));
+    gone.serial = 4;
+    r.status = gone.text();
+    host.refresh();
+    check(host.playbackError() == QStringLiteral("missing") && seen.missing.isEmpty(),
+          "a part gone is not reported from the reading");
+
+    // The play over (its terminal record taken, nothing open), a late Gone (its last item's open, past its
+    // timeout, found the file gone) moves the list's serial: the next poll hands it to the store, without reading the
+    // ended play's record or reopening it.
+    {
+        const int readsAfterEnd = r.statusReads;
+        const int rechecksAfterEnd = r.rechecks;
+        r.recheckSerial = 4;
+        host.refresh();
+        check(r.rechecks == rechecksAfterEnd, "a poll with no play open: the serial the end left is not news");
+        r.recheck = {QStringLiteral("/r/late.wav")};
+        r.recheckSerial = 5;
+        seen.missing.clear();
+        host.refresh();
+        check(seen.missing == QStringList({QStringLiteral("/r/late.wav")}) && r.statusReads == readsAfterEnd
+                  && host.playbackError() == QStringLiteral("missing"),
+              "#909: a late recheck after the end reaches the store at the next poll, the end left as it was");
+        host.refresh();
+        check(r.rechecks == rechecksAfterEnd + 1, "the same serial again is not news");
+        r.recheckSerial = -1;
+        seen.missing.clear();
+    }
+
+    // Away and back: read at once, and the list taken even with no play open.
+    const int reads = r.statusReads;
+    const int rechecks = r.rechecks;
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == reads && r.rechecks == rechecks, "an Active with no leave first is nothing new");
+    host.noteApplicationState(Qt::ApplicationInactive);
+    host.noteApplicationState(Qt::ApplicationSuspended);
+    r.recheck = {QStringLiteral("/r/a3.wav")};
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == reads && r.rechecks == rechecks + 1
+              && seen.missing == QStringList({QStringLiteral("/r/a3.wav")}),
+          "back in the foreground with no play open: the list is taken, the status not read");
+
+    r.nextGeneration = 52;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    StatusFields finished = ended_record(52, DecoderHost::PlaybackStopped, QStringLiteral("finished"));
+    finished.serial = 4;
+    r.status = finished.text();
+    host.noteApplicationState(Qt::ApplicationHidden);
+    const int before = r.rechecks;
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(host.playbackEndedReason() == QStringLiteral("finished") && host.playbackGeneration() == 52
+              && r.rechecks == before + 1,
+          "back in the foreground with a play open: its end is read at once, and the list taken");
+
+    // R51: Inactive is a leave too (split screen: visible, not active). The play finishes between polls; back to
+    // Active, the end is read and published at once, before the bar can say its waiting start.
+    r.nextGeneration = 53;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    StatusFields playingNow;
+    playingNow.generation = 53;
+    playingNow.item = 0;
+    playingNow.token = 9;
+    r.status = playingNow.text();
+    host.refresh();
+    check(host.playbackState() == DecoderHost::PlaybackPlaying, "the playlist plays");
+    host.noteApplicationState(Qt::ApplicationInactive);
+    r.status = ended_record(53, DecoderHost::PlaybackStopped, QStringLiteral("finished")).text();
+    const int readsBefore = r.statusReads;
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == readsBefore + 1 && host.playbackEndedReason() == QStringLiteral("finished"),
+          "Inactive then Active: the end is read at once");
+    const int idle = r.statusReads;
+    host.noteApplicationState(Qt::ApplicationInactive);
+    host.noteApplicationState(Qt::ApplicationActive);
+    check(r.statusReads == idle, "and with no play open no status is read");
+}
+
+/* #909: item commands carry the play token of the gesture; one for another recording is dropped, shown nowhere. */
+static void
+check_playlist_commands() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    r.nextGeneration = 60;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    r.commands.clear();
+    host.seekPlaybackFor(0, 100);
+    host.pausePlaybackFor(0);
+    check(r.commands.isEmpty(), "before the first record no recording is open to steer");
+    StatusFields f;
+    f.generation = 60;
+    f.token = 71;
+    f.position = 500;
+    r.status = f.text();
+    host.refresh();
+    PlaybackSignals seen(host);
+    host.seekPlaybackFor(70, 9000);
+    host.pausePlaybackFor(70);
+    host.resumePlaybackFor(72);
+    check(r.commands.isEmpty() && host.playbackPositionMs() == 500 && seen.moved == 0,
+          "a stale token's commands are dropped, with no position shown");
+    host.seekPlaybackFor(71, 9000);
+    host.pausePlaybackFor(71);
+    host.resumePlaybackFor(71);
+    check(r.commands
+              == QStringList(
+                  {QStringLiteral("seekFor 71 9000"), QStringLiteral("pauseFor 71"), QStringLiteral("resumeFor 71")}),
+          "the current token's reach the player");
+    // The token is the one the last poll read: the player may be on the next recording by now and drop the seek, so the
+    // host shows nothing of it, and only the player's record moves the position.
+    check(host.playbackPositionMs() == 500 && seen.moved == 0 && seen.changed == 0, "a seek shows nothing itself");
+    f.position = 9000;
+    r.status = f.text();
+    host.refresh();
+    check(host.playbackPositionMs() == 9000 && seen.moved == 1 && seen.changed == 0,
+          "the player's record shows where it landed");
+    f.position = 500;
+    f.canSeek = 0;
+    r.status = f.text();
+    host.refresh();
+    r.commands.clear();
+    host.seekPlaybackFor(71, 20000);
+    check(r.commands == QStringList({QStringLiteral("seekFor 71 20000")}) && host.playbackPositionMs() == 500,
+          "a seek where none moves it is sent, never shown");
+    r.commands.clear();
+    host.nextPlayback();
+    host.previousPlayback();
+    host.pausePlayback();
+    host.resumePlayback();
+    check(r.commands
+              == QStringList({QStringLiteral("next"), QStringLiteral("previous"), QStringLiteral("pause"),
+                              QStringLiteral("resume")}),
+          "the bar's queue-wide commands reach the player");
+
+    const QTemporaryDir dir;
+    r.nextGeneration = 61;
+    host.playRecording(temp_recording(dir, "one.wav", "RIFF"));
+    r.commands.clear();
+    host.nextPlayback();
+    host.previousPlayback();
+    check(r.commands.isEmpty(), "a single recording has no next or previous");
+}
+
+/* #909 replacement point: a refused play leaves what plays playing; an accepted one has replaced it, and owns every
+ * failure after, even one at its start. */
+static void
+check_playlist_replacement() {
+    using dsd_android::DecoderHostAndroid;
+    using dsd_qt::DecoderHost;
+    DecoderHostAndroid host;
+    reset_recordings();
+    PlatformRecordings& r = recordings();
+    r.nextGeneration = 80;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    StatusFields f;
+    f.generation = 80;
+    f.token = 90;
+    r.status = f.text();
+    host.refresh();
+    r.commands.clear();
+    r.nextGeneration = 0;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 0,
+          "a play the player refuses before taking it answers 0");
+    check(r.commands.isEmpty() && host.playbackGeneration() == 80 && host.playbackToken() == 90
+              && host.playbackState() == DecoderHost::PlaybackPlaying,
+          "and what plays plays on, its readings untouched");
+    host.refresh();
+    check(host.playbackGeneration() == 80 && host.playbackState() == DecoderHost::PlaybackPlaying,
+          "and is still polled");
+
+    r.nextGeneration = 81;
+    check(host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history")) == 81,
+          "an accepted play answers its generation");
+    check(host.playbackGeneration() == 81 && host.playbackState() == DecoderHost::PlaybackPreparing
+              && host.playbackToken() == 0,
+          "and has replaced what played");
+    host.refresh();
+    check(host.playbackGeneration() == 81 && host.playbackState() == DecoderHost::PlaybackPreparing,
+          "the replaced play's late record is not published");
+    r.status = ended_record(81, DecoderHost::PlaybackFailed, QStringLiteral("start"), QStringLiteral("failed")).text();
+    host.refresh();
+    check(host.playbackGeneration() == 81 && host.playbackState() == DecoderHost::PlaybackFailed
+              && host.playbackEndedReason() == QStringLiteral("start"),
+          "a service that would not start ends the new play, under its own generation");
+
+    r.nextGeneration = 82;
+    (void)host.playRecordings(three_items(), DecoderHost::PlaybackPlaylist, QStringLiteral("history"));
+    f.generation = 82;
+    f.state = DecoderHost::PlaybackPreparing;
+    r.status = f.text();
+    host.refresh();
+    r.status =
+        ended_record(82, DecoderHost::PlaybackFailed, QStringLiteral("failed"), QStringLiteral("unavailable")).text();
+    host.refresh();
+    check(host.playbackGeneration() == 82 && host.playbackError() == QStringLiteral("unavailable")
+              && host.playbackEndedReason() == QStringLiteral("failed"),
+          "a focus refused at its start ends the new play, and the old one is not brought back");
 }
 
 /* @p selection with each of its files as the store selects them (sizes, mtimeSecs, mtimeNanos), read now; zeros for
@@ -2998,6 +3890,9 @@ check_recording_share() {
               && recordings().diagnosticsCleanOnWorker.load(),
           "a host cleans old diagnostics share copies once, at its start, on the transfer worker");
     host.setRecordingIndex([&a](const QString& path) { return path == a; });
+    // The store's hold for the share's copy; 0 for one it refuses (not available now).
+    std::atomic<bool> holdRefused{false};
+    host.setRecordingHold([&holdRefused](const QString&) { return holdRefused.load() ? 0 : 1; }, [](int) {});
     const auto shared = [](const QString& path, const QString& title) {
         return with_transfer([&path, &title](const PlatformRecordings& r) {
             return r.sharedPath == path && r.sharedTitle == title && r.shareOnWorker;
@@ -3007,11 +3902,15 @@ check_recording_share() {
               return recordings().shares.load() == 1;
           }) && shared(a, QStringLiteral("Call recording")),
           "an indexed recording is shared through the platform, copied on the transfer worker");
+    holdRefused = true;
+    check(!host.shareRecording(a, QStringLiteral("Call recording")) && recordings().shares.load() == 1,
+          "#909: a recording the store will not hold is not shared, nothing staged");
+    holdRefused = false;
     recordings().canShareAnswer = false;
     check(!host.shareRecording(a, QStringLiteral("Call recording")), "the platform's refusal is the answer");
     recordings().canShareAnswer = true;
     check(!host.shareRecording(dir.filePath(QStringLiteral("other.wav")), QStringLiteral("x"))
-              && recordings().canShares == 2 && recordings().shares.load() == 1,
+              && recordings().canShares == 3 && recordings().shares.load() == 1,
           "a path the store does not manage never reaches the platform");
 
     // A share the platform took can still fail on its way; the next refresh reports it. One whose file is gone (here
@@ -5087,6 +5986,12 @@ main(int argc, char** argv) {
     check_unreadable_record_keeps_the_session();
     check_recording_roots();
     check_recording_playback();
+    check_playlist_arrays();
+    check_playlist_record();
+    check_playlist_terminal_record();
+    check_playlist_recheck();
+    check_playlist_commands();
+    check_playlist_replacement();
     check_recording_transfers();
     check_download_discards();
     check_recording_share();

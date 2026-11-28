@@ -40,6 +40,7 @@
 #include <QList>
 #include <QMap>
 #include <QMetaMethod>
+#include <QMetaProperty>
 #include <QMetaType>
 #include <QObject>
 #include <QRegularExpression>

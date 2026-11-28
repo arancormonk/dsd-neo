@@ -24,12 +24,17 @@
 #define DSD_NEO_SRC_UI_QT_SCAN_PROTOCOL_CATALOG_H_
 
 #include <QLatin1String>
+#include <QList> // IWYU pragma: keep -- QVariantList is a QList; IWYU asks for it in some units only.
+#include <QMap>
 #include <QString>
+#include <QVariant>
 #include <QVariantList>
 #include <QVariantMap>
+#include <Qt>
 #include <algorithm>
 #include <array>
 #include <cstddef>
+#include <utility>
 
 namespace dsd_qt {
 

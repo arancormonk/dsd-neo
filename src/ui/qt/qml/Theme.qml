@@ -27,6 +27,23 @@ QtObject {
             return decoderHost.fontPixelSize(16) / 16;
         return Math.min(1.6, Math.max(1, Qt.application.font.pixelSize / 16));
     }
+    // Whether the on-screen keyboard is shown, decided by the host first: a
+    // keyboard top it reports (0 or more) is the answer, and a host that
+    // reports the keyboard itself (Android, reportsKeyboard) saying none
+    // means hidden. Only a host with no word of its own falls back to Qt's
+    // input method, @p input in a test: shown with a keyboard of some
+    // height, the guard keyboardTop()'s own Qt fallback has always kept
+    // (main's rule). Where it overlaps an item is keyboardTop()'s to
+    // measure; a window already resized above the keyboard has no overlap.
+    function keyboardShown(input) {
+        var host = typeof decoderHost !== "undefined" ? decoderHost : null;
+        if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)
+            return true;
+        if (host && host.reportsKeyboard === true)
+            return false;
+        var method = input || Qt.inputMethod;
+        return method.visible === true && method.keyboardRectangle.height > 0;
+    }
     function keyboardTop(item) {
         var host = typeof decoderHost !== "undefined" ? decoderHost : null;
         if (host && typeof host.keyboardTop === "number" && host.keyboardTop >= 0)
@@ -66,6 +83,23 @@ QtObject {
         // further up, so the bounds are the view's own origin, not 0.
         var start = content === scroll.contentItem ? scroll.originY : 0;
         scroll.contentY = Math.max(start, Math.min(next, start + scroll.contentHeight - scroll.height));
+    }
+    // Lays out every positioner (Column, Row, Flow, Grid) in @p item's tree
+    // now, @p item included, innermost first, so each takes its children's
+    // sizes before its parent reads its own. A positioner places its children
+    // and takes its size on its next polish, so until then the geometry built
+    // on it (a list anchored under a header, a row brought into view) is the
+    // last frame's (issue #909).
+    function settlePositioners(item) {
+        if (!item)
+            return;
+        var children = item.children;
+        for (var i = 0; i < children.length; ++i)
+            settlePositioners(children[i]);
+        // Only positioners have this signal. A ListView's forceLayout()
+        // places its rows, which is the caller's to ask for.
+        if (typeof item.positioningComplete === "function")
+            item.forceLayout();
     }
     function resetFontScale() {
         fontScale = Qt.binding(function () {

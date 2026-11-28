@@ -5,10 +5,15 @@
 
 #include "unit_activity_model.h"
 
+#include <QByteArray>
 #include <QDateTime>
+#include <QDebug>
+#include <QHash>
 #include <algorithm>
 #include <dsd-neo/app_control/unit_activity_view.h>
 #include <dsd-neo/core/state_fwd.h>
+#include <iterator>
+#include <utility>
 
 namespace dsd_qt {
 

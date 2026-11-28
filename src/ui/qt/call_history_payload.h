@@ -16,7 +16,6 @@
 #ifndef DSD_NEO_SRC_UI_QT_CALL_HISTORY_PAYLOAD_H_
 #define DSD_NEO_SRC_UI_QT_CALL_HISTORY_PAYLOAD_H_
 
-#include <QHash>
 #include <QJsonObject>
 #include <QJsonValue>
 #include <QLatin1String>
@@ -29,6 +28,9 @@
 
 #include "call_history_merge.h"
 #include "call_history_model.h"
+
+template <typename Key, typename T>
+class QHash;
 
 namespace dsd_qt {
 

@@ -15,6 +15,7 @@
 #include <QLatin1String>
 #include <QMap>
 #include <QMetaMethod>
+#include <QMetaProperty>
 #include <QMetaType>
 #include <QObject>
 #include <QQmlComponent>
@@ -30,6 +31,7 @@
 #include <QVariantMap>
 #include <Qt>
 #include <QtGlobal>
+#include <qqml.h>
 #if defined(DSD_TEST_QPA_APP_STATE)
 #include <qpa/qwindowsysteminterface.h>
 #endif

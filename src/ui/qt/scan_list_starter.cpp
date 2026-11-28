@@ -39,7 +39,6 @@
 #include "scan_list_targets.h"
 #include "scan_protocol_catalog.h"
 #include "session_args.h"
-#include "stored_int.h"
 
 namespace dsd_qt {
 namespace {

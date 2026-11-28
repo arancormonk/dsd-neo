@@ -20,7 +20,8 @@ import "Util.js" as Util
 // id; when that recording leaves (deleted, or trimmed by the storage limit) the
 // row that takes its place is selected, the next older one, or the one before
 // it (newer) when it was the oldest, and the sheet closes when none is left. A
-// recording whose storage is away stays listed and says so.
+// recording whose storage is away stays listed and says so. With no player
+// (issue #909, B6) a row only selects, for Save and Delete.
 ModalSheet {
     id: sheet
     objectName: "detectionRecordingsSheet"
@@ -36,6 +37,10 @@ ModalSheet {
     // store, so it is resolved again on each History change while open.
     property double detailsUid: 0
     signal callDetailsRequested(var record)
+    // Issue #909 (B3): the sheet closed as its last recording went, with a
+    // problem still to show (a play that found it gone): the screen under it
+    // shows it on its own message line, as the sheet's has gone.
+    signal closedWithNotice(string text)
     accessibleName: qsTr("Recordings, %1 MHz").arg(frequencyText)
 
     // Closed, the list is empty, so no row is built (issue #782).
@@ -58,6 +63,13 @@ ModalSheet {
         selectedId = "";
         listedIds = [];
         open();
+        // Visible, with its selection set: what stands for the recording shown
+        // (a playlist's Resume refused) is said as it opens, as History's
+        // detail sheet does; the shared refusal key keeps it from being said
+        // twice (#909 R58).
+        follow();
+        recordingPlayer.follow();
+        recordingPlayer.noteFailure();
     }
     /** "14:03:22 · 0:42": when the recording started, and its length. */
     function timeLine(recording) {
@@ -139,8 +151,8 @@ ModalSheet {
     }
     function choose(id) {
         selectedId = id;
-        if (recordingPlayer.parts.length > 0 && !recordingPlayer.storageAway)
-            recordingPlayer.playPart(0);
+        if (recordingPlayer.parts.length > 0)
+            recordingPlayer.pickPart(0);
     }
     function showDetails() {
         resolveDetails();
@@ -164,8 +176,12 @@ ModalSheet {
         id: emptied
         interval: 0
         onTriggered: {
-            if (sheet.recordingList.length === 0)
-                sheet.visible = false;
+            if (sheet.recordingList.length > 0)
+                return;
+            var notice = recordingPlayer.noticeProblem ? recordingPlayer.notice : "";
+            sheet.visible = false;
+            if (notice.length > 0)
+                sheet.closedWithNotice(notice);
         }
     }
     // Focus follows the selection to its new row once the rows have settled.
@@ -224,7 +240,24 @@ ModalSheet {
         width: parent.width
         recordingList: sheet.selected ? [sheet.selected] : []
         dialogParent: sheet
+        noticeLine: recordingNotice
         title: sheet.selected && Number(sheet.selected.start) > 0 ? Util.fill(qsTr("%1 MHz · %2"), [sheet.frequencyText, Qt.formatDateTime(new Date(Number(sheet.selected.start) * 1000), "yyyy-MM-dd hh:mm")]) : qsTr("%1 MHz").arg(sheet.frequencyText)
+    }
+    // What the recording's last action came to, outside the player, which
+    // hides when its recording has gone (B3).
+    ReadableText {
+        id: recordingNotice
+        objectName: "recordingNotice"
+        width: parent.width
+        visible: text.length > 0
+        text: recordingPlayer.notice
+        // Names a saved file, which may hold markup characters.
+        textFormat: Text.PlainText
+        wrapMode: Text.Wrap
+        font.family: Theme.sans
+        font.pixelSize: Theme.fontSize(13)
+        color: recordingPlayer.noticeProblem ? Theme.alert : Theme.textSecondary
+        Accessible.role: !reachable ? Accessible.Pane : (recordingPlayer.noticeProblem ? Accessible.AlertMessage : Accessible.StaticText)
     }
     OutlineButton {
         id: callDetailsButton

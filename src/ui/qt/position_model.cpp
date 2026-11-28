@@ -10,7 +10,10 @@
 #include <QByteArray>
 #include <QCoreApplication>
 #include <QDateTime>
+#include <QDebug>
 #include <QGuiApplication>
+#include <QLatin1String>
+#include <QMap>
 #include <QString>
 #include <algorithm>
 #include <cstddef>

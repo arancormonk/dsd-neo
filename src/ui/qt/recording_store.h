@@ -137,10 +137,10 @@ class RecordingStore;
 void recording_store_follow_host(RecordingStore* store, DecoderHost* host);
 
 /**
- * @brief Let @p host play, export and share the recordings @p store manages: the file playing is held
- * (RecordingStore::setPlayingPath()), an export's or save's selection is released when it ends, files the host found
- * gone are looked at again (RecordingStore::recheckPaths()), only indexed recordings are shared, and a share is held
- * until its copy is made (DecoderHost::setRecordingHold()).
+ * @brief Let @p host play, export and share the recordings @p store manages: a single recording's file is held while
+ * it plays (DecoderHost::playbackHoldPath(), RecordingStore::setPlayingPath()), an export's or save's selection is
+ * released when it ends, files the host found gone are looked at again (RecordingStore::recheckPaths()), only indexed
+ * recordings are shared, and a share is held until its copy is made (DecoderHost::setRecordingHold()).
  */
 void recording_store_serve_host(RecordingStore* store, DecoderHost* host);
 
@@ -220,6 +220,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Every row's names under one hold of the store's lock (a History export), each named by
      * recording_entry_name() as selectForExport() names it. */
     QList<QStringList> recordingEntryNames(const QList<QStringList>& fragmentsPerRow) const override;
+    /** @brief Every row's recordings under one hold of the store's lock (a History playlist, issue #909): each row's
+     * maps as recordingsForFragments() gives them, plus `deleteQueued` (a delete asked for it waits). It looks at no
+     * storage: what is admitted is what the store knows. */
+    QList<QVariantList> recordingsForFragmentLists(const QList<QStringList>& fragmentsPerRow) const override;
 
     /** @brief How many recordings were heard on the Signal search detection @p key (`<session>:<hit>`, the journal's
      * `search`), those on storage that is away included. */
@@ -292,6 +296,17 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * but not done yet (its file held by an export) is dropped when the worker reads storage again. */
     Q_INVOKABLE bool deleteRecordings(const QStringList& ids);
     Q_INVOKABLE bool deleteRecording(const QString& id);
+    /**
+     * @brief deleteRecording() of the file the user pressed Delete on (issue #909): @p id with the path and the
+     * identity its map gave then (`path`, `identitySize`, `mtimeSec`, `mtimeNanos`).
+     *
+     * Checked under the store's lock as the request is taken: refused, queuing nothing, with deleteRefusal() "changed"
+     * when the recording under @p id is another file now (a read again put another file under the id, at another path
+     * or with another identity: R68), and "gone" when no recording has @p id now; otherwise as deleteRecording(). The
+     * path goes with the queued request and is checked again right before the unlink.
+     */
+    Q_INVOKABLE bool deleteRecordingChecked(const QString& id, const QString& path, qint64 size, qint64 mtimeSec,
+                                            int mtimeNanos);
     /** @brief Delete every recording of the owner @p uid, unfinished ones in its folders included. */
     Q_INVOKABLE bool deleteFolder(const QString& uid);
     /** @brief Delete the unfinished recordings earlier runs left. */
@@ -299,7 +314,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /** @brief Delete every managed recording. */
     Q_INVOKABLE bool deleteAll();
     /** @brief Why the last delete request refused (GUI thread): "loading" (the index is not settled), "storageAway"
-     * (it named a recording on storage that is not there), or empty after one that was asked. */
+     * (it named a recording on storage that is not there), "changed" or "gone" (deleteRecordingChecked() only), or
+     * empty after one that was asked. */
     Q_INVOKABLE QString deleteRefusal() const;
 
     /**
@@ -350,6 +366,21 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void recheckPaths(const QStringList& paths);
 
 #ifdef DSD_NEO_TEST_HOOKS
+    /** @brief Call @p hook on the worker after a pass's look at a root (listRootNow()), with the lock released, before
+     * what the look found is taken under it. Test hook. */
+    void setRootLookHookForTest(std::function<void(const QString& root)> hook);
+    /** @brief Call @p hook in a session start after it has looked at the roots and before it makes or takes a folder,
+     * under the store's lock (the hook must not call the store). Test hook. */
+    void setSessionRootsHookForTest(std::function<void()> hook);
+    /** @brief Call @p hook on the worker in a folder's read once its journal and files are read, before the read's
+     * last look at its root, with the lock released. Test hook. */
+    void setJournalReadHookForTest(std::function<void(const QString& folder)> hook);
+    /** @brief Call @p hook in a session start's owner check of each folder, under the store's lock (it must not call
+     * the store): true makes that check find the folder's root gone. While it is set, the start's owner checks walk
+     * the folders worst first, so a better folder is checked after a best one is saved. Test hook. */
+    void setOwnerCheckHookForTest(std::function<bool(const QString& folder)> hook);
+    /** @brief The label the index holds for the folder at @p path ("" when none). Test hook. */
+    QString folderNameForTest(const QString& path) const;
     /** @brief Wait for a worker pass that starts after this call (at once when not started). Test hook. */
     void waitForPassForTest();
     /** @brief Wait until @p count passes have ended, asking for none (so a pass running is not told another is asked
@@ -397,6 +428,10 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     void setPassEndHookForTest(std::function<void()> hook);
     /** @brief The ids waiting to be deleted, sorted, and none waiting after. Test hook. */
     QStringList takeDeleteQueueForTest();
+    /** @brief Put the entry under @p id at @p path, as a read again that indexed the id elsewhere would. Test hook. */
+    void moveEntryPathForTest(const QString& id, const QString& path);
+    /** @brief How many times a History read has taken the store's lock (ReaderLock). Test hook. */
+    int readerLocksForTest() const;
 #endif
 
   Q_SIGNALS:
@@ -562,6 +597,38 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * @p starts). */
     bool readFolderOwner(const QString& path, int root, quint64 starts, Folder* folder, Pass* pass);
     static bool rootAvailableNow(const QString& root);
+    /* Whether @p root is an existing directory that can be read now: the worker's look at a root (R83, I1). Not
+     * rootAvailableNow(), whose root that can be made counts for a session start, not for recordings already in it. */
+    static bool rootPlayableNow(const QString& root);
+    /* Whether root @p root (at @p path) is there for the index (R83): an existing readable directory, or a missing one
+     * a session could make (rootAvailableNow()) while the index holds no row on it (m2). So a root never made, or one
+     * whose folders hold no recording, reads as there and empty, and one whose directory went (renamed, removed) with
+     * rows indexed holds them away, never dropped. Takes the lock only when the directory is missing; the Locked form
+     * is for a caller holding it. */
+    bool rootThereForIndex(int root, const QString& path) const;
+    /* rootThereForIndex() for a root whose directory is not a readable one: one a session could make, with no row
+     * indexed on it. Takes the lock for the row look. */
+    bool rootMissingTakenAsThere(int root, const QString& path) const;
+    /* A first read of @p path that read @p rows rows, dropped (true) when @p root's directory is missing now: the
+     * folder stays unread and the next pass is asked for. Takes the lock. */
+    bool firstReadDropped(const QString& path, int root, qsizetype rows, Pass* pass);
+    /* Whether a new folder may go on @p root (@p usable, or @p makeOnly with its directory still absent, then made);
+     * one only to be made that is back since the start's look is passed over and its listing asked for. Lock held. */
+    bool rootTakenForFolderLocked(int root, bool usable, bool makeOnly);
+    /* @p root's path ("" for no root). Takes the lock. */
+    QString rootPathOf(int root) const;
+    /* refreshRoots()'s look at @p root (at @p path): @p there whether it is there for the index, and true when this
+     * pass lists it in full (the first pass, back from away, seen away, or its missing directory there now, I1). The
+     * missing flag is written under the lock from a look no session start overtook, and a seen-away note made since
+     * the pass's top is taken into this listing (m1). */
+    bool listRootNow(int root, const QString& path, bool first, bool was, QSet<int>* seenAway, bool* there);
+    bool rootThereForIndexLocked(int root) const;
+    /* Whether the index holds a row on @p root: an entry in a folder on it (m_rowsInFolder), or one a folder's read
+     * again holds from before it (m_committed). Lock held. */
+    bool rootHoldsRowsLocked(int root) const;
+    /* A session start made @p root's directory (it was missing): with rows indexed on it (I2), it is listed again in
+     * full at once, its old rows unavailable until then; with none, nothing is left to list. Lock held. */
+    void noteRootMadeLocked(int root);
     /* Whether the regular file at @p path opens to read, as a transfer opens it (dsd_fopen_existing_regular_file()). */
     static bool opensToRead(const QString& path);
     /* False for @p path, read as @p stat, while it is a recording a transfer could not open (m_unopenable) and it still
@@ -643,6 +710,13 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
      * then publish order). */
     QList<const Entry*> fragmentEntriesLocked(const QStringList& fragments) const;
     bool folderAvailableLocked(const QString& folder) const;
+    /* Whether @p entry is available to a reader (the entry map's `available`, a share's hold): its folder read, on
+     * storage there, not seen away since, and not held from before its read again. Lock held. */
+    bool entryAvailableLocked(const Entry& entry) const;
+    /* A root seen away (R74): found missing outside a pass, or back and not read again yet, from that first look
+     * through the pass's read of it. */
+    bool rootSeenAwayLocked(int root) const;
+
     /* Whether @p folder has been read (Folder::loaded): an unread one offers no recording path to any reader. */
     bool folderReadLocked(const QString& folder) const;
     /* The store is ready, the worker has no pass running or asked for (a pass reads storage, rechecks files and
@@ -693,11 +767,18 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* tailFolder() could not read @p path's new journal lines: read whole at the next pass (its root still there). */
     void noteTailReadFailed(const QString& path, Pass* pass);
     void processDeletes(Pass* pass);
+
     /* @p counted: the roots a limit's total counts, each checked again before the unlink (Held when one is gone). */
-    /* @p expected: the file a user's delete was asked of (its identity when the request was accepted); null for the
-     * limit's, which removes the file the index knows. */
+    /* A delete asked: the file it names, by its identity and its path when the request was accepted (R68). */
+    struct DeleteAsk {
+        dsd_file_identity_t identity{};
+        QString path;
+    };
+
+    /* @p expected: the file a user's delete was asked of (its identity and path when the request was accepted); null
+     * for the limit's, which removes the file the index knows. One whose entry has another path now is not it. */
     DeleteResult deleteEntry(const QString& id, DeleteCause cause, Pass* pass, const QList<bool>* counted = nullptr,
-                             const dsd_file_identity_t* expected = nullptr, qint64* foundBytes = nullptr);
+                             const DeleteAsk* expected = nullptr, qint64* foundBytes = nullptr);
     /* A recording not removable as found (@p found: missing, or not the store's to remove) leaves the index, unless
      * what is there changed meanwhile. Under the store's lock. */
     DeleteResult dropUnremovableLocked(const QString& id, OnDisk found, Pass* pass);
@@ -719,7 +800,11 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* deleteEntry()'s step under the lock: the holds, the check and the unlink. Failed when deleteEntry() still has to
      * settle it from @p attempt (a missing or foreign name, a refused or failed removal). */
     DeleteResult unlinkEntryLocked(const QString& id, const QString& path, bool uploading, DeleteCause cause,
-                                   const dsd_file_identity_t* expected, Pass* pass, UnlinkAttempt* attempt);
+                                   const DeleteAsk* expected, Pass* pass, UnlinkAttempt* attempt);
+    /* unlinkEntryLocked()'s refusals before it looks at the name: what decides for @p entry (at @p path when it was
+     * taken) instead of the unlink, or Failed when none does. */
+    DeleteResult unlinkRefusedLocked(const Entry& entry, const QString& path, bool uploading, DeleteCause cause,
+                                     const DeleteAsk* expected) const;
     /* The player, an export or a save holds @p path. */
     bool heldLocked(const QString& path) const;
     void noteDeleteFailure(DeleteCause cause, const QString& error);
@@ -759,9 +844,17 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QString folderLocked(const QString& kind, const QString& uid, const QString& name);
     /* folderLocked()'s steps, under the store's lock: the roots usable now; the owner's folder (its path, @p gone
      * listing the unread folders no longer its); that folder, relabelled; a folder name already there, taken or not;
-     * and a new folder. */
-    QList<bool> usableRootsLocked();
+     * and a new folder. @p makeOnly: the roots held or seen away that this start found with no directory, which it may
+     * make anew (I2 reads them again after) but never use as they stand. */
+    QList<bool> usableRootsLocked(QList<bool>* makeOnly);
     QString ownerFolderPathLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
+    /* One scan of ownerFolderPathLocked(): the best folder among the roots usable as it goes, its checks clearing any
+     * root they find gone. */
+    QString ownerFolderCandidateLocked(const QString& uid, QList<bool>* usable, QStringList* gone, QStringList* unread);
+    /* One folder of that scan: @p folder replaces @p best when it is this owner's, better placed, on a usable root,
+     * confirmed on disk and writable. */
+    void considerOwnerFolderLocked(const Folder& folder, const QString& uid, QList<bool>* usable, QStringList* gone,
+                                   QStringList* unread, const Folder** best);
     /* Whether @p folder's folder.json still names @p uid; one gone with its root marks the root unusable (a pass asked
      * for), one no longer the owner's and never read goes to @p gone, one that cannot be read to @p unread (its
      * folder is read again before any request). Under the store's lock. */
@@ -770,7 +863,8 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QString existingFolderLocked(const QString& kind, const QString& uid, const QString& name, QList<bool>* usable);
     CandidateFolder takeCandidateFolderLocked(const QString& path, int root, const QString& uid, const QFileInfo& info);
     bool makeFolderLocked(const QString& path, int root, const QString& kind, const QString& uid, const QString& name);
-    QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable);
+    QString newFolderLocked(const QString& kind, const QString& uid, const QString& name, const QList<bool>& usable,
+                            const QList<bool>& makeOnly);
     QVariantMap entryMap(const Entry& entry) const;
     /* entryMap() and what a detection's list shows of a recording. */
     QVariantMap detectionEntryMap(const Entry& entry) const;
@@ -789,6 +883,23 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     mutable std::mutex m_mutex;
     /* History reads waiting for m_mutex (ReaderLock). */
     mutable std::atomic<int> m_readersWaiting{0};
+#ifdef DSD_NEO_TEST_HOOKS
+    /* History reads that took m_mutex (readerLocksForTest()). */
+    mutable std::atomic<int> m_readerLocks{0};
+    /* setRootLookHookForTest(); under m_mutex. */
+    std::function<void(const QString&)> m_rootLookHook;
+    /* setSessionRootsHookForTest(); called under m_mutex. */
+    std::function<void()> m_sessionRootsHook;
+    /* setOwnerCheckHookForTest(); called under m_mutex. */
+    std::function<bool(const QString&)> m_ownerCheckHook;
+    /* The folder table worst placed first (root, then path, descending), for setOwnerCheckHookForTest(). Lock held. */
+    QList<const Folder*> foldersWorstFirstForTest() const;
+    /* setJournalReadHookForTest(); under m_mutex, called with it released. */
+    std::function<void(const QString&)> m_journalReadHook;
+    void journalReadForTest(const QString& folder) const;
+    /* Call m_rootLookHook, if set, for @p root; the lock not held. */
+    void rootLookedForTest(const QString& root) const;
+#endif
     std::condition_variable m_wake;
     std::condition_variable m_passed;
     std::condition_variable m_settled;
@@ -796,6 +907,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     /* Under m_mutex. */
     QStringList m_roots;
     QList<bool> m_rootAvailable;
+    /* Roots indexed as there and empty only because their directory is missing (I1: missing at a cold start, nothing
+     * indexed on them): one found a readable directory since is listed in full at once, as a root back from away is.
+     * Cleared when it is listed, or when a session start makes the directory itself. */
+    QList<bool> m_rootDirMissing;
+    /* How many entries each folder holds (insertEntryLocked(), removeEntryLocked()): whether a root holds rows without
+     * a walk of every entry. */
+    QHash<QString, int> m_rowsInFolder;
+    /* How many times a session start made each root's directory (noteRootMadeLocked()): a pass's look at a root, taken
+     * without the lock, writes its missing flag only if no start made the directory meanwhile (m1). */
+    QList<quint64> m_rootMade;
     QHash<QString, Folder> m_folders;
     QHash<QString, Entry> m_entries;
     QHash<QString, QStringList> m_byFragment;
@@ -807,7 +928,7 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     QHash<QString, CommittedFolder> m_committed;
     QSet<QString> m_active;
     /* Why the last delete request refused (deleteRefusal()). */
-    enum class DeleteRefusal { None, Loading, StorageAway };
+    enum class DeleteRefusal { None, Loading, StorageAway, Changed, Gone };
     DeleteRefusal m_deleteRefusal = DeleteRefusal::None;
     /* Every journal held: until the host's state is known, and while a session no starter began here is active. */
     bool m_allActive = true;
@@ -837,11 +958,16 @@ class RecordingStore : public QObject, public CallRecordingProvider, public Reco
     const std::shared_ptr<std::atomic<quint64>> m_storageReads = std::make_shared<std::atomic<quint64>>(0U);
     int m_nextSelection = 1;
     QString m_playing;
-    /* Each delete asked and not done yet, with its file's identity as the index knew it when the request was accepted. */
-    QHash<QString, dsd_file_identity_t> m_deleteQueue;
-    /* Roots a delete request found missing (rootAvailableNow()) or back before a pass read them: each is listed again in
-     * full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
+    /* Each delete asked and not done yet, with its file's identity and path as the index knew them when the request was
+     * accepted. */
+    QHash<QString, DeleteAsk> m_deleteQueue;
+    /* Roots found missing outside a pass (a delete request's or export's look, rootThereForIndexLocked(); a session
+     * start's, rootAvailableNow()), back before a pass read them, or whose directory a session start made over indexed
+     * rows (I2): each is listed again in full by the next pass (refreshRoots()), whatever m_rootAvailable says. */
     QSet<int> m_rootsSeenAway;
+    /* The seen-away roots the pass under way took into refreshRoots() and has not finished reading yet (R74): their
+     * recordings stay unavailable to every reader until that read is done, as while they wait in m_rootsSeenAway. */
+    QSet<int> m_rootsRereading;
     /* Paths of recordings a transfer could not open (recheckRegularLocked()): unreadable until an open succeeds. */
     QSet<QString> m_unopenable;
     /* The roots rebuildRoot() is listing now, each with the folders a session start made, took or relabelled on it since

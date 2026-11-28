@@ -6,6 +6,7 @@
 #include <QChar>
 #include <QDebug>
 #include <dsd-neo/core/receive_types.h>
+#include <type_traits>
 #include "call_history_model.h"
 
 #include <QBuffer>
@@ -749,6 +750,37 @@ CallHistoryModel::exportRows(const QList<int>& sourceRows) const {
     if (names.size() == rows.size()) {
         for (qsizetype i = 0; i < rows.size(); i++) {
             rows[i].recordingNames = names.at(i);
+        }
+    }
+    return rows;
+}
+
+QList<CallHistoryModel::PlaylistRow>
+CallHistoryModel::playlistRows(const QList<int>& sourceRows) const {
+    QList<PlaylistRow> rows;
+    QList<QStringList> fragments;
+    rows.reserve(sourceRows.size());
+    fragments.reserve(sourceRows.size());
+    for (const int source : sourceRows) {
+        if (source < 0 || source >= m_rows.size()) {
+            continue;
+        }
+        const QModelIndex idx = index(source);
+        PlaylistRow row;
+        row.uid = m_rows.at(source).uid;
+        row.name = data(idx, NameRole).toString();
+        row.when = data(idx, WhenRole).toLongLong();
+        rows.append(row);
+        fragments.append(recording_fragments(m_rows.at(source)));
+    }
+    if (m_recordings == nullptr) {
+        return rows;
+    }
+    // One read for every row: the store takes its lock once. An answer that does not cover every row lists none.
+    const QList<QVariantList> recordings = m_recordings->recordingsForFragmentLists(fragments);
+    if (recordings.size() == rows.size()) {
+        for (qsizetype i = 0; i < rows.size(); i++) {
+            rows[i].recordings = recordings.at(i);
         }
     }
     return rows;

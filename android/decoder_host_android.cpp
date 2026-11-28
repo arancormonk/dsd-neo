@@ -38,6 +38,7 @@
 #include <dsd-neo/runtime/decode_clock.h>
 #include <mutex>
 #include <utility>
+#include <vector>
 
 #include <jni.h>
 
@@ -138,6 +139,76 @@ to_java_file_array(QJniEnvironment& env, const QList<dsd_file_identity_t>& files
     }
     return array;
 }
+
+/** @brief @p values as a Java long[], a local ref the caller deletes; nullptr, with no exception left pending, when it
+ * could not be made. */
+jlongArray
+to_java_long_array(QJniEnvironment& env, const QList<qint64>& values) {
+    jlongArray array = env->NewLongArray(static_cast<jsize>(values.size()));
+    if (env.checkAndClearExceptions() || array == nullptr) {
+        return nullptr;
+    }
+    std::vector<jlong> copied(values.cbegin(), values.cend());
+    env->SetLongArrayRegion(array, 0, static_cast<jsize>(copied.size()), copied.data());
+    if (env.checkAndClearExceptions()) {
+        env->DeleteLocalRef(array);
+        return nullptr;
+    }
+    return array;
+}
+
+/** @brief @p values as a Java int[], a local ref the caller deletes; nullptr, with no exception left pending, when it
+ * could not be made. */
+jintArray
+to_java_int_array(QJniEnvironment& env, const QList<int>& values) {
+    jintArray array = env->NewIntArray(static_cast<jsize>(values.size()));
+    if (env.checkAndClearExceptions() || array == nullptr) {
+        return nullptr;
+    }
+    std::vector<jint> copied(values.cbegin(), values.cend());
+    env->SetIntArrayRegion(array, 0, static_cast<jsize>(copied.size()), copied.data());
+    if (env.checkAndClearExceptions()) {
+        env->DeleteLocalRef(array);
+        return nullptr;
+    }
+    return array;
+}
+
+/* Local references made for one call, deleted when it goes; failed() once any of them could not be made. */
+class LocalRefs {
+  public:
+    explicit LocalRefs(QJniEnvironment& env) : m_env(env) {}
+
+    ~LocalRefs() {
+        for (jobject ref : m_refs) {
+            m_env->DeleteLocalRef(ref);
+        }
+    }
+
+    LocalRefs(const LocalRefs&) = delete;
+    LocalRefs& operator=(const LocalRefs&) = delete;
+
+    template <typename Ref>
+    Ref
+    keep(Ref ref) {
+        if (ref == nullptr) {
+            m_failed = true;
+        } else {
+            m_refs.push_back(ref);
+        }
+        return ref;
+    }
+
+    bool
+    failed() const {
+        return m_failed;
+    }
+
+  private:
+    QJniEnvironment& m_env;
+    std::vector<jobject> m_refs;
+    bool m_failed = false;
+};
 
 /**
  * @brief A Java String with @p text's UTF-16 units, as a local ref the caller deletes; nullptr, with no exception left
@@ -273,6 +344,7 @@ DecoderHostAndroid::DecoderHostAndroid(QObject* parent) : dsd_qt::DecoderHost(pa
     startFileBrowser();
     startRecordingShareClean();
     refreshPresentation();
+    followApplicationState();
 }
 
 namespace {
@@ -422,10 +494,15 @@ class AndroidPresentationPlatform final : public PresentationScale::Platform {
     }
 
     bool
+    keyboardAvailable() override {
+        static const bool available = static_method_available(kSupportClass, "keyboardTopPixels", "()I");
+        return available;
+    }
+
+    bool
     keyboardTopPixels(int* pixels) override {
         // A failed primitive call reads 0, a keyboard covering the whole window; never take that for a reading.
-        static const bool available = static_method_available(kSupportClass, "keyboardTopPixels", "()I");
-        if (!available) {
+        if (!keyboardAvailable()) {
             return false;
         }
         *pixels = QJniObject::callStaticMethod<jint>(kSupportClass, "keyboardTopPixels", "()I");
@@ -946,6 +1023,42 @@ DecoderHostAndroid::platformPlayRecording(const QString& path) {
                                               context.object(), file.object());
 }
 
+int
+DecoderHostAndroid::platformPlayRecordings(const PlaybackRequest& request) {
+    const QJniObject context = android_context();
+    if (!context.isValid()) {
+        return 0;
+    }
+    /* The Qt main thread has no Java frame to reclaim local references: the arrays go when refs does. */
+    QJniEnvironment env;
+    LocalRefs refs(env);
+    jobjectArray paths = refs.keep(to_java_string_array(env, request.paths));
+    jlongArray sizes = refs.keep(to_java_long_array(env, request.sizes));
+    jlongArray secs = refs.keep(to_java_long_array(env, request.mtimeSecs));
+    jintArray nanos = refs.keep(to_java_int_array(env, request.mtimeNanos));
+    jintArray calls = refs.keep(to_java_int_array(env, request.calls));
+    jintArray ordinals = refs.keep(to_java_int_array(env, request.partOrdinals));
+    jintArray counts = refs.keep(to_java_int_array(env, request.partCounts));
+    jobjectArray titles = refs.keep(to_java_string_array(env, request.titles));
+    jobjectArray lines = refs.keep(to_java_string_array(env, request.lines));
+    jobjectArray keys = refs.keep(to_java_string_array(env, request.keys));
+    if (refs.failed()) {
+        return 0;
+    }
+    // Must match RecordingPlayback.kt: @JvmStatic fun play(context: Context, paths: Array<String>, sizes: LongArray,
+    // mtimeSecs: LongArray, mtimeNanos: IntArray, calls: IntArray, partOrdinals: IntArray, partCounts: IntArray,
+    // titles: Array<String>, lines: Array<String>, keys: Array<String>, start: Int, mode: Int): Int (#909). 0 only for a
+    // refusal before it was accepted; a call that fails answers 0 too (Qt clears a pending exception). The descriptor
+    // stays one literal, which tools/check_android_r8.py reads whole.
+    // clang-format off
+    return QJniObject::callStaticMethod<jint>(kPlaybackClass, "play",
+        "(Landroid/content/Context;[Ljava/lang/String;[J[J[I[I[I[I[Ljava/lang/String;[Ljava/lang/String;[Ljava/lang/String;II)I",
+        context.object(), paths, sizes, secs, nanos, calls, ordinals, counts, titles, lines, keys,
+        static_cast<jint>(request.start), static_cast<jint>(request.mode));
+    // clang-format on
+}
+
+/* RecordingPlayback's commands (#909) post to its looper and return; each item command carries its play token. */
 void
 DecoderHostAndroid::platformPausePlayback() {
     QJniObject::callStaticMethod<void>(kPlaybackClass, "pause", "()V");
@@ -957,8 +1070,34 @@ DecoderHostAndroid::platformResumePlayback() {
 }
 
 void
-DecoderHostAndroid::platformSeekPlayback(qint64 positionMs) {
-    QJniObject::callStaticMethod<void>(kPlaybackClass, "seek", "(J)V", static_cast<jlong>(positionMs));
+DecoderHostAndroid::platformNextPlayback() {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "next", "()V");
+}
+
+void
+DecoderHostAndroid::platformPreviousPlayback() {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "previous", "()V");
+}
+
+void
+DecoderHostAndroid::platformSeekPlaybackFor(qint64 token, qint64 positionMs) {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "seekFor", "(JJ)V", static_cast<jlong>(token),
+                                       static_cast<jlong>(positionMs));
+}
+
+void
+DecoderHostAndroid::platformPausePlaybackFor(qint64 token) {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "pauseFor", "(J)V", static_cast<jlong>(token));
+}
+
+void
+DecoderHostAndroid::platformResumePlaybackFor(qint64 token) {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "resumeFor", "(J)V", static_cast<jlong>(token));
+}
+
+void
+DecoderHostAndroid::platformStopPlaybackGeneration(int generation) {
+    QJniObject::callStaticMethod<void>(kPlaybackClass, "stopGeneration", "(I)V", static_cast<jint>(generation));
 }
 
 void
@@ -970,6 +1109,18 @@ QString
 DecoderHostAndroid::platformPlaybackStatus() {
     const QJniObject status = QJniObject::callStaticObjectMethod(kPlaybackClass, "status", "()Ljava/lang/String;");
     return status.isValid() ? status.toString() : QString();
+}
+
+qint64
+DecoderHostAndroid::platformRecordingRecheckSerial() {
+    // Must match RecordingPlayback.kt: @JvmStatic fun recheckSerial(): Long (#909). An atomic read.
+    return read_static_counter(kPlaybackClass, "recheckSerial");
+}
+
+QStringList
+DecoderHostAndroid::platformTakeRecordingRecheck() {
+    // Must match RecordingPlayback.kt: @JvmStatic fun takeRecheck(): Array<String> (#909).
+    return java_strings(QJniObject::callStaticObjectMethod(kPlaybackClass, "takeRecheck", "()[Ljava/lang/String;"));
 }
 
 QStringList

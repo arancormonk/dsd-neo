@@ -1,6 +1,7 @@
 // SPDX-License-Identifier: GPL-3.0-or-later
 #include <QByteArray>
 #include <QByteArrayView>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDir>
 #include <QFile>

@@ -8,6 +8,7 @@
 #include <QMap>
 #include <QVariant>
 #include <QVariantList>
+#include <tuple>
 #include <utility>
 #include "decoder_host.h"
 
@@ -29,16 +30,45 @@
 #include "platform_path.h"
 #include "qstring_scrub.h"
 
+#include <QMetaType>
 #include <Qt>
 #include <QtGlobal>
 #include <algorithm>
 #include <cerrno>
+#include <climits>
+#include <cmath>
+#include <cstdlib>
 #include <dsd-neo/platform/file_compat.h>
 #include <stdint.h>
+#ifdef DSD_NEO_TEST_HOOKS
+#include <functional>
+#include <initializer_list>
+#include "decoder_host_test_hooks.h"
+#endif
 
 namespace dsd_qt {
 
 namespace {
+
+#ifdef DSD_NEO_TEST_HOOKS
+std::function<void(const QString&)>&
+after_recording_check() {
+    static std::function<void(const QString&)> hook;
+    return hook;
+}
+#endif
+
+/* Whether the recording at @p path is a file there now: a play's one admission check. */
+bool
+recording_file_present(const QString& path) {
+    const bool present = QFileInfo(path).isFile();
+#ifdef DSD_NEO_TEST_HOOKS
+    if (present && after_recording_check()) {
+        after_recording_check()(path);
+    }
+#endif
+    return present;
+}
 
 /* @p selection's files as the store selected them (sizes, mtimeSecs, mtimeNanos), one for each of @p count paths, into
  * @p out; false when they are not all there. */
@@ -258,12 +288,35 @@ DecoderHost::playRecording(const QString& path) {
     }
     // A play that fails still replaces the recording playing: the player stops (stopPlayback(), which a platform
     // overrides) before the failure is published, so the store lets go of a file only once nothing plays it.
-    if (!QFileInfo(path).isFile()) {
+    if (!recording_file_present(path)) {
         stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("missing"));
         reportRecordingsMissing({path});
         return;
     }
+    startRecordingPlayback(path);
+}
+
+int
+DecoderHost::playRecordingOwned(const QString& path) {
+    // A file that is gone is refused before the play is taken, as a refused playlist is: what plays plays on and
+    // nothing is published; the store is asked to look again, and the sheet says the recording is gone. That one
+    // check is the only one: the start after it never reaches playRecording()'s, which stops what plays.
+    if (path.isEmpty()) {
+        return 0;
+    }
+    if (!recording_file_present(path)) {
+        reportRecordingsMissing({path});
+        return 0;
+    }
+    startRecordingPlayback(path);
+    // A play the platform took is published Preparing under its generation; one that failed at once is not.
+    const bool taken = m_playback.state == PlaybackPreparing && m_playback.path == path;
+    return taken ? m_playback.generation : 0;
+}
+
+void
+DecoderHost::startRecordingPlayback(const QString& path) {
     if (!playbackSupported()) {
         stopPlayback();
         publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
@@ -274,33 +327,265 @@ DecoderHost::playRecording(const QString& path) {
     beginPlayback(path);
 }
 
+namespace {
+
+/* @p text, a decimal integer and nothing else (no space, no junk, no NUL inside), into @p out (strtoll with its end
+ * checked against the whole text, so a NUL that would end the parse early refuses it). */
+bool
+playback_whole_text(const QString& text, qint64* out) {
+    const QByteArray bytes = text.toUtf8();
+    const char* begin = bytes.constData();
+    const bool leadsWithDigitOrSign = begin[0] == '-' || (begin[0] >= '0' && begin[0] <= '9');
+    if (bytes.isEmpty() || !leadsWithDigitOrSign) {
+        return false;
+    }
+    errno = 0;
+    char* end = nullptr;
+    const long long parsed = std::strtoll(begin, &end, 10);
+    if (errno != 0 || end == begin || end == nullptr || end != begin + bytes.size()) {
+        return false;
+    }
+    *out = static_cast<qint64>(parsed);
+    return true;
+}
+
+/* @p number with no fraction and within a qint64, into @p out (R80; no equality on doubles: whole < or > number). */
+bool
+playback_whole_double(double number, qint64* out) {
+    const double whole = std::trunc(number);
+    // 2^63 bounds what a qint64 holds.
+    if (!std::isfinite(number) || whole < number || whole > number || number < -9223372036854775808.0
+        || number >= 9223372036854775808.0) {
+        return false;
+    }
+    *out = static_cast<qint64>(number);
+    return true;
+}
+
+/* Whether @p id is one of @p ids. */
+bool
+playback_type_in(int id, std::initializer_list<int> ids) {
+    return std::find(ids.begin(), ids.end(), id) != ids.end();
+}
+
+/* @p value as a whole number (R80): an integer type, a double with no fraction, or a decimal string, read in 64 bits
+ * so nothing is narrowed before its range is checked; false for anything else (a bool, a fraction, junk). */
+bool
+playback_whole_value(const QVariant& value, qint64* out) {
+    const int id = value.metaType().id();
+    if (playback_type_in(id, {
+                                 QMetaType::Int,
+                                 QMetaType::Long,
+                                 QMetaType::LongLong,
+                                 QMetaType::Short,
+                                 QMetaType::SChar,
+                             })) {
+        *out = value.toLongLong();
+        return true;
+    }
+    if (playback_type_in(id, {
+                                 QMetaType::UInt,
+                                 QMetaType::ULong,
+                                 QMetaType::ULongLong,
+                                 QMetaType::UShort,
+                                 QMetaType::UChar,
+                             })) {
+        const qulonglong unsignedValue = value.toULongLong();
+        *out = static_cast<qint64>(unsignedValue);
+        return unsignedValue <= static_cast<qulonglong>(LLONG_MAX);
+    }
+    if (id == QMetaType::Double || id == QMetaType::Float) {
+        return playback_whole_double(value.toDouble(), out);
+    }
+    if (id == QMetaType::QString || id == QMetaType::QByteArray) {
+        return playback_whole_text(value.toString(), out);
+    }
+    return false;
+}
+
+/* @p value as a whole number within [@p low, @p high], into @p out once checked there; false otherwise. */
+bool
+playback_ranged_value(const QVariant& value, qint64 low, qint64 high, qint64* out) {
+    qint64 number = 0;
+    if (!playback_whole_value(value, &number) || number < low || number > high) {
+        return false;
+    }
+    *out = number;
+    return true;
+}
+
+/* @p value as an int (R80: checked in 64 bits first), into @p out; false when it is no whole number in int's range. */
+bool
+playback_int_value(const QVariant& value, int* out) {
+    qint64 number = 0;
+    if (!playback_ranged_value(value, INT_MIN, INT_MAX, &number)) {
+        return false;
+    }
+    *out = static_cast<int>(number);
+    return true;
+}
+
+/* The call of playlist item @p item (0 when it names none), into @p call; false when it names one that is no number. */
+bool
+playback_item_call(const QVariantMap& item, int* call) {
+    const QVariant value = item.value(QStringLiteral("call"));
+    if (!value.isValid()) {
+        *call = 0;
+        return true;
+    }
+    return playback_int_value(value, call);
+}
+
+/* Whether queued item @p item names the file the store listed (issue #909): a size from 0, and the modification time's
+ * seconds and nanoseconds, each a number. The store lists them for every recording, so an item without them is
+ * malformed; the queue would otherwise have no identity to check the file found at its turn against. */
+bool
+playback_item_identified(const QVariantMap& item) {
+    qint64 size = 0;
+    qint64 seconds = 0;
+    qint64 nanos = 0;
+    // Each read whole and in 64 bits (R80). A file identity's nanoseconds lie in 0..999,999,999 (dsd_file_identity_t,
+    // R75): any other names no file.
+    return playback_ranged_value(item.value(QStringLiteral("size")), 0, LLONG_MAX, &size)
+           && playback_ranged_value(item.value(QStringLiteral("mtimeSec")), LLONG_MIN, LLONG_MAX, &seconds)
+           && playback_ranged_value(item.value(QStringLiteral("mtimeNanos")), 0, 999999999, &nanos);
+}
+
+/* @p key of @p item as a number into @p out, 1 when it is absent (issue #909 R63: an item with no numbering is one
+ * part of one, as the Android player's Item(path) is); false when it is there but no number. */
+bool
+playback_item_part_number(const QVariantMap& item, const QString& key, int* out) {
+    const QVariant value = item.value(key);
+    if (!value.isValid()) {
+        *out = 1;
+        return true;
+    }
+    return playback_int_value(value, out);
+}
+
+/* Whether @p item's part numbering is one the player takes: its ordinal within its count, from 1 (each 1 when absent).
+ * Checked before the request replaces what plays, as the player would refuse it only after. */
+bool
+playback_item_parts_valid(const QVariantMap& item) {
+    int ordinal = 0;
+    int count = 0;
+    return playback_item_part_number(item, QStringLiteral("partOrdinal"), &ordinal)
+           && playback_item_part_number(item, QStringLiteral("partCount"), &count) && ordinal >= 1 && ordinal <= count;
+}
+
+/* Whether item @p index of a queued request is well formed (issue #909): it names a path, and its call is 0 for a part
+ * of one call, else the call before's (@p previous) or the next, from 0 with no hole, and its part numbering is within
+ * its count. A part or playlist item (@p queued) also names its identity. Writes the item's call to @p call. */
+bool
+playback_item_valid(const QVariantMap& item, qsizetype index, int previous, bool parts, bool queued, int* call) {
+    if (item.value(QStringLiteral("path")).toString().isEmpty() || !playback_item_call(item, call)
+        || !playback_item_parts_valid(item)) {
+        return false;
+    }
+    const bool inOrder = *call == previous || (index > 0 && *call == previous + 1);
+    return inOrder && (!parts || *call == 0) && (!queued || playback_item_identified(item));
+}
+
+/* The readings a change of which is news on playbackChanged: all but the position. */
+auto
+playback_shown(const DecoderHost::PlaybackReading& r) {
+    return std::tie(r.generation, r.state, r.durationMs, r.error, r.mode, r.origin, r.path, r.title, r.key, r.size,
+                    r.mtimeSec, r.mtimeNanos, r.token, r.callIndex, r.callCount, r.partOrdinal, r.partCount, r.gap,
+                    r.interrupted, r.canSeek, r.pausedReason, r.endedReason, r.skipped, r.refusals, r.skipNoticeCall,
+                    r.skipNoticeCount, r.seeksLanded, r.canNext);
+}
+
+} // namespace
+
+bool
+DecoderHost::playbackItemsValid(const QVariantList& items, int mode) {
+    if (items.isEmpty() || mode < PlaybackSingle || mode > PlaybackPlaylist
+        || (mode == PlaybackSingle && items.size() != 1)) {
+        return false;
+    }
+    // Calls from 0 up, with no hole: each item's call is the one before's, or the next. Parts are all of one call.
+    // Parts and a playlist check each file at its turn, so every item names its identity; a single play names a path.
+    int previous = 0;
+    for (qsizetype i = 0; i < items.size(); ++i) {
+        int call = 0;
+        if (!playback_item_valid(items.at(i).toMap(), i, previous, mode == PlaybackParts, mode != PlaybackSingle,
+                                 &call)) {
+            return false;
+        }
+        previous = call;
+    }
+    return true;
+}
+
+int
+DecoderHost::playRecordings(const QVariantList& items, int mode, const QString& origin) {
+    (void)origin;
+    if (!playbackItemsValid(items, mode)) {
+        return 0;
+    }
+    publishPlayback(items.first().toMap().value(QStringLiteral("path")).toString(), PlaybackFailed, 0, 0,
+                    QStringLiteral("unsupported"));
+    return 0;
+}
+
 void
 DecoderHost::beginPlayback(const QString& path) {
     publishPlayback(path, PlaybackFailed, 0, 0, QStringLiteral("unsupported"));
 }
 
+namespace {
+
+/* A play still open: opening, starting, playing or paused (issue #909), not stopped or failed. */
+bool
+playback_open(int state) {
+    return state == DecoderHost::PlaybackPreparing || state == DecoderHost::PlaybackStarting
+           || state == DecoderHost::PlaybackPlaying || state == DecoderHost::PlaybackPaused;
+}
+
+} // namespace
+
 void
-DecoderHost::stopPlayback() {
-    publishPlayback(QString(), PlaybackStopped, 0, 0, QString());
+DecoderHost::stopPlaybackGeneration(int generation) {
+    if (generation > 0 && generation == m_playback.generation && playback_open(m_playback.state)) {
+        stopPlayback();
+    }
 }
 
 void
-DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs,
-                             const QString& error) {
-    const bool changed = path != m_playbackPath || state != m_playbackState || durationMs != m_playbackDurationMs
-                         || error != m_playbackError;
-    const bool moved = positionMs != m_playbackPositionMs;
-    m_playbackPath = path;
-    m_playbackState = state;
-    m_playbackPositionMs = positionMs;
-    m_playbackDurationMs = durationMs;
-    m_playbackError = error;
+DecoderHost::stopPlayback() {
+    publishPlayback(PlaybackReading());
+}
+
+QString
+DecoderHost::playbackHoldPath() const {
+    return playback_open(m_playback.state) && m_playback.mode == PlaybackSingle ? m_playback.path : QString();
+}
+
+void
+DecoderHost::publishPlayback(const PlaybackReading& reading) {
+    const bool changed = playback_shown(reading) != playback_shown(m_playback);
+    const bool moved = reading.positionMs != m_playback.positionMs;
+    m_playback = reading;
     if (changed) {
         Q_EMIT playbackChanged();
     }
     if (moved) {
         Q_EMIT playbackPositionChanged();
     }
+}
+
+void
+DecoderHost::publishPlayback(const QString& path, int state, qint64 positionMs, qint64 durationMs,
+                             const QString& error) {
+    PlaybackReading reading;
+    reading.path = path;
+    reading.state = state;
+    reading.positionMs = positionMs;
+    reading.durationMs = durationMs;
+    reading.error = error;
+    reading.canSeek =
+        (state == PlaybackPlaying || state == PlaybackPaused || state == PlaybackStarting) && durationMs > 0;
+    publishPlayback(reading);
 }
 
 bool
@@ -799,5 +1084,12 @@ DecoderHost::reportRecordingsMissing(const QStringList& paths) {
         Q_EMIT recordingFilesMissing(paths);
     }
 }
+
+#ifdef DSD_NEO_TEST_HOOKS
+void
+decoder_host_test_after_recording_check(std::function<void(const QString& path)> hook) {
+    after_recording_check() = std::move(hook);
+}
+#endif
 
 } // namespace dsd_qt

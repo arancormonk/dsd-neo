@@ -19983,7 +19983,8 @@ Qt Quick frontend (`src/ui/qt`):
     "analogPreroll"), failures by kind and the last one, and the bridge's
     refusal.
   - Host surface (`DecoderHost`): playback (`playbackSupported`, `playRecording(path)`, pause/resume/seek/stop, the
-    `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"), export
+    `playback*` properties; `PlaybackState`; `playbackError` "missing", "unavailable", "unsupported", "failed"; the
+    queue surface of issue #909 below), export
     and save (`exportRecordings()` zips, `saveRecording()` copies one; each takes a store selection map and a document
     reference and ends in exactly one `recordingTransferFinished(selection, result, missing)`, a refusal included; one
     at a time; `recordingTransfer*` progress) and share (`shareRecording()`, indexed recordings only). The base host has
@@ -19994,10 +19995,14 @@ Qt Quick frontend (`src/ui/qt`):
     player stops what plays first, so the store's hold on a file ends only once nothing plays it. A transfer stats no
     file on the GUI thread: the platform skips the files gone, publishes the total it really writes and reports the gone
     ones at its end. A play, export or share that finds a file gone emits `recordingFilesMissing(paths)`.
-    `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file playing (`setPlayingPath()` from Preparing to the
-    end), releases each transfer's selection when it finishes, rechecks the missing files (`recheckPaths()`) and gives
-    the host the share check (`setRecordingIndex()`) and a hold for work outside a selection (`setRecordingHold()`:
-    `RecordingStore::selectPath()` and `releaseSelection()`).
+    `recording_store_serve_host()` (in `qt_ui.cpp`) holds the file a single play plays (`setPlayingPath()` from
+    Preparing to the end, SINGLE only: a PARTS or PLAYLIST play holds nothing and clears that hold when it starts,
+    issue #909 D9), releases each transfer's selection when it finishes, rechecks the missing files
+    (`recheckPaths()`) and gives the host the share check (`setRecordingIndex()`) and a hold for work outside a
+    selection (`setRecordingHold()`: `RecordingStore::selectPath()` and `releaseSelection()`). The share's hold is taken
+    only of a recording available as the entry map says (`entryAvailableLocked()`: not held from before its folder's
+    read again, R78, nor on a root seen away since, R74), and the Android host stages nothing without it (issue #909
+    main held and staged such a row, `test_queries_between_rebuild_slices` and `check_recording_share`).
   - UI (QML). Settings' Call recording card (`SettingsScreen.qml`, after Decoding): Record calls and Only unknown
     talkgroups write the preferences and, with a session on, go live through `setRecordCalls()` /
     `setRecordUnknownOnly()` (unknown-only is disabled while Record calls is off and travels with it); Analog pause hold
@@ -20060,8 +20065,13 @@ Qt Quick frontend (`src/ui/qt`):
     `CallRecordingPlayer.qml` above Hold: play/pause, position and seek with a status line ("Opening…", "Paused") whose
     line stays laid out, empty and unread, when there is none, so the block is as tall stopped, opening, playing and
     paused and a sheet centred on its content does not move at a tap (`test_height_steady_across_states`), the parts
-    (the one shown kept on its recording by path) with a Play all parts action (the host keeps no queue: a part that
-    stopped at its end, path kept and position at its length, plays the next; a stop clears the path and ends it), Share
+    (the one shown kept on its recording by path; a chip only selects, and an away part is selectable with its away
+    line but never plays, issue #909 B1) with a Play all parts action (a PARTS queue in the Kotlin player through
+    `playRecordings(items, PlaybackParts, "")`, the available parts only, one transient focus kept across them, ending
+    on the first part that fails, skipping one that never prepares, which the block's notice line says once on the part
+    that played after it, from the player's skip notice and in the bar's words, `Util.skippedText()`; skips no part
+    played after are said when the play finishes (the end's skip count), a play whose every part was skipped says them
+    as its failure, and one that ends on a part that failed says only that failure, B2/B7), Share
     (`recordingShareFailed()` worded there), Save to file and Delete. Save to file's picker (`recordingSavePicker`) is a
     `DocumentPicker` (save, `audio/x-wav`, the part's file name); one that is `unavailable` releases the selection and
     says why, and the block `cancel()`s a picker still asking when it stops being visible (the sheet closed, the row
@@ -20071,27 +20081,73 @@ Qt Quick frontend (`src/ui/qt`):
     "Saved to Download/DSD-neo as <name>." (else "Saved."). Problems and that Download-folder result are read out once
     each, as on the screen. A part the host reports "missing" leaves the block at once, until the store lists it as away
     (its storage went): from then on the store's availability speaks for it, so it shows away and plays again once the
-    storage is back, without reopening the sheet; closing the sheet stops what it played; a pause the host made in the
-    background (D10) reads as Paused. A single recording's delete confirmation says `deleteMessage` ("Only the audio is
-    deleted. History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk
-    deletes say the same of their count: a recording may have no History row (never linked, or trimmed) and may belong
-    to a Signal search detection, so "the call stays in History" would not hold (issue #809 B3).
-    `DetectionRecordingsSheet.qml` (Signal search) embeds the same block on one recording at a time. The talkgroup
-    editor's Record switch follows Listening (D11: off and disabled while not tuned, on again when tuned) and is sent
-    with the save only where it differs from what the decoder will hold; `addTalkgroup()` takes it for a row added
-    listening. History shows `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`,
-    `tst_call_recordings_screen.qml`, `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`,
-    `tst_talkgroup_edit_sheet.qml`), `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
+    storage is back, without reopening the sheet; closing the sheet stops what it played (only while it holds a
+    positive generation equal to `playbackGeneration`, from `playRecordingOwned()` or `playRecordings()`: a sheet that
+    follows a playlist item holds none, so its close never stops the playlist); a pause the host made in the
+    background (D10, sheet plays only) reads as Paused. The block's notice line (`noticeLine`) sits under it, outside
+    the hidden block, so a sole recording found missing still says so (B3); a refused resume is said once per refusal
+    (its playlist and `playbackRefusals`, as the bar), so a move that keeps it standing shows it without reading it
+    again, and once across the sheet and the bar: the sheet that follows the play notes the refusal it read out in
+    `Navigation.refusalSaid` (`refusalKey()`), and the bar marks its waiting event for that refusal heard
+    (`PlaylistStatus.eventSaidElsewhere`) instead of reading it again when the sheet closes; one the sheet did not read
+    out waits for the bar as before. Each surface writes its heard keys only when `Navigation.announce()` read the text
+    out (`say()` returns it): a refusal shown on a sheet under its Delete confirmation is not read there (R41). It is
+    kept (`refusalUnsaid`) and read on the sheet once its line can be read again (`lineReachable`: the confirmation
+    closed with the sheet still open, and the app active, R50, as the bar's `canSay` needs; covered again before its
+    turn, it stays pending), once, if it still stands, and only then marked heard; if the sheet closes first, it stays
+    the bar's to read. The bar notes the refusals it reads in the same place, and a sheet opened after shows such a
+    refusal without reading it again; a transient focus loss reads `playbackInterrupted` ("Paused for another app's
+    audio", the button Pause, B4); with no player the block says "Recordings can't be played on this device." and chips
+    only select (B6); a part played from the sheet whose file is gone at the press is refused before the play is taken
+    (`playRecordingOwned()` answers 0, what plays plays on, a play of the sheet's own still the sheet's, so its close
+    stops it, nothing is published, the store looks again; that one file check is its only one, and the start after it
+    never reaches `playRecording()`'s missing-file stop, `decoder_host_test_hooks.h` taking the file between them in
+    `UI_QT_ANDROID_HOST`) and the sheet says "This recording is gone.". Item commands carry the play token captured when
+    the gesture began (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`). One press rule holds for the pointer
+    controls whose target moves with the play (`GatedTapHandler.pressKey`, passed through by `PlayCircle`,
+    `MapControlButton`, `IconButton` and `OutlineButton`): the sheet's Play, Pause/Resume, seek bar, the part chips,
+    Share, Save to file and Delete, and the bar's Pause/Resume, Previous, Next, ✕ and Show in list. The others (Play all
+    parts, Play from here and History's Play all) act on a fixed target. The press takes a key, the action the control
+    would perform and the identity of what it shows, and the tap acts only if the same key is current at the release,
+    else it is dropped; a release with no press taken is dropped too. The sheet's Play keys on the part shown (its path
+    and the indexed size and mtime, so a reread that put another recording under the same id and path drops it, while a
+    playlist moving elsewhere does not), its Pause/Resume on the action, the generation and the token, Share, Save to
+    file and Delete on the part shown (its id, path and indexed size and mtime: a sheet that follows the play to the
+    next part during the press drops the tap), each part chip on its own recording (path and indexed size and mtime) and
+    whether it would play or only select it (`partKey()`, R42: a reread that put another recording at its place with the
+    count unchanged, or storage coming back, drops the tap), and the seek bar on its token
+    (`GatedTapHandler.pressBegan`, a drag's start included; a drag's preview shows only while its token is the one open,
+    and a keyboard or screen reader step seeks from the open recording's own position, never from a drag's preview). The
+    bar's Pause/Resume keys on whether it would pause and the playlist, and Previous, Next and ✕ on the playlist, Next
+    enabled only as the player offers it (the status record's last field, `playbackCanNext`: a later call not already
+    known failed, `RecordingPlayer.hasCallAfter()`, the rule `next()` delivers by), the action and whether it has
+    ended, so a press held on one playlist never moves or stops the next one, nor a press on an ended result stops a new
+    one; Show in list keys on the playlist and the call it names (`playbackKey`, or the ended reading's key). A keyboard
+    or screen reader activation acts on the state at its moment and never takes, clears or replaces a held pointer
+    press. A sheet-owned Play all parts offers Pause/Resume and seek only once the host has published a positive token
+    (before the first poll a pause would be the queue's, and could reach the next part); the seek bar reads
+    `playbackCanSeek`. A single recording's delete confirmation says `deleteMessage` ("Only the audio is deleted.
+    History and detections are unchanged.", a host may set its own), and the Call recordings screen's bulk deletes say
+    the same of their count: a recording may have no History row (never linked, or trimmed) and may belong to a Signal
+    search detection, so "the call stays in History" would not hold (issue #809 B3). `DetectionRecordingsSheet.qml`
+    (Signal search) embeds the same block on one recording at a time. The talkgroup editor's Record switch follows
+    Listening (D11: off and disabled while not tuned, on again when tuned) and is sent with the save only where it
+    differs from what the decoder will hold; `addTalkgroup()` takes it for a row added listening. History shows
+    `saveFailing`. Tests: `UI_QT_QML_CALL_LISTS` (`tst_call_recording_settings.qml`, `tst_call_recordings_screen.qml`,
+    `tst_call_recording_player.qml`, `tst_call_recording_rows.qml`, `tst_talkgroup_edit_sheet.qml`),
+    `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CONTROLLER`.
   - Android (`android/decoder_host_android_recordings.cpp`, JNI transport in `decoder_host_android.cpp`; D1, D6, D9,
     D10). Roots: `RecordingShare.roots()`, DSD-neo's own folder on the phone's storage (reachable over USB),
     `getExternalFilesDir(null)/Call recordings`, first (named even while away, at the path Android gives the app
     there), then `filesDir/Call recordings`. Playback:
     `RecordingPlayback.kt` runs the pure `RecordingPlayer.kt` state machine on one looper thread with a `MediaPlayer`
-    and the transient speech audio focus; the player starts only when prepared, wanted, in the foreground and with the
-    focus, and a pause, the background or a focus change while preparing only change what is wanted. Each play has a
-    generation; the host polls `status()` on its refresh tick while a play is open and ignores another play's record.
-    `DsdNeoActivity` reports `onStart`/`onStop` (leaving pauses, D10) and releases the player in `onDestroy`. A play
-    that reaches its end reads Stopped with its path kept and its position at its length (a stop clears the path).
+    and the speech audio focus; the player starts only when prepared, wanted, allowed (the foreground for a sheet play,
+    the promoted service for a playlist) and with the focus, and a pause, the background or a focus change while
+    preparing only change what is wanted. Each play has a generation; the host polls `status()` on its refresh tick
+    while a play is open and ignores another play's record. `DsdNeoActivity` reports `onStart`/`onStop` (leaving
+    pauses a sheet play, D10; a playlist ignores it) and calls `RecordingPlayback.release()` in `onDestroy`. A SINGLE
+    play that reaches its end reads Stopped with its path kept and its position at its length (a stop clears the path).
+    The History playlist's queue, service and session are the "History playlist" entry below.
     Export and save run on the host's one-thread transfer worker: it skips and counts the files there, then a
     `content://` document goes to `RecordingExport.transfer()`, which writes through `DocumentCopies.beginWrite()`'s
     `DocumentWrite` (the backup save's open, trim, sync, `closeWithError()` and delete) with its own
@@ -20124,9 +20180,408 @@ Qt Quick frontend (`src/ui/qt`):
     failure is "missing" only when the file does not exist. The store compacts a journal only while the session reads
     inactive: the engine's run opens and closes the journal inside `nativeRun()`, the service reports IDLE after it
     returns, and a lifecycle record that cannot be read while the engine runs reads RUNNING, not IDLE. Tests:
-    `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM`, `ANDROID_RECORDING_EXPORT_JVM`, `ANDROID_RECORDING_SHARE_JVM`
+    `UI_QT_ANDROID_HOST`, `ANDROID_RECORDING_PLAYER_JVM` (with the service order), `ANDROID_RECORDING_EXPORT_JVM`
+    (with `RecordingDescriptor.kt`), `ANDROID_DOWNLOADS_SAVE_JVM`, `ANDROID_RECORDING_SHARE_JVM`
     (also the provider declaration and the codes that cross JNI); they run wherever ctest runs the JVM suites, skipping
     the FIFO and symbolic-link cases where the host cannot make them.
+  - History playlist (issue #909; `call_history_playlist.{h,cpp}`, `CallHistoryModel::playlistRows()`,
+    `CallRecordingProvider::recordingsForFragmentLists()`, `DecoderHost::playRecordings()`, Android
+    `RecordingPlayer.kt`, `RecordingPlayback.kt`, `PlaybackServicePhases.kt`, `RecordingPlaybackService.kt`,
+    `RecordingDescriptor.kt`, `playback_status_record.h`; QML `NowPlayingBar.qml`, `PlaylistStatus.qml`). Plays the
+    recorded calls a History view shows, oldest first, one after another, and on Android keeps playing in the
+    background.
+    - Snapshot at the press (D1, D4): `CallHistoryPlaylist` (context property `historyPlaylist`, built over the shared
+      `historyView` filter proxy, GUI thread only) `start(startUid)` maps the view's rows once, from the oldest to the
+      newest (0: from the oldest shown; else from `startUid`'s row), and reads every row's recordings with one
+      `playlistRows()` → `recordingsForFragmentLists()` call (RecordingStore: one `ReaderLock`, each row's recordings
+      oldest first by start, then publish order, within the row, never a global sort, each with `entryMap()` plus
+      `deleteQueued`; `UI_QT_RECORDING_STORE` `test_playlist_recordings_per_row`). It keeps the available recordings
+      with no delete queued, each with its original part ordinal and the row's part count (a call with only part 2 reads
+      "part 2 of 3"), and hands them in order to `playRecordings(items, PlaybackPlaylist, "history")`. Item map keys:
+      `path`, `size`, `mtimeSec`, `mtimeNanos` (the entry's indexed identity, `entry.identity`, never `bytes`, which the
+      limit updates as accounting), `call`, `partOrdinal`, `partCount`, `title`, `line` (local "yyyy-MM-dd hh:mm"),
+      `key` (the row's uid, which `playbackKey` echoes for the row marker). The store lists every recording's identity,
+      so a PARTS or PLAYLIST item without one is malformed: `DecoderHost::playbackItemsValid()` refuses the request
+      (`size` must be a number from 0, `mtimeSec` a number and `mtimeNanos` one from 0 to 999,999,999, R75, on both
+      sides) (each of these, `call` and the part numbering a whole number, read in 64 bits before it is narrowed,
+      decimal text strictly: R80) as any invalid one, returning 0 with what plays left playing;
+      `RecordingPlayback.play()` refuses a negative size again (`RecordingPlayer.identified()`), and every request is
+      checked before it replaces what plays, on both sides (R63): the host refuses a part numbered outside its count
+      (`partOrdinal` and `partCount` default to 1 when absent or holding no value, the check and the sent request
+      reading every key alike, M4, so a SINGLE named by path alone is part 1 of 1, as `RecordingPlayer.Item(path)` is,
+      and is sent so), and `RecordingPlayback.play()` returns 0 for any request `RecordingPlayer.validRequest()` refuses
+      (R70: the host's own rules, an empty path, more than one SINGLE item and a PARTS play of several calls included;
+      the path-only play too), which `play()` checks again before closing the play running; the opener skips the
+      identity check only for a SINGLE play, chosen by its mode, never by the size's sign. The sheet's Play all parts
+      passes each part's identity as listed, inventing none, and its Delete of a part listed without one deletes by id
+      alone (`deleteRecording()`), as before #909. Results: `accepted` (generation above 0 and the call count), `none`,
+      `gone` (`startUid` not in the view after `flushPendingSearch()`), `rowNone` (shown, nothing playable),
+      `unsupported` and `refused`; every refusal leaves what plays playing. Calls recorded after the press, and filter
+      changes, never change the playlist; nothing runs on position ticks.
+    - No hold (D9, the maintainer's ruling): a playlist (and a PARTS play) holds no store selection and no
+      `setPlayingPath()`; deletes and the storage limit go ahead. At its turn each item is opened by
+      `RecordingDescriptor.open()` (`O_RDONLY|O_NOFOLLOW|O_NONBLOCK|O_CLOEXEC`, then `fstat`: a regular file with the
+      listed size and mtime; the check RecordingExport's selected open uses), and the player keeps its own copy of the
+      descriptor, so the file playing plays to its end when it is deleted under it. What plays is decided by the file
+      found at its turn: one whose delete waits on an export or upload and that is still there unchanged plays.
+    - One owner thread per player (every mode, R37): `MediaPlayer` is not thread-safe, and its creation, every call and
+      its callbacks must be on one thread with a Looper. Each part's player (`MediaItem` in `RecordingPlayback.kt`) has
+      a `HandlerThread` of its own, `dsd-neo-playback-player`, made by the looper with the part's player and token; the
+      playback looper never touches the `MediaPlayer`. The looper arms the prepare timeout and hands the setup to the
+      owner (`RecordingPlayer.Player.setup()`), which opens the file (`RecordingDescriptor.open()`, or a plain open for
+      SINGLE), makes the `MediaPlayer` (`Player.create()`: the attributes and every listener), calls `setDataSource(fd)`
+      and `prepareAsync()`, closes what it opened and posts its result (done, or failed with the reason) to the looper
+      with the part's token. The work never throws (anything thrown, an Error included, is a failed setup, `player`, as
+      is a `MediaPlayer` that cannot be made, a thread that cannot start and a hand-off the owner refuses because it has
+      quit), so a result is posted on every path; a thread whose `Handler` cannot be made is quit before the failure
+      goes on (`handlerOf()`), so no owner thread is left running. The player's callbacks arrive on the owner's Looper
+      and are forwarded to the looper with the token; the duration is read on the owner in `onPrepared`, before the
+      forward. A start is fenced and acknowledged (R39): each one the machine asks for carries a request serial
+      (`Player.start(serial)`), which a pause, the release, a move or Stop take back at once on the looper
+      (`MediaItem.wantedStart`); the owner makes `MediaPlayer.start()` only while its serial is still the one wanted,
+      then posts `onStarted(token, serial)`, and only that acknowledgement, current by token and serial, makes the
+      machine playing (`playingSinceMs`, the hold-off and paused stretch ended, the skip notice). Until then the
+      controls follow the wish and the clock follows the audio (R49, after Media3's play button and its legacy session
+      conversion): the Qt state is `STARTING` (`DecoderHost::PlaybackStarting`, 5, parsed strictly on both sides), which
+      the bar and the sheet show with Pause and the row marker as playing, with seek allowed (R45); the session reads
+      `STATE_BUFFERING` (`SESSION_BUFFERING`, Android 13+ shows a spinner) at the frozen position, speed 0, with Pause,
+      and a headset tap or PLAY_PAUSE takes the start back and pauses; Pause always withdraws it. The position does not
+      run, the deadline counts the old stretch, `PlaylistStatus` says no event for it (Playing is said on the
+      acknowledgement), and no second start is asked for. Each request arms a watchdog scoped to its token and serial
+      (`START_TIMEOUT_MS`, 10 s, R44), which the acknowledgement or any withdrawal cancels; on expiry the part fails as
+      the player's, as a start that throws: the play ends, the focus and the service go, the player is let go and
+      counted, and a late acknowledgement changes nothing. A seek while a start is pending takes that start back on the
+      looper before posting `seekTo()`, then, the wish to play unchanged, asks for a new start behind it (R45): the old
+      acknowledgement is stale, and the part plays from the seek's target. The next part starts only once the outgoing
+      one is silent (R52): a move that lets go of a player that may sound (a start was posted to it) asks its owner for
+      its silence behind the move's pause (`Player.silence()`, answered by `onSilenced(token)` on the looper only once
+      the audio has stopped, R62: `PlayerOwnerState` clears a start only once its pause has returned, so after a pause
+      that threw the release, once it has returned, confirms the silence instead, and the incoming start's watchdog
+      bounds the wait); the next part opens and prepares meanwhile, and its start, asked for and watched as usual, is
+      posted only once every such player is silent, so a silence that never comes ends the play at 10 s as the player's.
+      The looper never waits on it; a player never started needs none. A replacement (a sheet play over a playlist, a
+      playlist over a sheet play, Play all again) waits the same way: the replacing play's first start is posted only
+      once the old play's sounding player is silent, under the new start's watchdog. The silences outstanding outlive
+      the play's end (R61: finished, nothing left to try, Stop, the host's own stop; every release of a player that may
+      sound, a failure's too, pauses it and asks for its silence first if a move has not: `releasePlayer()`, I2), which
+      is published at once, and the next play's first start waits for them; only a wait that failed at its watchdog
+      drops them (the documented limit below). Each silence is fenced by its own token, so it counts only for the wait
+      it belongs to. Anything a start, pause or seek throws on the owner is `onFailed(token, REASON_PLAYER)`, and so is
+      anything the prepared listener throws (its length read), in place of `onPrepared` (R47); a release that throws is
+      logged and the thread still ends, and a let-go player whose thread has ended counts as silent (M3: a silence still
+      outstanding for it is taken as come, so the next start does not sit out its 10 s) (main ran `start()` on the
+      looper, where a throw crashed the app). Start, pause, seek and release are posted to the owner in order; the
+      posted release quits the owner's Looper (`quit()`) only after `MediaPlayer.release()` returns, since a Looper quit
+      earlier refuses the native events still in flight from a pause just before ("sending message to a Handler on a
+      dead thread"); release clears the native listener, so no new event is posted after it (a callback already running
+      can still be refused, harmlessly), and an event already queued, for a released player, is dropped. Until the
+      result is back the looper never touches that player (a prepare answering first is noted and applied at adoption;
+      an error drops the setup), and a result for a part no longer current (timed out, Stop, a move, the end, a
+      replacement) only releases its player; one that found its file gone or changed still puts the path it tried
+      (carried in the result) on the recheck list, leaving the play now open alone. A setup stuck in a read holds only
+      its own player's thread, so nothing ever queues behind it; it releases its player and ends once the read returns
+      and its result is delivered. Owner threads the machine has let go are counted for the process until they end
+      (`AbandonedSetups`, a limit of 2, `LIMIT`, R32/R35/R40): one counts from the moment its open is dropped or its
+      player released until its release task ends (`Player.release(ended)`, acknowledged on the looper; a release whose
+      post is refused ends at once), once for a thread dropped during its setup and then released; a completed part
+      counts before the next part's open checks the limit, its release posted after the hand-off (R48). While two are
+      running, each holding a `MediaPlayer` in a setup's or a release's read that may never return, an open makes no
+      player and starts no setup and waits (R35), its own prepare timeout armed as usual and bounding the wait to 10 s;
+      the looper hearing a thread end lets the waiting open go on under its own token. Only the current part waits, and
+      Stop, a move or the end drop the wait as they drop an opening, so stalled storage costs one ten-second timeout per
+      recording, one at a time, never a burst of failures, and quick moves never fail a recording. Stop never waits for
+      a setup. The JVM tests drive it with fake owner threads, numbered per setup, that hold a setup, run it late, fail
+      it or refuse it, and releases that end at once or are held in native code.
+    - Skip and recheck: an open answers `gone` (ENOENT in a folder that is there), `changed` (an identity mismatch, a
+      link, any other open error) or the player reports `damaged` (a media error for this file, or no prepare within ten
+      seconds of its open, setup included, `PREPARE_TIMEOUT_MS`, a task fenced by its id and the part's token, armed
+      before the hand-off to the owner thread and cancelled on prepare, error, a move and the end: a SINGLE play then
+      reads Failed, PARTS and PLAYLIST skip it, a resume waiting for it still waiting for the next, and the hung part's
+      late callbacks reach nothing); `player` (no player could be built, or `MEDIA_ERROR_SERVER_DIED`) is not the file's
+      fault and ends the play FAILED "failed". A PLAYLIST marks a failed recording failed for this play (never its whole
+      call), and the next not-failed one in the move's direction opens on the next looper turn (a long run of failures
+      stays stoppable; each search visits each recording once, making each candidate only as it reaches it, a range and
+      a cursor rather than a copy of the queue's tail, so a move costs only the candidates it tries); PARTS ends on its
+      first failure as before (gone, changed, a media error), a prepare timeout aside, which it skips as a playlist does
+      (every part timed out: "unplayable"). A move keeps its direction and remaining candidates until its candidate
+      plays, a start acknowledged (R46): one that prepared and fails before its first start is a candidate that failed,
+      and the search goes on the move's way with no gap; only a part that failed after it played is followed as if it
+      had completed. A player is never reused: it is released as soon as its part completes (just after the next part is
+      handed off, so the release adds nothing to the joint), fails or is left, so an error or completion it reports
+      later reaches nothing (its token is never opened again); the gap after a call holds no player, only the readings
+      of the part that completed or failed while it played (item, token, duration, position), kept apart from the part
+      opening: every open starts at position 0 with an unknown length (0), so the 3,000 ms Previous rule, the seek and
+      the record read the opening part's own, never those of a part that failed while it played before it. The paths of
+      `gone` and `changed` items go to the process-wide `RecordingRecheck` (not tied to a generation, so a Stop or a
+      replacement never drops one); its serial is in the status record, and the host calls `takeRecheck()` (a
+      `String[]`, no delimiter) when the serial moved, on every foreground return and with the next play, and, with no
+      play open, when the list's own serial (`recheckSerial()`, a `()J` counter) moved at a poll, so a late recheck
+      after a play ended (its last item's open past its timeout) is heard without reopening it; it hands the paths
+      to `recordingFilesMissing` (the store's root-aware recheck, which keeps away storage's entries). Each path is
+      handed over once.
+    - Kotlin queue (`RecordingPlayer.kt`, plain Kotlin with no Android imports, so `ANDROID_RECORDING_PLAYER_JVM` builds
+      it with no stubs): modes SINGLE (one path, unchecked, `setPlayingPath()` hold, transient focus, D10), PARTS (a
+      sheet's parts of one call, checked identities, transient focus kept across parts, D10, ends on a failed part,
+      skips one whose prepare timed out) and PLAYLIST (lasting `AUDIOFOCUS_GAIN` kept across parts, calls and gaps;
+      ignores the foreground; starts audio only once the service is promoted, in either order with the play, exactly
+      once; refused or not promoted within 5 s, `PROMOTION_MS`, ends "start"). Focus is `USAGE_MEDIA` +
+      `CONTENT_TYPE_SPEECH`, `setWillPauseWhenDucked(true)` (D8); only a granted request is kept, and a refused one is
+      abandoned at once (`FocusRequests`: Android registers its listener before it answers, so repeated refused resumes
+      leave none behind). No gap between parts, a 1 s gap (`GAP_MS`) after a call's last part (position frozen at the
+      part's end, speed 0, no seek). Next: the next call's first playable part at once (also from the gap); with calls
+      after but none playable it ends the play as the advance at the end does (finished, or "unplayable" when every
+      recording failed), and at the last call it is dropped. Previous (D7): restart the call when a playable part of it
+      comes before the current one, the position is past 3,000 ms (`RESTART_MS`) or it is in the gap, else the previous
+      call's first playable part, and at the first call restart. A restart opens the part again, as any move does (R31:
+      a new `MediaPlayer` and play token, set up on its own thread), also a part still opening, so nothing of the pass
+      before reaches it, and a part deleted while it played or opened is then a failed open, skipped and counted (D9
+      still holds while it plays: a delete never stops the part playing, which plays out from its open descriptor). A
+      restart tries its own call's parts first, then the earlier calls nearest first (R55), so a call deleted while it
+      played sends Previous to the call before it, never forward past it. A backward move whose every candidate fails
+      goes on forward. Next/Previous while paused stay paused. A transient focus loss interrupts (the request stays
+      outstanding, one listener; Play is a no-op, the app's Pause cancels the carry-on, B4); a lasting loss ends a
+      PLAYLIST ("focus") and pauses SINGLE/PARTS; headphones unplugged pause every mode in every state that would start
+      audio (B8). A PLAYLIST paused or interrupted ends after 10 minutes (`PAUSED_LIMIT_MS`, D11) counted from the start
+      of the continuous paused or interrupted stretch (a resume, in a part, from the gap, at an interruption's end or by
+      a media key, ends it only when a part starts playing, not at the press nor at the focus grant, so one refused,
+      interrupted or paused again as the next part opens keeps the pause's start; a resume pressed before the deadline
+      holds it off, across parts that fail or are skipped on the way, until a part plays, the focus is refused or lost
+      for a while, it is paused again (the deadline is back from the pause and ends it at once if the 10 minutes have
+      passed) or the search ends (finished, unplayable), so a part still preparing at 10 minutes does not end "timeout";
+      the search bounds it, each recording visited once and each open at most ten seconds), checked against
+      `SystemClock.elapsedRealtime()` by a task (`Handler.postDelayed()`, which counts the device's awake time), when
+      the screen turns on (`RecordingPlayer.onAwake()`, from an `ACTION_SCREEN_ON` receiver registered on the looper
+      while a playlist is open) and at every event, so it ends at the first of these after 10 minutes. Identities: every
+      open (a restart included) gets a fresh player and play token (unique in the process, never reused); each scheduled
+      task (gap, skip search, deadline, promotion timeout, prepare timeout) has its own id and is cancelled when
+      superseded; focus callbacks carry an epoch; a callback, task or command whose identity is not current is dropped.
+      The last generation's terminal reading (finished, stopped, focus, timeout, unplayable, start, failed, replaced;
+      the item it ended on) stays as the status until the next play, so the host reads a notification Stop on its next
+      poll. The queue goes at the end (R43): the machine drops `items`, the failed marks and `callStarts`, keeping only
+      the item it ended on and the call count for the terminal reading (`endedItem`, `endedCalls`; the counters stay),
+      since every command and task needs the play open; the host's own stop (`stop()` with no generation) and a
+      replacement let it all go too (`close()`), and the recheck list keeps its own paths. The host lets
+      `m_playback_items` go when it closes the play (`closePlayback()`: its terminal poll, a stop, a single play the
+      platform refuses, which replaces it, or the host's teardown; every path that zeroes the generation goes through
+      it), the published reading keeping what its item named.
+    - State/action table (one table drives Qt and the session, and every command is checked against it again on
+      delivery): opening (wanted) BUFFERING speed 0, Pause cancels the wish, no seek; opening (paused) PAUSED 0,
+      Play; playing PLAYING 1, seek when the duration is above 0; gap PLAYING 0, position frozen, Pause freezes the gap;
+      paused in the gap PAUSED 0, Play opens the next call at once (never replays the finished part); interrupted PAUSED
+      0, Play a no-op; paused PAUSED 0, Play, seek when the duration is above 0. Next/Previous and Stop in every row;
+      SKIP_TO_NEXT/PREVIOUS only while a move exists. Starting (a start asked for, not acknowledged) STARTING, the
+      session BUFFERING 0, position frozen, Pause takes the start back, seek re-asks behind the seek. Both rows wish to
+      play with no audio yet, so both read BUFFERING; a headset tap still pauses them, since `PlayPauseTaps.toggle()`
+      counts the taps (not the framework) and treats BUFFERING as playing. The notification stays ongoing for both.
+      `playbackCanSeek` comes from the same value and the sheet's seek bar reads it. The host's state reads Preparing
+      for both opening rows; Qt tells them apart by the paused reason the record carries only while nothing is wanted,
+      or (`background`) while a sheet's SINGLE or PARTS play waits for the foreground, which a visible app never shows:
+      Preparing with a reason reads Paused, with Resume, on the sheet, the bar and the row marker.
+    - Status record (`RecordingPlayback.status()`, parsed by `playback_status_record.h`, tab-separated, bounded, numeric
+      fields and fixed reason codes, each reason checked against its own field's codes, which `run_jvm_tests.py` checks
+      are `RecordingPlayer.kt`'s, a malformed record ignored with no change published): generation, state, position,
+      duration, error, item index, play token, call, calls, part, parts, gap, interrupted, can seek, paused reason,
+      ended reason, skipped count, recheck serial, refusals (the focus requests this play was refused, so a refusal read
+      again with the same reading still moves it), skip notice call and count (the call a part played on after
+      recordings were skipped, and how many, kept by the player while that call is current: `noteSkips()` when a part
+      starts, cleared when another call opens; -1 and 0 with none), seeks landed (R56: the play's seeks the player
+      confirmed, `playbackSeeksLanded`), can go next (`allows(ACTION_NEXT)`, `playbackCanNext`). `run_jvm_tests.py`
+      checks the writers and the parser count the same fields. A seek is a landing only once the player confirms it:
+      each carries a seek serial, the owner forwards `OnSeekCompleteListener` as `onSeekCompleted(token, serial)` for
+      the seek that landed (R59: the listener names no request, so the owner, `PlayerOwnerState`, keeps one platform
+      seek in flight and holds the newest request, which replaces an older held one and goes to the platform once the
+      one in flight completes, or is given up at 2 s with no completion, M1, not reported as landed then, though with no
+      newer seek issued its late completion still lands it, m1; a start asked for while a seek is held waits until that
+      seek has gone to the platform, M2, so the platform sees seek, then start, R45; the owner marks a completed player
+      before forwarding its completion, and nothing starts or seeks it again, R66: a start queued behind the completion
+      never plays the recording again), and until the latest seek lands the readings keep the confirmed position and its
+      clock (so Previous's 3,000 ms rule reads it); a superseded seek's completion counts for nothing. A plain seek (no
+      start pending to ask again) publishes nothing until it lands, so a system scrubber the user dragged never snaps
+      back to the old position (M4). The sheet takes a position near its target as the landing only from a record whose
+      landing count moved since it asked, so a position read before the seek reached the player never lands it; its
+      preview, with the 2 s fallback, shows the target meanwhile, each request restarting that 2 s, the same target
+      asked again included (R76). The host resolves `playbackPath`, `playbackTitle`, `playbackKey` and the identity from
+      the item index of the same record, and publishes everything together; the position alone goes on
+      `playbackPositionChanged`. Zero status reads while idle; a foreground return refreshes at once, from Hidden,
+      Suspended or Inactive (R51: an app visible but not active, as in split screen, holds the bar's events, so the
+      first active reading comes before the bar says anything).
+    - Ownership by generation and token: `playRecordings()` accepting (valid arrays and start) is the replacement point:
+      the old generation ends (its service is told it was replaced), the new one publishes Preparing and the call
+      returns its positive generation, which owns every later message, a synchronous service-start exception (published
+      as its terminal "start") and an asynchronous service or focus refusal included. A builder refusal changes nothing
+      and returns 0. Item commands (`seekPlaybackFor`, `pausePlaybackFor`, `resumePlaybackFor`) carry the play token
+      read when the gesture began, and the host forwards one only while it is the token open, showing no position for a
+      seek (the player may be on the next item since the poll the token came from, and drop it): the player's next
+      record moves the position, and the sheet counts a seek as landed from that record (meanwhile it shows the target,
+      so the thumb does not jump back for a poll, until the landing, another token, no seek or 2 s without one); the
+      player takes a Pause or Resume for the item also in the gap after its call (which holds no player), a seek only on
+      the item's open player; the bar's Next/Previous/Pause/Resume are queue-wide, and its Stop names its generation
+      (`stopPlaybackGeneration()`; a Stop for a generation no longer current does nothing). A Delete never stops a
+      queue: only a SINGLE play's own Delete stops it, as before; a sheet's Play all parts plays on while its History
+      row is there (`CallRecordingPlayer.rowPresent`), even once the row lists none of its parts, and stops when the row
+      is trimmed or cleared or the sheet closes. The playlist belongs to the app (`historyPlaylist`, `playlistStatus` in
+      `Main.qml`), never to a sheet: a sheet stops on close only what it started (a positive generation equal to
+      `playbackGeneration`), and a sheet that follows a playlist item (by path and indexed identity, until the user
+      picks a chip, never while a Save picker or a Delete confirmation is out, never on position ticks) holds none. Part
+      chips and Play all parts start a sheet play, replacing the playlist. D10 (leaving pauses, closing the sheet stops)
+      now applies only to sheet plays.
+    - Service (`RecordingPlaybackService.kt`, `foregroundServiceType="mediaPlayback"`, not exported, `START_NOT_STICKY`;
+      the decoder's `DecoderService` may run beside it) and its order (`PlaybackServicePhases.kt`, plain Kotlin, one
+      lock over admission, the phase NONE / ISSUED / PROMOTED / RETIRING, the reserved request and the owner).
+      `RecordingPlayback.play()` (Qt thread, Activity visible) allocates the generation, posts the play to the looper,
+      then for a playlist with no service issues `startForegroundService()` (PROMOTE); a playlist while a start is
+      issued joins that start, and one while the service is promoted is handed to it in the process: at most one start
+      that can promote is outstanding (an abandoned one, below, may still be delivered beside a fresh one). A thrown
+      refusal (`ForegroundServiceStartNotAllowedException`, `IllegalStateException`) ends that reserved, positive
+      generation "start". A start not promoted in time is given up with the play that waited for it (R53:
+      `abandonStart(generation)`, on the looper before the end is published, so a Play pressed as soon as Qt sees the
+      end never joins it), so the next play issues a fresh one, not a join of a start that may never be delivered; its
+      late delivery is fenced by its generation, promotes nothing and retires. Each PROMOTE delivery runs
+      `startForeground(MEDIA_PLAYBACK)` first, always, with the current owner's notification (a stale PROMOTE never
+      overwrites B's controls) or the instance's own "Opening…" one, then promotes only this process's outstanding start
+      for its generation. Intents carry `(process token, generation)` in their extras and their data URI
+      (`dsdneo-playback://<token>/<generation>/<action>`), so PendingIntent identity differs across processes and
+      generations; a transport delivery (the 29-32 notification buttons) is applied on the looper only while its
+      generation still owns the service. After every delivery and every asynchronous end the instance retires
+      (`stopSelfResult(lastStartId)`, removing only its own notification) when there is no owner, no request and no
+      start outstanding, so a stale action that creates a fresh instance after the end leaves nothing running.
+      `onDestroy` settles only the generation it served, always releases its own session and taps, and clears the media
+      key handoff and cancels notification id 2 only while it is still the instance alive
+      (`PlaybackServicePhases.Destroyed`, the same fence), so a destroy reported after the next instance was created
+      leaves those to the new one; `onTaskRemoved` ends the playlist. Teardown: `DsdNeoActivity.onDestroy` (not a
+      configuration change) → `RecordingPlayback.release()` closes admission and settles every request and owner; a
+      promoted service is stopped with `stopService()`, a start issued but not promoted is left to its delivery, which
+      promotes and retires with no owner (stopping it first would raise `ForegroundServiceDidNotStartInTimeException`).
+      A start redelivered to a new process carries the old token, promotes and retires.
+    - Session and notification: one framework `MediaSession` per service instance, made in `onCreate`, so the first
+      `startForeground()` already carries its token (`Notification.MediaStyle().setMediaSession()`: the
+      POST_NOTIFICATIONS exemption); callbacks on the playback looper, one callback object per playlist the session
+      shows, never one per part (R36: `SessionTarget` in `PlaybackServicePhases.kt`, the playlist's generation,
+      installed with `setCallback()` when the generation changes), so a command the framework queued for an earlier
+      playlist names that one and is dropped (by its generation, while it owns the service), while keys queued behind a
+      move all reach the queue: every move opens its part under a new token, and a callback swapped per part dropped
+      them (Next, Next, Stop lost the Stop). Queue-wide commands act on the queue's state when the looper runs them; a
+      seek applies to the item current then. The headset hook and play/pause keys are not left to the framework, whose
+      single tap waits on its callback's handler: `onMediaButtonEvent` hands them to `PlayPauseTaps` (plain Kotlin, the
+      instance's, for the playlist's generation, not its item), which counts them as the framework does (a second tap
+      within `ViewConfiguration.getDoubleTapTimeout()` is Next when offered; else the timeout, posted on the playback
+      looper, toggles Pause while the session plays or Play; a long-press repeat or another media key settles a waiting
+      tap at once); another playlist, its end or `onDestroy` drop the tap and its timeout, a part change keeps it. Play,
+      Pause, Next, Previous and Stop are not left to the framework either (`SessionKeys`, plain Kotlin beside the taps):
+      on ACTION_DOWN with no repeat, after a waiting tap counts as single, each is the queue command for the callback's
+      generation, applied on the looper against the player's state then, which ignores a command its state does not
+      allow; the framework would check the PlaybackState last published, posted to the main thread later, so a Pause
+      right after a tap that resumed found the paused actions and was dropped. Their ups and repeats are taken and
+      ignored. The direct transport callbacks (`onPlay`, `onPause`, `onStop`, `onSkipToNext`, `onSkipToPrevious`, the
+      Stop custom action: the lock screen, a Bluetooth controller) cancel the playlist's waiting tap without counting it
+      (`SessionKeys.direct()`, R60, M7), so the command acts alone: a tap's timeout never undoes an explicit Pause, and
+      a paused playlist's tap never resumes it, taking another app's audio, before the Pause. Every other explicit
+      command does the same, on the looper (R67, `PlayPauseTaps.explicit()`): the 29-32 notification buttons
+      (`ACTION_TRANSPORT`, for their own generation, the process and owner checks kept) and the app's own Pause, Resume,
+      Next, Previous and Stop (any waiting tap); a scoped command (the sheet's Pause or Resume for the item whose token
+      it captured, a Stop for one generation) is checked first and cancels the tap only when the player accepts it (R73,
+      `PlayPauseTaps.scoped()`), so a stale one changes nothing, the tap included; a media-button key still settles a
+      waiting tap first, as AOSP's `MediaSession.Callback` does. The Activity's foreground change, the content intent
+      and the screen-on receiver apply no transport command; the noisy receiver drops the tap (R54). Every other key
+      goes to the framework, after a waiting tap counts as single; metadata (title the call name, subtitle the line and
+      "Call 3 of 41", the part's duration) and a PlaybackState with exactly the table's action bits plus a Stop custom
+      action (`onCustomAction`); the session goes inactive when its play ends and is released in `onDestroy`. Channel
+      `dsdneo_playback` ("Call recordings", low), notification id 2 (the decoder's is 1), default (private) lock-screen
+      visibility, tap opens the launcher intent. The session follows every render at once; the notification is posted at
+      most once per 500 ms (`NotificationPace`, plain Kotlin), the first of a burst at once and the rest as one trailing
+      post of the latest status, shown only if its playlist still owns the service when it fires, dropped when a start's
+      foreground notification shows the owner's current status, and cancelled at the retire and in `onDestroy`: Android
+      sheds an app's updates over its enqueue rate (`DEFAULT_MAX_NOTIFICATION_ENQUEUE_RATE`, 5 a second per package,
+      shared with the decoder's notification, which posts at most once a second), and a shed last update left a paused
+      playlist's notification offering Pause on 29-32. On 29-32 the compact Previous / Play-Pause / Next and Stop are
+      immutable `getService` PendingIntents (a request code per generation and action; `deleteIntent` → Stop); on 33+
+      SystemUI builds them from the PlaybackState. A partial wake lock (`dsd-neo:playback`) is held while a playlist
+      wants audio (opening, playing, the gap); the `AUDIO_BECOMING_NOISY` receiver (a protected broadcast, registered
+      with no export flag) while any play is open, which drops the service's waiting headset tap on the looper before
+      the noisy pause (R54: `PlayPauseTaps.disconnected()`, so the tap's timeout cannot resume through the speaker), and
+      the `SCREEN_ON` one (the same way) while a playlist is open. While the media session is active for the playlist
+      that owns the service (`RecordingPlayback.playlistSession()`, the session's token: `ActiveSession` in
+      `MediaKeys.kt`, published by the service's `render()` once it has made the owner's session active, cleared at that
+      playlist's end, at a render with the session inactive and when the session is released, and not the owner's until
+      its own render after a replacement; the owner alone is set at promotion, before the looper starts the play),
+      `DsdNeoActivity.dispatchKeyEvent()` takes the media keys (`MediaKeys.sessionFor()`: headset hook, play, pause,
+      play/pause, stop, next, previous, rewind, fast-forward, record; not the microphone mute) from Qt, whose activity
+      consumes every key, and hands each to the playlist's own session (`MediaController(token)
+      .dispatchMediaButtonEvent()`), then consumes it: left to Android's routing, a key could reach another app's
+      session (a paused playlist's stays active while another app plays). With no playlist open they stay with Qt, as
+      before #909, so a headset's Play never resumes another app over the live audio or a sheet play.
+    - QML: Play all (`MapControlButton` shape "play", `historyPlayAll`, beside Map, only with `playbackSupported`) and
+      Play from here (`HistoryDetailSheet.showPlayFromHere`, History's sheet only; accepted closes the sheet, a refusal
+      stays on its notice line) call `historyPlaylist.start()`; `PlaylistStatus` (Main) keeps the playlist's generation,
+      its saved end, its events with an event id and a heard flag (a refused resume is an event each time: its reason
+      turning "unavailable", or `playbackRefusals` moving on the same reading, which the sheet's notice line says again
+      too); `NowPlayingBar` (both History screens, one height from its fonts and width, hidden while the keyboard is up,
+      decided by the host first, `Theme.keyboardShown()`: a `decoderHost.keyboardTop` of 0 or more is the answer, a host
+      that reports the keyboard itself (`DecoderHost::reportsKeyboard()`, Android, whose
+      `AppSupport.updateKeyboardBounds()` uses the IME inset, while `keyboardTopPixels()` can be called:
+      `PresentationScale::reportsKeyboard()`, the platform's `keyboardAvailable()` at the last tick) saying -1 means
+      hidden, and only a host with no word of its own (the base host, or Android without its reader) falls back to
+      `Qt.inputMethod.visible` with a keyboard of some height; never by overlap, which a window resized above the
+      keyboard does not have) shows it, keeps the call counter, the part counter and the time each whole on the line
+      under the name with a wrap point between them (R57: separate segments for the text and its sizing probe), says the
+      player's skip notice (`playbackSkipNoticeCount` while `playbackSkipNoticeCall` is the call playing: the player
+      names the call that followed the skips, so a call Qt sees first after a stretch away never takes an earlier skip;
+      the ended summary keeps the cumulative `playbackSkipped`), and announces an unheard event once, only while its
+      screen is visible, reachable and the application active, after the host has read the platform on a foreground
+      return; ✕ on an ended bar only dismisses. `CallRow.qml` shows the two-bar marker on the row whose uid is
+      `playbackKey` (History, Monitor, Home), paused while it is paused, opens paused or is halted for another app's
+      audio (`Util.playlistMark()`, as the bar and the sheet read "Paused for another app's audio"). Clear history ends
+      a History playlist. History closes its detail sheet when its screen hides (B5); a sheet's recording block ends its
+      delete confirmation (forgetting the file it named) and its save picker when its sheet hides or opens again
+      (`CallRecordingPlayer.endDialogs()`), so a confirmation never comes back over another call's sheet with the first
+      call's file (the Monitor's and Home's sheets and Signal search's `DetectionRecordingsSheet` share the block). Each
+      sheet reconciles the reading once it is visible with its selection set, as it opens (`HistoryDetailSheet.open()`,
+      `DetectionRecordingsSheet.openFor()`, R58), so a refusal standing on that file is said then, once: the shared
+      refusal key keeps the bar from reading it again. The block reconciles again once a store update, or `follow()`
+      after a dialog's dismissal or the play moving on (R69), has moved its selection and the following has settled
+      (R64, a zero-delay Timer after `onPartsChanged`): a refusal for a file no longer shown leaves the notice line, and
+      one that now matches the sheet is shown, read once. The bar's height and a row of list come out of the list's
+      share before the header gives room up, but the header keeps its top control row, or at least a 48 px control row,
+      within what the bar leaves (`HistoryScreen.headerFloor`), scrolling for the rest. Squeezed below that row (360×240
+      at 2x text leaves it 56 px), it scrolls the row's controls whole into view when its height changes and nothing in
+      it has the focus (`alignTopRow()`), so Map and Play all show whole and Search, the filters, Export and Clear are
+      reached by scrolling (a field taller than the room shows in part, and focusing it raises the keyboard, which hides
+      the bar). Where the bar leaves under 48 px, no control row fits whole. The floor applies only while the bar takes
+      room (`barHeight > 0`): with no bar the list keeps the 40% share it has without the playlist (`listMinHeight`),
+      however tall the header.
+    - Documented limits: a Pause in a part's last few hundred ms does not keep that tail (the platform plays out what it
+      had buffered and then reports completion; the completion is held while paused or interrupted, in every mode (a
+      sheet's SINGLE and PARTS plays too), the part current at its end (how far it played when its length is unknown,
+      R71), which cannot be scrubbed (no seek, and a seek landing after the completion moves nothing), its token still
+      current, so the sheet's Resume and Pause for it act (C1), its player let go at the hold and counted until its
+      thread ends (R72; the item, its token and its end reading stay, and no later callback of that player reaches the
+      play), and Resume moves on as if it had just completed: the next part, the gap, or the end; Stop, Next and
+      Previous act as from any paused part, Previous reading the end position, and the paused deadline counts on); calls
+      recorded after the press are not added; the limit or a delete can take a queued recording, which is skipped; a
+      gone file found after a host-asked Stop reaches the store at the next poll; a start redelivered after the
+      process died may flash the notification; while the app is in the background Qt does not update the bar or the rows
+      (the notification does); after the end a media key no longer restarts it; interrupted, the lock screen shows Play,
+      which changes nothing; a lock-screen or system seek applies to the part current when the looper runs it, so one
+      sent in the instant a part changes lands on the new part; a play whose start waited for an old player's silence
+      (R52, a move or a replacement) and failed at its 10 s watchdog forgets that wait as it ends, so a later play does
+      not wait for the stuck player again and may start over it if it ever sounds, while its thread stays counted until
+      it ends (R40); a seek given up at its 2 s bound (M1) still lands when its late completion comes if no newer seek
+      was issued since (m1), but one that arrives after a newer seek has been issued is matched to the newer one, which
+      can land that seek early; a transport command already in transit from a controller (a car, the lock screen) when a
+      playlist is replaced can act on the new playlist, the session being reused with its callback replaced per
+      generation (R36), within the binder transit of one command; and while a start is pending, Android 13 and
+      later's media controls show a loading spinner in place of Play and Pause for `STATE_BUFFERING`, as for any Media3
+      app (R49's mapping), so there is no Pause there until the start sounds, Stop staying available and the 10 s start
+      watchdog bounding the wait (R44); and a recording whose storage stops answering after its start was
+      acknowledged (a card that stalls mid-read) can leave the playlist waiting on it, the partial wake lock held and
+      the device kept awake, until Stop: the 10 s watchdog bounds only a start, and no timer watches a part that has
+      started; and the sheet compares a seek's landing count with the one read at the last poll, so two seeks
+      made between two polls can show the first one's landing for a moment before the second lands.
+    - Tests: `ANDROID_RECORDING_PLAYER_JVM` (`RecordingPlayerTest.kt`, `PlaybackServicePhasesTest.kt`,
+      `MediaKeysTest.kt`, `PlayerOwnerStateTest.kt`), `UI_QT_ANDROID_HOST`, `UI_QT_RECORDING_STORE`,
+      `UI_QT_CALL_HISTORY_MODEL`, `UI_QT_CALL_HISTORY_PLAYLIST`, `UI_QT_QML_CALL_LISTS` (`tst_history_playlist.qml`,
+      `tst_main_history_playlist.qml`, `tst_playlist_row_marker.qml`, `tst_call_recording_player.qml`),
+      `UI_QT_QML_A11Y_CHURN` (`tst_a11y_now_playing.qml`), `ANDROID_R8` (the new JNI keeps).
   - Worker (a `std::thread`, so it runs while Qt is paused in the background): the first pass checks the roots and
     reads the folder table (folder.json only) of each available one, in one hold of the lock, and then `ready` turns
     true and a session may start; only after that does it read each folder whole (one directory listing, the journal
@@ -20187,7 +20642,7 @@ Qt Quick frontend (`src/ui/qt`):
     owners' folders swapped while it was away), and a file a newer publish replaced at the same path under its old
     date. A delete request wakes a pass, so the next request waits for that pass to end. A delete request that names
     any recording on storage that is not there, as the last pass found it or as the request finds it now
-    (`queueDeletesLocked()`, `rootAvailableNow()` for each root it names), is refused at once and queues nothing,
+    (`queueDeletesLocked()`, `rootThereForIndexLocked()` for each root it names), is refused at once and queues nothing,
     whole. A root a request finds missing is remembered (`m_rootsSeenAway`) and the pass it asks for lists it again in
     full (`refreshRoots()`, `rebuildRoot()`) even when it is back before that pass, so storage that came back changed
     (two owners' folders swapped, journals as long as the ones read) is never taken as read; a retry that finds such a
@@ -20259,44 +20714,91 @@ Qt Quick frontend (`src/ui/qt`):
     drops it (`test_delete_held_when_its_root_was_seen_away`). Every root found missing outside a pass, by a delete
     request's probe, a session start's first probe or its owner lookup, goes through one function
     (`noteRootSeenAwayLocked()`): remembered, and every selection made before stale at once; the worker marking a root
-    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). A recheck a
-    transfer asked for that finds the file the index knows but cannot open it (no read access) marks it unreadable, so
-    the next export takes the others (`opensToRead()`, `test_unopenable_recording_leaves_selections`); the mark is kept
-    by path (`m_unopenable`) through later reads of its folder until an open succeeds, a metadata read alone never
-    bringing it back (`opensAgainLocked()`, `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false)
-    offers no recording path for save and share once its read is done, and a refreshed History row shows it as away
-    with Play refused (`folderReadLocked()`, `test_unread_folder_offers_no_paths`); while a read continues after a session
-    start between its slices marked the folder unread, a share can still take a path from the committed view, and a History call's part
-    buttons play by path (limits below). A journal is compacted only in a folder read and on
-    storage not seen away since, checked again right before the rewrite is committed (`compactableLocked()`,
-    `test_compaction_waits_for_a_rescan`).
-    A journal tail is applied only while its folder is still read with the session-start count its cursor was taken
-    with, so an owner lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck
-    that finds a link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
+    away makes them stale too (`markRootAwayLocked()`; `test_root_seen_away_by_a_delete_ends_tokens`). From that first
+    look through the pass that reads the root again (`m_rootsRereading` holds it while `refreshRoots()` has taken it out
+    of `m_rootsSeenAway`), its recordings read as unavailable to every reader (`rootSeenAwayLocked()` in the entry map's
+    `available`, R74), so Play all and Play from here admit none of them and answer `none` or `rowNone`, a sheet shows
+    them as storage not available, and the unlink and compaction checks hold for the same window
+    (`test_seen_away_root_is_not_admitted`; main read them as available until the worker marked the root away). The rows
+    a folder's read again holds from before it (`m_committed`) are unavailable too until `commitFolderLocked()` replaces
+    them, so between its slices they are listed but not played or admitted (R78; main read them as available from the
+    moment the folder was marked loaded, before its slices). A folder's first read waits for its last slice the same way
+    (an empty hold, `loadFolder()`, `test_first_read_waits_for_its_last_slice`); one that read recordings, whose
+    directory is missing at its last look at the root (there and empty only for holding no rows), is not committed at
+    all: the folder stays unread and the next pass is asked for
+    (`test_first_read_of_a_vanished_directory_is_not_committed`): its rows, an early one already carrying the identity
+    of a file a later record reused the name of, are neither listed, admitted nor shared before then (main listed them
+    as each slice applied, available, so a sheet's single play could play the newer file under the older call). Play all
+    and Play from here look at no storage: they admit from what the store knows, as every reader does
+    (`recordingsForFragmentLists()`, one `ReaderLock`, the entry map's `available`). Decided limit: a press in the
+    moment after storage goes away, before the store has noticed (its next pass, or a delete or session start that
+    looks), can replace the current play, which then ends "Couldn't play these recordings", as when files vanish just
+    after a press (D9); storage that returns is picked up by the store's next pass, within about a minute
+    (`test_playlist_missing_folder_keeps_its_rows_away`). A loss a session start sees while the root's listing in full
+    is in flight or done (not merely asked for) is noted again, so another listing runs after it: the storage there at
+    the listing's end may be another card (R79, `test_loss_during_a_listing_asks_for_another`); so does a session start
+    that sees only the root's directory gone during its listing, whatever root it records on (`usableRootsLocked()`,
+    `test_session_seeing_a_listing_root_gone_queues_another`); and one that sees a root's recordings folder missing
+    while rows are indexed on it notes it seen away too, whatever root it records on, so its rows are unavailable at
+    once and it is read in full once back (`test_session_on_another_root_notes_a_missing_indexed_root`). A session
+    start's one look at a root (`rootPlayableNow()`) decides whether its directory is missing; only a missing one is
+    asked whether it can be made. A recheck a transfer asked for that finds the file the index knows but cannot
+    open it (no read access) marks it unreadable, so the next export takes the others (`opensToRead()`,
+    `test_unopenable_recording_leaves_selections`); the mark is kept by path (`m_unopenable`) through later reads of its
+    folder until an open succeeds, a metadata read alone never bringing it back (`opensAgainLocked()`,
+    `test_unopenable_mark_survives_a_reread`). A folder not read (loaded false) offers no recording path for save and
+    share once its read is done, and a refreshed History row shows it as away with Play refused (`folderReadLocked()`,
+    `test_unread_folder_offers_no_paths`); while a read continues after a session start between its slices marked the
+    folder unread, a share can still take a path from the committed view, and a History call's part buttons play by path
+    (limits below). A journal is compacted only in a folder read and on storage not seen away since, checked again right
+    before the rewrite is committed (`compactableLocked()`, `test_compaction_waits_for_a_rescan`). A journal tail is
+    applied only while its folder is still read with the session-start count its cursor was taken with, so an owner
+    lookup that failed meanwhile ends it (`test_owner_lookup_failure_ends_a_tail_in_flight`). A recheck that finds a
+    link, a folder or a FIFO at a recording's name settles a delete waiting for it as skipped, told
     (`test_recheck_finding_a_link_tells_its_delete`). A folder read opens and reads the journal before it lists or looks
-    at any file, and a folder whose folder.json or journal could not be read is tried again no more often than every
-    30 s (`Folder::retryAtMs`, `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read, first or again, always publishes, so `indexed` comes back
-    even when no recording in it changed (`test_unread_journal_retry_publishes`). A root listed again while it reads
-    as available (a delete request saw it missing, back before the pass) keeps a folder a session start made or took
-    on it during the listing, or relabelled (`m_listing`, `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one
-    the listing has keeps the start's owner and label; one it has not was made new, and what the index held at that
-    path before, a folder removed while the storage was away, goes with its recordings;
-    `test_rescan_keeps_a_session_folder_made_meanwhile`, `test_rescan_drops_a_recreated_folders_old_recordings`,
-    `test_rescan_keeps_a_relabel_made_meanwhile`). Storage plugged in again after a pass marked it away wakes no pass on
-    its own, so an export or a save probes every root held as away first (`awayRootsBackLocked()`, as a delete request
-    does through `checkRootsLocked()`): one back asks for the pass that reads it, and the request is refused as
-    `loading` meanwhile (`test_export_probes_a_root_back`); so do Delete all, Delete unfinished and an owner's delete,
-    refused the same way (`requestDeletes()`, `test_bulk_deletes_probe_a_root_back`). A session start that finds the
-    preferred storage missing remembers it as a delete request's probe does (`m_rootsSeenAway`), so storage back before
-    a pass samples it is listed in full (`test_session_start_remembers_storage_away`). On Windows the no-follow type
-    probe (`dsd_path_type_nofollow()`) takes a long absolute name in extended-length form, as the openers do.
-    A recheck keeps a recording whose name cannot be read: only a name confirmed missing, or confirmed no recording
-    file (a link, a folder, a FIFO), leaves the index (`test_recheck_keeps_an_unreadable_name`).
+    at any file, and a folder whose folder.json or journal could not be read is tried again no more often than every 30
+    s (`Folder::retryAtMs`, `deferFolderReadLocked()`; `test_unreadable_journal_retry_backs_off`). A folder's read,
+    first or again, always publishes, so `indexed` comes back even when no recording in it changed
+    (`test_unread_journal_retry_publishes`). A session start never records onto a root held or seen away (a delete
+    request saw it missing, back before the pass, or a pass marked it away) until a full listing has read it, whatever
+    its looks see now: a card back unread may hold the owner's folder under another name, so the start records on the
+    fallback and the pass it asks for lists the card (`test_session_never_records_onto_a_root_back_unlisted`; a
+    root passed over so has its listing asked for whether or not the start finds a folder elsewhere,
+    `test_start_with_no_folder_asks_for_the_listing`; its owner-folder choice is made only among roots still usable once
+    its checks are done, a check that finds a root gone making it choose again without that root,
+    `test_owner_choice_drops_a_root_its_checks_found_gone`; the one exception, a start that finds the directory absent
+    and makes it anew, is read again in full after, I2). A root listed while it is not away (its directory there again,
+    I1) keeps a folder a session start made or took on it during the listing, or relabelled (`m_listing`,
+    `noteFolderAddedLocked()`, `keepSessionFoldersLocked()`: one the listing has keeps the start's owner and label; one
+    it has not was made new, and what the index held at that path before, a folder removed while the storage was away,
+    goes with its recordings; `test_rescan_keeps_a_session_folder_made_meanwhile`,
+    `test_rescan_drops_a_recreated_folders_old_recordings`, `test_rescan_keeps_a_relabel_made_meanwhile`). Storage
+    plugged in again after a pass marked it away wakes no pass on its own, so an export or a save probes every root held
+    as away first (`awayRootsBackLocked()`, as a delete request does through `checkRootsLocked()`): one back asks for
+    the pass that reads it, and the request is refused as `loading` meanwhile (`test_export_probes_a_root_back`); so do
+    Delete all, Delete unfinished and an owner's delete, refused the same way (`requestDeletes()`,
+    `test_bulk_deletes_probe_a_root_back`). A session start that finds the preferred storage missing remembers it as a
+    delete request's probe does (`m_rootsSeenAway`), so storage back before a pass samples it is listed in full
+    (`test_session_start_remembers_storage_away`). On Windows the no-follow type probe (`dsd_path_type_nofollow()`)
+    takes a long absolute name in extended-length form, as the openers do. A recheck keeps a recording whose name cannot
+    be read: only a name confirmed missing, or confirmed no recording file (a link, a folder, a FIFO), leaves the index
+    (`test_recheck_keeps_an_unreadable_name`).
 
     Decided limits (issue #902). Each is a timing ordering with storage changing underneath, or a rare platform edge,
     documented rather than handled:
     - Outside changes to the recordings folders while DSD-neo runs (replacing, swapping or re-permissioning files or
       folders) are not tracked beyond the guards described below.
+    - Storage that vanishes or returns at the same moment as a store pass or a session start (issue #909, the
+      store-race class, decided as a limit; the folder is chosen at `beginSession()`, when the session's
+      decoder arguments are built, and every call of that session records there): the store can start a session in a
+      second folder for an owner whose existing folder, on a card that appeared since the last pass, has another name
+      (the owner's recordings then sit in two folders, both listed); pick an owner folder whose directory was renamed
+      away in that moment, so that session's recordings cannot be written there and may not be saved; keep a first
+      read of a card that vanished and came back between two looks (its rows shown as that read found them); and leave
+      a card that returned unlisted until its next pass, about a minute (its recordings missing from History
+      meanwhile). A change the store noticed (a look that saw the root missing) is normally listed at its next pass; a
+      swap no look saw (a card back with another owner folder between two looks) leaves the index stale until a full
+      listing, such as the first pass after a restart.
     - A file's identity is its kind, size and modification time only: another file with exactly the same size and
       time counts as the recording, and the short window between the check before an unlink and the unlink is open.
     - Windows: the regular-file opener checks the name's attributes and then opens it, so a reparse point made in
@@ -20374,7 +20876,11 @@ Qt Quick frontend (`src/ui/qt`):
     screen and in Settings, and `deletesSkipped` (the file was not the recording: nothing to ask again) "Some files
     weren't deleted because they changed after they were recorded. They were left as they are."
     (`test_cancelled_deletes_notice`, `test_skipped_deletes_notice`, `tst_call_recording_settings.qml`). A refused export selects and holds nothing and returns `loading`; a refused delete returns
-    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`); the Call recordings screen
+    false and queues nothing, and `deleteRefusal()` says why (`loading` or `storageAway`). Every queued delete carries
+    the path its entry had when it was asked, with the identity (R68: `DeleteAsk`), and an entry found at another path
+    under its id, when the pass takes it and again right before the unlink, is not the file asked of: skipped, neither
+    file removed; the player's checked delete names the path pressed and is refused as "changed" for another path
+    (`deleteRecordingChecked(id, path, …)`, `test_checked_delete_refuses_another_path`). The Call recordings screen
     and the player say "Recordings are still loading. Try again in a moment." or "That storage isn't connected. Delete
     again once it's back." and keep nothing of the request (`test_delete_refused_while_storage_away` in both QML
     tests) (issue #902 B12, a decision: refuse, not merge the committed view;
@@ -20450,19 +20956,49 @@ Qt Quick frontend (`src/ui/qt`):
     root makes every read in it fail or come back empty. So no outcome that drops index state (a root's folder
     listing, a folder read whole, a journal's new lines, a file found missing or no longer the store's to remove), drops
     a request (a queued delete) or counts usage rests on a cached `m_rootAvailable` or on a failed stat, open or unlink
-    alone: the root is checked again first, through `rootStillAvailable()` (`rootAvailableNow()` for a root being read
-    back, which is not available yet). A root found gone is marked away (`markRootAwayLocked()`: its recordings'
-    fragments are announced, so History rows read them as away); nothing in it leaves the index, a request it
-    interrupted (a delete whose storage left as it ran) stays queued while it is away and is dropped when the root is
-    read again (the B12 backstop above); a delete asked while it is away is refused at once; and the
-    pass decides nothing more about it: a root marked away
-    reads as gone to `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was
-    gone (a short listing, a journal or files not found) is dropped, not applied. A root that comes back is listed,
-    then has its folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps
-    them (`Folder::rereading`) until its read completes and replaces them, so storage that leaves again during that
-    read drops nothing. Decided limit: storage that leaves and comes back between a read and the check after it is not
-    seen, and that read stands (a recording it found missing stays out of the index until its root is next read
-    whole).
+    alone: the root is checked again first, through `rootStillAvailable()` (`rootThereForIndex()` for a root being read
+    back, which is not available yet). A root is there for the index (R83, `rootThereForIndex()`) when it is an existing
+    readable directory, or a missing one that could be made while the index holds no row on it (m2,
+    `rootHoldsRowsLocked()`, a count per folder: a root whose folders hold no recording reads as there and empty, so a
+    desktop store's one root never reads as away for an emptied folder removed,
+    `test_root_without_rows_is_not_held_away`; main read it as there too): one whose directory went (renamed or removed,
+    its parent there) is away, not empty, its rows kept and unavailable, and read again once it is back; main dropped
+    them at the next pass (`tailFolder()` found folder.json gone and `readFolderOwner()` removed the folder,
+    `rootAvailableNow()` calling a root that can be made there) and, renamed back, never read them again until a
+    restart. `rootAvailableNow()`'s rule that a root that can be made is there stays for a session start alone
+    (`usableRootsLocked()`), which may make anew the directory of a root held away that its own look finds absent; its
+    next read again finds the folder made anew, and the old rows go then
+    (`test_playlist_missing_folder_keeps_its_rows_away`). A root whose directory is missing at a cold start holds
+    nothing and reads as there and empty, so a fresh install's screens never say its storage is away; it is remembered
+    as missing (`m_rootDirMissing`), looked at each pass and by the look an export, a save or a bulk delete takes at
+    away roots (`awayRootsBackLocked()`; a single recording's delete goes through `checkRootsLocked()`, which does not
+    look at the flag), and listed in full once it is a readable directory (I1, `test_folder_missing_at_a_cold_start`); a
+    directory that goes during the root's listing, before its final check, is remembered as missing the same way
+    (`rebuildRoot()`, `test_directory_gone_during_its_listing_is_remembered_missing`), and so is one a folder read in
+    the pass sees gone after the pass's look at its root (`rootStillAvailable()`,
+    `test_directory_gone_during_a_folder_read_is_remembered_missing`). A pass reads the flag at the root's turn and
+    writes it, under the lock, only from a look no session start overtook (a per-root count of directories a start
+    made), and its listing of a root takes any seen-away note made since the pass's top, so neither a session start nor
+    an export during the pass costs a second listing (m1, `listRootNow()`,
+    `test_session_made_root_during_a_pass_is_not_listed`, `test_export_note_during_a_pass_is_taken_by_its_listing`). A
+    session start that makes a root's directory over rows the index holds on it (renamed away before any pass marked the
+    root away) notes the root seen away, so its old rows are unavailable at once and the pass the start asks for lists
+    it in full, dropping them and reading the session's journal; one that makes it over nothing indexed lists nothing
+    (`noteRootMadeLocked()`, I2, `test_session_making_the_folder_reads_its_root_again`). Decided limit (M3): while a
+    root that holds rows has its directory missing, Delete all and an owner's or a recording's delete that name any of
+    its rows are refused as storage away (`checkRootsLocked()`): their files are not there to delete. The folder's
+    return makes the rows playable again; a restart (nothing is indexed on a missing directory, and the folder's return
+    then lists them again) or a session start that makes the folder (I2) takes them off the list instead. A root found
+    gone is marked away (`markRootAwayLocked()`: its recordings' fragments are announced, so History rows read them as
+    away); nothing in it leaves the index, a request it interrupted (a delete whose storage left as it ran) stays queued
+    while it is away and is dropped when the root is read again (the B12 backstop above); a delete asked while it is
+    away is refused at once; and the pass decides nothing more about it: a root marked away reads as gone to
+    `rootStillAvailable()` until a later pass reads it whole again. A read made while the root was gone (a short
+    listing, a journal or files not found) is dropped, not applied. A root that comes back is listed, then has its
+    folders read: a folder its listing no longer has leaves with its recordings, and one it still has keeps them
+    (`Folder::rereading`) until its read completes and replaces them, so storage that leaves again during that read
+    drops nothing. Decided limit: storage that leaves and comes back between a read and the check after it is not seen,
+    and that read stands (a recording it found missing stays out of the index until its root is next read whole).
   - Measured (`-O2`, NVMe ext4, warm cache; one folder of 44-byte WAVs, half of them pending plus a `link`): the first
     pass takes 17 ms for 2,000 recordings, 165-180 ms for 20,000 (11 MB journal) and 420-465 ms for 50,000; a session
     start right after the store starts waits 0.06-0.2 ms whatever the count, and a History read during the first pass
@@ -23570,13 +24106,19 @@ Qt Quick frontend (`src/ui/qt`):
     map" closes the sheet first and opens the map with a return token (the row's uid); Back reopens that sheet when the
     row is still logged and its screen shows, its close then returning to that row found again by uid
     (`rowFocusFor(uid)` on History, Listen and the monitor: the row it first opened from is gone, as a covered list
-    holds no rows); when the row has left the log the focus goes to the History list
-    (`HistoryScreen.focusList()`), else to the control that opened the sheet (`HistoryDetailSheet.mapOpener`, kept
-    past the close), else back to that screen (`restoreFocus(null)`). A plain `openMap()` keeps the focused control in
-    `mapReturn.focus` and Back gives it the focus again; when that control is gone (a Stop under the map took its
-    screen away), Back focuses the screen the map leaves to (`focusScreen()`, the top root surface). Opened from the
-    session menu, the session-menu return ("Text a screen reader reaches") hands the focus to Session options. A
-    close the app makes (an incoming document) reopens nothing.
+    holds no rows). History (there and in the bar's Show in list) and the monitor lay out the positioners their list
+    hangs from before they bring the row into view (`Theme.settlePositioners()`, then the list's `forceLayout()`): a
+    Column above or below the list that changed since the last frame lays out only on its next polish, and the row
+    would be contained against the old room and cut off once the list moved (issue #909). A filter change sends
+    History's list back to its top on a timer the screen owns (`logToStart`, shared with the density change), and a row
+    found there (`showPlaying()`, `rowFocusFor()`) stops it, so the return a search flushed by the press queued never
+    runs after the row is placed. Listen's list hangs from no positioner. When the row has left the log the focus goes
+    to the History list (`HistoryScreen.focusList()`), else to the control that opened the sheet
+    (`HistoryDetailSheet.mapOpener`, kept past the close), else back to that screen (`restoreFocus(null)`). A plain
+    `openMap()` keeps the focused control in `mapReturn.focus` and Back gives it the focus again; when that control is
+    gone (a Stop under the map took its screen away), Back focuses the screen the map leaves to (`focusScreen()`, the
+    top root surface). Opened from the session menu, the session-menu return ("Text a screen reader reaches") hands the
+    focus to Session options. A close the app makes (an incoming document) reopens nothing.
     Stop keeps the map open. The pin is the row's saved fix
     (`CallHistoryModel::PositionRole` "position", also `recordFor()["position"]`: `{latitude, longitude, errorM?,
     errorLowerBound, validityUnknown, provisional, weakCheck, anonymous, emergency, targetGroup, kindText,
@@ -25695,22 +26237,23 @@ does not, and a press on a `MouseArea` (a scrim, a barrier) or a Control reaches
 refuses a handler beneath while the cover is up, but a control that closes the cover on that release has taken it away
 by the time the handler beneath reports its tap. Every tap in `src/ui/qt/qml` therefore goes through
 `qml/GatedTapHandler.qml`, a `TapHandler` that reads `Navigation.allows(gate)` (its parent unless `gate` is set) when
-the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()`; a new
+the press begins and again at the tap, and emits `allowedTap(eventPoint, button)` and `allowedLongPress()` (and
+`pressBegan()` as a press starts; with `pressKey`, a tap acts only on the key its press began on, issue #909); a new
 control uses it and handles those, never a bare `TapHandler` or a `GatedTapHandler`'s `onTapped`/`onLongPressed`
 (Semgrep `dsd-neo.qml-bare-tap-handler` and `dsd-neo.qml-gated-tap-ungated-signal`, which also rejects
 `onSingleTapped`/`onDoubleTapped`; it cannot see a handler reached another way, `Connections { function onTapped() }` or
 `.tapped.connect(...)`). Keyboard and accessibility presses do not come through it and keep the control's own guarded
 activation. A drag or pinch is not a tap: a drag, mouse or touch, that begins anywhere on a cover, its scrim included,
-can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds
-`enabled: Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A
-`MouseArea` takes the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies
-outside every navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`,
-`PlexInput`) take the press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is
-the one cover that closed on the press itself, before any handler beneath judged it, and let that press through to the
-control under the finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it
-reaches nothing beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a
-sheet opened while it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or
-touch tap on a button beneath it), and the overlay cases above.
+can take the grab for a `DragHandler` beneath, so a `DragHandler` or `PinchHandler` binds `enabled:
+Navigation.allows(item) && …` (the Spectrum's pan and pinch, `BandRail`, the recording seek bar). A `MouseArea` takes
+the press itself and sits above what it covers (a sheet's barrier, the scan-warnings panel, which lies outside every
+navigation surface), so it needs neither, and Qt Quick Controls (`PlexCheckBox`, `PlexToggle`, `PlexInput`) take the
+press too and sit in sheets or in layers that stand down when covered. A `PlexComboBox` list is the one cover that
+closed on the press itself, before any handler beneath judged it, and let that press through to the control under the
+finger; it is modal (undimmed) and closes on the release outside it, so the press that dismisses it reaches nothing
+beneath. Tests: `tst_gated_tap_handler.qml` (a sheet closed on release or while the press is held, a sheet opened while
+it is held, a long press, keyboard and accessibility presses, a choice list closed by a mouse or touch tap on a button
+beneath it), and the overlay cases above.
 
 A choice of one among several that says which one is current (a `SegmentedControl` segment, a `BottomNav` tab) is
 `Accessible.RadioButton` with `checkable: true` and `checked` while it is the current one (issue #646). Qt 6.11.3's

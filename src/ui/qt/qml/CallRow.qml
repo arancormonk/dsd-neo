@@ -7,7 +7,11 @@ import "Util.js" as Util
 // One call in a list — monitor's recent panel and the history screen share it.
 // Encrypted rows carry the ENC tag while retaining readable text contrast. A
 // call with a recording carries a small play glyph before the time or ENC tag
-// (issue #708); a row without one is unchanged.
+// (issue #708); a row without one is unchanged. The call a History playlist
+// is on carries two magenta bars in that place instead (dimmed while it is
+// paused; issue #909), from
+// `playback` alone: the file that plays can be deleted under it, which takes
+// `hasRecording` away while it plays on.
 //
 // Issue #901: the row's height is its fonts' and the user's density, never
 // its call's or its width's: always the two lines, each a fixed line box
@@ -26,6 +30,9 @@ Item {
     property string accessibleName: name
     property bool interactive: false
     property bool hasRecording: false
+    // Issue #909: 0, or the History playlist on this call: 1 playing it
+    // (opening, between its parts), 2 paused on it (Util.playlistMark()).
+    property int playback: 0
     signal activated
     // The keyboard lands on the node, the row's named stop (Tab, a sheet's
     // focus return): a focus given to the row itself is passed on to it.
@@ -114,7 +121,7 @@ Item {
         var parts = [{key: "emergency", on: emergency},
                      {key: "enc", on: enc},
                      {key: "time", on: !enc && rightText.length > 0},
-                     {key: "recording", on: hasRecording}];
+                     {key: "recording", on: hasRecording || playback > 0}];
         for (var part of parts) {
             if (!part.on)
                 continue;
@@ -152,7 +159,9 @@ Item {
         width: row.width
         height: row.height
         Accessible.role: !row.reachable ? Accessible.Pane : (row.interactive ? Accessible.Button : Accessible.StaticText)
-        Accessible.name: !row.reachable ? "" : row.hasRecording ? qsTr("%1, has a recording").arg(row.accessibleName) : row.accessibleName
+        Accessible.name: !row.reachable ? "" : row.playback === 1 ? qsTr("%1, playing").arg(row.accessibleName)
+            : row.playback === 2 ? qsTr("%1, paused").arg(row.accessibleName)
+            : row.hasRecording ? qsTr("%1, has a recording").arg(row.accessibleName) : row.accessibleName
         Accessible.description: !row.reachable ? "" : [row.metaText,
             row.emergencyWords.length > 0 && !row.metaSaysEmergency ? row.emergencyWords : "",
             row.enc && !row.metaSaysEnc ? encTag.label : "",
@@ -240,6 +249,9 @@ Item {
                 id: recordingGlyph
                 objectName: "rowRecordingGlyph"
                 visible: row.plan.recording
+                bars: row.playback > 0
+                // Paused, the bars are dimmed: the playlist is on this call but silent.
+                color: row.playback === 1 ? Theme.magenta : row.playback === 2 ? Theme.textSubdued : Theme.cyan
                 anchors.right: encTag.visible ? encTag.left : timeText.visible ? timeText.left : parent.right
                 anchors.rightMargin: encTag.visible || timeText.visible ? 8 : 0
                 anchors.verticalCenter: parent.verticalCenter

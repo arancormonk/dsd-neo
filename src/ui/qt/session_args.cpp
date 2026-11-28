@@ -771,7 +771,7 @@ session_args_scan_build_lists(const QVariantMap& list, const QString& firstFreqM
     tuner["freqMhz"] = firstFreqMhz;
     /* Issue #890 (D3): App default runs a session with TETRA DMO targets at the rate TETRA decodes at. */
     if (tetraTargets && stored_int_or(list.value("bandwidthKhz"), -1) <= 0) {
-        tuner["bandwidthKhz"] = DSD_TETRA_DSP_BW_KHZ;
+        tuner["bandwidthKhz"] = QVariant(DSD_TETRA_DSP_BW_KHZ);
     }
     SessionArgsError reason;
     SessionArgPrefs tunerPrefs = prefs;

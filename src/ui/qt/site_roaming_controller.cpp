@@ -6,11 +6,13 @@
 #include "site_roaming_controller.h"
 
 #include <QAbstractItemModel>
+#include <QDebug>
 #include <QLatin1String>
-#include <QMetaObject>
+#include <QList>
 #include <QStringList>
 #include <QVariant>
 #include <QVariantList>
+#include <Qt>
 #include <algorithm>
 #include <cmath>
 #include <dsd-neo/runtime/decode_clock.h>
@@ -469,11 +471,11 @@ SiteRoaming::boundaryFailure(qint64 nowMs) {
     if (generation != m_tx.stopGeneration) {
         return QStringLiteral("userStop");
     }
-    const QString held = settingsFailure();
+    QString held = settingsFailure();
     if (!held.isEmpty()) {
         return held;
     }
-    const QString destination = destinationFailure();
+    QString destination = destinationFailure();
     if (!destination.isEmpty()) {
         return destination;
     }
@@ -1179,7 +1181,7 @@ SiteRoaming::cancel(const QString& why) {
 
 QVariantMap
 SiteRoaming::startPlan(qint64 roamId) {
-    const QVariantMap refused{{QStringLiteral("ok"), false}};
+    QVariantMap refused{{QStringLiteral("ok"), false}};
     const auto turn = [this, roamId] {
         return active() && m_tx.roamId == roamId
                && (m_tx.stage == Stage::Stopping || m_tx.stage == Stage::WaitingForUsb);
@@ -1391,7 +1393,7 @@ SiteRoaming::setFacts(const QVariantMap& readings) {
     next.optionsKnown = readings.value(QStringLiteral("optionsKnown")).toBool();
     next.scanKind = readings.value(QStringLiteral("scanKind")).toInt();
     next.heldTg = readings.value(QStringLiteral("heldTg")).toULongLong();
-    m_facts = next;
+    m_facts = std::move(next);
     Q_EMIT factsChanged();
     evaluate();
 }
@@ -1428,7 +1430,7 @@ SiteRoaming::publish() {
     next.candidateKm = distanceTo(next.fix, next.candidateUid);
     deriveLabels(next);
     if (!(next == m_view)) {
-        m_view = next;
+        m_view = std::move(next);
         Q_EMIT changed();
     }
     refreshNotice();

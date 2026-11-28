@@ -68,7 +68,6 @@
 #include <qflags.h>
 #include <qsystemdetection.h>
 #include <stdint.h>
-#include <stdio.h>
 #include <string.h>
 #include <thread>
 #include <utility>
@@ -670,11 +669,11 @@ testSystemForHitTetra(const dsd_qt::SignalSearchModel& model) {
 
     const struct {
         const char* protocol;
-        bool confirmed;
         const char* flag;
         int khz;
-    } cases[] = {{"TETRA", true, "-fT", 72}, {"TETRA DMO", true, "-fT", 72}, {"DMR", true, "-fs", 48},
-                 {"P25", true, "-ft", 48},   {"NXDN48", true, "-fi", 48},    {"", false, "-fA", 48}};
+        bool confirmed;
+    } cases[] = {{"TETRA", "-fT", 72, true}, {"TETRA DMO", "-fT", 72, true}, {"DMR", "-fs", 48, true},
+                 {"P25", "-ft", 48, true},   {"NXDN48", "-fi", 48, true},    {"", "-fA", 48, false}};
 
     for (const auto& c : cases) {
         for (const char* spec : {"rtl:0:426.7M", ""}) {

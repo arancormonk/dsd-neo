@@ -482,6 +482,7 @@ Item {
                     file: "HistoryDetailSheet.qml",
                     reach: function (sheet) {
                         var path = "/rec/County (12345678)/Keypad.wav";
+                        testContext.setPlaybackSupported(true);
                         var uid = callHistory.pushWithRecordings([{
                                 id: "k-1",
                                 path: path,

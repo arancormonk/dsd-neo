@@ -29,7 +29,6 @@
 #include <QList>
 #include <QMap>
 #include <QRegularExpression>
-#include <QRegularExpressionMatch>
 #include <QSet>
 #include <QStandardPaths>
 #include <QString>

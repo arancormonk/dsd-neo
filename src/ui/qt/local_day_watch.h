@@ -30,7 +30,8 @@
 #ifndef DSD_NEO_SRC_UI_QT_LOCAL_DAY_WATCH_H_
 #define DSD_NEO_SRC_UI_QT_LOCAL_DAY_WATCH_H_
 
-#include <QDateTime>
+#include <QDate> // IWYU pragma: keep -- QDate is the member type; IWYU names it <QDate> in some units and <QDateTime> in others.
+#include <QDateTime> // IWYU pragma: keep -- IWYU names QDate as <QDate> in some units and <QDateTime> in others.
 #include <QObject>
 #include <QTimer>
 #include <QtGlobal>

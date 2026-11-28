@@ -58,14 +58,23 @@
     public static java.lang.String probeImportDocument(android.content.ContentResolver, long, java.lang.String, long);
 }
 
-# Call recordings (#708): playback, export/save and share.
+# Call recordings (#708): playback, export/save and share. Playback's queue (#909): Play all parts and History
+# playlists, the queue-wide and item commands, and the recordings found gone or changed.
 -keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingPlayback {
     public static int play(android.content.Context, java.lang.String);
+    public static int play(android.content.Context, java.lang.String[], long[], long[], int[], int[], int[], int[], java.lang.String[], java.lang.String[], java.lang.String[], int, int);
+    public static void next();
+    public static void previous();
     public static void pause();
     public static void resume();
-    public static void seek(long);
     public static void stop();
+    public static void stopGeneration(int);
+    public static void seekFor(long, long);
+    public static void pauseFor(long);
+    public static void resumeFor(long);
     public static java.lang.String status();
+    public static java.lang.String[] takeRecheck();
+    public static long recheckSerial();
 }
 
 -keep,allowoptimization class io.github.arancormonk.dsdneo.RecordingExport {

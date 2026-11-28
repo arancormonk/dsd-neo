@@ -8,9 +8,9 @@
 // (the rows a filter view shows, the token flow, the save through the writer, its teardown).
 
 #include <QByteArray>
+#include <QChar>
 #include <QCoreApplication>
 #include <QDate>
-#include <QDateTime>
 #include <QDir>
 #include <QElapsedTimer>
 #include <QEventLoop>
@@ -19,9 +19,11 @@
 #include <QJsonArray>
 #include <QJsonDocument>
 #include <QJsonObject>
+#include <QJsonValue>
 #include <QLatin1String>
 #include <QList>
 #include <QLocale>
+#include <QMap>
 #include <QModelIndex>
 #include <QObject>
 #include <QPair>
@@ -30,7 +32,6 @@
 #include <QString>
 #include <QStringList>
 #include <QTemporaryDir>
-#include <QTime>
 #include <QTimeZone>
 #include <QTimer>
 #include <QVariant>
@@ -46,7 +47,9 @@
 #include <functional>
 #include <memory>
 #include <mutex>
+#include <qflags.h>
 #include <stdio.h>
+#include <utility>
 #include "../test_support/qt_test_paths.h"
 #include "call_history_export.h"
 #include "call_history_exporter.h"

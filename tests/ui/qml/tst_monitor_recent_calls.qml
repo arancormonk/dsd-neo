@@ -328,6 +328,50 @@ Item {
             verify(tc.list.contentY > before, "shown: it scrolls")
         }
 
+        // Issue #909: Back from the map brings its row into view (rowFocusFor) against the list's place the next
+        // frame draws. The list hangs between the header and hero's Column and the call actions' Column, each laid
+        // out on its next polish, and the call comes with one of them pending: a scan's timing line joined the
+        // header since the last frame, or a larger text size put the call actions on two rows (and the header
+        // grew).
+        function test_row_focus_with_a_layout_pending_data() {
+            return [
+                {tag: "timing line", part: "monitorHeader", column: ""},
+                {tag: "larger text", part: "monitorCallActions", column: "monitorLiveActions"}
+            ]
+        }
+        function test_row_focus_with_a_layout_pending(data) {
+            var screen = screenLoader.item
+            var part = findChild(screen, data.part)
+            // The header and hero's Column is named by neither; it is the header's parent.
+            var column = data.column.length > 0 ? findChild(screen, data.column) : part.parent
+            callHistory.clearAll()
+            callHistory.push("TODAY")
+            var uid = callHistory.newestUid()
+            callHistory.pushMany(20, "TODAY")
+            try {
+                tc.list.positionViewAtBeginning()
+                verify(waitForPolish(column))
+                var before = {part: part.height, column: column.height}
+                if (data.tag === "timing line")
+                    testContext.setMetric("scanTimingVisible", true)
+                else
+                    Ui.Theme.fontScale = 1.3
+                verify(part.height > before.part, data.part + " grew")
+                compare(column.height, before.column, "its Column has not laid it out yet")
+                var node = screen.rowFocusFor(uid)
+                verify(node !== null, "the oldest row is built")
+                waitForRendering(tc.list)
+                var row = tc.list.itemAtIndex(tc.list.count - 1)
+                verify(row !== null && row.node === node, "the oldest row is the last")
+                var y = row.mapToItem(tc.list, 0, 0).y
+                verify(y >= -0.5 && y + row.height <= tc.list.height + 0.5,
+                       "scrolled into view: " + y.toFixed(1) + " + " + row.height + " of " + tc.list.height)
+            } finally {
+                testContext.setMetric("scanTimingVisible", false)
+                Ui.Theme.resetFontScale()
+            }
+        }
+
         function test_01_the_call_that_just_ended_is_on_screen() {
             var newest = ""
             for (var i = 0; i < 4; i++) {
