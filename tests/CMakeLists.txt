@@ -24665,8 +24665,8 @@ if(DSD_HAS_RADIO)
                 ${Python3_EXECUTABLE}
                 ${CMAKE_CURRENT_SOURCE_DIR}/symbol_capture_check.py
                 $<TARGET_FILE:dsd-neo>
-                ${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_acquire_synth.iq.json
-                --mode=-fy --frame 480 --sync 20 --skip-frames 1 --min-clean 1.0
+                ${_DSD_NEO_IQ_FIXTURE_DIR}/ysf_acquire_synth.iq.json --mode=-fy
+                --frame 480 --sync 20 --skip-frames 1 --min-clean 1.0
                 --expect-frames 3
         )
         set_tests_properties(
