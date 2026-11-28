@@ -2684,8 +2684,8 @@ RecordingStore::usableRootsLocked(QList<bool>* makeOnly) {
         // Gone while its listing in full is in flight (r13, R79's rule), or while rows are indexed on it (r14t, R83):
         // what the index holds of it may name files no longer there, and it is read in full once back, wherever this
         // session records.
-        const bool indexed = m_rootAvailable.value(i) && rootHoldsRowsLocked(i);
-        if (missing && (m_listing.contains(i) || indexed) && !m_rootsSeenAway.contains(i)) {
+        const bool holdsRows = m_rootAvailable.value(i) && rootHoldsRowsLocked(i);
+        if (missing && (m_listing.contains(i) || holdsRows) && !m_rootsSeenAway.contains(i)) {
             noteRootSeenAwayLocked(i);
         }
         if (usable.at(i) && !creatable) {
